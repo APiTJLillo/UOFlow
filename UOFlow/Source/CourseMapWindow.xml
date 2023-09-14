@@ -1,0 +1,179 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+		<Window name="MapPoint" popable="false">
+			<Size>
+				<AbsPoint x="20" y="20"/>
+			</Size>
+			<Windows>
+				<DynamicImage name="$parentPoint" texture="MapX" >
+					<Size>
+						<AbsPoint x="20" y="20"/>
+					</Size>
+					<Anchors>
+						<Anchor point="center" relativePoint="center" relativeTo="">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="CourseMapWindow.MapPoint_OnLButtonDown" />
+					</EventHandlers>
+					<TexCoords x="0" y="0"/>
+				</DynamicImage>
+				<Label name="$parentName" font="UO_DefaultText" maxchars="2" textalign="right">
+					<Size>
+						<AbsPoint x="20" y="20"/>
+					</Size>
+					<Anchors>
+						<Anchor point="left" relativePoint="right" relativeTo="$parentPoint"/>
+					</Anchors>
+				</Label>
+			</Windows>
+		</Window>
+        
+	   	<Window name="CourseMapWindow" movable="true"  >
+			<Size>
+				<AbsPoint x="10" y="10" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center" relativeTo="">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="CourseMapWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="CourseMapWindow.Shutdown" />
+				<EventHandler event="OnUpdate" function="CourseMapWindow.OnUpdate" />
+				<EventHandler event="OnRButtonUp" function="UO_DefaultWindow.CloseDialog" />
+			</EventHandlers>
+			<Windows>
+                <FullResizeImage name="$parentBg" texture="TMapBG" handleinput="false">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft"/>
+                        <Anchor point="bottomright" relativePoint="bottomright"/>
+                    </Anchors>
+                    <Sizes>
+                        <TopLeft x="70" y="70" />
+                        <BottomRight x="70" y="70" />
+                        <Middle x="70" y="70" />
+                    </Sizes>
+                    <TexCoords>
+                        <TopLeft x="0" y="0" />
+                        <TopCenter x="70" y="0" />
+                        <TopRight x="140" y="0" />
+                        <MiddleLeft x="0" y="70" />
+                        <MiddleCenter x="70" y="70" />
+                        <MiddleRight x="140" y="70" />
+                        <BottomLeft x="0" y="140" />
+                        <BottomCenter x="70" y="140" />
+                        <BottomRight x="140" y="140" />
+                    </TexCoords>                    
+                </FullResizeImage>
+
+				<DynamicImage name="$parentTexture" popable="false">
+					<Size>
+						<AbsPoint x="10" y="10" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="8" y="48" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="CourseMapWindow.Map_OnLButtonDown" />
+						<EventHandler event="OnLButtonUp" function="CourseMapWindow.Map_OnLButtonUp" />
+					</EventHandlers>
+					<TexCoords x="0" y="0"/>
+				</DynamicImage>
+
+				<FullResizeImage name="$parentOverlay" texture="TMapOverlay" handleinput="false">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentTexture">
+							<AbsPoint x="-8" y="-8" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parentTexture">
+							<AbsPoint x="8" y="8" />
+						</Anchor>
+					</Anchors>
+					<Sizes>
+						<TopLeft x="70" y="70" />
+						<BottomRight x="70" y="70" />
+						<Middle x="70" y="70" />
+					</Sizes>
+					<TexCoords>
+						<TopLeft x="0" y="0" />
+						<TopCenter x="70" y="0" />
+						<TopRight x="140" y="0" />
+						<MiddleLeft x="0" y="70" />
+						<MiddleCenter x="70" y="70" />
+						<MiddleRight x="140" y="70" />
+						<BottomLeft x="0" y="140" />
+						<BottomCenter x="70" y="140" />
+						<BottomRight x="140" y="140" />
+					</TexCoords>
+				</FullResizeImage>
+
+				<HorizontalResizeImage name="$parentTop" texture="TMapOverlay" handleinput="false">
+					<Size>
+						<AbsPoint x="229" y="43" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentBg">
+							<AbsPoint x="-5" y="-2" />
+						</Anchor>
+					</Anchors>
+					<Sizes left="70" middle="70" right="70"/>
+					<TexCoords>
+						<Left x="0" y="213" />
+						<Middle x="35" y="213" />
+						<Right x="155" y="215" />
+					</TexCoords>
+				</HorizontalResizeImage>
+				<HorizontalResizeImage name="$parentBottom" texture="TMapBG" handleinput="false">
+					<Size>
+						<AbsPoint x="218" y="18" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentBg">
+							<AbsPoint x="2" y="4" />
+						</Anchor>
+					</Anchors>
+					<Sizes left="70" middle="70" right="70"/>
+					<TexCoords>
+						<Left x="0" y="212" />
+						<Middle x="70" y="212" />
+						<Right x="150" y="210" />
+					</TexCoords>
+				</HorizontalResizeImage>
+				<Label name="$parentPlotToggle" font="UO_NeueText_18pt" linespacing="20" maxchars="64" textalign="center">
+					<Size>
+						<AbsPoint x="150" y="32" />
+					</Size>
+					<Anchors>
+						<Anchor point="top" relativePoint="top" relativeTo="$parent">
+							<AbsPoint x="0" y="20" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="CourseMapWindow.PlotToggle_OnLButtonUp" />
+					</EventHandlers>
+					<Color r="0" g="50" b="0" a="255" />
+				</Label>
+
+				<Label name="$parentClearCourse" font="UO_NeueText_18pt" linespacing="20" maxchars="64" textalign="center">
+					<Size>
+						<AbsPoint x="160" y="32" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" relativeTo="$parent">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="CourseMapWindow.ClearCourse_OnLButtonUp" />
+					</EventHandlers>
+					<Color r="0" g="0" b="50" a="255" />
+				</Label>
+            </Windows>
+	   	</Window>
+	</Windows>
+</Interface>

@@ -1,0 +1,104 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Scripts>
+	<Script file="Source/SkillsTracker.lua"/>
+  </Scripts>
+  <Windows>
+    <Window name="SkillsTrackerSkillTemplate" movable="false">
+      <Size>
+        <AbsPoint x="320" y="16" />
+      </Size>
+      <Windows>
+        <Label name="$parentName" font="UO_DefaultText" maxchars="64" textalign="left" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" />
+          </Anchors>
+        </Label>
+        <Label name="$parentValue" font="UO_DefaultText" maxchars="64" textalign="right" handleinput="false">
+          <Size>
+            <AbsPoint x="120" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentName" />
+          </Anchors>
+        </Label>
+      </Windows>
+    </Window>
+
+	  <Window name="SkillsTrackerSPSkillTemplate" movable="false">
+		  <Size>
+			  <AbsPoint x="380" y="16" />
+		  </Size>
+		  <Windows>
+			  <Label name="$parentName" font="UO_DefaultText" maxchars="64" textalign="left" handleinput="false">
+				  <Size>
+					  <AbsPoint x="200" y="16" />
+				  </Size>
+				  <Anchors>
+					  <Anchor point="topleft" relativePoint="topleft" />
+				  </Anchors>
+			  </Label>
+			  <Label name="$parentValue" font="UO_DefaultText" maxchars="64" textalign="right" handleinput="false">
+				  <Size>
+					  <AbsPoint x="120" y="16" />
+				  </Size>
+				  <Anchors>
+					  <Anchor point="topright" relativePoint="topleft" relativeTo="$parentName" />
+				  </Anchors>
+			  </Label>
+			  <Label name="$parentROT" font="UO_DefaultText" maxchars="64" textalign="right" handleinput="false">
+				  <Size>
+					  <AbsPoint x="60" y="16" />
+				  </Size>
+				  <Anchors>
+					  <Anchor point="topright" relativePoint="topleft" relativeTo="$parentValue" />
+				  </Anchors>
+			  </Label>
+		  </Windows>
+	  </Window>
+
+    <Window name="SkillsTrackerWindow" movable="true">
+      <Size>
+        <AbsPoint x="20" y="20" />
+      </Size>
+      <Anchors>
+        <Anchor point="right" relativePoint="right">
+          <AbsPoint x="-10" y="0" />
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="SkillsTracker.Initialize" />
+        <EventHandler event="OnShutdown" function="SkillsTracker.Shutdown" />
+        <EventHandler event="OnRButtonUp" function="SkillsTracker.Context" />
+      </EventHandlers>
+      <Windows>
+        <Button name="$parentDragHandle" backgroundtexture="Swirl_Button" highlighttexture="Swirl_Button" handleinput="false">
+          <Size>
+            <AbsPoint x="20" y="20" />
+          </Size>
+
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" />
+          </Anchors>
+          <TexCoords>
+            <Normal x="0" y="0" />
+            <NormalHighlit x="0" y="23" />
+            <Pressed x="0" y="23" />
+            <PressedHighlit x="0" y="23" />
+            <Disabled x="0" y="23" />
+          </TexCoords>
+        </Button>
+        <Label name="$parentInfoText" font="UO_DefaultText" textalign="left" handleinput="false" wordwrap="true">
+          <Size>
+            <AbsPoint x="300" y="200" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="topright" relativeTo="$parentDragHandle" />
+          </Anchors>
+        </Label>
+      </Windows>
+    </Window>
+  </Windows>
+</Interface>

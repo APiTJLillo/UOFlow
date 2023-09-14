@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+	
+		<HorizontalScrollbar name="StandardHorizScroll" up="StandardHorizScrollUpBtn" down="StandardHorizScrollDownBtn" thumb="StandardHorizScrollThumb" gutter="StandardHorizScrollGutter" >
+			<Anchors>
+				<Anchor point="bottomleft" relativePoint="topleft">
+					<AbsPoint x="5" y="-25"/>
+				</Anchor>
+				<Anchor point="bottomright" relativePoint="bottomright">
+					<AbsPoint x="-5" y="-14"/>
+				</Anchor>
+			</Anchors>
+			<ThumbOffset x="0" y="-1" />
+      <ActiveZoneOffset x="500" y="500" />
+		</HorizontalScrollbar>
+		
+		<Button name="StandardHorizScrollUpBtn" backgroundtexture="UO_Core" highlighttexture="UO_Core">
+			<Size>
+				<AbsPoint x="11" y="11" />
+			</Size>
+			<TexCoords>
+				<Normal x="179" y="159" />
+				<NormalHighlit x="179" y="172" />
+				<Pressed x="179" y="172" />
+				<PressedHighlit x="179" y="172" />
+				<!--<Disabled x="420" y="0" />-->			
+			</TexCoords>
+		</Button>
+		<Button name="StandardHorizScrollDownBtn" backgroundtexture="UO_Core" highlighttexture="UO_Core">
+			<Size>
+				<AbsPoint x="11" y="11" />
+			</Size>
+			<TexCoords>
+				<Normal x="192" y="159" />
+				<NormalHighlit x="192" y="172" />
+				<Pressed x="192" y="172" />
+				<PressedHighlit x="192" y="172" />
+				<!--<Disabled x="356" y="8" />-->
+			</TexCoords>
+		</Button>
+		<HorizontalResizeImage name="StandardHorizScrollThumb" texture="UO_Core">
+		  <Size>
+				<AbsPoint x="12" y="12" />
+			</Size>
+      <Sizes left="2" middle="2" right="10" />
+			<TexCoords>
+                <Left x="219" y="198" />
+                <Middle x="231" y="198" />
+                <Right x="243" y="198" />
+			</TexCoords>
+		</HorizontalResizeImage>
+		<HorizontalResizeImage name="StandardHorizScrollGutter" texture="UO_Core">
+			<Size>
+				<AbsPoint x="11" y="11" />
+			</Size>
+			<Sizes left="9" middle="5" right="9"/>
+			<TexCoords>
+				<Left x="189" y="186" />
+				<Middle x="196" y="186" />
+				<Right x="220" y="186" />
+			</TexCoords>
+		</HorizontalResizeImage>
+
+	</Windows>
+</Interface>

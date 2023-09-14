@@ -1,0 +1,22 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+		<Window name="CenterScreenText" layer="overlay" handleinput="false" popable="false">
+			<Anchors>
+				<Anchor point="topleft" relativePoint="topleft" relativeTo="ResizeWindow"/>
+				<Anchor point="bottomright" relativePoint="bottomright" relativeTo="ResizeWindow"/>	
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnUpdate" function="CenterScreenText.OnUpdate" />
+			</EventHandlers>
+			<Windows>
+				<DynamicImage name="$parentImage" texturescale="1.0" handleinput="false" >
+					<Anchors>
+						<Anchor point="center" relativePoint="center">
+							<AbsPoint x="0" y="-210" />
+						</Anchor>
+					</Anchors>
+				</DynamicImage>
+			</Windows>
+		</Window>
+	</Windows>
+</Interface>

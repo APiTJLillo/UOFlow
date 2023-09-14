@@ -1,0 +1,349 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Windows>
+    <Label name="SectionTitle" font="UO_DefaultText" maxchars="64" textalign="left">
+      <Color r="255" g="255" b="255" a="255" />
+    </Label>
+
+    <Label name="Settings_ItemTitle" font="UO_DefaultText" linespacing="20" autoresize="true" wordwrap="true" maxchars="64" textalign="left">
+      <Color r="255" g="255" b="255" a="255" />
+      <EventHandlers>
+       
+      </EventHandlers>
+    </Label>
+
+    <Window name="Agents_LabelCheckButton">
+      <Size>
+        <AbsPoint x="350" y="32" />
+      </Size>
+      <Windows>
+        <Button name="$parentButton" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="left" relativePoint="left">
+              <AbsPoint x="5" y="0"/>
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonDown" function="OrganizerWindow.AutoClose" />
+          </EventHandlers>
+        </Button>
+        <Label name="$parentLabel" inherits="Settings_ItemTitle">
+          <Size>
+            <AbsPoint x="700" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="right" relativePoint="left" relativeTo="$parentButton">
+              <AbsPoint x="5" y="0" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+      </Windows>
+    </Window>
+
+    <Window name="SubSectionLabelTemplate">
+      <Size>
+        <AbsPoint/>
+      </Size>
+      <Windows>
+        <Label name="$parentLabel" font="UO_DefaultText">
+          <Size>
+            <AbsPoint x="650" y="20"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" />
+          </Anchors>
+          <Color r="206" g="217" b="242" a="255" />
+        </Label>
+
+        <FullResizeImage name="$parentGoldLine" inherits="UO_Default_Horizontal_Gold_Line" >
+          <Size>
+            <AbsPoint x="650" y="2" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="bottomleft" relativeTo="$parentLabel">
+              <AbsPoint x="0" y="30" />
+            </Anchor>
+          </Anchors>
+        </FullResizeImage>
+      </Windows>
+    </Window>
+
+
+    <Button name="OrganizerWindowTabButton" inherits="UO_Default_PaperDollTabButton">
+      <Size>
+        <AbsPoint x="117" y="23" />
+      </Size>
+      <Windows>
+        <HorizontalResizeImage name="$parentTab" inherits="UO_Default_Medium_Tab_Disabled">
+          <Size>
+            <AbsPoint x="120" y="30" />
+          </Size>
+        </HorizontalResizeImage>
+        <HorizontalResizeImage name="$parentTabSelected" inherits="UO_Default_Medium_Tab_Enabled" >
+          <Size>
+            <AbsPoint x="120" y="30" />
+          </Size>
+        </HorizontalResizeImage>
+      </Windows>
+    </Button>
+
+    <Button name="OrgRowTemplate">
+      <Size>
+        <AbsPoint x="50" y="25" />
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="OrganizerWindow.RemoveItem" />
+        <EventHandler event="OnRButtonUp" function="OrganizerWindow.RemoveItem" />
+        <EventHandler event="OnMouseOver" function="OrganizerWindow.ItemMouseOver" />
+        <EventHandler event="OnMouseOverEnd" function="OrganizerWindow.ClearMouseOverItem" />
+      </EventHandlers>
+      <Windows>
+        <Label name="$parentLabel" font="UO_DefaultText" maxchars="256" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="680" y="25" />
+          </Size>
+        </Label>
+      </Windows>
+    </Button>
+
+    <!-- Settings Window -->
+    <Window name="OrganizerWindow" movable="true" >
+      <Size>
+        <AbsPoint x="740" y="620" />
+      </Size>
+      <Anchors>
+        <Anchor point="center" relativePoint="center" />
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="OrganizerWindow.Initialize" />
+		  <EventHandler event="OnShutdown" function="OrganizerWindow.Shutdown"/>
+        <EventHandler event="OnKeyEnter" function="OrganizerWindow.Cancel" />
+      </EventHandlers>
+      <Windows>
+        <!-- Default chrome. Alter this at your own peril. -->
+        <Window name="$parentChrome" inherits="UO_DefaultWindow">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+        </Window>
+        <!-- End of default chrome boilerplate code -->
+
+        <!-- Buttons -->
+        <Button name="$parentAddTypeButton" inherits="UO_Default_Medium_Select_Button" >
+          <Anchors>
+            <Anchor point="bottom" relativePoint="center" relativeTo="OrganizerWindow">
+              <AbsPoint x="-80" y="-35" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="OrganizerWindow.OnAddTypeButton" />
+          </EventHandlers>
+        </Button>
+        <Button name="$parentAddIDButton" inherits="UO_Default_Medium_Select_Button" >
+          <Anchors>
+            <Anchor point="right" relativePoint="left" relativeTo="$parentAddTypeButton">
+              <AbsPoint x="10" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="OrganizerWindow.OnAddIDButton" />
+          </EventHandlers>
+        </Button>
+
+
+
+
+        <!-- Gold lines -->
+        <FullResizeImage name="$parentGoldLine1" inherits="UO_Default_Horizontal_Gold_Line" >
+          <Size>
+            <AbsPoint x="2" y="2" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" >
+              <AbsPoint x="10" y="72" />
+            </Anchor>
+            <Anchor point="topright" relativePoint="topright" >
+              <AbsPoint x="-10" y="72"/>
+            </Anchor>
+          </Anchors>
+        </FullResizeImage>
+        <FullResizeImage name="$parentGoldLine2" inherits="UO_Default_Horizontal_Gold_Line" >
+          <Size>
+            <AbsPoint x="2" y="2" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="bottomleft" >
+              <AbsPoint x="10" y="-68" />
+            </Anchor>
+            <Anchor point="bottomright" relativePoint="bottomright" >
+              <AbsPoint x="-10" y="-68"/>
+            </Anchor>
+          </Anchors>
+        </FullResizeImage>
+
+        <!-- End of Gold Lines -->
+
+
+        <Label name="$parentAgentLabel" inherits="Settings_ItemTitle" >
+          <Size>
+            <AbsPoint x="80" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="top" relativePoint="center" >
+              <AbsPoint x="-150" y="70" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+        <ComboBox name="$parentAgentCombo" inherits="UO_Default_LongComboBox">
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentAgentLabel">
+              <AbsPoint x="10" y="-5" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="OrganizerWindow.OnSelChanged" />
+          </EventHandlers>
+        </ComboBox>
+		  <Button name="$parentDefaultButton" inherits="UO_Default_Spring_Button" >
+			  <Anchors>
+				  <Anchor point="topleft" relativePoint="topright" relativeTo="$parentAgentLabel">
+					  <AbsPoint x="-22" y="0" />
+				  </Anchor>
+			  </Anchors>
+			  <EventHandlers>
+				  <EventHandler event="OnLButtonUp" function="OrganizerWindow.SetDefault" />
+				  <EventHandler event="OnMouseOver" function="OrganizerWindow.DefaultButtonMouseOver" />
+			  </EventHandlers>
+		  </Button>
+		  <Label name="$parentDefaultLabel" inherits="Settings_ItemTitle" >
+			  <Size>
+				  <AbsPoint x="80" y="20" />
+			  </Size>
+			  <Anchors>
+				  <Anchor point="topleft" relativePoint="topright" relativeTo="$parentAgentLabel">
+					  <AbsPoint x="-22" y="0" />
+				  </Anchor>
+			  </Anchors>
+			  <Color r="255" g="255" b="255" a="255" />
+		  </Label>
+        <Button name="$parentPlusButton" inherits="OrgRowTemplate" >
+          <Size>
+            <AbsPoint x="20" y="25" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentAgentCombo">
+              <AbsPoint x="10" y="3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="OrganizerWindow.AgentPlus" />
+            <EventHandler event="OnMouseOver" function="OrganizerWindow.PlusItemMouseOver" />
+            <EventHandler event="OnMouseOverEnd" function="OrganizerWindow.ClearMouseOverItem" />
+          </EventHandlers>
+
+        </Button>
+        <Button name="$parentMinusButton" inherits="OrgRowTemplate" >
+          <Size>
+            <AbsPoint x="20" y="25" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentPlusButton">
+              <AbsPoint x="10" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="OrganizerWindow.AgentMinus" />
+            <EventHandler event="OnMouseOver" function="OrganizerWindow.ItemMouseOver" />
+            <EventHandler event="OnMouseOverEnd" function="OrganizerWindow.ClearMouseOverItem" />
+          </EventHandlers>
+        </Button>
+        <Button name="$parentRenameButton" inherits="OrgRowTemplate" >
+          <Size>
+            <AbsPoint x="70" y="25" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentMinusButton">
+              <AbsPoint x="10" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="OrganizerWindow.AgentRename" />
+            <EventHandler event="OnMouseOver" function="OrganizerWindow.ItemMouseOver" />
+            <EventHandler event="OnMouseOverEnd" function="OrganizerWindow.ClearMouseOverItem" />
+          </EventHandlers>
+        </Button>
+        <Button name="$parentDefContButton" inherits="OrgRowTemplate" >
+          <Size>
+            <AbsPoint x="200" y="25" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentAgentCombo">
+              <AbsPoint x="-180" y="15" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="OrganizerWindow.AddRemDefCont" />
+            <EventHandler event="OnMouseOver" function="OrganizerWindow.ItemMouseOver" />
+            <EventHandler event="OnMouseOverEnd" function="OrganizerWindow.ClearMouseOverItem" />
+          </EventHandlers>
+        </Button>
+
+        <Window name="$parentCloseContainer" inherits="Agents_LabelCheckButton" >
+          <Size>
+            <AbsPoint x="150" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentDefContButton">
+              <AbsPoint x="30" y="-7" />
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <!-- Scrolling Window-->
+        <ScrollWindow name="OrganizerContentWindow" childscrollwindow="OrganizerContentWindowScrollChild" scrollbar="OrganizerContentWindowScrollbar" lineheight="18" autoHideScrollBar="true">
+          <Size>
+            <AbsPoint x="710" y="450" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="15" y="105" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" />
+
+            <Window name="$parentScrollChild" >
+              <Size>
+                <AbsPoint x="695" y="456"/>
+              </Size>
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft"/>
+              </Anchors>
+              <Windows>
+
+                
+                <Window name="OrganizerContent" >
+                  <Size>
+                    <AbsPoint x="695" y="0" />
+                  </Size>
+                  <Windows>
+
+                    
+
+
+                  </Windows>
+                </Window>
+              </Windows>
+            </Window>
+          </Windows>
+        </ScrollWindow>
+
+
+
+      </Windows>
+    </Window>
+  </Windows>
+</Interface>

@@ -1,0 +1,136 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Scripts>
+    <Script file="Source/BookTemplate.lua"/>
+  </Scripts>
+  <Windows>
+    <Label autoresize="true" font="UO_Book_18pt" maxchars="64" name="TitlePageLabelTemplate" textalign="center" wordwrap="true">
+      <Size>
+        <AbsPoint x="220" y="20"/>
+      </Size>
+      <Color a="0" b="0" g="0" r="0"/>
+    </Label>
+    <Label autoresize="false" font="UO_Book_18pt" autoresizewidth="false" maxchars="4" name="PageNumLabelTemplate" textalign="center" wordwrap="false">
+      <Size>
+        <AbsPoint x="218" y="10"/>
+      </Size>
+      <Color a="0" b="0" g="0" r="0"/>
+    </Label>
+    <EditBox autoresize="true" font="UO_Book_18pt" history="true" maxchars="64" name="EditTitleTemplate" textalign="center" wordwrap="true">
+      <Size>
+        <AbsPoint x="220" y="20"/>
+      </Size>
+      <Color a="0" b="0" g="0" r="0"/>
+      <EventHandlers>
+        <EventHandler event="OnKeyEnter" function="BookTemplate.EnterTitle"/>
+      </EventHandlers>
+      <TextOffset x="4" y="5"/>      
+    </EditBox>
+    <EditBox autoresize="false" font="UO_Book_18pt" history="true" maxchars="1600" name="EditPageTextTemplate" scrolling="vert" textalign="left" wordwrapwidth="177">
+      <Size>
+        <AbsPoint x="230" y="198"/>
+      </Size>
+      <Color a="0" b="49" g="49" r="148"/>
+      <TextOffset x="4" y="0"/>
+    </EditBox>
+    <!-- Generic Book Page Template -->
+    <Window layer="default" movable="false" name="PageTemplate">
+      <Size>
+        <AbsPoint x="230" y="280"/>
+      </Size>
+      <Windows>
+        <EditBox inherits="EditPageTextTemplate" name="$parentEditText" relativeTo="$parent">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="0" y="56"/>
+            </Anchor>
+          </Anchors>
+        </EditBox>
+        <Label inherits="PageNumLabelTemplate" name="$parentNumber" relativeTo="$parent">
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parent">
+              <AbsPoint x="0" y="-20"/>
+            </Anchor>
+          </Anchors>          
+        </Label>
+      </Windows>
+    </Window>
+    <!-- Generic Book Title Page Template -->
+    <Window inherits="PageTemplate" layer="default" movable="false" name="TitlePageTemplate">
+      <Windows>
+        <EditBox inherits="EditTitleTemplate" name="$parentEditTitle" relativeTo="$parent">
+          <Anchors>
+            <Anchor point="center" relativePoint="center">
+              <AbsPoint x="0" y="-30"/>
+            </Anchor>
+          </Anchors>
+        </EditBox>
+        <Label inherits="TitlePageLabelTemplate" name="$parentTitle" relativeTo="$parent">
+          <Anchors>
+            <Anchor point="center" relativePoint="center">
+              <AbsPoint x="0" y="-30"/>
+            </Anchor>
+          </Anchors>          
+        </Label>
+        <Label inherits="TitlePageLabelTemplate" name="$parentAuthor">
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentTitle">
+              <AbsPoint x="0" y="50"/>
+            </Anchor>
+          </Anchors>          
+        </Label>
+      </Windows>
+    </Window>
+    <!-- Generic Book Template -->
+    <Window layer="default" movable="true" name="BookTemplate">
+      <Size>
+        <AbsPoint x="500" y="280"/>
+      </Size>
+      <Anchors>
+        <Anchor point="center" relativePoint="center"/>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="BookTemplate.Initialize"/>
+        <EventHandler event="OnShutdown" function="BookTemplate.Shutdown"/>
+        <EventHandler event="OnRButtonUp" function="BookTemplate.CloseBook"/>
+      </EventHandlers>
+      <Windows>
+        <DynamicImage inherits="UO_Default_Legacy_Book" layer="background" name="$parentLegacyBook" popable="false" />
+        <!-- End of default chrome boilerplate code -->
+        <Window inherits="PageTemplate" name="$parentPage1">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="34" y="0"/>
+            </Anchor>
+          </Anchors>
+        </Window>
+        <Window inherits="PageTemplate" name="$parentPage2">
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentPage1">
+              <AbsPoint x="8" y="0"/>
+            </Anchor>
+          </Anchors>
+        </Window>
+        <Button inherits="UO_Default_Legacy_Book_PreviousButton" name="$parentPageDownButton" layer="overlay">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentPage1">
+              <AbsPoint x="-34" y="0"/>
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="BookTemplate.PageDown"/>
+          </EventHandlers>
+        </Button>
+        <Button inherits="UO_Default_Legacy_Book_NextButton" name="$parentPageUpButton" layer="overlay">
+          <Anchors>
+            <Anchor point="topright" relativePoint="topright" relativeTo="$parentPage2">
+              <AbsPoint x="28" y="0"/>
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="BookTemplate.PageUp"/>
+          </EventHandlers>
+        </Button>
+      </Windows>
+    </Window>
+  </Windows>
+</Interface>

@@ -1,0 +1,212 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Windows>
+    <Window name="ProfileWindow" movable="true" layer="default">
+      <Size>
+        <AbsPoint x="180" y="280" />
+      </Size>
+      <Anchors>
+        <Anchor point="center" relativePoint="center">
+          <AbsPoint x="0" y="0" />
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnShutdown" function="ProfileWindow.Shutdown" />
+        <EventHandler event="OnRButtonUp" function="ProfileWindow.Close" />        
+      </EventHandlers>
+      <Windows>
+
+        <FullResizeImage name="$parentBg" texture="TMapBG" handleinput="false">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+          <Sizes>
+            <TopLeft x="70" y="70" />
+            <BottomRight x="70" y="70" />
+            <Middle x="70" y="70" />
+          </Sizes>
+          <TexCoords>
+            <TopLeft x="0" y="0" />
+            <TopCenter x="70" y="0" />
+            <TopRight x="140" y="0" />
+            <MiddleLeft x="0" y="70" />
+            <MiddleCenter x="70" y="70" />
+            <MiddleRight x="140" y="70" />
+            <BottomLeft x="0" y="140" />
+            <BottomCenter x="70" y="140" />
+            <BottomRight x="140" y="140" />
+          </TexCoords>
+        </FullResizeImage>
+        <HorizontalResizeImage name="$parentTop" texture="TMapOverlay" handleinput="false">
+          <Size>
+            <AbsPoint x="229" y="43" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentBg">
+              <AbsPoint x="-5" y="-2" />
+            </Anchor>
+          </Anchors>
+          <Sizes left="70" middle="70" right="70"/>
+          <TexCoords>
+            <Left x="0" y="213" />
+            <Middle x="70" y="213" />
+            <Right x="179" y="215" />
+          </TexCoords>
+        </HorizontalResizeImage>
+
+        <HorizontalResizeImage name="$parentBottom" texture="TMapBG" handleinput="false">
+          <Size>
+            <AbsPoint x="218" y="18" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentBg">
+              <AbsPoint x="2" y="4" />
+            </Anchor>
+          </Anchors>
+          <Sizes left="70" middle="70" right="70"/>
+          <TexCoords>
+            <Left x="0" y="212" />
+            <Middle x="70" y="212" />
+            <Right x="176" y="210" />
+          </TexCoords>
+        </HorizontalResizeImage>
+        <Window name="$parentProfileEdit" movable="false" >
+          <Size>
+            <AbsPoint x="350" y="330" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="25" y="100" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <ScrollWindow name="$parentScrollW" childscrollwindow="$parentChild" scrollbar="$parentScrollbarED" lineheight="60" draganddrop="true" autoHideScrollBar="true">
+              <Size>
+                <AbsPoint x="350" y="320" />
+              </Size>
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft">
+                  <AbsPoint x="4" y="4" />
+                </Anchor>
+              </Anchors>
+              <Windows>
+                <VerticalScrollbar name="$parentScrollbarED" inherits="StandardVertScroll" layer="secondary"/>
+                <Window name ="$parentChild" >
+                  <Size>
+                    <AbsPoint x="350" y="0"/>
+                  </Size>
+                  <Windows>
+                    <EditBox name="$parentText" font="UO_GoldButtonText" maxchars="1024" scrolling="vert" >
+                      <Size>
+                        <AbsPoint x="330" y="700" />
+                      </Size>
+                      <EventHandlers>
+                        <EventHandler event="OnTextChanged" function="ProfileWindow.TextChange" />
+                      </EventHandlers>
+                      <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                          <AbsPoint x="4" y="4" />
+                        </Anchor>
+                      </Anchors>
+                      <TextColor r="0" g="0" b="0"  />
+                    </EditBox>
+                   </Windows>
+                </Window>
+              </Windows>
+            </ScrollWindow>
+          </Windows>
+        </Window>
+        <Window name="$parentProfileView" movable="false" >
+          <Size>
+            <AbsPoint x="350" y="330" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="25" y="100" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+           
+            <ScrollWindow name="$parentScroll" childscrollwindow="$parentChild" scrollbar="$parentScrollbar" lineheight="60" draganddrop="true" autoHideScrollBar="true">
+              <Size>
+                <AbsPoint x="350" y="320" />
+              </Size>
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft">
+                  <AbsPoint x="4" y="4" />
+                </Anchor>
+              </Anchors>
+              <Windows>
+                <VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" />
+
+                <Window name ="$parentChild" handleinput="false">
+                  <Size>
+                    <AbsPoint x="350" y="0"/>
+                  </Size>
+                  <Windows>
+                    <Label name="$parentText" font="UO_GoldButtonText" textalign="left" autoresize="true" maxchars="1024" linespacing="20" wordwrap="true" >
+                      <Size>
+                        <AbsPoint x="350" y="0" />
+                      </Size>
+                      <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                        </Anchor>
+                      </Anchors>
+                      <Color r="0" g="0" b="0" a="0" />
+                    </Label>
+                  </Windows>
+                </Window>
+              </Windows>
+            </ScrollWindow>
+          </Windows>
+        </Window>
+        <Label name="$parentAge" font="UO_DefaultText_15pt" maxchars="128" textalign="center" wordwrap="true">
+          <Size>
+            <AbsPoint x="327" y="70"/>
+          </Size>
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentProfileEdit" >
+              <AbsPoint x="0" y="-8"/>
+            </Anchor>
+          </Anchors>
+          <Color r="0" g="0" b="0" a="255" />
+        </Label>
+        <Label name="$parentCharName" font="UO_GoldButtonText" maxchars="128" textalign="left" wordwrap="true">
+          <Size>
+            <AbsPoint x="327" y="30"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="70" y="40" />
+            </Anchor>
+          </Anchors>
+          <Color r="0" g="0" b="0" a="255" />
+        </Label>
+
+        <DynamicImage name="$parentSeal" texture="Seal_IMG" layer="default">
+          <Size>
+            <AbsPoint x="360" y="40"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="20" y="50" />
+            </Anchor>
+          </Anchors>
+        </DynamicImage>
+        <DynamicImage name="$parentLine" texture="Line_IMG" layer="default">
+          <Size>
+            <AbsPoint x="360" y="21"/>
+          </Size>
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentProfileEdit" >
+              <AbsPoint x="0" y="-10" />
+            </Anchor>
+          </Anchors>
+        </DynamicImage>
+        
+      </Windows>
+		
+    </Window>
+  </Windows>
+</Interface>

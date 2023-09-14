@@ -1,0 +1,75 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Scripts>
+		<Script file="Source/NewPlayerGuide.lua" />
+	</Scripts>
+	<Windows>
+
+		<Window name="InfoDisplay"> 
+			<Size>
+				<AbsPoint x="610" y="460" />
+			</Size>
+			<Windows>
+				<Label name="$parentText" font="UO_DefaultText" maxchars="10000" textalign="left" handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="610" y="440" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="0" y="40" />
+						</Anchor>
+					</Anchors>
+					<Color r="243" g="207" b="67" a="255" />
+				</Label>
+		    </Windows>
+		</Window>		
+				
+		<Window name="NewPlayerGuide" movable="true" layer="secondary">
+			<Size>
+				<AbsPoint x="640" y="480" />
+			</Size>
+			<Anchors>
+				<Anchor point="bottomright" relativePoint="bottomright">
+					<AbsPoint x="-25" y="-90" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="NewPlayerGuide.Initialize" />
+				<EventHandler event="OnShutdown" function="NewPlayerGuide.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<!-- Default chrome. Alter this at your own peril. --> 
+				<Window name="$parentChrome" inherits="UO_DefaultWindow"> 
+					<Anchors> 
+						<Anchor point="topleft" relativePoint="topleft"/> 
+						<Anchor point="bottomright" relativePoint="bottomright"/> 
+					</Anchors> 
+				</Window>  
+				<!-- End of default chrome boilerplate code -->
+
+				<Window name="$parentEntry1" inherits="InfoDisplay">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="20" y="20" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<HorizontalResizeImage name="$parentHRule" inherits="UO_Default_Horizontal_Rule" layer="secondary" handleinput="false">
+					<Size>
+						<AbsPoint x="629" y="4" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="bottomleft">
+							<AbsPoint x="5" y="-40" />
+						</Anchor>
+					</Anchors>
+				</HorizontalResizeImage>     
+
+				
+
+			</Windows>
+
+		</Window>
+		
+	</Windows>
+</Interface>

@@ -1,0 +1,194 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Windows>
+    
+
+    <Button name="ShowButtonTemplate" inherits="UO_Default_SmallNextButton">
+      <Size>
+        <AbsPoint x="32" y="23" />
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="PetWindow.ShowPet" />
+        <EventHandler event="OnRButtonUp" function="PetWindow.Lock" />
+        <EventHandler event="OnLButtonDown" function="PetWindow.OnMouseDrag" />
+        <EventHandler event="OnMouseOver" function="PetWindow.ShowPetToolTip" />
+        <EventHandler event="OnMouseOverEnd" function="PetWindow.ShowPetToolTipEnd" />
+      </EventHandlers>
+    </Button>
+
+    <Button name="HideButtonTemplate" inherits="UO_Default_SmallPreviousButton">
+      <Size>
+        <AbsPoint x="32" y="23" />
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="PetWindow.HidePet" />
+        <EventHandler event="OnRButtonUp" function="PetWindow.Lock" />
+        <EventHandler event="OnMouseOver" function="PetWindow.HidePetToolTip" />
+        <EventHandler event="OnMouseOverEnd" function="PetWindow.HidePetToolTipEnd" />
+      </EventHandlers>
+    </Button>
+
+    <Button name="ShowButtonTemplateR" inherits="UO_Default_SmallPreviousButton">
+      <Size>
+        <AbsPoint x="34" y="23" />
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="PetWindow.ShowPet" />
+        <EventHandler event="OnRButtonUp" function="PetWindow.Lock" />
+        <EventHandler event="OnLButtonDown" function="PetWindow.OnMouseDrag" />
+        <EventHandler event="OnMouseOver" function="PetWindow.ShowPetToolTip" />
+        <EventHandler event="OnMouseOverEnd" function="PetWindow.ShowPetToolTipEnd" />
+      </EventHandlers>
+    </Button>
+
+    <Button name="HideButtonTemplateR" inherits="UO_Default_SmallNextButton">
+      <Size>
+        <AbsPoint x="34" y="23" />
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="PetWindow.HidePet" />
+        <EventHandler event="OnRButtonUp" function="PetWindow.Lock" />
+        <EventHandler event="OnMouseOver" function="PetWindow.HidePetToolTip" />
+        <EventHandler event="OnMouseOverEnd" function="PetWindow.HidePetToolTipEnd" />
+      </EventHandlers>
+    </Button>
+
+    <Window name="PetWindow" layer="background" movable="false" sticky="true">
+      <Size>
+        <AbsPoint x="190" y="37" />
+      </Size>
+      <Anchors>
+        <Anchor point="topleft" relativePoint="topleft">
+          <AbsPoint x="0" y="0" />
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="PetWindow.Initialize" />
+        <EventHandler event="OnShutdown" function="PetWindow.Shutdown" />
+        <EventHandler event="OnLButtonDown" function="PetWindow.OnMouseDrag" />
+        <EventHandler event="OnUpdate" function="PetWindow.Update"  />
+		<EventHandler event="OnMouseWheel" function="WindowUtils.Scale" />
+      </EventHandlers>
+      <Windows>
+        <Window name="$parentHideView" moveable="false">
+          <Size>
+            <AbsPoint x="40" y="37" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+          </Anchors>
+
+          <Windows>
+            <Button name="$parentShowButton" inherits="ShowButtonTemplate">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft">
+                  <AbsPoint x="10" y="0" />
+                </Anchor>
+              </Anchors>
+            </Button>
+            <Button name="$parentShowButtonR" inherits="ShowButtonTemplateR">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft">
+                  <AbsPoint x="10" y="0" />
+                </Anchor>
+              </Anchors>
+            </Button>
+            <Label name="$parentName" font="Arial_Black_Shadow_15" maxchars="16" textalign="left" handleinput="false" wordwrap="true" linespacing="18" autoresize="true" autoresizewidth="true">
+              <Size>
+                <AbsPoint x="150" y="0" />
+              </Size>
+              <Anchors>
+                <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parent">
+                  <AbsPoint x="10" y="-20" />
+                </Anchor>
+              </Anchors>
+            </Label>
+          </Windows>
+        </Window>
+
+        <Window name="$parentShowView" movable="false">
+          <Size>
+            <AbsPoint x="190" y="37" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+          </Anchors>
+
+          <Windows>
+
+            <DynamicImage name="$parentTitleBar" texture="HealthbarBg" layer="background" alpha="0.3" textureScale="2">
+              <Size>
+                <AbsPoint x="190" y="37" />
+              </Size>
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent"  />
+                <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent"  />
+              </Anchors>
+            </DynamicImage>
+
+            <FullResizeImage name="$parentFrame" inherits="UO_Simple_Frame" layer="background" frameonly="false">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+
+            <Label name="$parentName" font="Arial_Black_Shadow_15" maxchars="16" textalign="center" handleinput="false" wordwrap="true" linespacing="18">
+              <Size>
+                <AbsPoint x="150" y="10" />
+              </Size>
+              <Anchors>
+                <Anchor point="top" relativePoint="top">
+                  <AbsPoint x="0" y="7" />
+                </Anchor>
+              </Anchors>
+            </Label>
+
+            <!-- Left arrow circle button -->
+            <Button name="$parentHideButton" inherits="HideButtonTemplate" >
+              <Anchors>
+                <Anchor point="topright" relativePoint="topleft">
+                  <AbsPoint x="-37" y="7" />
+                </Anchor>
+              </Anchors>
+            </Button>
+            <Button name="$parentHideButtonR" inherits="HideButtonTemplateR" >
+              <Anchors>
+                <Anchor point="topright" relativePoint="topleft">
+                  <AbsPoint x="-37" y="7" />
+                </Anchor>
+              </Anchors>
+            </Button>
+            <Button name="PetWindowLock" layer="popup" backgroundtexture="UO_Core" highlighttexture="UO_Core" textureScale="1">
+              <Size>
+                <AbsPoint x="20" y="20" />
+              </Size>
+              <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="PetWindow.LockMe" />
+                <EventHandler event="OnMouseOver" function="PetWindow.LockTooltip" />
+              </EventHandlers>
+              <TexCoords>
+                <Normal x="69" y="341" />
+                <NormalHighlit x="69" y="341" />
+                <Pressed x="69" y="341" />
+                <PressedHighlit x="69" y="341" />
+                <Disabled x="69" y="341" />
+              </TexCoords>
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                  <AbsPoint x="5" y="5" />
+                </Anchor>
+              </Anchors>
+            </Button>
+          </Windows>
+        </Window>
+
+      </Windows>
+    </Window>
+    <!--End of PetWindow -->
+
+  </Windows>
+</Interface>

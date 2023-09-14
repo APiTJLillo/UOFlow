@@ -1,0 +1,205 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+		<Button name="ChannelButtonTemplate" inherits="UO_Default_GenericTextButton">
+			<Size>
+				<AbsPoint x="250" y="20" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnLButtonUp" function="ChannelWindow.ToggleChannel" />
+			</EventHandlers>
+		</Button>
+		<Window name="CreateChannelWindow" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="325" y="140" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<Windows>
+				<Window name="$parentChrome" inherits="UO_DefaultWindow">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>
+				<Window name="$parentBackground" handleinput="false">
+					<Size>
+						<AbsPoint x="220" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="top" relativePoint="top">
+							<AbsPoint x="0" y="45" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnInitialize" function="ChannelWindow.CreateWindowInitialize" />
+						<EventHandler event="OnShutdown" function="ChannelWindow.OnShutdown" />
+					</EventHandlers>
+					<Windows>
+						<!-- Inner Frame Boilerplate -->
+						<FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<!-- End of Inner Frame Boilerplate -->
+					</Windows>
+				</Window>
+				<EditBox name="$parentTextEntry" font="UO_DefaultText" taborder="1" maxchars="20">
+					<Size>
+						<AbsPoint x="200" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="center" relativePoint="center" relativeTo="$parentBackground">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnKeyEnter" function="ChannelWindow.CreateChannel" />
+					</EventHandlers>
+				</EditBox>
+				<Button name="$parentOkayButton" inherits="UO_Default_GumpButton">
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" >
+							<AbsPoint x="-45" y="-15" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ChannelWindow.CreateChannel" />
+					</EventHandlers>
+				</Button>
+				<Button name="$parentCancelButton" inherits="UO_Default_GumpButton">
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" >
+							<AbsPoint x="45" y="-15" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ChannelWindow.CreateCancel_OnLButtonUp" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+		<Window name="ChannelWindow" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="300" y="375" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="ChannelWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="ChannelWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentChrome" inherits="UO_DefaultWindow">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="ChannelListWindow" childscrollwindow="ChannelListChildWindow" scrollbar="ChannelListScrollbar" lineheight="60" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="250" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="top" relativePoint="top">
+							<AbsPoint x="0" y="45" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<FullResizeImage name="$parentBackground" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft">
+									<AbsPoint x="-5" y="-5" />
+								</Anchor>
+								<Anchor point="bottomright" relativePoint="bottomright">
+									<AbsPoint x="5" y="5" />
+								</Anchor>
+							</Anchors>
+						</FullResizeImage>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft">
+									<AbsPoint x="-5" y="-5" />
+								</Anchor>
+								<Anchor point="bottomright" relativePoint="bottomright">
+									<AbsPoint x="5" y="5" />
+								</Anchor>
+							</Anchors>
+						</FullResizeImage>
+						<VerticalScrollbar name="ChannelListScrollbar" inherits="StandardVertScroll" />
+						<Window name="ChannelListChildWindow" >
+							<Size>
+								<AbsPoint x="230" y="0" />
+							</Size>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Label name="$parentCurrentChannelDescLabel" font="UO_DefaultText" maxchars="256" textalign="center">
+					<Size>
+						<AbsPoint x="320" y="25" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottom" relativePoint="top" relativeTo="ChannelListWindow">
+							<AbsPoint x="0" y="10" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<Label name="$parentCurrentChannelLabel" font="UO_DefaultText" maxchars="256" textalign="center">
+					<Size>
+						<AbsPoint x="320" y="25" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottom" relativePoint="top" relativeTo="$parentCurrentChannelDescLabel">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<Button name="$parentJoinButton" inherits="UO_Default_GumpButton">
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" >
+							<AbsPoint x="-90" y="-15" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ChannelWindow.Join_OnLButtonUp" />
+					</EventHandlers>
+				</Button>
+				<Button name="$parentLeaveButton" inherits="UO_Default_GumpButton">
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" >
+							<AbsPoint x="0" y="-15" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ChannelWindow.Leave_OnLButtonUp" />
+					</EventHandlers>
+				</Button>
+				<Button name="$parentCreateButton" inherits="UO_Default_GumpButton">
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" >
+							<AbsPoint x="90" y="-15" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ChannelWindow.Create_OnLButtonUp" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+	</Windows>
+</Interface>

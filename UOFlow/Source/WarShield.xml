@@ -1,0 +1,56 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Windows>
+
+    <!-- War button -->
+    <Window name="WarShield" sticky="true" layer="default" handleinput="true" movable="true">
+      <Size>
+        <AbsPoint x="51" y="120"/>
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnShutdown" function="WarShield.Shutdown" />
+        <EventHandler event="OnInitialize" function="WarShield.OnInitialize" />
+        <EventHandler event="OnMouseOver" function="WarShield.ShieldOver" />
+        <EventHandler event="OnMouseOverEnd" function="WarShield.ShieldOverend" />
+        <EventHandler event="OnLButtonDown" function="WarShield.ShieldOnLButtonDown" />
+      </EventHandlers>
+      <Windows>
+        <HorizontalResizeImage name="$parentHandle" inherits="UO_Default_Medium_Tab_Enabled" >
+          <Size>
+            <AbsPoint x="71" y="30"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"  relativeTo="$parent">
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="WarShield.ShieldOver" />
+            <EventHandler event="OnMouseOverEnd" function="WarShield.ShieldOverend" />
+          </EventHandlers>
+
+        </HorizontalResizeImage>
+        <Button name="WarButton" movable="false" backgroundtexture="hud_image" highlighttexture="hud_image" texturescale="0.9">
+          <Size>
+            <!--<AbsPoint x="60" y="77" /> ACTUAL TEXTURE SCALE -->
+            <AbsPoint x="54" y="69" />
+            <!-- SCALED DOWN TO THE TEXT SCALE VALUE-->
+          </Size>
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top"  relativeTo="$parentHandle">
+              <AbsPoint x="5" y="6" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="Actions.ToggleWarMode" />
+          </EventHandlers>
+          <TexCoords>
+			<Normal x="204" y="277" />
+            <NormalHighlit x="266" y="277" />
+            <Pressed x="204" y="355" />
+            <PressedHighlit x="266" y="355" />
+          </TexCoords>
+        </Button>
+      </Windows>
+    </Window>
+  </Windows>
+</Interface>

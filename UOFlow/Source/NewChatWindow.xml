@@ -1,0 +1,2057 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Scripts>
+		<Script file="Source/NewChatWindow.lua" />
+	</Scripts>
+	<Windows>
+    <Window name="NewChatButtons" handleinput="true">
+      <Size>
+        <AbsPoint x="240" y="45" />
+      </Size>
+      <Anchors>
+        <Anchor point="topleft" relativePoint="topleft">
+          <AbsPoint x="227" y="12" />
+        </Anchor>
+      </Anchors>
+      <Windows>
+        <DynamicImage name="$parentFont" texture="Font_IMG" layer="default" textureScale="0.5">
+          <Size>
+            <AbsPoint x="45" y="45"/>
+          </Size>
+          
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="NewChatWindow.Font" />
+            <EventHandler event="OnMouseOver" function="NewChatWindow.FontToolTip" />
+          </EventHandlers>
+        </DynamicImage>
+
+        <DynamicImage name="$parentFontSize" texture="FontSize_IMG" layer="default" textureScale="0.5">
+          <Size>
+            <AbsPoint x="45" y="45"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft"  relativeTo="$parentFont">
+              <AbsPoint x="20" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="NewChatWindow.FontSize" />
+            <EventHandler event="OnMouseOver" function="NewChatWindow.FontSizeToolTip" />
+          </EventHandlers>
+        </DynamicImage>
+
+        <DynamicImage name="$parentFontColor" texture="FontColor_IMG" layer="default" textureScale="0.5">
+          <Size>
+            <AbsPoint x="45" y="45"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft"  relativeTo="$parentFontSize">
+              <AbsPoint x="20" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="NewChatWindow.FontColor" />
+            <EventHandler event="OnMouseOver" function="NewChatWindow.FontColorToolTip" />
+          </EventHandlers>
+        </DynamicImage>
+
+        <DynamicImage name="$parentRubber" texture="Rubber_IMG" layer="default" textureScale="0.5">
+          <Size>
+            <AbsPoint x="45" y="45"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft"  relativeTo="$parentFontColor">
+              <AbsPoint x="20" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="NewChatWindow.Rubber" />
+            <EventHandler event="OnMouseOver" function="NewChatWindow.RubberToolTip" />
+          </EventHandlers>
+        </DynamicImage>
+        </Windows>
+    </Window>
+    
+		<Label name="JournalItem" font="UO_DefaultText" linespacing="20" autoresize="true" wordwrap="true" maxchars="1024" textalign="left">
+			<Color r="255" g="255" b="255" a="255" />
+			<EventHandlers>
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.DragBar" />
+			</EventHandlers>
+		</Label>
+
+		<FullResizeImage name="FullResizeImage_ChatDefaultFrame"  handleinput="false" layer="background" texture="Default_Frame" frameonly="false">
+			<Sizes>
+				<TopLeft x="9" y="9" />
+				<Middle x="28" y="7" />
+				<BottomRight x="9" y="6" />
+			</Sizes>
+			<TexCoords>
+				<TopLeft x="2" y="0" />
+				<TopCenter x="11" y="0" />
+				<TopRight x="39" y="0" />
+				<MiddleLeft x="2" y="9" />
+				<MiddleCenter x="11" y="9" />
+				<MiddleRight x="39" y="9" />
+				<BottomLeft x="2" y="16" />
+				<BottomCenter x="11" y="16" />
+				<BottomRight x="39" y="16" />
+			</TexCoords>
+		</FullResizeImage>
+
+		<Window name="ChatDefaultFrame" handleinput="false" layer="background">
+			<Size>
+				<AbsPoint x="156" y="100" />
+			</Size>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="UO_Simple_Black_Background" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+						<Anchor point="bottomleft" relativePoint="bottomleft" />
+					</Anchors>
+				</FullResizeImage>
+				<FullResizeImage name="$parentBackgroundFrame" inherits="FullResizeImage_ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+						<Anchor point="bottomleft" relativePoint="bottomleft" />
+					</Anchors>
+				</FullResizeImage>
+			</Windows>
+
+		</Window>
+		<Window name="NewChatWindow" movable="true" layer="background"  sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="bottomleft" relativePoint="bottomleft"  relativeTo="ResizeWindow">
+					<AbsPoint x="0" y="-40" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnUpdate" function="NewChatWindow.OnUpdate" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<ScrollWindow name="NewChatWindowJournalWindow" childscrollwindow="NewChatWindowJournalWindowScrollChild" scrollbar="NewChatWindowJournalWindowScrollbar" lineheight="18" autoHideScrollBar="true" >
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+
+
+
+
+
+
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+
+			</Windows>
+
+		</Window>
+
+
+
+		<Window name="NewChatWindowBookmarsk1" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<ScrollWindow name="NewChatWindowBookmark1" id ="1" childscrollwindow="NewChatWindowBookmark1ScrollChild" scrollbar="NewChatWindowBookmark1Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+
+
+
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+
+			</Windows>
+
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk2" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+
+				<ScrollWindow name="NewChatWindowBookmark2" id="2" childscrollwindow="NewChatWindowBookmark2ScrollChild" scrollbar="NewChatWindowBookmark2Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" />
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+
+
+
+
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+
+			</Windows>
+
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk3" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+
+				<ScrollWindow name="NewChatWindowBookmark3" id="3" childscrollwindow="NewChatWindowBookmark3ScrollChild" scrollbar="NewChatWindowBookmark3Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+
+
+
+
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+
+			</Windows>
+
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk4" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark4" id ="4" childscrollwindow="NewChatWindowBookmark4ScrollChild" scrollbar="NewChatWindowBookmark4Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+
+		<Window name="NewChatWindowBookmarsk5" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark5" id ="5" childscrollwindow="NewChatWindowBookmark5ScrollChild" scrollbar="NewChatWindowBookmark5Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk6" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark6" id ="6" childscrollwindow="NewChatWindowBookmark6ScrollChild" scrollbar="NewChatWindowBookmark6Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk7" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark7" id ="7" childscrollwindow="NewChatWindowBookmark7ScrollChild" scrollbar="NewChatWindowBookmark7Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk8" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark8" id ="8" childscrollwindow="NewChatWindowBookmark8ScrollChild" scrollbar="NewChatWindowBookmark8Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk9" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark9" id ="9" childscrollwindow="NewChatWindowBookmark9ScrollChild" scrollbar="NewChatWindowBookmark9Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk10" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark10" id ="10" childscrollwindow="NewChatWindowBookmark10ScrollChild" scrollbar="NewChatWindowBookmark10Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk11" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark11" id ="11" childscrollwindow="NewChatWindowBookmark11ScrollChild" scrollbar="NewChatWindowBookmark11Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk12" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark12" id ="12" childscrollwindow="NewChatWindowBookmark12ScrollChild" scrollbar="NewChatWindowBookmark12Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk13" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark13" id ="13" childscrollwindow="NewChatWindowBookmark13ScrollChild" scrollbar="NewChatWindowBookmark13Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk14" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark14" id ="14" childscrollwindow="NewChatWindowBookmark14ScrollChild" scrollbar="NewChatWindowBookmark14Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+
+		<Window name="NewChatWindowBookmarsk15" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark15" id ="15" childscrollwindow="NewChatWindowBookmark15ScrollChild" scrollbar="NewChatWindowBookmark15Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk16" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark16" id ="16" childscrollwindow="NewChatWindowBookmark16ScrollChild" scrollbar="NewChatWindowBookmark16Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk17" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark17" id ="17" childscrollwindow="NewChatWindowBookmark17ScrollChild" scrollbar="NewChatWindowBookmark17Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk18" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark18" id ="18" childscrollwindow="NewChatWindowBookmark18ScrollChild" scrollbar="NewChatWindowBookmark18Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk19" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark19" id ="19" childscrollwindow="NewChatWindowBookmark19ScrollChild" scrollbar="NewChatWindowBookmark19Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="NewChatWindowBookmarsk20" movable="true" layer="default" popable="false" sticky="true" >
+			<Size>
+				<AbsPoint x="180" y="280" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="NewChatWindow.Shutdown" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+				<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUp" />
+				<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentBackground" inherits="ChatDefaultFrame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="-3" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<ScrollWindow name="NewChatWindowBookmark20" id ="20" childscrollwindow="NewChatWindowBookmark20ScrollChild" scrollbar="NewChatWindowBookmark20Scrollbar" lineheight="18" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="350" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+							<AbsPoint x="5" y="40" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+							<AbsPoint x="-2" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnLButtonDownJW" />
+						<EventHandler event="OnLButtonUp" function="NewChatWindow.OnLButtonUpJW" />
+						<EventHandler event="OnMouseOver" function="NewChatWindow.ShowAgain" />
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="335" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+							<Windows>
+
+								<!--Pinco -->
+								<Window name="$parentText" >
+									<Size>
+										<AbsPoint x="350" y="0" />
+									</Size>
+									<Windows>
+
+
+									</Windows>
+								</Window>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="NewChatWindow.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="BookmarkTemplate" sticky="true" layer="background" handleinput="true" movable="false" popable="false">
+			<EventHandlers>
+				<EventHandler event="OnRButtonUp" function="NewChatWindow.BookmarkContext" />
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.SwitchTab" />
+			</EventHandlers>
+			<Windows>
+				<HorizontalResizeImage name="$parentIMG" inherits="UO_Default_Medium_Tab_Enabled" >
+					<Size>
+						<AbsPoint x="92" y="30"/>
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"  relativeTo="$parent">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+
+
+						<EventHandler event="OnMouseOver" function="NewChatWindow.BookmarkToolTip" />
+						<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+					</EventHandlers>
+				</HorizontalResizeImage>
+
+				<Label name="$parentText" font="Arial_Black_Shadow_15" maxchars="7" textalign="center" autoresize="false" layer="popup">
+					<Size>
+						<AbsPoint x="85" y="26"/>
+					</Size>
+					<Color r="0" g="153" b="255" a="255" />
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"  relativeTo="$parent">
+							<AbsPoint x="5" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="NewChatWindow.BookmarkToolTip" />
+						<EventHandler event="OnMouseOverEnd" function="NewChatWindow.OnMouseOverEnd" />
+					</EventHandlers>
+				</Label>
+
+			</Windows>
+		</Window>
+
+
+		
+
+		<Button name="NewChannelMenuButton" font="UO_DefaultText" textalign="left">
+			<Size>
+				<AbsPoint x="131" y="18" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.SwitchToSelectedChannel" />
+				<EventHandler event="OnMouseOver" function="ChatWindow.UpdateMenuSelection" />
+			</EventHandlers>
+		</Button>
+
+		<Window name="NewChatChannelSelectionWindow" movable="false" layer="secondary" savesettings="false" >
+			<Size>
+				<AbsPoint x="133" y="212" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnKeyEscape" function="NewChatWindow.HideChannelSelectionMenu" />
+				<EventHandler event="OnUpdate" function="NewChatWindow.MenuItemMouseLeave" />
+			</EventHandlers>
+			<Windows>
+				<!-- Body background -->
+				<FullResizeImage name="$parentWindowBackground" inherits="UO_Simple_Black_Background" layer="background">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"/>
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</FullResizeImage>
+
+				<!-- Inner Frame Boilerplate -->
+				<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" layer="background">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+				<!-- End of Inner Frame Boilerplate -->
+
+				<FullResizeImage name="$parentSelection" inherits="UO_Context_Item_Selection">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="topright" relativePoint="bottomright" >
+							<AbsPoint x="0" y="85" />
+						</Anchor>
+					</Anchors>
+				</FullResizeImage>
+
+				<Button name="$parentChatButton" inherits="NewChannelMenuButton">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="9" y="7" />
+						</Anchor>
+					</Anchors>
+				</Button>
+				<Button name="$parentYellButton" inherits="NewChannelMenuButton" >
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentChatButton">
+							<AbsPoint x="0" y="8" />
+						</Anchor>
+					</Anchors>
+				</Button>
+				<Button name="$parentAllianceButton" inherits="NewChannelMenuButton" >
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentYellButton">
+							<AbsPoint x="0" y="8" />
+						</Anchor>
+					</Anchors>
+				</Button>
+				<Button name="$parentGuildButton" inherits="NewChannelMenuButton" >
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentAllianceButton">
+							<AbsPoint x="0" y="8" />
+						</Anchor>
+					</Anchors>
+				</Button>
+				<Button name="$parentPartyButton" inherits="NewChannelMenuButton" >
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentGuildButton">
+							<AbsPoint x="0" y="8" />
+						</Anchor>
+					</Anchors>
+				</Button>
+				<Button name="$parentSayButton" inherits="NewChannelMenuButton" >
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentPartyButton">
+							<AbsPoint x="0" y="8" />
+						</Anchor>
+					</Anchors>
+				</Button>
+				<Button name="$parentGMButton" inherits="NewChannelMenuButton" >
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentSayButton">
+							<AbsPoint x="0" y="8" />
+						</Anchor>
+					</Anchors>
+				</Button>
+				<Button name="$parentSelfButton" inherits="NewChannelMenuButton" >
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentGMButton">
+							<AbsPoint x="0" y="8" />
+						</Anchor>
+					</Anchors>
+				</Button>
+			</Windows>
+		</Window>
+
+
+		<Button name="NewChatWindowInputTextButton" layer="secondary" sticky="true" backgroundtexture="Chat_Baloon" highlighttexture="Chat_Baloon" texturescale="1.2">
+			<Size>
+				<AbsPoint x="32" y="32" />
+			</Size>
+			<TexCoords>
+				<Normal x="0" y="30" />
+				<NormalHighlit x="0" y="0" />
+				<Pressed x="0" y="0" />
+				<PressedHighlit x="0" y="0" />
+			</TexCoords>
+			<EventHandlers>
+				<EventHandler event="OnLButtonUp" function="NewChatWindow.OnOpenChannelMenu" />
+				<EventHandler event="OnMouseOver" function="NewChatWindow.ChatSettingsToolTip" />
+			</EventHandlers>
+		</Button>
+
+	</Windows>
+</Interface>

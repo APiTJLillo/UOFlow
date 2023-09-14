@@ -1,0 +1,1488 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+		<Window name="ItemTemplateVS" layer="overlay" draganddrop="true">
+			<Size>
+				<AbsPoint x="250" y="22" />
+			</Size>
+			<Windows>
+				<Button name="$parentRemoveButton" backgroundtexture="CloseButton" highlighttexture="CloseButton" texturescale="1.12" layer="popup">
+					<Size>
+						<AbsPoint x="22" y="22" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topright" relativeTo="$parentSearchBoxBG">
+							<AbsPoint x="-5" y="5" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal x="21" y="0" />
+						<NormalHighlit x="63" y="0" />
+						<Pressed x="42" y="0"  />
+						<PressedHighlit x="42" y="0" />
+						<Disabled x="0" y="0" />
+					</TexCoords>
+
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="VendorSearch.RemoveCriteriaTooltip" />
+						<EventHandler event="OnLButtonUp" function="VendorSearch.RemoveCriteria" />
+					</EventHandlers>
+				</Button>
+
+				<Label name="$parentName" font="Arial_Black_12" maxchars="64" textalign="left" draganddrop="true" wordwrap="true">
+					<Size>
+						<AbsPoint x="230" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentRemoveButton">
+							<AbsPoint x="5" y="-2" />
+						</Anchor>
+					</Anchors>
+					<Color r="159" g="177" b="189" a="255"/>
+				</Label>
+			</Windows>
+		</Window>
+		
+
+		<Window name="VendorSearch" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="700" y="700" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center" relativeTo="ResizeWindow">
+					<AbsPoint x="10" y="-20"/>
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="VendorSearch.Initialize" />
+				<EventHandler event="OnShutdown" function="VendorSearch.Shutdown" />
+				<EventHandler event="OnUpdate" function="VendorSearch.OnUpdate" />
+			</EventHandlers>
+			<Windows>
+				<!-- Default chrome. Alter this at your own peril. -->
+				<Window name="$parentChrome" inherits="UO_DefaultWindow" frameonly="false">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>
+
+				<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+				<!--							-->
+				<!-- ITEM NAME					-->
+				<!--							-->
+				<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+				
+				<Label name="$parentItemName" font="UO_GoldButtonText" maxchars="64" textalign="right" wordwrap="true">
+					<Size>
+						<AbsPoint x="110" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="20" y="50" />
+						</Anchor>
+					</Anchors>
+					<Color r="159" g="177" b="189" a="255"/>
+				</Label>
+				<EditBox name="$parentItemNameText" font="UO_DefaultText" taborder="1" maxchars="25" scrolling="horz" layer="overlay">
+					<Size>
+						<AbsPoint x="250" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentItemName">
+							<AbsPoint x="25" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnTextChanged" function="VendorSearch.OnItemNameTextChanged"/>
+						<EventHandler event="OnKeyEnter" function="VendorSearch.SearchName" />
+					</EventHandlers>
+				</EditBox>
+
+				<Window name="$parentItemNameBoxBG" handleinput="false">
+					<Size>
+						<AbsPoint x="250" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentItemNameText" >
+							<AbsPoint x="-5" y="-5" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<!-- Inner Frame Boilerplate -->
+						<FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<!-- End of Inner Frame Boilerplate -->
+					</Windows>
+				</Window>
+
+				<Button name="$parentItemNameButton" inherits="UO_Default_SmallNextButton">
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentItemNameBoxBG">
+							<AbsPoint x="62" y="-3" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+						<EventHandler event="OnLButtonUp" function="VendorSearch.SearchName" />
+					</EventHandlers>
+				</Button>
+
+				<HorizontalResizeImage name="$parentHRuleName" inherits="UO_Default_Horizontal_Rule" layer="default" handleinput="false">
+					<Size>
+						<AbsPoint x="450" y="2" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentItemName">
+							<AbsPoint x="10" y="30" />
+						</Anchor>
+					</Anchors>
+				</HorizontalResizeImage>
+
+				<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+				<!--							-->
+				<!-- PRICE RANGE				-->
+				<!--							-->
+				<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~ -->
+
+				<Label name="$parentPriceRange" font="UO_GoldButtonText" maxchars="64" textalign="right" wordwrap="true">
+					<Size>
+						<AbsPoint x="140" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentHRuleName">
+							<AbsPoint x="-10" y="45" />
+						</Anchor>
+					</Anchors>
+					<Color r="159" g="177" b="189" a="255"/>
+				</Label>
+				
+				<!-- MIN PRICE-->
+				
+				<EditBox name="$parentMinPriceText" font="UO_DefaultText" taborder="2" maxchars="10" scrolling="horz" layer="overlay">
+					<Size>
+						<AbsPoint x="105" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentPriceRange">
+							<AbsPoint x="15" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnTextChanged" function="VendorSearch.OnMinPriceTextChanged"/>
+						<EventHandler event="OnKeyEnter" function="VendorSearch.SearchPrice" />
+					</EventHandlers>
+				</EditBox>
+
+				<Window name="$parentMinPriceBoxBG" handleinput="false">
+					<Size>
+						<AbsPoint x="105" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentMinPriceText" >
+							<AbsPoint x="-5" y="-5" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<!-- Inner Frame Boilerplate -->
+						<FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<!-- End of Inner Frame Boilerplate -->
+					</Windows>
+				</Window>
+
+				<Label name="$parentMinPrice" font="Arial_Black_12" maxchars="64" textalign="left" wordwrap="true">
+					<Size>
+						<AbsPoint x="130" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="bottomleft" relativeTo="$parentMinPriceBoxBG">
+							<AbsPoint x="3" y="-8" />
+						</Anchor>
+					</Anchors>
+					<Color r="159" g="177" b="189" a="255"/>
+				</Label>
+
+				<!-- SEPARATOR -->
+				
+				<Label name="$parentPriceRangeSep" font="UO_GoldButtonText" maxchars="1" textalign="left" wordwrap="true">
+					<Size>
+						<AbsPoint x="20" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentMinPriceBoxBG">
+							<AbsPoint x="15" y="3" />
+						</Anchor>
+					</Anchors>
+					<Color r="159" g="177" b="189" a="255"/>
+				</Label>
+
+				<!-- MAX PRICE -->
+				
+				<EditBox name="$parentMaxPriceText" font="UO_DefaultText" taborder="3" maxchars="10" scrolling="horz" layer="overlay">
+					<Size>
+						<AbsPoint x="106" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentPriceRangeSep">
+							<AbsPoint x="5" y="2" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnTextChanged" function="VendorSearch.OnMaxPriceTextChanged"/>
+						<EventHandler event="OnKeyEnter" function="VendorSearch.SearchPrice" />
+					</EventHandlers>
+				</EditBox>
+
+				<Window name="$parentMaxPriceBoxBG" handleinput="false">
+					<Size>
+						<AbsPoint x="106" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentMaxPriceText" >
+							<AbsPoint x="-5" y="-5" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<!-- Inner Frame Boilerplate -->
+						<FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<!-- End of Inner Frame Boilerplate -->
+					</Windows>
+				</Window>
+
+				<Label name="$parentMaxPrice" font="Arial_Black_12" maxchars="64" textalign="left" wordwrap="true">
+					<Size>
+						<AbsPoint x="130" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="bottomleft" relativeTo="$parentMaxPriceBoxBG">
+							<AbsPoint x="3" y="-8" />
+						</Anchor>
+					</Anchors>
+					<Color r="159" g="177" b="189" a="255"/>
+				</Label>
+
+				<Button name="$parentPriceRangeButton" inherits="UO_Default_SmallNextButton">
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentMaxPriceBoxBG">
+							<AbsPoint x="65" y="-3" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+						<EventHandler event="OnLButtonUp" function="VendorSearch.SearchPrice" />
+					</EventHandlers>
+				</Button>
+
+				<HorizontalResizeImage name="$parentHRulePrice" inherits="UO_Default_Horizontal_Rule" layer="default" handleinput="false">
+					<Size>
+						<AbsPoint x="450" y="2" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentPriceRange">
+							<AbsPoint x="10" y="30" />
+						</Anchor>
+					</Anchors>
+				</HorizontalResizeImage>
+
+        <!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+        <!--							              -->
+        <!-- EQUIPMENT    				      -->
+        <!--							              -->
+        <!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+
+        <Label name="$parentEquip" font="UO_GoldButtonText" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentHRulePrice">
+              <AbsPoint x="-10" y="20" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <ComboBox name="$parentEquipCombo" inherits="UO_Default_LongComboBox" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentEquip">
+              <AbsPoint x="10" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+          </EventHandlers>
+        </ComboBox>
+
+        <Button name="$parentEquipButton" inherits="UO_Default_SmallNextButton">
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentEquipCombo">
+              <AbsPoint x="51" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </Button>
+
+        <HorizontalResizeImage name="$parentHRuleEquip" inherits="UO_Default_Horizontal_Rule" layer="default" handleinput="false">
+          <Size>
+            <AbsPoint x="450" y="2" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentEquip">
+              <AbsPoint x="10" y="30" />
+            </Anchor>
+          </Anchors>
+        </HorizontalResizeImage>
+        
+				<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+				<!--							-->
+				<!-- MISCELLANEOUS				-->
+				<!--							-->
+				<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+
+				<Label name="$parentMisc" font="UO_GoldButtonText" maxchars="64" textalign="right" wordwrap="false">
+					<Size>
+						<AbsPoint x="140" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentHRuleEquip">
+							<AbsPoint x="-10" y="20" />
+						</Anchor>
+					</Anchors>
+					<Color r="159" g="177" b="189" a="255"/>
+				</Label>
+				
+				<ComboBox name="$parentMiscCombo" inherits="UO_Default_LongComboBox" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentMisc">
+							<AbsPoint x="10" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+					</EventHandlers>
+				</ComboBox>
+
+				<EditBox name="$parentMiscText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+					<Size>
+						<AbsPoint x="40" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentMiscCombo">
+							<AbsPoint x="10" y="2" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+						<EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+					</EventHandlers>
+				</EditBox>
+
+				<Window name="$parentMiscTextBG" handleinput="false">
+					<Size>
+						<AbsPoint x="40" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentMiscText" >
+							<AbsPoint x="-5" y="-5" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<!-- Inner Frame Boilerplate -->
+						<FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<!-- End of Inner Frame Boilerplate -->
+					</Windows>
+				</Window>
+
+				<Button name="$parentMiscButton" inherits="UO_Default_SmallNextButton">
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentMiscTextBG">
+							<AbsPoint x="5" y="-3" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+						<EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+					</EventHandlers>
+				</Button>
+
+				<HorizontalResizeImage name="$parentHRuleMisc" inherits="UO_Default_Horizontal_Rule" layer="default" handleinput="false">
+					<Size>
+						<AbsPoint x="450" y="2" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentMisc">
+							<AbsPoint x="10" y="30" />
+						</Anchor>
+					</Anchors>
+				</HorizontalResizeImage>
+
+        <!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+        <!--							-->
+        <!-- PROPERTIES				-->
+        <!--							-->
+        <!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+
+        <Label name="$parentProps" font="UO_GoldButtonText" maxchars="64" textalign="left" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentHRuleMisc">
+              <AbsPoint x="0" y="10" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <!-- COMBAT  -->
+        
+        <Label name="$parentCombat" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentProps">
+              <AbsPoint x="-10" y="28" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+        
+        <ComboBox name="$parentCombatCombo" inherits="UO_Default_LongComboBox" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentCombat">
+							<AbsPoint x="10" y="-3" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+					</EventHandlers>
+				</ComboBox>
+
+				<EditBox name="$parentCombatText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+					<Size>
+						<AbsPoint x="40" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentCombatCombo">
+							<AbsPoint x="10" y="2" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+            <EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+					</EventHandlers>
+				</EditBox>
+
+				<Window name="$parentCombatTextBG" handleinput="false">
+					<Size>
+						<AbsPoint x="40" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentCombatText" >
+							<AbsPoint x="-5" y="-5" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<!-- Inner Frame Boilerplate -->
+						<FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<!-- End of Inner Frame Boilerplate -->
+					</Windows>
+				</Window>
+
+				<Button name="$parentCombatButton" inherits="UO_Default_SmallNextButton">
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentCombatTextBG">
+							<AbsPoint x="5" y="-3" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+					</EventHandlers>
+				</Button>
+
+
+        <!-- CASTING  -->
+
+        <Label name="$parentCasting" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentCombat">
+              <AbsPoint x="0" y="28" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <ComboBox name="$parentCastingCombo" inherits="UO_Default_LongComboBox" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentCasting">
+              <AbsPoint x="10" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+          </EventHandlers>
+        </ComboBox>
+
+        <EditBox name="$parentCastingText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+          <Size>
+            <AbsPoint x="40" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentCastingCombo">
+              <AbsPoint x="10" y="2" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+            <EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </EditBox>
+
+        <Window name="$parentCastingTextBG" handleinput="false">
+          <Size>
+            <AbsPoint x="40" y="30" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentCastingText" >
+              <AbsPoint x="-5" y="-5" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <!-- Inner Frame Boilerplate -->
+            <FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <!-- End of Inner Frame Boilerplate -->
+          </Windows>
+        </Window>
+
+        <Button name="$parentCastingButton" inherits="UO_Default_SmallNextButton">
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentCastingTextBG">
+              <AbsPoint x="5" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </Button>
+
+				<!-- DAMAGE TYPE  -->
+
+				<Label name="$parentDamageType" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+					<Size>
+						<AbsPoint x="140" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentCasting">
+							<AbsPoint x="0" y="28" />
+						</Anchor>
+					</Anchors>
+					<Color r="159" g="177" b="189" a="255"/>
+				</Label>
+
+				<ComboBox name="$parentDamageTypeCombo" inherits="UO_Default_LongComboBox" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentDamageType">
+							<AbsPoint x="10" y="-3" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+					</EventHandlers>
+				</ComboBox>
+
+				<EditBox name="$parentDamageTypeText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+					<Size>
+						<AbsPoint x="40" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentDamageTypeCombo">
+							<AbsPoint x="10" y="2" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+						<EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+					</EventHandlers>
+				</EditBox>
+
+				<Window name="$parentDamageTypeTextBG" handleinput="false">
+					<Size>
+						<AbsPoint x="40" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentDamageTypeText" >
+							<AbsPoint x="-5" y="-5" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<!-- Inner Frame Boilerplate -->
+						<FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<!-- End of Inner Frame Boilerplate -->
+					</Windows>
+				</Window>
+
+				<Button name="$parentDamageTypeButton" inherits="UO_Default_SmallNextButton">
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentDamageTypeTextBG">
+							<AbsPoint x="5" y="-3" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+						<EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+					</EventHandlers>
+				</Button>
+
+        <!-- SLAYERS  -->
+
+        <Label name="$parentSlayers" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentDamageType">
+              <AbsPoint x="0" y="28" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <ComboBox name="$parentSlayersCombo" inherits="UO_Default_LongComboBox" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentSlayers">
+              <AbsPoint x="10" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+          </EventHandlers>
+        </ComboBox>
+
+        <EditBox name="$parentSlayersText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+          <Size>
+            <AbsPoint x="40" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentSlayersCombo">
+              <AbsPoint x="10" y="2" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+            <EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </EditBox>
+
+        <Window name="$parentSlayersTextBG" handleinput="false">
+          <Size>
+            <AbsPoint x="40" y="30" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentSlayersText" >
+              <AbsPoint x="-5" y="-5" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <!-- Inner Frame Boilerplate -->
+            <FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <!-- End of Inner Frame Boilerplate -->
+          </Windows>
+        </Window>
+
+        <Button name="$parentSlayersButton" inherits="UO_Default_SmallNextButton">
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentSlayersTextBG">
+              <AbsPoint x="5" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </Button>
+
+        <!-- RESIST  -->
+
+        <Label name="$parentResist" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentSlayers">
+              <AbsPoint x="0" y="28" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <ComboBox name="$parentResistCombo" inherits="UO_Default_LongComboBox" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentResist">
+              <AbsPoint x="10" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+          </EventHandlers>
+        </ComboBox>
+
+        <EditBox name="$parentResistText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+          <Size>
+            <AbsPoint x="40" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentResistCombo">
+              <AbsPoint x="10" y="2" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+            <EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </EditBox>
+
+        <Window name="$parentResistTextBG" handleinput="false">
+          <Size>
+            <AbsPoint x="40" y="30" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentResistText" >
+              <AbsPoint x="-5" y="-5" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <!-- Inner Frame Boilerplate -->
+            <FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <!-- End of Inner Frame Boilerplate -->
+          </Windows>
+        </Window>
+
+        <Button name="$parentResistButton" inherits="UO_Default_SmallNextButton">
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentResistTextBG">
+              <AbsPoint x="5" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </Button>
+
+        <!-- STATS  -->
+
+        <Label name="$parentStats" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentResist">
+              <AbsPoint x="0" y="28" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <ComboBox name="$parentStatsCombo" inherits="UO_Default_LongComboBox" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentStats">
+              <AbsPoint x="10" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+          </EventHandlers>
+        </ComboBox>
+
+        <EditBox name="$parentStatsText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+          <Size>
+            <AbsPoint x="40" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentStatsCombo">
+              <AbsPoint x="10" y="2" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+            <EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </EditBox>
+
+        <Window name="$parentStatsTextBG" handleinput="false">
+          <Size>
+            <AbsPoint x="40" y="30" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentStatsText" >
+              <AbsPoint x="-5" y="-5" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <!-- Inner Frame Boilerplate -->
+            <FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <!-- End of Inner Frame Boilerplate -->
+          </Windows>
+        </Window>
+
+        <Button name="$parentStatsButton" inherits="UO_Default_SmallNextButton">
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentStatsTextBG">
+              <AbsPoint x="5" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </Button>
+
+        <!-- SKILLS  -->
+
+        <Label name="$parentSkills" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentStats">
+              <AbsPoint x="0" y="28" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <ComboBox name="$parentSkillsCombo" inherits="UO_Default_LongComboBox" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentSkills">
+              <AbsPoint x="10" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+          </EventHandlers>
+        </ComboBox>
+
+        <EditBox name="$parentSkillsText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+          <Size>
+            <AbsPoint x="40" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentSkillsCombo">
+              <AbsPoint x="10" y="2" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+            <EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </EditBox>
+
+        <Window name="$parentSkillsTextBG" handleinput="false">
+          <Size>
+            <AbsPoint x="40" y="30" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentSkillsText" >
+              <AbsPoint x="-5" y="-5" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <!-- Inner Frame Boilerplate -->
+            <FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <!-- End of Inner Frame Boilerplate -->
+          </Windows>
+        </Window>
+
+        <Button name="$parentSkillsButton" inherits="UO_Default_SmallNextButton">
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentSkillsTextBG">
+              <AbsPoint x="5" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </Button>
+
+        <!-- HIT SPELL  -->
+
+        <Label name="$parentHitSpell" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentSkills">
+              <AbsPoint x="0" y="28" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <ComboBox name="$parentHitSpellCombo" inherits="UO_Default_LongComboBox" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentHitSpell">
+              <AbsPoint x="10" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+          </EventHandlers>
+        </ComboBox>
+
+        <EditBox name="$parentHitSpellText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+          <Size>
+            <AbsPoint x="40" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentHitSpellCombo">
+              <AbsPoint x="10" y="2" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+            <EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </EditBox>
+
+        <Window name="$parentHitSpellTextBG" handleinput="false">
+          <Size>
+            <AbsPoint x="40" y="30" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentHitSpellText" >
+              <AbsPoint x="-5" y="-5" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <!-- Inner Frame Boilerplate -->
+            <FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <!-- End of Inner Frame Boilerplate -->
+          </Windows>
+        </Window>
+
+        <Button name="$parentHitSpellButton" inherits="UO_Default_SmallNextButton">
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentHitSpellTextBG">
+              <AbsPoint x="5" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </Button>
+
+        <!-- HIT AREA  -->
+
+        <Label name="$parentHitArea" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentHitSpell">
+              <AbsPoint x="0" y="28" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <ComboBox name="$parentHitAreaCombo" inherits="UO_Default_LongComboBox" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentHitArea">
+              <AbsPoint x="10" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+          </EventHandlers>
+        </ComboBox>
+
+        <EditBox name="$parentHitAreaText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+          <Size>
+            <AbsPoint x="40" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentHitAreaCombo">
+              <AbsPoint x="10" y="2" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+            <EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </EditBox>
+
+        <Window name="$parentHitAreaTextBG" handleinput="false">
+          <Size>
+            <AbsPoint x="40" y="30" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentHitAreaText" >
+              <AbsPoint x="-5" y="-5" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <!-- Inner Frame Boilerplate -->
+            <FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <!-- End of Inner Frame Boilerplate -->
+          </Windows>
+        </Window>
+
+        <Button name="$parentHitAreaButton" inherits="UO_Default_SmallNextButton">
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentHitAreaTextBG">
+              <AbsPoint x="5" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </Button>
+
+        <!-- SKILL REQUIRED  -->
+
+        <Label name="$parentSkillReq" font="Arial_Black_12" maxchars="64" textalign="right" wordwrap="true">
+          <Size>
+            <AbsPoint x="140" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentHitArea">
+              <AbsPoint x="0" y="28" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <ComboBox name="$parentSkillReqCombo" inherits="UO_Default_LongComboBox" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentSkillReq">
+              <AbsPoint x="10" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="VendorSearch.OnComboSelChanged"/>
+          </EventHandlers>
+        </ComboBox>
+
+        <EditBox name="$parentSkillReqText" font="UO_DefaultText" taborder="4" maxchars="3" scrolling="horz" layer="overlay">
+          <Size>
+            <AbsPoint x="40" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentSkillReqCombo">
+              <AbsPoint x="10" y="2" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnTextChanged" function="VendorSearch.OnTextChanged"/>
+            <EventHandler event="OnKeyEnter" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </EditBox>
+
+        <Window name="$parentSkillReqTextBG" handleinput="false">
+          <Size>
+            <AbsPoint x="40" y="30" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentSkillReqText" >
+              <AbsPoint x="-5" y="-5" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <!-- Inner Frame Boilerplate -->
+            <FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" />
+                <Anchor point="bottomright" relativePoint="bottomright" />
+              </Anchors>
+            </FullResizeImage>
+            <!-- End of Inner Frame Boilerplate -->
+          </Windows>
+        </Window>
+
+        <Button name="$parentSkillReqButton" inherits="UO_Default_SmallNextButton">
+          <Anchors>
+            <Anchor point="bottomright" relativePoint="bottomleft" relativeTo="$parentSkillReqTextBG">
+              <AbsPoint x="5" y="-3" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnMouseOver" function="VendorSearch.ADDButtonTooltip" />
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchCombo" />
+          </EventHandlers>
+        </Button>
+        
+				<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+				<!--							-->
+				<!-- SCROLL WINDOW				-->
+				<!--							-->
+				<!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+				
+				<VerticalResizeImage name="$parentVRule" inherits="UO_Default_Vertical_Rule" layer="default" handleinput="false">
+					<Size>
+						<AbsPoint x="2" y="750" />
+					</Size>
+					<Anchors>
+						<Anchor point="top" relativePoint="top">
+							<AbsPoint x="60" y="50" />
+						</Anchor>
+					</Anchors>
+				</VerticalResizeImage>
+
+				<Label name="$parentCriteriaText" font="UO_Title" textalign="left" handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="280" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="bottomleft" relativeTo="VendorSearchSW" >
+							<AbsPoint x="10" y="-40" />
+						</Anchor>
+					</Anchors>
+					<Color r="159" g="177" b="189" a="255"/>
+				</Label>
+
+				<Label name="$parentCriteriaMax" font="Arial_Black_12" textalign="left" handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="350" y="28" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentCriteriaText" >
+							<AbsPoint x="-10" y="15" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="0" b="0" a="255"/>
+				</Label>
+
+				<Label name="$parentOtherError" font="Arial_Black_12" textalign="left" handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="350" y="28" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentItemName" >
+							<AbsPoint x="0" y="15" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="0" b="0" a="255"/>
+				</Label>
+				
+				<Button name="$parentLowHighButton" >
+					<Size>
+						<AbsPoint x="17" y="15" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentCriteriaText">
+							<AbsPoint x="-5" y="5"/>
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="VendorSearch.LowHighButton" />
+						<EventHandler event="OnMouseOver" function="VendorSearch.LowHighButtonTooltip" />
+					</EventHandlers>
+				</Button>
+
+				<DynamicImage name="$parentGoldIcon" texture=""  texturescale="2.0" draganddrop="true">
+					<Size>
+						<AbsPoint x="45" y="35" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentLowHighButton" >
+							<AbsPoint x="-5" y="-3" />
+						</Anchor>
+					</Anchors>
+				</DynamicImage>
+
+
+				<Button name="$parentToggleAuctionButton" >
+					<Size>
+						<AbsPoint x="17" y="15" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentCriteriaText">
+							<AbsPoint x="-5" y="32"/>
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="VendorSearch.ToggleAuctionButton" />
+						<EventHandler event="OnMouseOver" function="VendorSearch.ToggleAuctionButtonTooltip" />
+					</EventHandlers>
+				</Button>
+
+				<DynamicImage name="$parentToggleAuctionIcon" texture=""  texturescale="2.0" draganddrop="true">
+					<Size>
+						<AbsPoint x="45" y="35" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentToggleAuctionButton" >
+							<AbsPoint x="10" y="-3" />
+						</Anchor>
+					</Anchors>
+				</DynamicImage>
+
+				<ScrollWindow name="VendorSearchSW" childscrollwindow="VendorSearchSWScrollChild" scrollbar="VendorSearchSWScrollbar" lineheight="18" autoHideScrollBar="true" >
+					<Size>
+						<AbsPoint x="350" y="610" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topright" relativeTo="$parent" >
+							<AbsPoint x="-25" y="100" />
+						</Anchor>
+						
+					</Anchors>
+					<EventHandlers>					
+					</EventHandlers>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+	
+						<FullResizeImage name="$parentFrame" inherits="UO_Simple_Frame" layer="background" frameonly="false">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<Window name="$parentScrollChild" popable="false">
+							<Size>
+								<AbsPoint x="290" y="200"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft">
+									<AbsPoint x="5" y="5" />
+								</Anchor>
+							</Anchors>
+
+						</Window>
+					</Windows>
+				</ScrollWindow>
+
+        <!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+        <!--							-->
+        <!-- FINAL BUTTONS				-->
+        <!--							-->
+        <!-- ~~~~~~~~~~~~~~~~~~~~~~~~~~	-->
+
+        <Label name="$parentClearSearch" font="Arial_Black_12" maxchars="64" textalign="right" draganddrop="true" wordwrap="true">
+          <Size>
+            <AbsPoint x="230" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="VendorSearchSW">
+              <AbsPoint x="70" y="30" />
+            </Anchor>
+          </Anchors>
+
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+
+        <Button name="$parentClearSearchButton" backgroundtexture="CloseButton" highlighttexture="CloseButton" texturescale="1.12" layer="popup">
+          <Size>
+            <AbsPoint x="22" y="22" />
+          </Size>
+
+          <TexCoords>
+            <Normal x="21" y="0" />
+            <NormalHighlit x="63" y="0" />
+            <Pressed x="42" y="0"  />
+            <PressedHighlit x="42" y="0" />
+            <Disabled x="0" y="0" />
+          </TexCoords>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentClearSearch">
+              <AbsPoint x="15" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="VendorSearch.ClearAll" />
+          </EventHandlers>
+        </Button>
+
+
+        <Label name="$parentSearch" font="Arial_Black_12" maxchars="64" textalign="right" draganddrop="true" wordwrap="true">
+          <Size>
+            <AbsPoint x="230" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topright" relativeTo="$parentClearSearch">
+              <AbsPoint x="0" y="40" />
+            </Anchor>
+          </Anchors>
+          <Color r="159" g="177" b="189" a="255"/>
+        </Label>
+        
+        <Button name="$parentSearchButton" inherits="UO_Default_Spring_Button">
+          
+          <Anchors>
+            <Anchor point="topright" relativePoint="topleft" relativeTo="$parentSearch">
+              <AbsPoint x="15" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="VendorSearch.SearchThis" />
+          </EventHandlers>
+        </Button>
+
+        
+
+			</Windows>
+
+		</Window>
+
+	</Windows>
+</Interface>

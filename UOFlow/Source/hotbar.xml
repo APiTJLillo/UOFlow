@@ -1,0 +1,388 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+		<Window name="AssignHotkeyInfo" layer="overlay">
+			<Size>
+				<AbsPoint x="400" y="64" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center" />
+			</Anchors>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="UO_Simple_Black_Background">
+					<Size>
+						<AbsPoint x="0" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+					<Windows>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Size>
+								<AbsPoint x="10" y="10"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+					</Windows>
+				</FullResizeImage>
+				<Label name="$parentText" font="UO_DefaultText" maxchars="256" textalign="topcenter" autoresize="true" wordwrap="true">
+					<Size>
+						<AbsPoint x="250" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="8" y="8" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+			</Windows>
+		</Window>
+
+		<Window name="RequestTargetIdInfo" layer="overlay">
+			<Size>
+				<AbsPoint x="400" y="64" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center" />
+			</Anchors>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="UO_Simple_Black_Background">
+					<Size>
+						<AbsPoint x="0" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+					<Windows>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Size>
+								<AbsPoint x="10" y="10"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+					</Windows>
+				</FullResizeImage>
+				<Label name="$parentText" font="UO_DefaultText" maxchars="256" textalign="topcenter" autoresize="true" wordwrap="true">
+					<Size>
+						<AbsPoint x="250" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="8" y="8" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+			</Windows>
+		</Window>
+
+		<!--
+    <Button name="HotbarButtonDef"  inherits="ActionButtonDef">
+			<EventHandlers>
+				<EventHandler event="OnLButtonDown" function="Hotbar.ItemLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="Hotbar.ItemLButtonUp" />
+				<EventHandler event="OnRButtonUp" function="Hotbar.ItemRButtonUp" />
+				<EventHandler event="OnMouseOver" function="Hotbar.ItemMouseOver" />
+				<EventHandler event="OnMouseOverEnd" function="ItemProperties.ClearMouseOverItem" />
+			</EventHandlers>				
+		</Button>
+    -->
+
+		<!-- THIS IS THE BUTTON TEMPLATE THAT ALL BUTTONS WILL BE USING -->
+		<Button name="HotbarButtonDef" inherits="ActionButtonDef" sticky="false">
+			<Size>
+				<AbsPoint x="50" y="50" />
+			</Size>
+			<Anchors>
+				<Anchor point="middle" relativePoint="middle" relativeTo="$parentHorizHandle">
+					<AbsPoint x="20" y="0"/>
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnLButtonDown" function="Hotbar.ItemLButtonDown" />
+				<EventHandler event="OnLButtonUp" function="Hotbar.ItemLButtonUp" />
+				<EventHandler event="OnRButtonUp" function="Hotbar.ItemRButtonUp" />
+				<EventHandler event="OnMouseOver" function="Hotbar.ItemMouseOver" />
+				<EventHandler event="OnMouseOverEnd" function="Hotbar.ItemMouseOverEnd" />	
+			</EventHandlers>
+		</Button>
+
+		<Window name="Hotbar" movable="false" layer="default" id="1" sticky="true">
+			<Size>
+				<AbsPoint x="674" y="50" />
+			</Size>
+			<Anchors>
+				<Anchor point="bottomleft" relativePoint="bottomleft" >
+					<AbsPoint x="10" y="-10" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="Hotbar.Initialize" />
+				<EventHandler event="OnShutdown" function="Hotbar.Shutdown" />
+        <EventHandler event="OnMouseWheel" function="WindowUtils.Scale" />
+        <EventHandler event="OnMouseOverEnd" function="Hotbar.ItemMouseOverEnd" />
+			</EventHandlers>
+			<Windows>
+				<DynamicImage name="$parentHorizHandle" texturescale="1.15" texture="BrightHandle" >
+					<Size>
+						<AbsPoint x="20" y="50" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<TexCoords x="0" y="18"/>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="Hotbar.OnHandleLButDown" />
+						<EventHandler event="OnLButtonUp" function="Hotbar.OnHandleLButUp" />
+					</EventHandlers>
+				</DynamicImage>
+				<DynamicImage name="$parentVertHandle" textureScale="1.15" texture="BrightHandle" >
+					<Size>
+						<AbsPoint x="50" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<TexCoords x="0" y="0"/>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="Hotbar.OnHandleLButtonDown" />
+						<EventHandler event="OnLButtonUp" function="Hotbar.OnHandleLButtonUp" />
+					</EventHandlers>
+				</DynamicImage>
+				<Button name="$parentMinimizeButtonH" backgroundtexture="hud_image" highlighttexture="hud_image" texturescale="0.8" layer="overlay">
+					<Size>
+						<AbsPoint x="19" y="19" />
+					</Size>
+					<Anchors>
+						<Anchor point="top" relativePoint="center" relativeTo="$parentHorizHandle">
+							<AbsPoint x="1" y="10" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal x="39" y="937" />
+						<NormalHighlit x="14" y="937" />
+						<Pressed x="14" y="937" />
+						<PressedHighlit x="14" y="937" />
+					</TexCoords>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="Hotbar.ShrinkBDown" />
+						<EventHandler event="OnMouseOver" function="Hotbar.ShrinkTooltip" />
+						<EventHandler event="OnMouseOverEnd" function="Hotbar.ItemMouseOverEnd" />
+						<EventHandler event="OnRButtonUp" function="Hotbar.SpecialLock" />
+					</EventHandlers>
+				</Button>
+        <Button name="$parentLock" layer="popup" backgroundtexture="UO_Core" highlighttexture="UO_Core" >
+          <Size>
+            <AbsPoint x="20" y="20" />
+          </Size>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="Hotbar.Lock" />
+            <EventHandler event="OnMouseOver" function="Hotbar.LockTooltip" />
+          </EventHandlers>
+          <TexCoords>
+            <Normal x="69" y="341" />
+            <NormalHighlit x="69" y="341" />
+            <Pressed x="69" y="341" />
+            <PressedHighlit x="69" y="341" />
+            <Disabled x="69" y="341" />
+          </TexCoords>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentHorizHandle">
+              <AbsPoint x="3" y="-5" />
+            </Anchor>
+          </Anchors>
+        </Button>
+				<Button name="$parentMaximizeButtonH" backgroundtexture="hud_image" highlighttexture="hud_image" texturescale="0.8" layer="overlay">
+					<Size>
+						<AbsPoint x="19" y="19" />
+					</Size>
+					<Anchors>
+            <Anchor point="top" relativePoint="center" relativeTo="$parentHorizHandle">
+              <AbsPoint x="1" y="10" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal x="63" y="937" />
+						<NormalHighlit x="88" y="937" />
+						<Pressed x="88" y="937" />
+						<PressedHighlit x="88" y="937" />
+					</TexCoords>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="Hotbar.ShrinkBDown" />
+						<EventHandler event="OnMouseOver" function="Hotbar.ShrinkTooltip" />
+						<EventHandler event="OnMouseOverEnd" function="Hotbar.ItemMouseOverEnd" />
+						<EventHandler event="OnRButtonUp" function="Hotbar.SpecialLock" />
+					</EventHandlers>
+				</Button>
+				<Label name="$parentNameH" font="Arial_Black_12" maxchars="16" textalign="left" handleinput="false" wordwrap="true" linespacing="18" autoresize="true" autoresizewidth="true" layer="background" popable="false">
+					<Size>
+						<AbsPoint x="10" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topright" relativeTo="$parent">
+							<AbsPoint x="0" y="-5" />
+						</Anchor>
+					</Anchors>
+				</Label>
+				<Label name="$parentNameHrev" font="Arial_Black_12" maxchars="16" textalign="left" handleinput="false" wordwrap="true" linespacing="18" autoresize="true" autoresizewidth="true" layer="background" popable="false">
+					<Size>
+						<AbsPoint x="10" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="3" y="-3" />
+						</Anchor>
+					</Anchors>
+				</Label>
+				<Button name="$parentMinimizeButtonV" backgroundtexture="updown" highlighttexture="updown" texturescale="0.8" layer="overlay">
+					<Size>
+						<AbsPoint x="19" y="19" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topright" relativeTo="$parentVertHandle">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal x="27" y="0" />
+						<NormalHighlit x="3" y="2" />
+						<Pressed x="3" y="2" />
+						<PressedHighlit x="3" y="2" />
+					</TexCoords>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="Hotbar.ShrinkBDown" />
+						<EventHandler event="OnMouseOver" function="Hotbar.ShrinkTooltip" />
+						<EventHandler event="OnMouseOverEnd" function="Hotbar.ItemMouseOverEnd" />
+						<EventHandler event="OnRButtonUp" function="Hotbar.SpecialLock" />
+					</EventHandlers>
+				</Button>
+				<Button name="$parentMaximizeButtonV" backgroundtexture="updown" highlighttexture="updown" texturescale="0.8" layer="overlay">
+					<Size>
+						<AbsPoint x="19" y="19" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topright" relativeTo="$parentVertHandle">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal x="50" y="1" />
+						<NormalHighlit x="76" y="0" />
+						<Pressed x="76" y="0" />
+						<PressedHighlit x="76" y="0" />
+					</TexCoords>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="Hotbar.ShrinkBDown" />
+						<EventHandler event="OnMouseOver" function="Hotbar.ShrinkTooltip" />
+						<EventHandler event="OnRButtonUp" function="Hotbar.SpecialLock" />
+					</EventHandlers>
+				</Button>
+				<Label name="$parentNameV" font="Arial_Black_12" maxchars="16" textalign="left" handleinput="false" wordwrap="true" linespacing="18" autoresize="true" autoresizewidth="true" layer="background" popable="false">
+					<Size>
+						<AbsPoint x="50" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="bottomleft" relativeTo="$parent">
+							<AbsPoint x="5" y="-8" />
+						</Anchor>
+					</Anchors>
+				</Label>
+				<Label name="$parentNameVrev" font="Arial_Black_12" maxchars="16" textalign="left" handleinput="false" wordwrap="true" linespacing="18" autoresize="true" autoresizewidth="true" layer="background" popable="false">
+					<Size>
+						<AbsPoint x="50" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="5" y="-3" />
+						</Anchor>
+					</Anchors>
+				</Label>
+				<Button name="$parentButton1" inherits="HotbarButtonDef" id="1">
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentHorizHandle">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Button>
+				<Button name="$parentButton2" inherits="HotbarButtonDef" id="2" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton1" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton3" inherits="HotbarButtonDef" id="3" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton2" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton4" inherits="HotbarButtonDef" id="4" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton3" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton5" inherits="HotbarButtonDef" id="5" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton4" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton6" inherits="HotbarButtonDef" id="6" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton5" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton7" inherits="HotbarButtonDef" id="7" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton6" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton8" inherits="HotbarButtonDef" id="8" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton7" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton9" inherits="HotbarButtonDef" id="9" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton8" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton10" inherits="HotbarButtonDef" id="10" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton9" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton11" inherits="HotbarButtonDef" id="11" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton10" />
+					</Anchors>
+				</Button>
+				<Button name="$parentButton12" inherits="HotbarButtonDef" id="12" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton11" />
+					</Anchors>
+				</Button>
+				<Button name="$parentResizeButton" inherits="CoreWindowResizeButtonBottomRight" layer="popup" >
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="" >
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="Hotbar.OnResizeBegin" />
+					</EventHandlers>
+				</Button>
+
+			</Windows>
+		</Window>
+	</Windows>
+</Interface>

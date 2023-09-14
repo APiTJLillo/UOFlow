@@ -1,0 +1,531 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+
+		<Button name="EmptyEquipButtonDef" draganddrop="true" id="0" >
+			<Size>
+				<AbsPoint x="50" y="50" />
+			</Size>
+			<TexCoords>
+				<Normal texture="default_grid_backpack" x="0" y="0" />
+				<NormalHighlit texture="default_grid_backpack" x="50" y="0" />
+				<Disabled texture="default_grid_backpack" x="0" y="0" />
+				<Pressed texture="default_grid_backpack" x="0" y="0" />
+				<PressedHighlit texture="default_grid_backpack" x="50" y="0" />
+			</TexCoords>
+			<EventHandlers>
+				<EventHandler event="OnLButtonUp" function="ActionEditWindow.EquipLButtonUp" />
+				<EventHandler event="OnMouseOver" function="ActionEditWindow.EquipMouseOver" />
+			</EventHandlers>
+		</Button>
+
+		<Button name="EquipButtonDef" inherits="EquipActionButtonDef">
+			<EventHandlers>
+				<EventHandler event="OnLButtonUp" function="ActionEditWindow.EquipLButtonUp" />
+				<EventHandler event="OnRButtonUp" function="ActionEditWindow.EquipRButtonUp" />
+			</EventHandlers>
+		</Button>
+
+		<Window name="UnequipButtonDef" layer="popup">
+			<Size>
+				<AbsPoint x="160" y="64" />
+			</Size>
+			<Windows>
+				<Button name="$parentButton" inherits="UO_Default_Check_Button" handleinput = "true" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="25" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="ActionEditWindow.UnequipPosSelected" />
+					</EventHandlers>
+				</Button>
+				<DynamicImage name="$parentSquareIcon" texturescale="1.2" handleinput="false" layer="popup">
+					<Size>
+						<AbsPoint x="58" y="58" />
+					</Size>
+					<Anchors>
+						<Anchor point="center" relativePoint="center" relativeTo="">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</DynamicImage>
+			</Windows>
+		</Window>
+
+		<Window name="ArmDisarmButtonDef" layer="popup">
+			<Size>
+				<AbsPoint x="100" y="70" />
+			</Size>
+			<Windows>
+				<Button name="$parentButton" inherits="UO_Default_Check_Button" handleinput = "true" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="0" y="10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="ActionEditWindow.ArmDisarmSelectSlot" />
+					</EventHandlers>
+				</Button>
+				<DynamicImage name="$parentSquareIcon" texturescale="1.2" handleinput="false" layer="popup">
+					<Size>
+						<AbsPoint x="58" y="58" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentButton">
+							<AbsPoint x="5" y="-20" />
+						</Anchor>
+					</Anchors>
+				</DynamicImage>
+			</Windows>
+		</Window>
+
+		<FullResizeImage name="ActionEditBackground" inherits="UO_Simple_Black_Background">
+			<Size>
+				<AbsPoint x="0" y="0" />
+			</Size>
+			<Anchors>
+				<Anchor point="topleft" relativePoint="topleft" />
+				<Anchor point="bottomright" relativePoint="bottomright" />
+			</Anchors>
+			<Windows>
+				<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+					<Size>
+						<AbsPoint x="10" y="10"/>
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+			</Windows>
+		</FullResizeImage>
+
+		<Window name="ActionEditText" movable="false" layer="popup" >
+			<Size>
+				<AbsPoint x="250" y="120" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="ActionEditWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="ActionEditWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="ActionEditBackground" />
+
+				<Label name="$parentParamInfo" font="UO_DefaultText" linespacing="20" maxchars="512" textalign="left" autoresize="true" handleinput="false" wordwrap="true" >
+					<Size>
+						<AbsPoint x="200" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="12" y="12" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<Window name="$parentBG"  handleinput="false">
+					<Size>
+						<AbsPoint x="220" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="left" relativePoint="left" relativeTo="$parent">
+							<AbsPoint x="12" y="0"/>
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<!-- Inner Frame Boilerplate -->
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						<!-- End of Inner Frame Boilerplate -->
+					</Windows>
+				</Window>
+
+				<EditBox name="$parentEntry" font="UO_DefaultText" maxchars="128">
+					<Size>
+						<AbsPoint x="200" y="20"/>
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentBG">
+							<AbsPoint x="10" y="5"/>
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnKeyEnter" function="ActionEditWindow.TextEditOK" />
+					</EventHandlers>
+				</EditBox>
+
+				<Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button" >
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" relativeTo="$parent">
+							<AbsPoint x="0" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.TextEditOK" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="ActionEditSlider" movable="false" layer="popup" >
+			<Size>
+				<AbsPoint x="250" y="140" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="ActionEditWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="ActionEditWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="ActionEditBackground" />
+
+				<Label name="$parentParamInfo" font="UO_DefaultText" linespacing="20" maxchars="512" textalign="left" autoresize="true" handleinput="false" wordwrap="true" >
+					<Size>
+						<AbsPoint x="200" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="12" y="12" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<Label name="$parentValue" font="UO_DefaultText" linespacing="20" maxchars="32" textalign="center" autoresize="true" handleinput="false" wordwrap="true" >
+					<Size>
+						<AbsPoint x="200" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="center" relativePoint="center" relativeTo="$parent">
+							<AbsPoint x="0" y="-20" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<SliderBar name="$parentSlider" inherits="UO_Default_Horizontal_SliderBar">
+					<Anchors>
+						<Anchor point="center" relativePoint="center" relativeTo="$parent">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnSlide" function="ActionEditWindow.SliderUpdate" />
+					</EventHandlers>
+				</SliderBar>
+				<Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button" >
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" relativeTo="$parent">
+							<AbsPoint x="0" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.SliderEditOK" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="ActionEditEquip" movable="false" layer="popup" >
+			<Size>
+				<AbsPoint x="370" y="190" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="ActionEditWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="ActionEditWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="ActionEditBackground" />
+
+				<Label name="$parentParamInfo" font="UO_DefaultText" linespacing="20" maxchars="512" textalign="left" autoresize="true" handleinput="false" wordwrap="true" >
+					<Size>
+						<AbsPoint x="200" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="12" y="12" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<HorizontalScrollWindow name="$parentActions" childscrollwindow="$parentScrollChild" scrollbar="$parentScrollbar" linewidth="50"  draganddrop="true" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="340" y="80" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentParamInfo" >
+							<AbsPoint x="5" y="7" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+
+						<HorizontalScrollbar name="$parentScrollbar" inherits="StandardHorizScroll" />
+						<Window name ="$parentScrollChild" >
+							<Size>
+								<AbsPoint x="320" y="50"/>
+							</Size>
+							<Windows>
+								<Button name="$parentEmptyButton" inherits="EmptyEquipButtonDef"/>
+							</Windows>
+						</Window>
+					</Windows>
+				</HorizontalScrollWindow>
+
+				<Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button" >
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parent">
+							<AbsPoint x="10" y="-45" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.EquipItemOK" />
+					</EventHandlers>
+				</Button>
+
+				<Button name="$parentAddEquippedButton" inherits="UO_Default_Medium_Select_Button" >
+					<Anchors>
+						<Anchor point="right" relativePoint="left" relativeTo="$parentOKButton">
+							<AbsPoint x="10" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.EquipItemAddEquipped" />
+					</EventHandlers>
+				</Button>
+				<Button name="$parentClearButton" inherits="UO_Default_Medium_Select_Button" >
+					<Anchors>
+						<Anchor point="bottom" relativePoint="center" relativeTo="$parent">
+							<AbsPoint x="0" y="-25" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.EquipClearEquipped" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="ActionEditUnEquip" movable="false" layer="popup" >
+			<Size>
+				<AbsPoint x="190" y="300" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="ActionEditWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="ActionEditWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="ActionEditBackground" />
+
+				<Label name="$parentParamInfo" font="UO_DefaultText" linespacing="20" maxchars="512" textalign="left" autoresize="true" handleinput="false" wordwrap="true" >
+					<Size>
+						<AbsPoint x="200" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="12" y="12" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<ScrollWindow name="$parentActions" childscrollwindow="$parentScrollChild" scrollbar="$parentScrollbar" lineheight="60" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="160" y="200" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentParamInfo">
+							<AbsPoint x="5" y="5" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" />
+
+						<Window name ="$parentScrollChild" >
+							<Size>
+								<AbsPoint x="75" y="0"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"/>
+							</Anchors>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+
+				<Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button" >
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" relativeTo="$parent">
+							<AbsPoint x="0" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.UnEquipOK" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="ActionEditArmDisarm" movable="false" layer="popup" >
+			<Size>
+				<AbsPoint x="410" y="420" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="ActionEditWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="ActionEditWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="ActionEditBackground" />
+
+				<Label name="$parentParamInfo" font="UO_DefaultText" linespacing="20" maxchars="512" textalign="left" autoresize="true" handleinput="false" wordwrap="true" >
+					<Size>
+						<AbsPoint x="400" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="12" y="12" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button" >
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" relativeTo="$parent">
+							<AbsPoint x="0" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.ArmDisarmOK" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="ActionEditTargetByResource" movable="false" layer="popup" >
+			<Size>
+				<AbsPoint x="300" y="170" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="ActionEditWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="ActionEditWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="ActionEditBackground" />
+
+				<Label name="$parentParamInfo" font="UO_DefaultText" linespacing="20" maxchars="512" textalign="left" autoresize="true" handleinput="false" wordwrap="true" >
+					<Size>
+						<AbsPoint x="200" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="12" y="12" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<Button name="$parentEmptyButton" draganddrop="true" id="0" >
+					<Size>
+						<AbsPoint x="50" y="50" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentParamInfo" >
+							<AbsPoint x="5" y="25" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal texture="default_grid_backpack" x="0" y="0" />
+						<NormalHighlit texture="default_grid_backpack" x="50" y="0" />
+						<Disabled texture="default_grid_backpack" x="0" y="0" />
+						<Pressed texture="default_grid_backpack" x="0" y="0" />
+						<PressedHighlit texture="default_grid_backpack" x="50" y="0" />
+					</TexCoords>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.TargetByResourceLButtonUp" />
+						<EventHandler event="OnMouseOver" function="ActionEditWindow.TargetByResourceMouseOver" />
+					</EventHandlers>
+				</Button>
+
+				<Button name="$parentResourceButton" inherits="EquipActionButtonDef">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentParamInfo" >
+							<AbsPoint x="5" y="25" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.TargetByResourceLButtonUp" />
+						<EventHandler event="OnMouseOver" function="ActionEditWindow.TargetByResourceMouseOver" />
+					</EventHandlers>
+				</Button>
+
+				<Label name="$parentResourceLabel" font="UO_DefaultText" linespacing="20" maxchars="512" textalign="left" autoresize="true" handleinput="false" wordwrap="true" >
+					<Size>
+						<AbsPoint x="200" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentResourceButton">
+							<AbsPoint x="20" y="-10" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<ComboBox name="$parentResourceCombo" inherits="UO_Default_ComboBox" >
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentResourceLabel">
+							<AbsPoint x="0" y="10" />
+						</Anchor>
+					</Anchors>
+				</ComboBox>
+
+				<Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button" >
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" relativeTo="$parent">
+							<AbsPoint x="0" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.TargetByResourceOK" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="ActionEditTargetByObjectId" movable="false" layer="popup" >
+			<Size>
+				<AbsPoint x="270" y="40" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="ActionEditWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="ActionEditWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="ActionEditBackground" />
+
+				<Label name="$parentParamInfo" font="UO_DefaultText" linespacing="20" maxchars="512" textalign="left" autoresize="true" handleinput="false" wordwrap="true" >
+					<Size>
+						<AbsPoint x="400" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="12" y="12" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button" >
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" relativeTo="$parent">
+							<AbsPoint x="0" y="-10" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="ActionEditWindow.TargetByObjectIdOK" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+	</Windows>
+</Interface>

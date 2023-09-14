@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../Interface.xsd">
+	<Scripts>
+		<Script file="Source/Generic/NewPlayerInstruction.lua" />
+	</Scripts>
+	<Windows>
+		<Window name="GUMP_NEW_PLAYER_INSTRUCTION" movable="true">
+			<Size>
+				<AbsPoint x="315" y="500" />
+ 			</Size>
+			<Anchors>
+				<Anchor point="topleft" relativePoint="topleft">
+					<AbsPoint x="130" y="212" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="NewPlayerInstruction.Initialize" />
+				<EventHandler event="OnShutdown"   function="NewPlayerInstruction.Shutdown" />
+				<EventHandler event="OnKeyEscape"  function="NewPlayerInstruction.ButtonPressed"/>
+			</EventHandlers>
+
+			<Windows>
+				<!-- This gump might look nicer without the chrome! -->
+				<Window name="$parentChrome" inherits="UO_DefaultWindow" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"/>
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>
+				<!-- -->
+		      
+				<Label name="$parentSubtitle" font="UO_Subtitle_large" textalign="center" autoresize="true" maxchars="2048" linespacing="20" wordwrap="true" layer="overlay">
+					<Size>
+						<AbsPoint x="270" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="top" relativePoint="top">
+							<AbsPoint x="15" y="65" />
+						</Anchor>
+					</Anchors>
+				</Label>
+
+				<ScrollWindow name="$parentScroll" childscrollwindow="$parentChild" scrollbar="$parentbar" lineheight="18" layer="popup" autoHideScrollBar="true">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="30" y="120" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent">
+							<AbsPoint x="-5" y="-70" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<VerticalScrollbar name="$parentbar" inherits="StandardVertScroll"/>
+						<Window name="$parentChild">
+							<Windows>
+								<Label name="$parentText" font="UO_DefaultText" textalign="left" autoresize="true" maxchars="9000" linespacing="20" wordwrap="true">
+									<Size>
+										<AbsPoint x="250" y="0" />
+									</Size>
+								</Label>
+							</Windows>
+						</Window>				
+					</Windows>
+				</ScrollWindow>
+
+				<DynamicImage name="$parentIcon" layer="secondary" handleinput="false">
+					<Size>
+						<AbsPoint x="512" y="512"/>
+					</Size>
+					<Anchors>
+						<Anchor point="top" relativePoint="top" relativeTo="$parent">
+							<AbsPoint x="-25" y="-10"/>
+						</Anchor>
+					</Anchors>
+				</DynamicImage>
+		        
+				<!-- Frame around the Icon -->
+				<!--FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" layer="secondary" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentIcon" />
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parentIcon" />
+					</Anchors>
+				</FullResizeImage-->
+			</Windows>
+		</Window>
+		<Button name="BottomButtonName" inherits="UO_Default_GumpButton">
+			<Anchors>
+				<Anchor point="bottom" relativePoint="bottom">
+					<AbsPoint x="0" y="-15" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnLButtonUp" function="NewPlayerInstruction.ButtonPressed" />
+			</EventHandlers>
+		</Button>
+	</Windows>
+</Interface>
+
+

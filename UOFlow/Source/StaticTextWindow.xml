@@ -1,0 +1,25 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>	
+		<Window name="StaticTextWindow" layer="background" handleinput="false">
+			<Size>
+				<AbsPoint x="300" y="30" />
+			</Size>	
+			<EventHandlers>
+				<EventHandler event="OnShutdown" function="StaticTextWindow.Shutdown" />
+      </EventHandlers>
+      <Windows>
+        <Label name="$parentText" sticky="false" font="UO_NeueText" maxchars="1024"
+					textalign="center"  autoresize="true" wordwrap="true" handleinput ="false" linespacing="20" layer="background">
+          <Size>
+            <AbsPoint x="300" y="30" />
+          </Size>
+          <Anchors>
+            <Anchor point="top" relativePoint="top" >
+              <AbsPoint x="0" y="0"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+      </Windows>	
+		</Window>
+	</Windows>
+</Interface>

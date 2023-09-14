@@ -1,0 +1,885 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Scripts>
+		<Script file="Source/CraftingWindow.lua" />
+		<Script file="Source/Generic/TextEntry.lua" />
+	</Scripts>
+  <Windows>
+    <!-- Definitions -->
+    <HorizontalResizeImage name="Label_Background" texture="UO_Common" texturescale="1.7">
+      <Size>
+        <AbsPoint x="20" y="30" />
+      </Size>
+      <Sizes  middle="20" />
+      <TexCoords>
+        <Middle x="212" y="416" />
+      </TexCoords>
+    </HorizontalResizeImage>
+
+    <Window name="Label">
+      <Size>
+        <AbsPoint x="100" y="30"/>
+      </Size>
+      <Anchors>
+        <Anchor point="topleft" relativePoint="topleft" />
+      </Anchors>
+      <Windows>
+        <HorizontalResizeImage name="Label_Stretch" inherits="Label_Background">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" />
+            <Anchor point="bottomright" relativePoint="bottomright" />
+          </Anchors>
+        </HorizontalResizeImage>
+        <Label name="$parentText" font="UO_Title" maxchars="64" textalign="center" handleinput="false" wordwrap="true">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="0" y="-3"/>
+            </Anchor>
+            <Anchor point="bottomright" relativePoint="bottomright" />
+          </Anchors>
+          <Color r="200" g="200" b="150" a="255" />
+        </Label>
+      </Windows>
+    </Window>
+    
+    <Window name="RecipeTemplate">
+      <Size>
+        <AbsPoint x="350" y="20" />
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="CraftingWindow.OnItemClicked" />
+        <EventHandler event="OnLButtonDblClk" function="CraftingWindow.OnItemDblClicked" />
+      </EventHandlers>
+      <Windows>
+
+        <!-- Button -->
+        <Button name="$parentButton" texturescale="2.23" backgroundtexture="UO_Common" font="UO_DefaultText" textalign="leftcenter" highlighttexture="UO_Common" handleinput="false" layer="background">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+          <TexCoords>
+            <NormalHighlit x="264" y="259" />
+            <PressedHighlit x="264" y="259" />
+          </TexCoords>
+          <TextColors>
+            <Normal r="255" g="255" b="255" a="255"/>
+            <NormalHighlit r="243" g="227" b="49" a="255"/>
+            <PressedHighlit r="243" g="227" b="49" a="255"/>
+            <Disabled r="128" g="128" b="128" a="255"/>
+          </TextColors>
+          <TextOffset x="10" y="4" />
+        </Button>
+
+      </Windows>
+    </Window>
+
+    <Window name="CategoryTemplate">
+      <Size>
+        <AbsPoint x="230" y="20" />
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="CraftingWindow.OnCategoryClicked" />
+      </EventHandlers>
+      <Windows>
+
+        <!-- Button -->
+        <Button name="$parentButton" texturescale="2.23" backgroundtexture="UO_Common" font="UO_DefaultText" textalign="leftcenter" highlighttexture="UO_Common" handleinput="false">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+          <TexCoords>
+            <NormalHighlit x="264" y="259" />
+            <PressedHighlit x="264" y="259" />
+          </TexCoords>
+          <TextColors>
+            <Normal r="255" g="255" b="255" a="255"/>
+            <NormalHighlit r="243" g="227" b="49" a="255"/>
+            <PressedHighlit r="243" g="227" b="49" a="255"/>
+            <Disabled r="128" g="128" b="128" a="255"/>
+          </TextColors>
+          <TextOffset x="10" y="0" />
+        </Button>
+      </Windows>
+    </Window>
+
+    <Button name="CraftingActionButtonDef" inherits="UO_Default_Medium_Select_Button">
+      <Windows>
+        <Label name="$parentDesc" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="250" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="right" relativePoint="left">
+              <AbsPoint x="10" y="0" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+      </Windows>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="CraftingWindow.OnActionClicked" />
+        <EventHandler event="OnMouseOver" function="CraftingWindow.ItemMouseOver" />
+      </EventHandlers>
+    </Button>
+
+    <!-- Recycle button -->
+    <Button name="ActionButton1Def" inherits="CraftingActionButtonDef" id="7000" >
+    </Button>
+
+    <Window name="LabelCheckButton">
+      <Size>
+        <AbsPoint x="350" y="32" />
+      </Size>
+      <Windows>
+        <Button name="$parentButton" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="left" relativePoint="left">
+              <AbsPoint x="5" y="0"/>
+            </Anchor>
+          </Anchors>
+         </Button>
+        <Label name="$parentLabel" inherits="ItemTitle">
+          <Size>
+            <AbsPoint x="325" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="right" relativePoint="left" relativeTo="$parentButton">
+              <AbsPoint x="5" y="0" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+      </Windows>
+    </Window>
+
+    <Button name="CR_ComboBoxSelectedButton" inherits="UO_Default_ComboBoxSelectedButton" textAutoFitMinScale="0.5" >
+	<Size>
+        	<AbsPoint x="200" y="36"/>
+      	</Size>
+	<TextOffset x="10" y="10" />
+    </Button>
+
+    <Button name="CR_ComboBoxMenuItemButton" inherits="UO_Default_ComboBoxMenuItemButton" textalign="right" >
+      	<Size>
+        	<AbsPoint x="210" y="25" />
+      	</Size>
+    </Button>
+    
+    <Window name="MaterialDef">
+      <Size>
+        <AbsPoint x="240" y="70"/>
+      </Size>
+      <Windows>
+        <ComboBox name="$parentMaterialCombo" selectedbutton="CR_ComboBoxSelectedButton" menubackground="UO_Simple_Black_Background" menuitembutton="CR_ComboBoxMenuItemButton" font="UO_DefaultText" >
+          <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+            <AbsPoint x="5" y="0" />
+          </Anchor>
+          <EventHandlers>
+            <EventHandler event="OnSelChanged" function="CraftingWindow.SelectMaterial" />
+          </EventHandlers>
+        </ComboBox>
+        <!--
+        <Window name="$parentUseColor" inherits="LabelCheckButton" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="10" y="40" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp"	function="CraftingWindow.ToggleCheckBox" />
+          </EventHandlers>
+        </Window>
+        -->
+      </Windows>
+    </Window>
+
+    <!-- Options Window Def -->
+    <Window name="OptionsWindowDef" >
+      <Size>
+        <AbsPoint x="240" y="360"/>
+      </Size>
+      <Windows>
+        <Label name="$parentMaterialComboLabel" inherits="ItemTitle" >
+          <Size>
+            <AbsPoint x="240" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="10" y="0" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Window name="$parentMaterial1" inherits="MaterialDef" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="0" y="30" />
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <Window name="$parentMaterial2" inherits="MaterialDef" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="0" y="100" />
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <Window name="$parentMarkItem" inherits="LabelCheckButton" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="10" y="170" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp"		function="CraftingWindow.ToggleCheckBox" />
+          </EventHandlers>
+        </Window>
+
+        <Window name="$parentQuestMark" inherits="LabelCheckButton" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="10" y="200" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp"		function="CraftingWindow.ToggleCheckBox" />
+          </EventHandlers>
+        </Window>
+
+        <Button name="$parentActionButton1" inherits="CraftingActionButtonDef" id="7000" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="230"/>
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="CraftingWindow.OnActionClicked" />
+          </EventHandlers>
+        </Button>
+
+        <Button name="$parentActionButton6" inherits="CraftingActionButtonDef" id="2000" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="260"/>
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="CraftingWindow.OnActionClicked" />
+          </EventHandlers>
+        </Button>
+
+
+        <Button name="$parentActionButton4" inherits="CraftingActionButtonDef" id="8000" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="290"/>
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="CraftingWindow.OnActionClicked" />
+          </EventHandlers>
+        </Button>
+
+    	<Button name="$parentActionButtonAlterItem" inherits="CraftingActionButtonDef" id="9000" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="320"/>
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="CraftingWindow.OnActionClicked" />
+          </EventHandlers>
+        </Button>
+
+      </Windows>
+    </Window>
+
+    <!-- Creation Window Def -->
+    <Window name="CreationWindowDef" >
+      <Size>
+        <AbsPoint x="240" y="150"/>
+      </Size>
+      <Windows>
+        <Label name="$parentMakeLabel" inherits="ItemTitle" >
+          <Size>
+            <AbsPoint x="240" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="10" y="0" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Window name="$parentMakeLast" inherits="LabelCheckButton" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="10" y="20" />
+            </Anchor>
+          <Size>
+            <AbsPoint x="200" y="20" />
+          </Size>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp"		function="CraftingWindow.ToggleCheckBox" />
+          </EventHandlers>
+        </Window>
+
+        <Window name="$parentMakeNum" inherits="LabelCheckButton" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="10" y="40" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp"	function="CraftingWindow.ToggleCheckBox" />
+          </EventHandlers>
+        </Window>
+
+	<EditBox name="$parentMakeNumTextBox" inherits="TextEntrySingleLineEditBox" input="numbers">	
+		<Size>
+			<AbsPoint x="40" y="30" />
+		</Size>
+		<Anchors>
+			<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+				<AbsPoint x="180" y="40" />
+			</Anchor>
+		</Anchors>
+         	<EventHandlers>
+      			<EventHandler event="OnFocusLost" function="CraftingWindow.OnMakeNumTextChanged" />
+          	</EventHandlers>
+	</EditBox>
+
+        <Window name="$parentMakeMax" inherits="LabelCheckButton" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="10" y="60" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp"		function="CraftingWindow.ToggleCheckBox" />
+          </EventHandlers>
+        </Window>
+
+        <Button name="$parentMakeItem" inherits="CraftingActionButtonDef" id="10002" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="90"/>
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="CraftingWindow.OnActionClicked" />
+          </EventHandlers>
+        </Button>
+
+      <Label name="$parentCompleteCount" inherits="ItemTitle">
+          <Size>
+            <AbsPoint x="220" y="20" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="10" y="120"/>
+            </Anchor>
+          </Anchors>
+   
+        </Label>
+      </Windows>
+    </Window>
+
+    <Label name="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+      <Size>
+        <AbsPoint x="390" y="16" />
+      </Size>
+      <Color r="255" g="255" b="255" a="255" />
+    </Label>
+    
+    <!-- Info Window Def -->
+    <Window name="InfoWindowDef" >
+      <Size>
+        <AbsPoint x="395" y="380" />
+      </Size>
+      <Windows>
+        <!-- Icon -->
+        <DynamicImage name="$parentIcon" texturescale="1.0" handleinput="false" >
+          <Size>
+            <AbsPoint x="55" y="70" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="10" y="10" />
+            </Anchor>
+          </Anchors>
+        </DynamicImage>
+        
+        <!-- "Item" and item name -->
+        <Label name="$parentLabel1" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="center" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="380" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="0" y="10"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Success chance -->
+        <Label name="$parentLabel2" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="right" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="25" y="150"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentLabel2.5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="100" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="245" y="150"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Exceptional chance (if any) -->
+        <Label name="$parentLabel3" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="right" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="25" y="170"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentLabel3.5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="100" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="245" y="170"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Skill 1 -->
+        <Label name="$parentLabel4" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="right" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="25" y="210"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentLabel4.5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="100" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="245" y="210"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Skill 2 -->
+        <Label name="$parentLabel5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="right" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="25" y="230"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentLabel5.5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="100" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="245" y="230"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Ingredient 1 -->
+        <Label name="$parentLabel6" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="right" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="170" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="25" y="30"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentLabel6.5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="100" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="245" y="30"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Ingredient 2 -->
+        <Label name="$parentLabel7" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="right" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="170" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="25" y="50"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentLabel7.5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="100" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="245" y="50"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Ingredient 3 -->
+        <Label name="$parentLabel8" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="right" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="170" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="70"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentLabel8.5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="100" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="245" y="70"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Ingredient 4 -->
+        <Label name="$parentLabel9" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="right" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="170" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="25" y="90"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentLabel9.5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="100" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="245" y="90"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Ingredient 5 -->
+        <Label name="$parentLabel10" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="right" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="170" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="25" y="110"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentLabel10.5" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="100" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="245" y="110"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Description notes, line 1 -->
+        <Label name="$parentLabel11" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="topleft" autoresize="true" handleinput="false">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="250"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Description notes, line 2 -->
+        <Label name="$parentLabel12" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="topleft" autoresize="true" handleinput="false">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="270"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Description notes, line 3 -->
+        <Label name="$parentLabel13" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="topleft" autoresize="true" handleinput="false">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="290"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Description notes, line 4 -->
+        <Label name="$parentLabel14" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="topleft" autoresize="true" handleinput="false">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="310"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <!-- Description notes, line 5 -->
+        <Label name="$parentLabel15" inherits="InfoLabelDef" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="topleft" autoresize="true" handleinput="false">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="10" y="330"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+      </Windows>
+    </Window>
+    
+    <!-- Main crafting window -->
+    <Window name="CraftingWindow" movable="true"  >
+      <Size>
+        <AbsPoint x="650" y="930" />
+      </Size>
+      <Anchors>
+        <Anchor point="topright" relativePoint="topright" >
+          <AbsPoint x="-50" y="50"/>
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="CraftingWindow.Initialize" />
+        <EventHandler event="OnShown" function="CraftingWindow.Show" />
+        <EventHandler event="OnShutdown" function="CraftingWindow.Shutdown" />
+      </EventHandlers>
+      <Windows>
+        <!-- Default chrome. Alter this at your own peril. -->
+        <Window name="$parentChrome" inherits="UO_DefaultWindow">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+        </Window>
+        <!-- End of default chrome boilerplate code -->
+
+        <Window name="$parentCategoryLabel" inherits="Label">
+          <Size>
+            <AbsPoint x="240" y="30"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="6" y="43"/>
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <!-- List of categories -->
+        <ScrollWindow name="$parentCatListView" childscrollwindow="$parentCatScrollChild" scrollbar="$parentCatScrollbar" lineheight="60" autoHideScrollBar="true">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentCategoryLabel" >
+              <AbsPoint x="4" y="30" />
+            </Anchor>
+          </Anchors>
+          <Size>
+            <AbsPoint x="230" y="320"/>
+          </Size>
+          <Windows>
+            <VerticalScrollbar name="$parentCatScrollbar" inherits="StandardVertScroll" >
+            </VerticalScrollbar>
+
+            <Window name ="$parentCatScrollChild" >
+              <Size>
+                <AbsPoint x="230" y="320"/>
+              </Size>
+            </Window>
+          </Windows>
+        </ScrollWindow>
+
+        <Window name="$parentOptionsLabel" inherits="Label">
+          <Size>
+            <AbsPoint x="240" y="30"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="6" y="361"/>
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <Window name="$parentOptionsWindow" inherits="OptionsWindowDef" >
+          <Anchors>
+              <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentOptionsLabel">
+                <AbsPoint x="4" y="30" />
+              </Anchor>
+         </Anchors>
+        </Window>
+
+        <Window name="$parentCreationLabel" inherits="Label">
+          <Size>
+            <AbsPoint x="240" y="30"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="6" y="750"/>
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <Window name="$parentCreationWindow" inherits="CreationWindowDef" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentCreationLabel">
+              <AbsPoint x="4" y="30" />
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <Window name="$parentItemLabel" inherits="Label">
+          <Size>
+            <AbsPoint x="395" y="30"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="247" y="43"/>
+            </Anchor>
+          </Anchors>
+        </Window>
+        <!-- List of recipes -->
+        <ScrollWindow name="$parentListView" childscrollwindow="$parentScrollChild" scrollbar="$parentScrollbar" lineheight="60" autoHideScrollBar="true">
+          <Size>
+            <AbsPoint x="10" y="10" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentItemLabel" >
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+            <Anchor point="bottomleft" relativePoint="bottomright" relativeTo="$parentItemLabel" >
+              <AbsPoint x="385" y="380"/>
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" >
+            </VerticalScrollbar>
+
+            <Window name ="$parentScrollChild" >
+              <Size>
+                <AbsPoint x="385" y="380"/>
+              </Size>
+            </Window>
+          </Windows>
+        </ScrollWindow>
+
+        <Window name="$parentInfoLabel" inherits="Label">
+          <Size>
+            <AbsPoint x="395" y="30"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+              <AbsPoint x="247" y="461"/>
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <Window name="$parentInfoWindow" inherits="InfoWindowDef" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentInfoLabel">
+              <AbsPoint x="4" y="30" />
+            </Anchor>
+          </Anchors>
+        </Window>
+
+
+        <!-- Dividers -->
+        <VerticalResizeImage name="$parentDividerLeft" inherits="UO_Default_Vertical_Rule">
+          <Size>
+            <AbsPoint x="4" y="885" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topright" relativeTo="$parentCategoryLabel">
+              <AbsPoint x="3" y="0"/>
+            </Anchor>
+          </Anchors>
+        </VerticalResizeImage>
+
+        <HorizontalResizeImage name="$parentDividerLeftMiddle" inherits="UO_Default_Horizontal_Rule">
+          <Size>
+            <AbsPoint x="240" y="4" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentOptionsLabel">
+              <AbsPoint x="1" y="0"/>
+            </Anchor>
+          </Anchors>
+        </HorizontalResizeImage>
+
+        <HorizontalResizeImage name="$parentDividerLeftBottom" inherits="UO_Default_Horizontal_Rule">
+          <Size>
+            <AbsPoint x="240" y="4" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentCreationLabel">
+              <AbsPoint x="1" y="0"/>
+            </Anchor>
+          </Anchors>
+        </HorizontalResizeImage>
+
+        <HorizontalResizeImage name="$parentDividerRightMiddle" inherits="UO_Default_Horizontal_Rule">
+          <Size>
+            <AbsPoint x="395" y="4" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentItemLabel">
+              <AbsPoint x="0" y="390"/>
+            </Anchor>
+          </Anchors>
+        </HorizontalResizeImage>
+
+        <HorizontalResizeImage name="$parentDividerRightBottom" inherits="UO_Default_Horizontal_Rule">
+          <Size>
+            <AbsPoint x="395" y="4" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentInfoLabel">
+              <AbsPoint x="0" y="325"/>
+            </Anchor>
+          </Anchors>
+        </HorizontalResizeImage>
+
+        <Label name="$parentNoticesText" font="UO_DefaultText" wordwrap="true" textalign="center" linespacing="16" maxchars="128" handleinput="false">
+          <Size>
+            <AbsPoint x="395" y="100" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentInfoLabel">
+              <AbsPoint x="0" y="400"/>
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+      </Windows>
+    </Window>
+  </Windows>
+</Interface>
+

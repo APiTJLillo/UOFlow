@@ -1,0 +1,93 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Scripts>
+		<Script file="Source/PartyInviteWindow.lua" />
+	</Scripts>
+	<Windows>
+		<Window name="PartyInviteWindow" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="350" y="165" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="PartyInviteWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="PartyInviteWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentChrome" inherits="UO_DefaultWindow">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>
+				<Label name="$parentDescriptionLabel" font="UO_DefaultText" wordwrap="true" maxchars="512" textalign="center">
+					<Size>
+						<AbsPoint x="320" y="40" />
+					</Size>
+					<Anchors>
+						<Anchor point="top" relativePoint="top" relativeTo="PartyInviteWindow">
+							<AbsPoint x="0" y="40" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<Button name="$parentAcceptButton" inherits="UO_Default_GumpButton">
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" >
+							<AbsPoint x="-60" y="-40" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="PartyInviteWindow.Accept_OnLButtonUp" />
+					</EventHandlers>
+				</Button>
+				<Button name="$parentDeclineButton" inherits="UO_Default_GumpButton">
+					<Anchors>
+						<Anchor point="bottom" relativePoint="bottom" >
+							<AbsPoint x="60" y="-40" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="PartyInviteWindow.Decline_OnLButtonUp" />
+					</EventHandlers>
+				</Button>
+				<Window name="$parentShowOption" inherits="LabelCheckButton" id="1">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="bottomleft">
+							<AbsPoint x="15" y="-10" />
+						</Anchor>
+					</Anchors>
+					<Size>
+						<AbsPoint x="350" y="32" />
+					</Size>
+					<Windows>
+						<Button name="$parentButton" inherits="UO_Default_Check_Button">
+							<Anchors>
+								<Anchor point="left" relativePoint="left">
+									<AbsPoint x="5" y="0"/>
+								</Anchor>
+							</Anchors>
+							<EventHandlers>
+								<EventHandler event="OnLButtonUp" function="PartyInviteWindow.Check_OnLButtonUp" />
+							</EventHandlers>
+						</Button>
+						<Label name="$parentLabel" inherits="ItemTitle">
+							<Size>
+								<AbsPoint x="700" y="16" />
+							</Size>
+							<Anchors>
+								<Anchor point="right" relativePoint="left" relativeTo="$parentButton">
+									<AbsPoint x="5" y="0" />
+								</Anchor>
+							</Anchors>
+							<Color r="255" g="255" b="255" a="255" />
+						</Label>
+					</Windows>
+				</Window>
+			</Windows>
+		</Window>
+	</Windows>
+</Interface>

@@ -1,0 +1,269 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Scripts>
+	<Script file="Source/RaceChange.lua" />
+  </Scripts>
+  <Windows>
+
+    <Button name="RCWRightButton" backgroundtexture="CC_Widgets" highlighttexture="CC_Widgets" textalign="center" font="UO_GoldButtonText">
+      <Size>
+        <AbsPoint x="30" y="30" />
+      </Size>
+      <TexCoords>
+        <Normal x="321" y="125" />
+        <NormalHighlit x="381" y="125" />
+        <Pressed x="351" y="125" />
+        <PressedHighlit x="351" y="125" />
+        <Disabled x="291" y="125" />
+      </TexCoords>
+      <TextColors>
+        <Normal r="253" g="210" b="69" a="255" />
+        <NormalHighlit r="253" g="210" b="69" a="255" />
+        <Pressed r="23" g="24" b="19" a="255" />
+        <PressedHighlit r="23" g="24" b="19" a="255" />
+        <Disabled r="73" g="59" b="14" a="255" />
+      </TextColors>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="RaceChangeWindow.ToggleAppearanceItemUp" />
+      </EventHandlers>
+    </Button>
+
+    <Button name="RCWLeftButton" inherits="RCWRightButton">
+      <TexCoords>
+        <Normal x="321" y="156" />
+        <NormalHighlit x="381" y="156" />
+        <Pressed x="351" y="156" />
+        <PressedHighlit x="351" y="156" />
+        <Disabled x="291" y="156" />
+      </TexCoords>
+      <EventHandlers>
+        <EventHandler event="OnLButtonUp" function="RaceChangeWindow.ToggleAppearanceItemDown" />
+      </EventHandlers>
+    </Button>
+
+    <DynamicImage name="RCWButtonClickableItemBackground" texture="CC_Widgets" handleinput="false">
+      <Size>
+        <AbsPoint x="289" y="40" />
+      </Size>
+      <TexCoords x="0" y="125" />
+    </DynamicImage>
+
+    <DynamicImage name="RCWItemBackground" texture="CC_Widgets">
+      <Size>
+        <AbsPoint x="261" y="42" />
+      </Size>
+      <TexCoords x="0" y="167" />
+    </DynamicImage>
+
+    <Window name="RCWColorSelectItemTemplate">
+      <Size>
+        <AbsPoint x="266" y="46" />
+      </Size>
+      <Windows>
+        <DynamicImage name="$parentBackground" inherits="RCWItemBackground" layer="background">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" />
+          </Anchors>
+        </DynamicImage>
+        <DynamicImage name="$parentBar" texture="CC_Widgets" handleinput="true">
+          <Size>
+            <AbsPoint x="253" y="34" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="5" y="5" />
+            </Anchor>
+          </Anchors>
+          <TexCoords x="0" y="251" />
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="RaceChangeWindow.ShowColorPicker" />
+          </EventHandlers>
+        </DynamicImage>
+      </Windows>
+    </Window>
+
+
+    <Window name="RCWAppearanceItemTemplate" >
+      <Size>
+        <AbsPoint x="380" y="125" />
+      </Size>
+
+      <Windows>
+
+        <Label name="$parentLabel" font="UO_DefaultText" maxchars="64" textalign="center" >
+          <Size>
+            <AbsPoint x="200" y="20"/>
+          </Size>
+          <Anchors>
+            <Anchor point="top" relativePoint="top" relativeTo="$parent">
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <DynamicImage name="$parentBackground" inherits="RCWButtonClickableItemBackground">
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentLabel">
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+          </Anchors>
+        </DynamicImage>
+
+        <Label name="$parentStyle" font="UO_DefaultText" maxchars="64" textalign="center" >
+          <Size>
+            <AbsPoint x="200" y="20"/>
+          </Size>
+          <Anchors>
+            <Anchor point="center" relativePoint="center" relativeTo="$parentBackground"/>
+            <AbsPoint x="0" y="-15" />
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="$parentUpButton" inherits="RCWRightButton" >
+          <Anchors>
+            <Anchor point="topright" relativePoint="topright" relativeTo="$parentBackground">
+              <AbsPoint x="-5" y="6" />
+            </Anchor>
+          </Anchors>
+        </Button>
+
+        <Button name="$parentDownButton" inherits="RCWLeftButton" >
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentBackground">
+              <AbsPoint x="5" y="6" />
+            </Anchor>
+          </Anchors>
+        </Button>
+
+        <Label name="$parentColorLabel" font="UO_DefaultText" maxchars="64" textalign="center" >
+          <Size>
+            <AbsPoint x="200" y="20"/>
+          </Size>
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentBackground">
+              <AbsPoint x="0" y="5" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Window name="$parentColor" inherits="RCWColorSelectItemTemplate" handleinput="true">
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentColorLabel">
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        
+
+      </Windows>
+    </Window>
+
+
+    <Window name="RaceChangeWindow" movable="true" layer="background">
+      <Size>
+        <AbsPoint x="400" y="595" />
+      </Size>
+      <Anchor point="topleft" relativePoint="topleft">
+        <AbsPoint x="380" y="280" />
+      </Anchor>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="RaceChangeWindow.Initialize" />
+        <EventHandler event="OnShutdown" function="RaceChangeWindow.Shutdown" />
+      </EventHandlers>
+      <Windows>
+
+        <!-- Default chrome. Alter this at your own peril. -->
+        <Window name="$parentChrome" inherits="UO_DefaultWindow">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+        </Window>
+        <!-- End of default chrome boilerplate code -->
+<!--
+        <DynamicImage name="$parentFrame" texture="RCW_Frame" layer="background">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" >
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+          </Anchors>
+          <Size>
+            <AbsPoint x="971" y="686" />
+          </Size>
+          <TexCoords x="21" y="266"/>
+        </DynamicImage>
+-->
+
+            <Button name="$parentOkButton" inherits="UO_Default_Medium_Select_Button" font="UO_GoldButtonText" textalign="center" drawchildrenfirst="true" wordwrap="false">
+              <Anchors>
+                <Anchor point="center" relativePoint="center" relativeTo="$parent">
+                  <AbsPoint x="0" y="250" />
+                </Anchor>
+              </Anchors>
+              <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="RaceChangeWindow.HandleOkButton" />
+              </EventHandlers>
+            </Button>
+
+            <Window name="$parentSkin" inherits="RCWAppearanceItemTemplate">
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" >
+                  <AbsPoint x="10" y="30" />
+                </Anchor>
+              </Anchors>
+            </Window>
+
+            <Window name="$parentHair" inherits="RCWAppearanceItemTemplate">
+              <Anchors>
+                <Anchor point="bottom" relativePoint="top" relativeTo="$parentSkin">
+                  <AbsPoint x="0" y="20" />
+                </Anchor>
+              </Anchors>
+            </Window>
+
+            <Window name="$parentFacialHair" inherits="RCWAppearanceItemTemplate">
+              <Anchors>
+                <Anchor point="bottom" relativePoint="top" relativeTo="$parentHair">
+                  <AbsPoint x="0" y="20" />
+                </Anchor>
+              </Anchors>
+            </Window>
+            <Window name="$parentPaperdollWindow" movable="true" layer="background">
+              <Size>
+                <AbsPoint x="288" y="595" />
+              </Size>
+              <Anchors>
+                <Anchor point="topright" relativePoint="topleft" relativeTo="$parent">
+                  <AbsPoint x="0" y="0" />
+                </Anchor>
+              </Anchors>
+
+              <Windows>
+                <Window name="$parentChrome" inherits="UO_DefaultWindow">
+                  <Anchors>
+                    <Anchor point="topleft" relativePoint="topleft"/>
+                    <Anchor point="bottomright" relativePoint="bottomright"/>
+                  </Anchors>
+                </Window>
+                
+                <DynamicImage name="$parentImage" texture="" handleinput="false"  sticky="false">
+                  <Size>
+                    <AbsPoint x="0" y="0" />
+                  </Size>
+                  <Anchors>
+                    <Anchor point="center" relativePoint="center">
+                      <AbsPoint x="0" y="0" />
+                    </Anchor>
+                  </Anchors>
+                  <TexCoords x="0" y="0"/>
+                </DynamicImage>
+              </Windows>
+            </Window>
+
+      </Windows>      
+    </Window> 
+  </Windows>
+</Interface>

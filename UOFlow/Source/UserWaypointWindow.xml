@@ -1,0 +1,371 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+		<Window name="WaypointTextEntryFieldTemplate" handleinput="true">
+			<Size>
+				<AbsPoint x="350" y="50" />
+			</Size>
+			<Windows>
+				<Label name="$parentPrompt" font="UO_DefaultText" linespacing="20" maxchars="15" textalign="left" autoresize="false" handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="150" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="0" y="16" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<Label name="$parentLabel" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="false" handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="200" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentPrompt">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<Window name="$parentText" handleinput="true">
+					<Size>
+						<AbsPoint x="200" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentPrompt">
+							<AbsPoint x="0" y="-5" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+
+						<EditBox name="$parentEditBox" font="UO_DefaultText" taborder="1" maxchars="100" scrolling="horz">
+							<Size>
+								<AbsPoint x="200" y="20" />
+							</Size>
+							<TextOffset x="5" y="2" />
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" relativeTo="">
+									<AbsPoint x="0" y="2" />
+								</Anchor>
+							</Anchors>
+							<EventHandlers>
+								<EventHandler event="OnKeyEnter" function="UserWaypointWindow.OnOkay"/>
+								<EventHandler event="OnKeyEscape" function="UserWaypointWindow.OnKeyCancel"/>
+								<EventHandler event="OnKeyTab" function="UserWaypointWindow.OnKeyTab"/>
+							</EventHandlers>
+						</EditBox>
+
+					</Windows>
+				</Window>
+			</Windows>
+		</Window>
+		<Window name="WaypointTextEntryFieldTemplateCombo" handleinput="true">
+			<Size>
+				<AbsPoint x="425" y="50" />
+			</Size>
+			<Windows>
+				<Label name="$parentPrompt" font="UO_DefaultText" linespacing="20" maxchars="15" textalign="left" autoresize="false" handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="150" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="0" y="16" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+
+				<ComboBox name="$parentLabel" inherits="UO_Default_ComboBox" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentPrompt">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnSelChanged" function="UserWaypointWindow.OnSelChanged" />
+					</EventHandlers>
+				</ComboBox>
+				<Window name="$parentBG"  handleinput="false">
+					<Size>
+						<AbsPoint x="50" y="50" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topright" relativeTo="$parentLabel">
+							<AbsPoint x="70" y="-15" />
+						</Anchor>
+					</Anchors>
+
+				</Window>
+
+				<DynamicImage name="$parentIcon" layer="default">
+					<Anchors>
+						<Anchor point="center" relativePoint="center" relativeTo="$parentBG">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</DynamicImage>
+				<Button name="$parentScaleUp" inherits="UO_Default_Plus_Button" texturescale="0.9" layer="overlay">
+					<Size>
+						<AbsPoint x="20" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topright" relativeTo="">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="UserWaypointWindow.IconScaleUp" />
+						<EventHandler event="OnMouseOver" function="UserWaypointWindow.ScaleUpOnMouseOver" />
+					</EventHandlers>
+				</Button>
+
+				<Button name="$parentScaleDown" inherits="UO_Default_Minus_Button" texturescale="0.9" layer="overlay">
+					<Size>
+						<AbsPoint x="20" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottom" relativePoint="top" relativeTo="$parentScaleUp">
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="UserWaypointWindow.IconScaleDown" />
+						<EventHandler event="OnMouseOver" function="UserWaypointWindow.ScaleDownOnMouseOver" />
+					</EventHandlers>
+				</Button>
+
+			</Windows>
+
+		</Window>
+
+		<Window name="WaypointNumEntryFieldTemplate" handleinput="true">
+			<Size>
+				<AbsPoint x="220" y="50" />
+			</Size>
+			<Windows>
+				<Label name="$parentPrompt" font="UO_DefaultText" linespacing="20" maxchars="15" textalign="left" autoresize="false" handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="150" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="0" y="16" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<Label name="$parentLabel" font="UO_DefaultText" linespacing="20" maxchars="64" textalign="left" autoresize="false" handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="70" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentPrompt">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<Window name="$parentText" handleinput="true">
+					<Size>
+						<AbsPoint x="70" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentPrompt">
+							<AbsPoint x="0" y="-5" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<FullResizeImage name="$parentBG" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+
+						<EditBox name="$parentEditBox" font="UO_DefaultText" taborder="1" maxchars="6" scrolling="horz" input="nospaces">
+							<Size>
+								<AbsPoint x="70" y="20" />
+							</Size>
+							<TextOffset x="5" y="2" />
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" relativeTo="">
+									<AbsPoint x="0" y="2" />
+								</Anchor>
+							</Anchors>
+							<EventHandlers>
+								<EventHandler event="OnKeyEnter" function="UserWaypointWindow.OnOkay"/>
+								<EventHandler event="OnKeyEscape" function="UserWaypointWindow.OnKeyCancel"/>
+								<EventHandler event="OnKeyTab" function="UserWaypointWindow.OnKeyTab"/>
+							</EventHandlers>
+						</EditBox>
+
+					</Windows>
+				</Window>
+			</Windows>
+		</Window>
+
+		<Window name="UserWaypointWindow" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="500" y="400" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center" relativeTo="">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="UserWaypointWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="UserWaypointWindow.Shutdown" />
+				<EventHandler event="OnKeyTab" function="UserWaypointWindow.OnKeyTab"/>
+				<EventHandler event="OnKeyEnter" function="UserWaypointWindow.OnOkay"/>
+				<EventHandler event="OnKeyEscape" function="UserWaypointWindow.OnKeyCancel"/>
+			</EventHandlers>
+			<Windows>
+				<!-- Default chrome. Alter this at your own peril. -->
+				<Window name="$parentChrome" inherits="UO_DefaultWindow">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"/>
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>
+				<!-- End of default chrome boilerplate code -->
+
+				<Window name="$parentName" inherits="WaypointTextEntryFieldTemplate">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="">
+							<AbsPoint x="55" y="60" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+
+
+				<Window name="$parentType" inherits="WaypointTextEntryFieldTemplateCombo">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentName">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<Window name="$parentFacet" inherits="WaypointTextEntryFieldTemplate">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentType">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<Window name="$parentLat" inherits="WaypointNumEntryFieldTemplate">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentFacet">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<ComboBox name="$parentLatDirCombo" inherits="UO_Default_ComboBox" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentLat">
+							<AbsPoint x="10" y="13" />
+						</Anchor>
+					</Anchors>
+				</ComboBox>
+
+				<Window name="$parentLong" inherits="WaypointNumEntryFieldTemplate">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentLat">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<ComboBox name="$parentLongDirCombo" inherits="UO_Default_ComboBox" >
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentLong">
+							<AbsPoint x="10" y="13" />
+						</Anchor>
+					</Anchors>
+				</ComboBox>
+
+				<Window name="$parentX" inherits="WaypointNumEntryFieldTemplate">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentFacet">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<Window name="$parentY" inherits="WaypointNumEntryFieldTemplate">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentX">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<Button name="$parentToggleCoordButton" inherits="UO_Default_Radio_Button">
+					<Anchors>
+						<Anchor point="left" relativePoint="right" relativeTo="$parentLat">
+							<AbsPoint x="-10" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="UserWaypointWindow.ToggleCoord" />
+						<EventHandler event="OnMouseOver" function="UserWaypointWindow.ToggleCoordMouseOver" />
+					</EventHandlers>
+				</Button>
+
+				<Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="">
+							<AbsPoint x="20" y="-20" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="UserWaypointWindow.OnOkay" />
+					</EventHandlers>
+				</Button>
+
+				<Button name="$parentCancelButton" inherits="UO_Default_Medium_Select_Button">
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="">
+							<AbsPoint x="-20" y="-20" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="UserWaypointWindow.OnCancel" />
+					</EventHandlers>
+				</Button>
+
+			</Windows>
+		</Window>
+
+	</Windows>
+</Interface>

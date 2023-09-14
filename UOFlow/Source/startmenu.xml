@@ -1,0 +1,42 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Scripts>
+		<Script file="Source/StartMenu.lua" />
+	</Scripts>
+	
+	<Windows>
+		<Window name="StartMenu" sticky="false" backgroundtexture="hud_image" highlighttexture="hud_image" >
+			<Size>
+				<AbsPoint x="88" y="81" />
+			</Size>
+			<Anchors>
+				<Anchor point="bottomleft" relativePoint="bottomleft"/>
+			</Anchors>
+			
+			<Windows>
+                <Button name="$parentButton" sticky="false" backgroundtexture="hud_image" highlighttexture="hud_image">
+					<Size>
+						<AbsPoint x="88" y="81" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="bottomleft"/>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnInitialize" function="StartMenu.Initialize" />
+						<EventHandler event="OnLButtonUp" function="StartMenu.ToggleStartMenu" />
+						<EventHandler event="OnMouseOver" function="StartMenu.OnMouseoverStartMenuBtn" />
+					</EventHandlers> 
+					<!--<Sounds>
+						<Sound event="OnLButtonDown" script="" />
+						<Sound event="OnMouseOver" script="Sound.Play( Sound.BUTTON_OVER )" />
+					</Sounds>-->
+					<TexCoords>
+						<Normal x="193" y="372" />
+						<NormalHighlit x="281" y="372" />			
+						<Pressed x="281" y="372" />
+						<!--<Disabled x="12" y="152" />-->
+					</TexCoords> 
+				</Button>
+			</Windows>
+		</Window>				
+	</Windows>
+

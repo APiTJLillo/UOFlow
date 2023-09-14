@@ -1,0 +1,148 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+
+		<Window name="FaceSelectionWindow" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="420" y="200" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center" relativeTo="">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="FaceSelectionWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="FaceSelectionWindow.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<!-- Default chrome. Alter this at your own peril. -->
+				<Window name="$parentChrome" inherits="UO_DefaultWindow">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"/>
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>			
+				<!-- End of default chrome boilerplate code -->
+				
+				<Window name="$parentFace" >
+				      <Size>
+					<AbsPoint x="380" y="60" />
+				      </Size>
+				     <Anchors>
+					    <Anchor point="topleft" relativePoint="topleft" relativeTo="">
+							<AbsPoint x="70" y="40" />
+					    </Anchor>
+					</Anchors>
+
+					<Windows>
+						<DynamicImage name="$parentBackground" texture="CC_Widgets" handleinput="false">
+						  <Anchors>
+							<Anchor point="bottomleft" relativePoint="bottomleft" />
+						  </Anchors>
+						  <Size>
+							<AbsPoint x="289" y="40" />
+						  </Size>
+						  <TexCoords x="0" y="125" />
+						</DynamicImage>
+				
+						<Label name="$parentLabel" font="UO_DefaultText" maxchars="64" textalign="center" >
+						  <Size>
+							<AbsPoint x="200" y="20"/>
+						  </Size>
+						  <Anchors>
+							<Anchor point="center" relativePoint="center" relativeTo="$parentBackground">
+							  <AbsPoint x="0" y="-30" />
+							</Anchor>
+						  </Anchors>
+						  <Color r="255" g="255" b="255" a="255" />
+						</Label>
+
+						<Label name="$parentStyle" font="UO_DefaultText" maxchars="64" textalign="center" >
+						  <Size>
+							<AbsPoint x="200" y="20"/>
+						  </Size>
+						  <Anchors>
+							<Anchor point="center" relativePoint="center" relativeTo="$parentBackground"/>
+						  </Anchors>
+						  <Color r="255" g="255" b="255" a="255" />
+						</Label>
+
+						<Button name="$parentUpButton" backgroundtexture="CC_Widgets" highlighttexture="CC_Widgets" textalign="center" font="UO_GoldButtonText">
+							<Size>
+								<AbsPoint x="30" y="30" />
+							</Size>
+							<Anchors>
+								<Anchor point="topright" relativePoint="topright" relativeTo="$parentBackground">
+								  <AbsPoint x="-5" y="6" />
+								</Anchor>
+							</Anchors>
+							<TexCoords>
+								<Normal x="321" y="125" />
+								<NormalHighlit x="381" y="125" />
+								<Pressed x="351" y="125" />
+								<PressedHighlit x="351" y="125" />
+								<Disabled x="291" y="125" />
+							</TexCoords>
+							<TextColors>
+								<Normal r="253" g="210" b="69" a="255" />
+								<NormalHighlit r="253" g="210" b="69" a="255" />
+								<Pressed r="23" g="24" b="19" a="255" />
+								<PressedHighlit r="23" g="24" b="19" a="255" />
+								<Disabled r="73" g="59" b="14" a="255" />
+							</TextColors>
+							<EventHandlers>
+								<EventHandler event="OnLButtonUp" function="FaceSelectionWindow.ToggleFaceUp" />
+							</EventHandlers>
+						</Button>
+
+						<Button name="$parentDownButton" inherits="$parentUpButton">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentBackground">
+								  <AbsPoint x="5" y="6" />
+								</Anchor>
+							</Anchors>	
+							<TexCoords>
+								<Normal x="321" y="156" />
+								<NormalHighlit x="381" y="156" />
+								<Pressed x="351" y="156" />
+								<PressedHighlit x="351" y="156" />
+								<Disabled x="291" y="156" />
+							</TexCoords>
+							<EventHandlers>
+								<EventHandler event="OnLButtonUp" function="FaceSelectionWindow.ToggleFaceDown" />
+							</EventHandlers>
+						</Button>
+
+				      </Windows>
+					  
+				</Window>
+				
+				<Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentFace">
+						  <AbsPoint x="-30" y="35" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="FaceSelectionWindow.OK" />
+					</EventHandlers>
+				</Button>
+				
+				<Button name="$parentCancelButton" inherits="UO_Default_Medium_Select_Button">
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentOKButton">
+						  <AbsPoint x="20" y="0" />
+						</Anchor>
+				      </Anchors>
+					  <EventHandlers>
+						<EventHandler event="OnLButtonUp" function="FaceSelectionWindow.Cancel" />
+					</EventHandlers>
+				</Button>
+				
+			</Windows>
+		</Window>
+		
+	</Windows>
+</Interface>	
+      
+      

@@ -1,0 +1,390 @@
+<?xml version="1.0"encoding="UTF-8"?>
+<ManagedTextures xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"xsi:noNamespaceSchemaLocation="ManagedTextures.xsd">
+
+	<!--
+	<TextureTypes>
+		<!-- These types are enumerated in UITextureManager.cpp and are here for reference -- >
+		<TextureType typeid="1"					name="PORTRAIT" />
+		<TextureType typeid="2"					name="GENERAL" />
+	</TextureTypes>
+	-->
+
+	<Textures>
+		<!-- Portrait Textures -->
+		<Texture id="1"		typeid="1" file="portraits/ogre.dds"										name="ogre" />
+		<Texture id="2"		typeid="1" file="portraits/Ettin.dds"										name="ettin" />
+		<Texture id="3"		typeid="1" file="portraits/Undead_Zombie.dds"						name="zombie" />
+		<Texture id="4"		typeid="1" file="portraits/Gargoyle.dds"								name="gargoyle" />
+		<Texture id="5"		typeid="1" file="portraits/Bird_Eagle.dds"							name="eagle" />
+		<Texture id="6"		typeid="1" file="portraits/Bird_Generic.dds"						name="bird" />
+		<Texture id="7"		typeid="1" file="portraits/Orc_Captain.dds"							name="orc captain" />
+		<Texture id="8"		typeid="1" file="portraits/Flail_Corpser.dds"						name="corpser" />
+		<Texture id="9"		typeid="1" file="portraits/Daemon_Red.dds"							name="daemon" />
+		<Texture id="10"	typeid="1" file="portraits/Daemon_Red.dds"							name="daemon" />
+		<Texture id="11"	typeid="1" file="portraits/Spider_Dread.dds"						name="dread spider" />
+		<Texture id="12"	typeid="1" file="portraits/Dragon_RetroGrey_Drake.dds"	name="dragon" />
+		<Texture id="13"	typeid="1" file="portraits/Elemental_Air.dds"						name="air elemental" />
+		<Texture id="14"	typeid="1" file="portraits/Elemental_Earth.dds"					name="earth elemental" />
+		<Texture id="15"	typeid="1" file="portraits/Elemental_Fire.dds"					name="fire elemental" />
+		<Texture id="16"	typeid="1" file="portraits/Elemental_Water.dds"					name="water elemental" />
+		<Texture id="17"	typeid="1" file="portraits/Orc.dds"											name="orc" />
+		<Texture id="18"	typeid="1" file="portraits/Ettin.dds"										name="ettin" />
+		<Texture id="19"	typeid="1" file="portraits/Spider_Dread.dds"						name="dread spider" />
+		<Texture id="20"	typeid="1" file="portraits/Spider_Frost.dds"						name="frost spider" />
+		<Texture id="21"	typeid="1" file="portraits/Snake_Giant.dds"							name="giant serpent" />
+		<Texture id="22"	typeid="1" file="portraits/Gazer.dds"										name="gazer" />
+		<Texture id="23"	typeid="1" file="portraits/Canine_wolf.dds"							name="dire wolf" />
+		<Texture id="24"	typeid="1" file="portraits/Lich.dds"										name="lich" />
+		<Texture id="25"	typeid="1" file="portraits/Canine_wolf.dds"							name="grey wolf" />
+		<Texture id="26"	typeid="1" file="portraits/Spirit_Ghost.dds"						name="ghost" />
+		<Texture id="27"	typeid="1" file="portraits/Canine_wolf.dds"							name="grey wolf" />
+		<Texture id="28"	typeid="1" file="portraits/Spider_BlackWidow.dds"				name="giant spider" />
+		<Texture id="29"	typeid="1" file="portraits/Gorilla_Silverback.dds"			name="gorilla" />
+		<Texture id="30"	typeid="1" file="portraits/Harpy.dds"										name="harpy" />
+		<Texture id="31"	typeid="1" file="portraits/Headless_One.dds"						name="headless" />
+		<Texture id="33"	typeid="1" file="portraits/Lizard_Men.dds"							name="lizardman" />
+		<Texture id="34"	typeid="1" file="portraits/Canine_wolf.dds"							name="white wolf" />
+		<Texture id="35"	typeid="1" file="portraits/Lizard_Men.dds"							name="lizardman" />
+		<Texture id="36"	typeid="1" file="portraits/Lizard_Men.dds"							name="lizardman" />
+		<Texture id="37"	typeid="1" file="portraits/Canine_wolf.dds"							name="white wolf" />
+		<Texture id="38"	typeid="1" file="portraits/Daemon_BlackGate.dds"				name="world devourer" />
+		<Texture id="39"	typeid="1" file="portraits/mongbat.dds"									name="mongbat" />
+		<Texture id="40"	typeid="1" file="portraits/Daemon_Elder.dds"						name="balron" />
+		<Texture id="41"	typeid="1" file="portraits/Orc.dds"											name="orc" />
+		<Texture id="42"	typeid="1" file="portraits/Ratman.dds"									name="ratman" />
+		<Texture id="43"	typeid="1" file="portraits/Daemon_IceFiend.dds"					name="ice fiend" />
+		<Texture id="44"	typeid="1" file="portraits/Ratman.dds"									name="ratman" />
+		<Texture id="45"	typeid="1" file="portraits/Ratman.dds"									name="ratman" />
+		<Texture id="46"	typeid="1" file="portraits/Dragon_AcientWyrm.dds"				name="ancient wyrm" />
+		<Texture id="47"	typeid="1" file="portraits/Flail_Reaper.dds"						name="reaper" />
+		<Texture id="48"	typeid="1" file="portraits/Scorpion_Giant.dds"					name="giant scorpion" />
+		<Texture id="49"	typeid="1" file="portraits/Dragon_WhiteWyrm.dds"				name="white wyrm" />
+		<Texture id="50"	typeid="1" file="portraits/skelton.dds"									name="skeleton" />
+		<Texture id="51"	typeid="1" file="portraits/slime.dds"										name="slime" />
+		<Texture id="52"	typeid="1" file="portraits/Snake_Giant.dds"							name="snake" />
+		<Texture id="53"	typeid="1" file="portraits/Troll.dds"										name="troll" />
+		<Texture id="54"	typeid="1" file="portraits/Troll.dds"										name="troll" />
+		<Texture id="55"	typeid="1" file="portraits/Troll_Frost.dds"							name="frost troll" />
+		<Texture id="56"	typeid="1" file="portraits/skelton.dds"									name="skeleton" />
+		<Texture id="57"	typeid="1" file="portraits/skelton.dds"									name="skeleton" />
+		<Texture id="58"	typeid="1" file="portraits/placeholder.dds"							name="wisp" />
+		<Texture id="59"	typeid="1" file="portraits/Dragon_RetroRed.dds"					name="dragon" />
+		<Texture id="60"	typeid="1" file="portraits/Dragon_RetroGrey_Drake.dds"	name="drake" />
+		<Texture id="61"	typeid="1" file="portraits/Dragon_RetroGrey_Drake.dds"	name="drake" />
+		<Texture id="62"	typeid="1" file="portraits/Dragon_Wyvern.dds"						name="wyvern" />
+		<Texture id="63"	typeid="1" file="portraits/Cat_Cougar.dds"							name="cougar" />
+		<Texture id="64"	typeid="1" file="portraits/Cat_Cougar.dds"							name="snow leopard" />
+		<Texture id="65"	typeid="1" file="portraits/Cat_Cougar.dds"							name="snow leopard" />
+		<Texture id="66"	typeid="1" file="portraits/Flails_Quagmire.dds"					name="swamp tentacles" />
+		<Texture id="67"	typeid="1" file="portraits/Gargoyle.dds"								name="stone gargoyle" />
+		<Texture id="68"	typeid="1" file="portraits/Gazer_Elder.dds"							name="elder gazer" />
+		<Texture id="69"	typeid="1" file="portraits/Gazer_Elder.dds"							name="elder gazer" />
+		<Texture id="70"	typeid="1" file="portraits/Terathan_Warrior.dds"				name="terathan warrior" />
+		<Texture id="71"	typeid="1" file="portraits/Terathan_Worker.dds"					name="terathan drone" />
+		<Texture id="72"	typeid="1" file="portraits/Terrathan_Queen.dds"					name="terathan matriarch" />
+		<Texture id="73"	typeid="1" file="portraits/Harpy_Stone.dds"							name="stone harpy" />
+		<Texture id="74"	typeid="1" file="portraits/Imp.dds"											name="imp" />
+		<Texture id="75"	typeid="1" file="portraits/Cyclopsian_Warrior.dds"			name="cyclops" />
+		<Texture id="76"	typeid="1" file="portraits/Titan.dds"										name="titan" />
+		<Texture id="77"	typeid="1" file="portraits/Kraken.dds"									name="kraken" />
+		<Texture id="78"	typeid="1" file="portraits/Lich.dds"										name="ancient lich" />
+		<Texture id="79"	typeid="1" file="portraits/Lich.dds"										name="lich lord" />
+		<Texture id="80"	typeid="1" file="portraits/Frog_Giant.dds"							name="giant toad" />
+		<Texture id="81"	typeid="1" file="portraits/Frog_Giant.dds"							name="bullfrog" />
+		<Texture id="82"	typeid="1" file="portraits/Lich.dds"										name="lich lord" />
+		<Texture id="83"	typeid="1" file="portraits/Ogre.dds"										name="ogre lord" />
+		<Texture id="84"	typeid="1" file="portraits/Ogre.dds"										name="ogre lord" />
+		<Texture id="85"	typeid="1" file="portraits/Ophidian.dds"								name="ophidian mage" />
+		<Texture id="86"	typeid="1" file="portraits/Ophidian.dds"								name="ophidian warrior" />
+		<Texture id="87"	typeid="1" file="portraits/Ophidian.dds"								name="ophidian queen" />
+		<Texture id="88"	typeid="1" file="portraits/Goat_Mountain.dds"						name="mountain goat" />
+		<Texture id="89"	typeid="1" file="portraits/snake_ice.dds"								name="ice serpent" />
+		<Texture id="90"	typeid="1" file="portraits/Snake_lava.dds"							name="lava serpent" />
+		<Texture id="91"	typeid="1" file="portraits/Snake_chrome.dds"						name="silver serpent" />
+		<Texture id="92"	typeid="1" file="portraits/Snake_chrome.dds"						name="silver serpent" />
+		<Texture id="93"	typeid="1" file="portraits/Snake_chrome.dds"						name="silver serpent" />
+		<Texture id="94"	typeid="1" file="portraits/slime.dds"										name="frost ooze" />
+		<Texture id="96"	typeid="1" file="portraits/slime.dds"										name="frost ooze" />
+		<Texture id="97"	typeid="1" file="portraits/Canine_Hell_Hound.dds"				name="hell hound" />
+		<Texture id="98"	typeid="1" file="portraits/Canine_Hell_Hound.dds"				name="hell hound" />
+		<Texture id="99"	typeid="1" file="portraits/Canine_wolf.dds"							name="dark wolf" />
+		<Texture id="100"	typeid="1" file="portraits/Canine_wolf.dds"							name="silver wolf" />
+		<Texture id="101"	typeid="1" file="portraits/Centaur.dds"									name="centaur" />
+		<Texture id="102"	typeid="1" file="portraits/Daemon_Exodus.dds"						name="exodus" />
+		<Texture id="103"	typeid="1" file="portraits/Dragon_Asian.dds"						name="oriental dragon" />
+		<Texture id="104"	typeid="1" file="portraits/Dragon_Skeletal.dds"					name="skeletal dragon" />
+		<Texture id="106"	typeid="1" file="portraits/Dragon_ShadowWyrm.dds"				name="shadow wyrm" />
+		<Texture id="107"	typeid="1" file="portraits/Elemental_Agapite.dds"				name="agapite elementa" />
+		<Texture id="108"	typeid="1" file="portraits/Elemental_Agapite.dds"				name="bronze elemental" />
+		<Texture id="109"	typeid="1" file="portraits/Elemental_Agapite.dds"				name="copper elemental" />
+		<Texture id="110"	typeid="1" file="portraits/Elemental_Agapite.dds"				name="dull copper elemental" />
+		<Texture id="111"	typeid="1" file="portraits/Elemental_Ore.dds"						name="shadow iron elemental" />
+		<Texture id="112"	typeid="1" file="portraits/Elemental_Agapite.dds"				name="valorite elemental" />
+		<Texture id="113"	typeid="1" file="portraits/Elemental_Agapite.dds"				name="verite elemental" />
+		<Texture id="114"	typeid="1" file="portraits/horse.dds"										name="dark steed" />
+		<Texture id="115"	typeid="1" file="portraits/horse.dds"										name="ethereal horse" />
+		<Texture id="116"	typeid="1" file="portraits/horse.dds"										name="nightmare" />
+		<Texture id="117"	typeid="1" file="portraits/horse.dds"										name="silver steed" />
+		<Texture id="118"	typeid="1" file="portraits/horse.dds"										name="war horse" />
+		<Texture id="119"	typeid="1" file="portraits/horse.dds"										name="war horse" />
+		<Texture id="120"	typeid="1" file="portraits/horse.dds"										name="war horse" />
+		<Texture id="121"	typeid="1" file="portraits/horse.dds"										name="war horse" />
+		<Texture id="122"	typeid="1" file="portraits/Horse_Unicorn.dds"						name="unicorn" />
+		<Texture id="123"	typeid="1" file="portraits/Ethereal_Warrior.dds"				name="ethereal warrior" />
+		<Texture id="124"	typeid="1" file="portraits/Evil_Mage.dds"								name="evil mage" />
+		<Texture id="125"	typeid="1" file="portraits/Evil_Mage.dds"								name="evil mage lord" />
+		<Texture id="126"	typeid="1" file="portraits/Evil_Mage.dds"								name="evil mage lord" />
+		<Texture id="127"	typeid="1" file="portraits/Cat_HellCat.dds"							name="predator hellcat" />
+		<Texture id="128"	typeid="1" file="portraits/Pixie.dds"										name="pixies" />
+		<Texture id="129"	typeid="1" file="portraits/Flails_Quagmire.dds"					name="tentacles of the Harrower" />
+		<Texture id="130"	typeid="1" file="portraits/Gargoyle.dds"								name="blistering gargoyle" />
+		<Texture id="131"	typeid="1" file="portraits/Efreet.dds"									name="efreet" />
+		<Texture id="132"	typeid="1" file="portraits/Kirin.dds"										name="ki-rin" />
+		<Texture id="133"	typeid="1" file="portraits/Alligator_Brown.dds"					name="small alligator" />
+		<Texture id="134"	typeid="1" file="portraits/Komodo_Dragon.dds"						name="komodo dragon" />
+		<Texture id="135"	typeid="1" file="portraits/Ogre.dds"										name="arctic ogre lord" />
+		<Texture id="136"	typeid="1" file="portraits/Ophidian.dds"								name="ophidian archmag" />
+		<Texture id="137"	typeid="1" file="portraits/Ophidian.dds"								name="ophidian knight" />
+		<Texture id="138"	typeid="1" file="portraits/Orc_Brute.dds"								name="orc lord" />
+		<Texture id="139"	typeid="1" file="portraits/Orc_Brute.dds"								name="orc lord" />
+		<Texture id="140"	typeid="1" file="portraits/Orc_Shaman.dds"							name="orc mage" />
+		<Texture id="141"	typeid="1" file="portraits/placeholder.dds"							name="ladin" />
+		<Texture id="142"	typeid="1" file="portraits/Ratman.dds"									name="ratman archer" />
+		<Texture id="143"	typeid="1" file="portraits/Ratman.dds"									name="ratman shaman" />
+		<Texture id="144"	typeid="1" file="portraits/Sea_Horse.dds"								name="sea horse" />
+		<Texture id="146"	typeid="1" file="portraits/Shadow_Knight.dds"						name="shadowlord body, (Harrower)" />
+		<Texture id="147"	typeid="1" file="portraits/Skeleton_Knight.dds"					name="skeletal knight" />
+		<Texture id="148"	typeid="1" file="portraits/Skeleton_Mage.dds"						name="skeletal mage" />
+		<Texture id="149"	typeid="1" file="portraits/Succubus.dds"								name="succubus" />
+		<Texture id="151"	typeid="1" file="portraits/Dolphin.dds"									name="dolphin" />
+		<Texture id="152"	typeid="1" file="portraits/Terathan_Warrior.dds"				name="terathan avenger" />
+		<Texture id="153"	typeid="1" file="portraits/Undead_Ghoul.dds"						name="ghoul" />
+		<Texture id="154"	typeid="1" file="portraits/Undead_Mummy.dds"						name="mummy" />
+		<Texture id="155"	typeid="1" file="portraits/Undead_RottingCorpse.dds"		name="rotting corpse" />
+		<Texture id="157"	typeid="1" file="portraits/Spider_BlackWidow.dds"				name="giant black widow" />
+		<Texture id="158"	typeid="1" file="portraits/Elemental_Acid.dds"					name="acid elemental" />
+		<Texture id="159"	typeid="1" file="portraits/Elemental_Blood.dds"					name="blood elemental" />
+		<Texture id="160"	typeid="1" file="portraits/Elemental_Blood.dds"					name="blood elemental" />
+		<Texture id="161"	typeid="1" file="portraits/Elemental_Ice.dds"						name="ice elemental" />
+		<Texture id="162"	typeid="1" file="portraits/Elemental_Poison.dds"				name="poison elemental" />
+		<Texture id="163"	typeid="1" file="portraits/Elemental_Snow.dds"					name="snow elemental" />
+		<Texture id="164"	typeid="1" file="portraits/placeholder.dds"							name="energy vortex" />
+		<Texture id="165"	typeid="1" file="portraits/placeholder.dds"							name="evil wisp" />
+		<Texture id="166"	typeid="1" file="portraits/Elemental_Ore.dds"						name="gold elemental" />
+		<Texture id="167"	typeid="1" file="portraits/Bear.dds"										name="brown bear" />
+		<Texture id="168"	typeid="1" file="portraits/Imp.dds"											name="shadow fiend" />
+		<Texture id="170"	typeid="1" file="portraits/Llama.dds"										name="ethereal llama" />
+		<Texture id="171"	typeid="1" file="portraits/Ostard_Forest.dds"						name="ethereal ostard" />
+		<Texture id="177"	typeid="1" file="portraits/horse.dds"										name="nightmare" />
+		<Texture id="178"	typeid="1" file="portraits/horse.dds"										name="nightmare" />
+		<Texture id="179"	typeid="1" file="portraits/horse.dds"										name="nightmare" />
+		<Texture id="180"	typeid="1" file="portraits/Dragon_AcientWyrm.dds"				name="white wyrm" />
+		<Texture id="181"	typeid="1" file="portraits/Orc_Scout.dds"								name="Orc Scout" />
+		<Texture id="182"	typeid="1" file="portraits/Orc.dds"											name="Orc Bomber" />
+		<Texture id="183"	typeid="1" file="portraits/placeholder.dds"							name="Savage Male Warrior" />
+		<Texture id="184"	typeid="1" file="portraits/placeholder.dds"							name="Savage Female Warrior" />
+		<Texture id="185"	typeid="1" file="portraits/placeholder.dds"							name="Savage Rider" />
+		<Texture id="186"	typeid="1" file="portraits/placeholder.dds"							name="Savage Shaman" />
+		<Texture id="187"	typeid="1" file="portraits/Ridgeback.dds"								name="Ridgeback" />
+		<Texture id="188"	typeid="1" file="portraits/Ridgeback_flame.dds"					name="Savage Rideback (painted)" />
+		<Texture id="189"	typeid="1" file="portraits/Orc_Captain.dds"							name="Orc Brute" />
+		<Texture id="190"	typeid="1" file="portraits/horse.dds"										name="fire steed" />
+		<Texture id="200"	typeid="1" file="portraits/horse.dds"										name="horse" />
+		<Texture id="201"	typeid="1" file="portraits/Cat_Cougar.dds"							name="cat" />
+		<Texture id="202"	typeid="1" file="portraits/Alligator_Brown.dds"					name="alligator" />
+		<Texture id="203"	typeid="1" file="portraits/Boar.dds"										name="pig" />
+		<Texture id="204"	typeid="1" file="portraits/horse.dds"										name="horse" />
+		<Texture id="205"	typeid="1" file="portraits/Rabbit.dds"									name="rabbit" />
+		<Texture id="206"	typeid="1" file="portraits/lizard_lava.dds"							name="lava lizard" />
+		<Texture id="207"	typeid="1" file="portraits/Sheep.dds"										name="sheep" />
+		<Texture id="208"	typeid="1" file="portraits/Bird_Hen.dds"								name="chicken" />
+		<Texture id="209"	typeid="1" file="portraits/Goat_Billy.dds"							name="goat" />
+		<Texture id="210"	typeid="1" file="portraits/Ostard_Forest.dds"						name="ostard" />
+		<Texture id="211"	typeid="1" file="portraits/Bear.dds"										name="black bear" />
+		<Texture id="212"	typeid="1" file="portraits/Bear.dds"										name="grizzly bear" />
+		<Texture id="213"	typeid="1" file="portraits/Bear_Polar.dds"							name="polar bear" />
+		<Texture id="214"	typeid="1" file="portraits/Cat_Cougar.dds"							name="panther" />
+		<Texture id="215"	typeid="1" file="portraits/Rat_Giant.dds"								name="giant rat" />
+		<Texture id="216"	typeid="1" file="portraits/Cow_Brown.dds"								name="cow" />
+		<Texture id="217"	typeid="1" file="portraits/Canine_Dog_Hound.dds"				name="dog" />
+		<Texture id="219"	typeid="1" file="portraits/Ostard_Forest.dds"						name="forest ostard" />
+		<Texture id="218"	typeid="1" file="portraits/Ostard_Forest.dds"						name="frenzied ostard" />
+		<Texture id="220"	typeid="1" file="portraits/Llama.dds"										name="llama" />
+		<Texture id="221"	typeid="1" file="portraits/Walrus.dds"									name="walrus" />
+		<Texture id="223"	typeid="1" file="portraits/Sheep.dds"										name="sheep" />
+		<Texture id="225"	typeid="1" file="portraits/Canine_wolf.dds"							name="timber wolf" />
+		<Texture id="226"	typeid="1" file="portraits/horse.dds"										name="horse" />
+		<Texture id="228"	typeid="1" file="portraits/horse.dds"										name="horse" />
+		<Texture id="231"	typeid="1" file="portraits/Cow_Brown.dds"								name="cow" />
+		<Texture id="232"	typeid="1" file="portraits/Bull.dds"										name="bull" />
+		<Texture id="233"	typeid="1" file="portraits/Bull.dds"										name="bull" />
+		<Texture id="234"	typeid="1" file="portraits/Deer_Stag.dds"								name="great hart" />
+		<Texture id="237"	typeid="1" file="portraits/Deer_Doe.dds"								name="doe" />
+		<Texture id="238"	typeid="1" file="portraits/Rat_Giant.dds"								name="rat" />
+		<Texture id="290"	typeid="1" file="portraits/Boar.dds"										name="big pig" />
+		<Texture id="291"	typeid="1" file="portraits/horse.dds"										name="pack horse" />
+		<Texture id="292"	typeid="1" file="portraits/Llama.dds"										name="pack llama" />
+		<Texture id="752"	typeid="1" file="portraits/Golem_Iron.dds"							name="golem" />
+		<Texture id="753"	typeid="1" file="portraits/Gargoyle.dds"								name="enslaved gargoyle" />
+		<Texture id="754"	typeid="1" file="portraits/Gargoyle.dds"								name="gargoyle enforcer" />
+		<Texture id="755"	typeid="1" file="portraits/Gargoyle.dds"								name="gargoyle destroyer" />
+		<Texture id="756"	typeid="1" file="portraits/Clockwork_Overseer.dds"			name="exodus overseer" />
+		<Texture id="757"	typeid="1" file="portraits/Daemon_Exodus.dds"						name="exodus minion" />
+		<Texture id="758"	typeid="1" file="portraits/Gargoyle.dds"								name="gargoyle shopkeeper" />
+		<Texture id="763"	typeid="1" file="portraits/Daemon_Exodus.dds"						name="exodus minion lord" />
+		<Texture id="764"	typeid="1" file="portraits/Juka.dds"										name="juka warrior" />
+		<Texture id="765"	typeid="1" file="portraits/Juka.dds"										name="juka mage" />
+		<Texture id="766"	typeid="1" file="portraits/placeholder.dds"							name="Warlord Kabur" />
+		<Texture id="767"	typeid="1" file="portraits/placeholder.dds"							name="betrayer" />
+		<Texture id="768"	typeid="1" file="portraits/Juggernaut.dds"							name="juggernaut" />
+		<Texture id="769"	typeid="1" file="portraits/placeholder.dds"							name="Lord Blackthorn" />
+		<Texture id="770"	typeid="1" file="portraits/placeholder.dds"							name="meer mage" />
+		<Texture id="771"	typeid="1" file="portraits/placeholder.dds"							name="meer warrior" />
+		<Texture id="772"	typeid="1" file="portraits/placeholder.dds"							name="Adranath" />
+		<Texture id="773"	typeid="1" file="portraits/placeholder.dds"							name="Captain Dasha" />
+		<Texture id="774"	typeid="1" file="portraits/Pixie.dds"										name="Dawn" />
+		<Texture id="775"	typeid="1" file="portraits/Plague_Beast.dds"						name="plague beast" />
+		<Texture id="776"	typeid="1" file="portraits/Horde_Demon.dds"							name="horde demon" />
+		<Texture id="777"	typeid="1" file="portraits/Doppleganger.dds"						name="doppleganger" />
+		<Texture id="778"	typeid="1" file="portraits/Gazer.dds"										name="gazer larva" />
+		<Texture id="779"	typeid="1" file="portraits/Bogling.dds"									name="bogling" />
+		<Texture id="780"	typeid="1" file="portraits/Bogling.dds"									name="bog thing (and true harrower)" />
+		<Texture id="781"	typeid="1" file="portraits/Solen_Drone.dds"							name="solen worker" />
+		<Texture id="782"	typeid="1" file="portraits/Solen_Warrior.dds"						name="solen warrior" />
+		<Texture id="783"	typeid="1" file="portraits/Solen_Queen.dds"							name="solen queen" />
+		<Texture id="784"	typeid="1" file="portraits/Daemon_Arcane.dds"						name="arcane demon" />
+		<Texture id="785"	typeid="1" file="portraits/Daemon_FourArmed.dds"				name="moloch demon" />
+		<Texture id="786"	typeid="1" file="portraits/Spider_Dread.dds"						name="chariot" />
+		<Texture id="787"	typeid="1" file="portraits/Ant_Lion.dds"								name="ant lion" />
+		<Texture id="788"	typeid="1" file="portraits/Sphinx.dds"									name="sphinx" />
+		<Texture id="789"	typeid="1" file="portraits/Flails_Quagmire.dds"					name="quagmire" />
+		<Texture id="790"	typeid="1" file="portraits/SandVortex.dds"							name="sand vortex" />
+		<Texture id="791"	typeid="1" file="portraits/Beetle_Giant.dds"						name="giant beetle" />
+		<Texture id="792"	typeid="1" file="portraits/Daemon_Chaos.dds"						name="chaos demon" />
+		<Texture id="793"	typeid="1" file="portraits/Horse_SkeletalMount.dds"			name="skeletal mount" />
+		<Texture id="794"	typeid="1" file="portraits/Dragon_Swamp.dds"						name="swamp dragon" />
+		<Texture id="795"	typeid="1" file="portraits/Horde_Demon.dds"							name="horde demon (medium)" />
+		<Texture id="796"	typeid="1" file="portraits/Horde_Demon.dds"							name="horde demon (large)" />
+		<Texture id="799"	typeid="1" file="portraits/Dragon_Swamp.dds"						name="armored swamp dragon" />
+		<Texture id="312"	typeid="1" file="portraits/Abysmal_Horror.dds"					name="abyssmal horror" />
+		<Texture id="300"	typeid="1" file="portraits/Elemental_Crystal.dds"				name="crystal elemental" />
+		<Texture id="301"	typeid="1" file="portraits/Treefellow.dds"							name="treefellow" />
+		<Texture id="302"	typeid="1" file="portraits/Skittering_Hopper.dds"				name="skittering hopper" />
+		<Texture id="303"	typeid="1" file="portraits/placeholder.dds"							name="devourer of souls" />
+		<Texture id="304"	typeid="1" file="portraits/Golem_Flesh.dds"							name="flesh golem" />
+		<Texture id="305"	typeid="1" file="portraits/Gore_Fiend_.dds"							name="gore fiend" />
+		<Texture id="306"	typeid="1" file="portraits/Impaler.dds"									name="impaler" />
+		<Texture id="307"	typeid="1" file="portraits/Gibberling.dds"							name="gibberling" />
+		<Texture id="308"	typeid="1" file="portraits/Daemon_Bone.dds"							name="bone daemon" />
+		<Texture id="309"	typeid="1" file="portraits/Undead_RottingCorpse.dds"		name="patchwork skeleton" />
+		<Texture id="310"	typeid="1" file="portraits/Banshee.dds"									name="wailing banshee" />
+		<Texture id="311"	typeid="1" file="portraits/Shadow_Knight.dds"						name="shadow knight" />
+		<Texture id="313"	typeid="1" file="portraits/Darknight_Creeper.dds"				name="darknight creeper" />
+		<Texture id="314"	typeid="1" file="portraits/Ravager.dds"									name="ravager" />
+		<Texture id="315"	typeid="1" file="portraits/Flesh_Renderer.dds"					name="fleshrenderer" />
+		<Texture id="316"	typeid="1" file="portraits/WandererOfTheVoid.dds"				name="wanderer of the void" />
+		<Texture id="317"	typeid="1" file="portraits/VampireBat.dds"							name="vampire bat" />
+		<Texture id="318"	typeid="1" file="portraits/Dark_Father.dds"							name="daemon knight" />
+		<Texture id="319"	typeid="1" file="portraits/MoundofMaggots.dds"					name="mound of maggots" />
+		<Texture id="804"	typeid="1" file="portraits/Solen_Avenger.dds"						name="red solen matriarch" />
+		<Texture id="805"	typeid="1" file="portraits/Solen_Drone.dds"							name="black solen worker" />
+		<Texture id="806"	typeid="1" file="portraits/Solen_Warrior.dds"						name="black solen warrior" />
+		<Texture id="807"	typeid="1" file="portraits/Solen_Queen.dds"							name="black solen queen" />
+		<Texture id="808"	typeid="1" file="portraits/Solen_Avenger.dds"						name="black solen matriarch" />
+		<Texture id="400"	typeid="1" file="portraits/placeholder.dds"							name="male human" />
+		<Texture id="401"	typeid="1" file="portraits/placeholder.dds"							name="female human" />
+		<Texture id="605"	typeid="1" file="portraits/placeholder.dds"							name="male elf" />
+		<Texture id="606"	typeid="1" file="portraits/placeholder.dds"							name="female elf" />
+		<Texture id="744"	typeid="1" file="portraits/Evil_Mage.dds"								name="male vampire (transformed)" />
+		<Texture id="745"	typeid="1" file="portraits/LadyoftheSnows.dds"					name="female vampire (transformed)" />
+		<Texture id="746"	typeid="1" file="portraits/Daemon_FourArmed.dds"				name="4-armed daemon (transformed)" />
+		<Texture id="747"	typeid="1" file="portraits/Banshee.dds"									name="banshee (transformed)" />
+		<Texture id="748"	typeid="1" file="portraits/Spirit_Ghost.dds"						name="wraith (transformed)" />
+		<Texture id="749"	typeid="1" file="portraits/Lich.dds"										name="lich (transformed)" />
+		<Texture id="750"	typeid="1" file="portraits/placeholder.dds"							name="Male Player wBody Paint" />
+		<Texture id="751"	typeid="1" file="portraits/placeholder.dds"							name="Female Player wBody Paint" />
+		<Texture id="240"	typeid="1" file="portraits/Kappa.dds"										name="Kappa" />
+		<Texture id="241"	typeid="1" file="portraits/Oni.dds"											name="Oni" />
+		<Texture id="242"	typeid="1" file="portraits/Beetle_Deathwatch.dds"				name="Bimbomushi" />
+		<Texture id="243"	typeid="1" file="portraits/Hiryu.dds"										name="Hiryu" />
+		<Texture id="244"	typeid="1" file="portraits/Beetle_Rune.dds"							name="Rune Beetle" />
+		<Texture id="245"	typeid="1" file="portraits/Tengu_Warrior.dds"						name="Yomotsu Warrior" />
+		<Texture id="246"	typeid="1" file="portraits/Bake_Kitsune.dds"							name="Bake-Kitsune" />
+		<Texture id="247"	typeid="1" file="portraits/Fan_Dancer.dds"							name="Fan Dancer" />
+		<Texture id="248"	typeid="1" file="portraits/Gamam.dds"										name="Gamam" />
+		<Texture id="249"	typeid="1" file="portraits/Yamandon.dds"								name="Yamandon" />
+		<Texture id="250"	typeid="1" file="portraits/Tsuki_Wolf.dds"							name="Tri-wolf" />
+		<Texture id="251"	typeid="1" file="portraits/Revenant_Lion_000251.dds"		name="Vampiric beast" />
+		<Texture id="252"	typeid="1" file="portraits/LadyoftheSnows.dds"					name="Lady of the Snow" />
+		<Texture id="253"	typeid="1" file="portraits/Tengu_Warrior.dds"						name="Yomotsu Priest" />
+		<Texture id="254"	typeid="1" file="portraits/Bird_Crane.dds"							name="Crane" />
+		<Texture id="255"	typeid="1" file="portraits/Tengu_Warrior.dds"						name="Yomotsu Elder" />
+		<Texture id="169"	typeid="1" file="portraits/Beetle_Fire.dds"							name="Fire beetle" />
+		<Texture id="196"	typeid="1" file="portraits/placeholder.dds"							name="Gouzen Ha" />
+		<Texture id="199"	typeid="1" file="portraits/placeholder.dds"							name="Denkou Yajuu" />
+		<Texture id="256"	typeid="1" file="portraits/Paroxysmus.dds"							name="Chief Paroxysmus" />
+		<Texture id="257"	typeid="1" file="portraits/dreadhorn.dds"								name="Dread Horn" />
+		<Texture id="258"	typeid="1" file="portraits/Lady_Melisande.dds"					name="Lady M" />
+		<Texture id="259"	typeid="1" file="portraits/grizzle.dds"									name="Monstrous Interred Grizzle" />
+		<Texture id="260"	typeid="1" file="portraits/placeholder.dds"							name="Travesty" />
+		<Texture id="261"	typeid="1" file="portraits/placeholder.dds"							name="Shimmering Effusion" />
+		<Texture id="262"	typeid="1" file="portraits/minotaur.dds"								name="Tormented Minotaur" />
+		<Texture id="263"	typeid="1" file="portraits/minotaur.dds"								name="Minotaur" />
+		<Texture id="264"	typeid="1" file="portraits/Changeling.dds"							name="Changeling" />
+		<Texture id="265"	typeid="1" file="portraits/Hydra.dds"										name="Hydra" />
+		<Texture id="266"	typeid="1" file="portraits/Dryad.dds"										name="Dryad" />
+		<Texture id="267"	typeid="1" file="portraits/Troglodyte.dds"							name="Troglodyte" />
+		<Texture id="269"	typeid="1" file="portraits/VampireBat.dds"							name="Thorn bat" />
+		<Texture id="270"	typeid="1" file="portraits/Bulbous_Putrification.dds"		name="Bulbous Putrification" />
+		<Texture id="271"	typeid="1" file="portraits/Satyr.dds"										name="Satyr" />
+		<Texture id="272"	typeid="1" file="portraits/grizzle.dds"									name="Interred Grizzle" />
+		<Texture id="273"	typeid="1" file="portraits/placeholder.dds"							name="Fetid Essence" />
+		<Texture id="274"	typeid="1" file="portraits/placeholder.dds"							name="Mantra Effervescence" />
+		<Texture id="275"	typeid="1" file="portraits/placeholder.dds"							name="Corporeal Brume" />
+		<Texture id="276"	typeid="1" file="portraits/Reptalon.dds"								name="Chimera" />
+		<Texture id="277"	typeid="1" file="portraits/placeholder.dds"							name="Cu Sidhe" />
+		<Texture id="278"	typeid="1" file="portraits/Squirrel.dds"								name="Squirrel" />
+		<Texture id="279"	typeid="1" file="portraits/Ferret.dds"									name="Ferret" />
+		<Texture id="281"	typeid="1" file="portraits/minotaur.dds"								name="Minotaur Leather" />
+
+		<!-- General Textures -->
+		<Texture id="1001"	typeid="2" file="portraits/gwen.dds"		name="Gwen" />
+		<Texture id="1002"	typeid="2" file="gwen.dds"							name="NewGwen" />
+		<Texture id="11413"	typeid="2" file="tapestryofsosaria.dds"	name="Tapestry of Sosaria" />
+		<Texture id="1417"	typeid="2" file="pot.dds"								name="Pot" />
+		<Texture id="2324"	typeid="2" file="pot_dirt.dds"					name="Potted Dirt" />
+		<Texture id="11414"	typeid="2" file="misc/aquarium.tga"			name="Aquarium" />
+		<Texture id="11415"	typeid="2" file="mapofbrittania.dds"		name="Map of Brittania" />
+
+		<!-- Tarot Card (General) Textures -->
+		<Texture id="30501"	typeid="2" file="misc/Tarot_Death.tga"										name="Death" />
+		<Texture id="30503"	typeid="2" file="misc/Tarot_Justice.tga"									name="Justice" />
+		<Texture id="30506"	typeid="2" file="misc/Tarot_Priestess.tga"								name="The High Priestess" />
+		<Texture id="30504"	typeid="2" file="misc/Tarot_TheFool.tga"									name="The Fool" />
+		<Texture id="30505"	typeid="2" file="misc/Tarot_TheHangedMan.tga"							name="The Hanged Man" />
+		<Texture id="30507"	typeid="2" file="misc/Tarot_TheMage.tga"									name="The Magus" />
+		<Texture id="30508"	typeid="2" file="misc/Tarot_TheStar.tga"									name="The Star" />
+		<Texture id="30509"	typeid="2" file="misc/Tarot_TheTower.tga"									name="The Tower" />
+		<Texture id="30510"	typeid="2" file="misc/Tarot_TheWorld.tga"									name="The World" />
+		<Texture id="30502"	typeid="2" file="misc/Tarot_WheelOfFortune.tga"						name="The Wheel Of Fortune" />
+
+		<!-- Inverted Tarot Cards -->
+		<Texture id="30511"	typeid="2" file="misc/Tarot_Death_inverted.tga"						name="Death Inverted" />
+		<Texture id="30513"	typeid="2" file="misc/Tarot_Justice_inverted.tga"					name="Inverted Justice" />
+		<Texture id="30516"	typeid="2" file="misc/Tarot_Priestess_inverted.tga"				name="The Inverted High Priestess" />
+		<Texture id="30514"	typeid="2" file="misc/Tarot_TheFool_inverted.tga"					name="The Inverted Fool" />
+		<Texture id="30515"	typeid="2" file="misc/Tarot_TheHangedMan_inverted.tga"		name="The Inverted Hanged Man" />
+		<Texture id="30517"	typeid="2" file="misc/Tarot_TheMage_inverted.tga"					name="The Inverted Magus" />
+		<Texture id="30518"	typeid="2" file="misc/Tarot_TheStar_inverted.tga"					name="The Inverted Star" />
+		<Texture id="30519"	typeid="2" file="misc/Tarot_TheTower_inverted.tga"				name="The Inverted Tower" />
+		<Texture id="30520"	typeid="2" file="misc/Tarot_TheWorld_inverted.tga"				name="The Inverted World" />
+		<Texture id="30512"	typeid="2" file="misc/Tarot_WheelOfFortune_inverted.tga"	name="The Inverted Wheel" />
+
+		<!-- Container Medallions -->
+		<Texture id="100001" typeid="2" file="Hud01_medallion.dds" name="Medallions 1" />
+		<Texture id="100002" typeid="2" file="Hud02_medallion.dds" name="Medallions 2" />
+		<Texture id="100003" typeid="2" file="Hud03_medallion.dds" name="Medallions 3" />
+
+	</Textures>
+</ManagedTextures>
+

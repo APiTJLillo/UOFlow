@@ -1,0 +1,118 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+    <Scripts>
+        <Script file="Source/ChatFiltersWindow.lua" />
+    </Scripts>
+    <Windows>
+
+        <!--*******************************************************************-->
+        <!--                              Templates                            -->
+        <!--*******************************************************************-->
+        <!-- Row Label Template -->
+        <Label name="ChatFiltersChannelLabelTemplate" maxchars="64" wordwrap="false" font="UO_DefaultText" textalign="leftcenter">
+        </Label>
+
+        <Button name="ChatFiltersRowTemplate" drawchildrenfirst="true">
+            <Size>
+                <AbsPoint x="200" y="28" />
+            </Size>
+            <TextColors>
+                <Normal r="255" g="255" b="255" a="255" />
+                <NormalHighlit r="250" g="213" b="63" a="255" />
+                <Pressed r="250" g="213" b="63" a="255" />
+                <PressedHighlit r="250" g="213" b="63" a="255" />
+                <Disabled r="92" g="92" b="92" a="255" />
+            </TextColors>
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="ChatFiltersWindow.OnToggleChannel"/>
+            </EventHandlers>
+            <Windows>
+                <Label name="$parentChannelName" inherits="ChatFiltersChannelLabelTemplate" handleinput="false">
+                    <Size>
+                        <AbsPoint x="180" y="24" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="right" relativePoint="left" relativeTo="$parentCheckBox">
+                            <AbsPoint x="10" y="0" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+                <Button name="$parentCheckBox" inherits="UO_Default_Check_Button" handleinput="false">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="4" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+            </Windows>
+        </Button>
+
+        <!--*******************************************************************-->
+        <!--                      Whole Window Definition                      -->
+        <!--*******************************************************************-->
+        <Window name="ChatFiltersWindow" movable="true" layer="secondary">
+            <Size>
+                <AbsPoint x="280" y="440" />
+            </Size>
+            <Anchors>
+                <Anchor point="topleft" relativePoint="topleft" relativeTo="">
+                    <AbsPoint x="30" y="100" />
+                </Anchor>
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnInitialize" function="ChatFiltersWindow.Initialize"/>
+                <EventHandler event="OnShutdown" function="ChatFiltersWindow.Shutdown"/>
+                <EventHandler event="OnShown" function="ChatFiltersWindow.OnShown" />
+                <EventHandler event="OnHidden" function="ChatFiltersWindow.OnHidden" />
+            </EventHandlers>
+            <Windows>
+
+                <!-- Default chrome. Alter this at your own peril. -->
+                <Window name="$parentChrome" inherits="UO_DefaultWindow">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft"/>
+                        <Anchor point="bottomright" relativePoint="bottomright"/>
+                    </Anchors>
+                </Window>
+                <!-- End of default chrome boilerplate code -->
+
+                <Button name="$parentAcceptButton" inherits="UO_Default_Medium_Select_Button" textalign="center">
+                    <Anchors>
+                        <Anchor point="bottom" relativePoint="bottom" relativeTo="">
+                            <AbsPoint x="0" y="-25" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="ChatFiltersWindow.SetAllFiltersChanges"/>
+                    </EventHandlers>
+                </Button>
+                <!--<Window name="$parentDescriptionSeperator" inherits="EA_Window_DefaultSeparator" handleinput="false" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentTitleBar" >
+                            <AbsPoint x="0" y="48" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parentTitleBar" >
+                            <AbsPoint x="0" y="48" />
+                        </Anchor>
+                    </Anchors>
+                </Window>-->
+                <!-- List Box -->
+                <ListBox name="$parentList" rowdef="ChatFiltersRowTemplate" visiblerows="11" rowcount="20" rowspacing="0">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="">
+                            <AbsPoint x="20" y="60"/>
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright" relativeTo="">
+                            <AbsPoint x="-10" y="-50"/>
+                        </Anchor>
+                    </Anchors>
+                    <ListData table="ChatFiltersWindow.channelListData" populationfunction="ChatFiltersWindow.UpdateChatOptionRow">
+                        <ListColumns>
+                            <ListColumn windowname="ChannelName" variable="channelName" format="wstring" />
+                        </ListColumns>
+                    </ListData>
+                </ListBox>
+            </Windows>
+        </Window>
+
+    </Windows>
+</Interface>

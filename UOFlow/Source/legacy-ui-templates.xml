@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Windows>
+
+<!-- "Diamonds" for the runebook -->
+    <Button name="LegacyDefaultDiamond" texture="Legacy_Buttons">
+      <Size>
+        <AbsPoint x="17" y="17" />
+      </Size>
+      <TexCoords>
+        <Normal texture="Legacy_Buttons" x="426" y="113" />
+        <NormalHighlit texture="Legacy_Buttons" x="455" y="113" />
+        <Pressed texture="Legacy_Buttons" x="455" y="113" />
+        <Disabled texture="Legacy_Buttons" x="486" y="113" />
+      </TexCoords>
+    </Button>
+    <Button name="LegacyPurpleDiamond" texture="Legacy_Buttons">
+      <Size>
+        <AbsPoint x="17" y="17" />
+      </Size>
+      <TexCoords>
+        <Normal texture="Legacy_Buttons" x="426" y="141" />
+        <NormalHighlit texture="Legacy_Buttons" x="455" y="141" />
+        <Pressed texture="Legacy_Buttons" x="455" y="141" />
+        <Disabled texture="Legacy_Buttons" x="486" y="141" />
+      </TexCoords>
+    </Button>
+    <Button name="LegacyYellowDiamond" texture="Legacy_Buttons">
+      <Size>
+        <AbsPoint x="17" y="17" />
+      </Size>
+      <TexCoords>
+        <Normal texture="Legacy_Buttons" x="426" y="169" />
+        <NormalHighlit texture="Legacy_Buttons" x="455" y="169" />
+        <Pressed texture="Legacy_Buttons" x="455" y="169" />
+        <Disabled texture="Legacy_Buttons" x="486" y="169" />
+      </TexCoords>
+    </Button>
+    <Button name="LegacyTorquoiseDiamond" texture="Legacy_Buttons">
+      <Size>
+        <AbsPoint x="17" y="17" />
+      </Size>
+      <TexCoords>
+        <Normal texture="Legacy_Buttons" x="426" y="199" />
+        <NormalHighlit texture="Legacy_Buttons" x="455" y="199" />        
+        <Pressed texture="Legacy_Buttons" x="455" y="199" />
+        <Disabled texture="Legacy_Buttons" x="486" y="199" />
+      </TexCoords>
+    </Button>
+    <Button name="LegacyGrayDiamond" texture="Legacy_Buttons">
+      <Size>
+        <AbsPoint x="17" y="17" />
+      </Size>
+      <TexCoords>
+        <Normal texture="Legacy_Buttons" x="426" y="227" />
+        <NormalHighlit texture="Legacy_Buttons" x="455" y="227" />
+        <Pressed texture="Legacy_Buttons" x="455" y="227" />
+        <Disabled texture="Legacy_Buttons" x="486" y="227" />
+      </TexCoords>
+    </Button>
+    <Button name="LegacyGreenDiamond" texture="Legacy_Buttons">
+      <Size>
+        <AbsPoint x="17" y="17" />
+      </Size>
+      <TexCoords>
+        <Normal texture="Legacy_Buttons" x="426" y="256" />
+        <NormalHighlit texture="Legacy_Buttons" x="455" y="256" />
+        <Pressed texture="Legacy_Buttons" x="455" y="256" />
+        <Disabled texture="Legacy_Buttons" x="486" y="256" />
+      </TexCoords>
+    </Button>
+    <Button name="LegacyBrownDiamond" texture="Legacy_Buttons">
+      <Size>
+        <AbsPoint x="17" y="17" />
+      </Size>
+      <TexCoords>
+        <Normal texture="Legacy_Buttons" x="426" y="285" />
+        <NormalHighlit texture="Legacy_Buttons" x="455" y="285" />
+        <Pressed texture="Legacy_Buttons" x="455" y="285" />
+        <Disabled texture="Legacy_Buttons" x="486" y="285" /> 
+      </TexCoords>
+    </Button>
+  </Windows>
+</Interface>

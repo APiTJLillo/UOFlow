@@ -1,0 +1,578 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+		<Window name="TradeItemTemplate" draganddrop="true">
+			<Size>
+				<AbsPoint x="315" y="68" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnLButtonUp" function="TradeWindow.OnItemRelease" />
+				<EventHandler event="OnLButtonDblClk" function="TradeWindow.OnItemDblClicked" />
+				<EventHandler event="OnMouseOver" function="TradeWindow.ItemMouseOver"/>
+				<EventHandler event="OnMouseOverEnd" function="ItemProperties.ClearMouseOverItem"/>
+			</EventHandlers>
+			<Windows>
+				<!--
+				<FullResizeImage name="$parentSlotNormal" inherits="UO_Default_Slot_Normal" handleinput="false">
+					<Size>
+						<AbsPoint x="315" y="68"/>
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+-->
+				<DynamicImage name="$parentIcon" texture=""  handleinput="false">
+					<Size>
+						<AbsPoint x="45" y="45" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="15" y="0" />
+						</Anchor>
+					</Anchors>
+				</DynamicImage>
+				<Label name="$parentName" font="UO_DefaultText" maxchars="64" linespacing="20" textalign="left"  handleinput="false" wordwrap="true">
+					<Size>
+						<AbsPoint x="240" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentIcon">
+							<AbsPoint x="15" y="0" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+			</Windows>
+		</Window>
+		<Window name="MyTradeTotalGoldTemplate"  handleinput="true">
+			<Size>
+				<AbsPoint x="325" y="40" />
+			</Size>
+			<Windows>
+				<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+				<DynamicImage name="$parentImageGold">
+					<Size>
+						<AbsPoint x="56" y="56" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"  relativeTo="$parentFrame">
+							<AbsPoint x="1" y="4" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="TradeWindow.MyTradeTotalGoldMouseOver"/>
+					</EventHandlers>
+				</DynamicImage>							
+				<EditBox name="$parentAmountGold" font="UO_DefaultText" maxchars="9" textalign="left" scrolling="horz" layer="overlay" input="numbers" >
+					<Size>
+						<AbsPoint x="100" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topight" relativePoint="topleft" relativeTo="$parentImageGold">
+							<AbsPoint x="55" y="5" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnKeyDown" function="TradeWindow.OnKeyDown" />							
+						<EventHandler event="OnKeyEnter" function="TradeWindow.OnKeyEnter" />
+						<EventHandler event="OnKeyTab" function="TradeWindow.OnKeyTab" />
+						<EventHandler event="OnTextChanged" function="TradeWindow.OnTextChanged" />
+					</EventHandlers>
+					<Color r="255" g="255" b="255" a="255" />
+				</EditBox>
+				<Label name="$parentAmountGoldWtihCommas" font="UO_DefaultText" maxchars="11" linespacing="20" textalign="left" wordwrap="false" autoresize="false">
+				  <Size>
+					<AbsPoint x="100" y="20" />
+				  </Size>
+				  <Anchors>
+					<Anchor point="topight" relativePoint="topleft" relativeTo="$parentImageGold">
+					  <AbsPoint x="55" y="5" />
+					</Anchor>
+				  </Anchors>
+				  <EventHandlers>
+					<EventHandler event="OnLButtonDown" function="TradeWindow.OnLButtonDown" />
+				  </EventHandlers>
+				  <Color r="255" g="255" b="255" a="255" />
+				</Label>
+				
+				<DynamicImage name="$parentImagePlat">
+					<Size>
+						<AbsPoint x="56" y="56" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft"  relativeTo="$parentAmountGold">
+							<AbsPoint x="0" y="-5" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="TradeWindow.MyTradeTotalPlatMouseOver"/>
+					</EventHandlers>
+				</DynamicImage>							
+				<EditBox name="$parentAmountPlat" font="UO_DefaultText" maxchars="9" textalign="left" scrolling="horz" layer="overlay" input="numbers" >
+					<Size>
+						<AbsPoint x="100" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topight" relativePoint="topleft" relativeTo="$parentImagePlat">
+							<AbsPoint x="55" y="5" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnKeyDown" function="TradeWindow.OnKeyDown" />						
+						<EventHandler event="OnKeyEnter" function="TradeWindow.OnKeyEnter" />
+						<EventHandler event="OnKeyTab" function="TradeWindow.OnKeyTab" />
+						<EventHandler event="OnTextChanged" function="TradeWindow.OnTextChanged" />
+					</EventHandlers>
+					<Color r="255" g="255" b="255" a="255" />
+				</EditBox>
+				<Label name="$parentAmountPlatWtihCommas" font="UO_DefaultText" maxchars="11" linespacing="20" textalign="left" wordwrap="false" autoresize="false">
+				  <Size>
+					<AbsPoint x="100" y="20" />
+				  </Size>
+				  <Anchors>
+					<Anchor point="topight" relativePoint="topleft" relativeTo="$parentImagePlat">
+					  <AbsPoint x="55" y="5" />
+					</Anchor>
+				  </Anchors>
+				  <EventHandlers>
+					<EventHandler event="OnLButtonDown" function="TradeWindow.OnLButtonDown" />
+				  </EventHandlers>
+				  <Color r="255" g="255" b="255" a="255" />
+				</Label>			
+			</Windows>
+		</Window>
+		<Window name="TheirTradeTotalGoldTemplate"  handleinput="true">
+			<Size>
+				<AbsPoint x="325" y="40" />
+			</Size>
+			<Windows>
+				<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+				<DynamicImage name="$parentImageGold">
+					<Size>
+						<AbsPoint x="56" y="56" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"  relativeTo="$parentFrame">
+							<AbsPoint x="1" y="4" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="TradeWindow.TheirTradeTotalGoldMouseOver"/>
+					</EventHandlers>
+				</DynamicImage>	
+				<Label name="$parentAmountGold" font="UO_DefaultText" maxchars="11" textalign="left" >
+					<Size>
+						<AbsPoint x="100" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topight" relativePoint="topleft" relativeTo="$parentImageGold">
+							<AbsPoint x="55" y="5" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<DynamicImage name="$parentImagePlat">
+					<Size>
+						<AbsPoint x="56" y="56" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft"  relativeTo="$parentAmountGold">
+							<AbsPoint x="0" y="-5" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="TradeWindow.TheirTradeTotalPlatMouseOver"/>
+					</EventHandlers>
+				</DynamicImage>
+				<Label name="$parentAmountPlat" font="UO_DefaultText" maxchars="11" textalign="left" >
+					<Size>
+						<AbsPoint x="100" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="topight" relativePoint="topleft" relativeTo="$parentImagePlat">
+							<AbsPoint x="55" y="5" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>																		
+			</Windows>
+		</Window>				
+		<Window name="TradeAcceptTemplate" >
+			<Size>
+				<AbsPoint x="325" y="40" />
+			</Size>
+			<Windows>
+				<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+
+				<Button name="$parentCheck" inherits="UO_Default_Check_Button">
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parentFrame">
+							<AbsPoint x="-10" y="-12" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="TradeWindow.OnAccept" />
+					</EventHandlers>
+				</Button>
+				<DynamicImage name="$parentIcon" texture="Danger" >
+					<Size>
+						<AbsPoint x="32" y="32" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topright" relativeTo="$parentButton">
+							<AbsPoint x="-10" y="2" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnMouseOver" function="TradeWindow.DangerMouseOver"/>
+					</EventHandlers>
+				</DynamicImage>
+				<Button name="$parentButton" inherits="UO_Default_GumpButton" >
+					<Anchors>
+						<Anchor point="left" relativePoint="right" relativeTo="$parentCheck">
+							<AbsPoint x="-10" y="-1" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonDown" function="TradeWindow.OnAccept" />
+					</EventHandlers>
+				</Button>
+
+				<Label name="$parentName" font="UO_DefaultText" maxchars="64" textalign="left" >
+					<Size>
+						<AbsPoint x="150" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentFrame">
+							<AbsPoint x="15" y="13" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+			</Windows>
+		</Window>
+
+		<Window name="TradeWaitTemplate" >
+			<Size>
+				<AbsPoint x="325" y="40" />
+			</Size>
+			<Windows>
+				<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+
+				<Button name="$parentCheck" inherits="UO_Default_Check_Button" handleinput="false">
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parentFrame">
+							<AbsPoint x="-10" y="-12" />
+						</Anchor>
+					</Anchors>
+				</Button>
+
+				<Label name="$parentLabel" font="UO_DefaultText" maxchars="64" textalign="center" >
+					<Size>
+						<AbsPoint x="100" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="bottomright" relativeTo="$parentCheck">
+							<AbsPoint x="-10" y="0" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<Label name="$parentName" font="UO_DefaultText" maxchars="64" textalign="left" >
+					<Size>
+						<AbsPoint x="120" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentFrame">
+							<AbsPoint x="15" y="13" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+			</Windows>
+		</Window>
+
+
+		<!--Start of our Trade Window -->
+		<Window name="TradeItemList" draganddrop="true">
+			<Size>
+				<AbsPoint x="335" y="375" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnLButtonUp" function="TradeWindow.OnContainerRelease" />
+			</EventHandlers>
+			<Windows>
+				<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+
+				<ScrollWindow name="$parentScrollWindow" childscrollwindow="$parentScrollChild" scrollbar="$parentScrollbar" lineheight="60" autoHideScrollBar="true">
+					<Size>
+						<AbsPoint x="315" y="365" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" >
+							<AbsPoint x="5" y="5" />
+						</Anchor>
+					</Anchors>
+
+					<Windows>
+						<Window name ="$parentScrollChild" >
+							<Size>
+								<AbsPoint x="305" y="365"/>
+							</Size>
+						</Window>
+
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" />
+					</Windows>
+				</ScrollWindow>
+
+			</Windows>
+		</Window>
+
+		<!-- Main container window -->
+		<Window name="TradeWindow" movable="true"  >
+			<Size>
+				<AbsPoint x="700" y="600" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center" >
+					<AbsPoint x="0" y="0"/>
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="TradeWindow.Initialize" />
+				<EventHandler event="OnShutdown" function="TradeWindow.Shutdown" />
+				<EventHandler event="OnUpdate" function="TradeWindow.OnUpdate" />
+			</EventHandlers>
+
+			<Windows>
+				<!-- Default chrome. Alter this at your own peril. -->
+				<Window name="$parentChrome" inherits="UO_DefaultWindow">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"/>
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>
+				<!-- End of default chrome boilerplate code -->
+
+
+				<!--Balance display window -->
+				<Window name="$parentBalanceDesc" >
+					<Size>
+						<AbsPoint x="650" y="40" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="25" y="50" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+						
+						<DynamicImage name="$parentImageGold">
+							<Size>
+								<AbsPoint x="56" y="56" />
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft"  relativeTo="$parentFrame">
+									<AbsPoint x="202" y="4" />
+								</Anchor>
+							</Anchors>
+							<EventHandlers>
+								<EventHandler event="OnMouseOver" function="TradeWindow.BalanceGoldMouseOver"/>
+							</EventHandlers>
+						</DynamicImage>	
+						<Label name="$parentBalanceGold" font="UO_DefaultText" maxchars="11" textalign="left" >
+							<Size>
+								<AbsPoint x="100" y="20" />
+							</Size>
+							<Anchors>
+								<Anchor point="topight" relativePoint="topleft" relativeTo="$parentImageGold">
+									<AbsPoint x="55" y="5" />
+								</Anchor>
+							</Anchors>
+							<Color r="255" g="255" b="255" a="255" />
+						</Label>
+						<DynamicImage name="$parentImagePlat">
+							<Size>
+								<AbsPoint x="56" y="56" />
+							</Size>
+							<Anchors>
+								<Anchor point="topright" relativePoint="topleft" relativeTo="$parentBalanceGold">
+									<AbsPoint x="0" y="-5" />
+								</Anchor>
+							</Anchors>
+							<EventHandlers>
+								<EventHandler event="OnMouseOver" function="TradeWindow.BalancePlatMouseOver"/>
+							</EventHandlers>
+						</DynamicImage>
+						<Label name="$parentBalancePlat" font="UO_DefaultText" maxchars="11" textalign="left" >
+							<Size>
+								<AbsPoint x="100" y="20" />
+							</Size>
+							<Anchors>
+								<Anchor point="topight" relativePoint="topleft" relativeTo="$parentImagePlat">
+									<AbsPoint x="55" y="5" />
+								</Anchor>
+							</Anchors>
+							<Color r="255" g="255" b="255" a="255" />
+						</Label>
+					</Windows>
+				</Window>
+
+				<!--Header display window -->
+				<Window name="$parentItemDesc" >
+					<Size>
+						<AbsPoint x="650" y="26" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentBalanceDesc">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>
+						</FullResizeImage>
+
+						<Label name="$parentMyOffer" font="UO_GoldButtonText" maxchars="64" textalign="center" >
+							<Size>
+								<AbsPoint x="324" y="24" />
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentFrame">
+									<AbsPoint x="0" y="-3" />
+								</Anchor>
+							</Anchors>
+							<Color r="255" g="255" b="255" a="255" />
+						</Label>
+
+						<Label name="$parentTradeOffer" font="UO_GoldButtonText" maxchars="64" textalign="center" >
+							<Size>
+								<AbsPoint x="324" y="24" />
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" relativeTo="$parentFrame">
+									<AbsPoint x="340" y="-3" />
+								</Anchor>
+							</Anchors>
+							<Color r="255" g="255" b="255" a="255" />
+						</Label>
+
+					</Windows>
+				</Window>
+				<!--End of Header display window -->
+
+				<!--Shows the players trading item list -->
+				<Window name = "$parentPlayerList" inherits="TradeItemList">
+					<Size>
+						<AbsPoint x="325" y="375" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentItemDesc">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<!--Shows the players trading with you item list -->
+				<Window name = "$parentTraderList" inherits="TradeItemList">
+					<Size>
+						<AbsPoint x="325" y="375" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="$parentPlayerList">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<!--Shows the players total gold offered window -->
+				<Window name = "$parentPlayerAcceptGold" inherits="MyTradeTotalGoldTemplate">
+					<Size>
+						<AbsPoint x="325" y="40" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentPlayerList">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				
+				<!--Shows the players accept window -->
+				<Window name = "$parentPlayerAccept" inherits="TradeAcceptTemplate">
+					<Size>
+						<AbsPoint x="325" y="40" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentPlayerAcceptGold">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<!--Shows the players total gold waiting window -->
+				<Window name = "$parentPlayerWaitingGold" inherits="TheirTradeTotalGoldTemplate">
+					<Size>
+						<AbsPoint x="325" y="40" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentTraderList">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>				
+				<!--Shows the trader accept window -->
+				<Window name = "$parentTradeAccept" inherits="TradeWaitTemplate">
+					<Size>
+						<AbsPoint x="325" y="40" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentPlayerWaitingGold">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+			</Windows>
+		</Window>
+		<!--End of Trade Window -->
+	</Windows>
+
+</Interface>

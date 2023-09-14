@@ -1,0 +1,80 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Windows>
+
+    <Label name="LabelTitle"  font="UO_GoldButtonText" maxchars="64" textalign="left" autoresize="true" handleinput="false" wordwrap="true">
+      <Size>
+        <AbsPoint x="330" y="0" />
+      </Size>
+      <Color r="255" g="255" b="255" a="255" />
+    </Label>
+    <Label name="LabelDescription" font="UO_DefaultText" maxchars="10000" textalign="left" autoresize="true" handleinput="false" wordwrap="true">
+      <Size>
+        <AbsPoint x="330" y="0" />
+      </Size>
+      <Color r="255" g="255" b="255" a="255" />
+    </Label>
+
+
+    <Window name="SkillsInfo" movable="true" >
+      <Size>
+        <AbsPoint x="380" y="400" />
+      </Size>
+      <Anchors>
+        <Anchor point="topright" relativePoint="topright" >
+          <AbsPoint x="-50" y="50" />
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="SkillsInfo.Initialize" />
+        <EventHandler event="OnShutdown" function="SkillsInfo.Shutdown" />
+      </EventHandlers>
+      <Windows>
+        <!-- Default chrome. Alter this at your own peril. -->
+        <Window name="$parentChrome" inherits="UO_DefaultWindow">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+        </Window>
+        <!-- End of default chrome boilerplate code -->
+        <ScrollWindow name="SkillInfoTextWindow" childscrollwindow="SkillInfoTextWindowScrollChild" scrollbar="SkillInfoTextWindowScrollbar" lineheight="18" autoHideScrollBar="true" >
+          <Size>
+            <AbsPoint x="360" y="360" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" >
+              <AbsPoint x="20" y="40" />
+            </Anchor>
+            <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+              <AbsPoint x="0" y="-20" />
+            </Anchor>
+          </Anchors>
+          <Windows>
+            <VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="secondary"/>
+
+            <Window name="$parentScrollChild" popable="false">
+              <Size>
+                <AbsPoint x="350" y="260"/>
+              </Size>
+              <Anchors>
+                <Anchor point="topleft" relativePoint="topleft"/>
+              </Anchors>
+              <Windows>
+
+                <Window name="$parentText" >
+                  <Size>
+                    <AbsPoint x="330" y="0" />
+                  </Size>
+                  <Windows>
+
+
+                  </Windows>
+                </Window>
+              </Windows>
+            </Window>
+          </Windows>
+        </ScrollWindow>
+      </Windows>
+    </Window>
+  </Windows>
+</Interface>

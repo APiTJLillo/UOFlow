@@ -1,0 +1,421 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+   <Scripts>
+		<Script file="Source/HuePickerWindow.lua" />
+   </Scripts>
+  <Windows>
+    <Window name="HuePickerWindow" movable="true" >
+      <Size>
+        <AbsPoint x="350" y="720"/>
+      </Size>
+      <Anchors>
+        <Anchor point="center" relativePoint="center" />
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="HuePickerWindow.Initialize"/>
+        <EventHandler event="OnShutdown" function="HuePickerWindow.Shutdown"/>
+      </EventHandlers>
+      <Windows>
+        <Window name="$parentChrome" inherits="UO_DefaultWindow">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+        </Window>
+        <Window name="$parentPicker" inherits="ColorPickerWindowTemplate" movable="false">
+          <Anchors>
+            <Anchor point="top" relativePoint="top" relativeTo="$parent">
+              <AbsPoint x="0" y="40" />
+            </Anchor>
+          </Anchors>
+        </Window>
+        <Label name="$parentName" font="UO_DefaultText" maxchars="64" textalign="center" >
+          <Size>
+            <AbsPoint x="167" y="23" />
+          </Size>
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentPicker">
+              <AbsPoint x="0" y="5" />
+            </Anchor>
+          </Anchors>
+        </Label>
+        <SliderBar name="$parentSliderBar" inherits="UO_Default_Horizontal_SliderBar_With_Ticks" numticks="5" locktoticks="true">
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentName">
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnSlide" function="HuePickerWindow.OnSlide" />
+          </EventHandlers>
+        </SliderBar>
+        <Button name="PickColorTarget" inherits="UO_Default_GumpButton" >
+          <Anchors>
+            <Anchor point="bottom" relativePoint="bottom" relativeTo="">
+              <AbsPoint x="0" y="-20" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.PickColorTarget" />
+          </EventHandlers>
+        </Button>
+
+
+
+        <Button name="Color2" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="left" relativePoint="top" relativeTo="$parentName">
+              <AbsPoint x="-50" y="60" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color2Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color2Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color2">
+              <AbsPoint x="96" y="9" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color3" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color2">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color3Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color3Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color2">
+              <AbsPoint x="100" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color4" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color3">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color4Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color4Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color3">
+              <AbsPoint x="100" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color5" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color4">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color5Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color5Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color4">
+              <AbsPoint x="72" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color6" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color5">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color6Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color6Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color5">
+              <AbsPoint x="83" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color7" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color6">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color7Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color7Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color6">
+              <AbsPoint x="87" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color8" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color7">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color8Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color8Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color7">
+              <AbsPoint x="105" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color10" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color8">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color10Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color10Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color8">
+              <AbsPoint x="108" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color11" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color10">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color11Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color11Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color10">
+              <AbsPoint x="98" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+
+        <Button name="Color12" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color11">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color12Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color12Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color11">
+              <AbsPoint x="108" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color13" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color12">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color13Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color13Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color12">
+              <AbsPoint x="110" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color14" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color13">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color14Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color14Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color13">
+              <AbsPoint x="106" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color15" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color14">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color15Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color15Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="200" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color14">
+              <AbsPoint x="115" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color16" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color15">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color16Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color16Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="250" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color15">
+              <AbsPoint x="100" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color17" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color16">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color17Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color17Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="250" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color16">
+              <AbsPoint x="143" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <Button name="Color18" inherits="UO_Default_Check_Button">
+          <Anchors>
+            <Anchor point="right" relativePoint="bottom" relativeTo="Color17">
+              <AbsPoint x="-8" y="30" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="HuePickerWindow.Color18Up" />
+          </EventHandlers>
+        </Button>
+        <Label name="Color18Label" inherits="ItemTitle" autoresizewidth="true" handleinput="false">
+          <Size>
+            <AbsPoint x="250" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="bottom" relativeTo="Color17">
+              <AbsPoint x="105" y="30" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+      </Windows>
+    </Window>
+
+  </Windows>
+</Interface>

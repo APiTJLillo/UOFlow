@@ -1,0 +1,192 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Scripts>
+        <Script file="Source/GChatRoster.lua" />
+    </Scripts>
+	<Windows>
+		<Label name="GChatRoster_ElementTitle" font="UO_DefaultText" linespacing="20" autoresize="true" wordwrap="true" maxchars="64" textalign="left">
+			<Color r="255" g="255" b="255" a="255" />			
+		</Label>
+		<Window name="GChatRosterListItemTemplate" movable="false">
+			<Size>
+				<AbsPoint x="245" y="30" />
+			</Size>			
+			<Windows>
+				<Button name="$parentPresenceOnline" layer="default" backgroundtexture="UO_Core" highlighttexture="UO_Core" texturescale="1">
+					<Size>
+						<AbsPoint x="16" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="5" y="5" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal x="284" y="430"/>
+						<NormalHighlit x="284" y="430"/>
+						<Pressed x="284" y="430"/>
+						<PressedHighlit x="284" y="430"/>
+					</TexCoords>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="GChatRoster.SelectActiveFriend" />
+						<EventHandler event="OnMouseOver" function="GChatRoster.OnlineTooltip" />
+					</EventHandlers>
+				</Button>
+				<Button name="$parentPresenceOffline" layer="default" backgroundtexture="UO_Core" highlighttexture="UO_Core" texturescale="1">
+					<Size>
+						<AbsPoint x="16" y="16" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="5" y="5" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal x="284" y="398"/>
+						<NormalHighlit x="284" y="398"/>
+						<Pressed x="284" y="398"/>
+						<PressedHighlit x="284" y="398"/>
+					</TexCoords>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="GChatRoster.SelectActiveFriend" />
+						<EventHandler event="OnMouseOver" function="GChatRoster.OfflineTooltip" />
+					</EventHandlers>
+				</Button>
+				<Button name="$parentName" inherits="UO_Default_GenericTextButton" font="UO_DefaultText">
+					<Size>
+						<AbsPoint x="100" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="right" relativePoint="left" relativeTo="$parentPresenceOnline">
+							<AbsPoint x="14" y="0" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="GChatRoster.SelectActiveFriend" />
+					</EventHandlers>
+				</Button>		
+				<Button name="$parentRemove" layer="default" backgroundtexture="UO_Core" highlighttexture="UO_Core" texturescale="1.1">
+					<Size>
+						<AbsPoint x="22" y="22" />
+					</Size>
+					<Anchors>
+						<Anchor point="right" relativePoint="left" relativeTo="$parentName">
+							<AbsPoint x="90" y="0" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal x="184" y="0" />
+						<NormalHighlit x="226" y="0" />
+						<Pressed x="205" y="0"  />
+						<PressedHighlit x="205" y="0" />
+						<Disabled x="163" y="0" />
+					</TexCoords>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="GChatRoster.RemoveFriend" />
+						<EventHandler event="OnMouseOver" function="GChatRoster.RemoveTooltip" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="GChatRoster" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="365" y="400" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="GChatRoster.Initialize" />
+				<EventHandler event="OnShutdown" function="GChatRoster.Shutdown" />
+			</EventHandlers>
+			<Windows>
+				<Window name="$parentChrome" inherits="UO_DefaultWindow">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>
+
+				<ScrollWindow name="GChatRosterScrollWindow" childscrollwindow="GChatRosterContent" scrollbar="GChatRosterScrollbar" lineheight="60" autoHideScrollBar="true" layer="default">
+					<Size>
+						<AbsPoint x="315" y="250" />
+					</Size>
+					<Anchors>
+						<Anchor point="top" relativePoint="top">
+							<AbsPoint x="0" y="45" />
+						</Anchor>
+					</Anchors>
+					<Windows>
+						<FullResizeImage name="$parentBackground" inherits="UO_Simple_Black_Background">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft">
+									<AbsPoint x="-5" y="-5" />
+								</Anchor>
+								<Anchor point="bottomright" relativePoint="bottomright">
+									<AbsPoint x="5" y="5" />
+								</Anchor>
+							</Anchors>
+						</FullResizeImage>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft">
+									<AbsPoint x="-5" y="-5" />
+								</Anchor>
+								<Anchor point="bottomright" relativePoint="bottomright">
+									<AbsPoint x="5" y="5" />
+								</Anchor>
+							</Anchors>
+						</FullResizeImage>
+						<VerticalScrollbar name="GChatRosterScrollbar" inherits="StandardVertScroll" />
+
+						<!-- SCROLL CHILD -->
+						<Window name="GChatRosterContent">
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft">
+									<AbsPoint x="0" y="5" />
+								</Anchor>
+							</Anchors>
+							<Size>
+								<AbsPoint x="245" y="0" />
+							</Size>
+						</Window>						
+						<!-- SCROLL CHILD -->
+					</Windows>
+				</ScrollWindow>
+				<Label name="GChatRosterPresenceLabel" inherits="GChatRoster_ElementTitle" layer="popup">
+					<Size>
+						<AbsPoint x="100" y="20" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="GChatRosterScrollWindow">
+							<AbsPoint x="26" y="20" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				<ComboBox name="GChatRosterPresenceCombo" inherits="UO_Default_ComboBox" layer="popup">
+					<Anchors>
+						<Anchor point="topright" relativePoint="topleft" relativeTo="GChatRosterPresenceLabel">
+							<AbsPoint x="10" y="-5" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnSelChanged" function="GChatRoster.OnPresenceChange" />                 
+					</EventHandlers>
+				</ComboBox>
+				<Button name="GChatRosterAddFriendButton" inherits="UO_Default_Medium_Select_Button" layer="popup">
+					<Anchors>
+						<Anchor point="center" relativePoint="topleft" relativeTo="GChatRosterPresenceLabel">
+							<AbsPoint x="0" y="18" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="GChatRoster.OnAddFriend" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+	</Windows>
+</Interface>

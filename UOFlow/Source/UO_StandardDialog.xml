@@ -1,0 +1,81 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Scripts>
+		<Script file="Source/UO_StandardDialog.lua" />
+	</Scripts>
+	<Windows>
+        <Button name="DialogButtonTemplate" inherits="UO_Default_GumpButton" >
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="UO_StandardDialog.OnLButtonUp"/>
+            </EventHandlers>
+        </Button>           
+        
+        
+        <Window name="UO_StandardDialog" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="350" y="400"/>
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="UO_StandardDialog.Initialize" />
+                <EventHandler event="OnShutdown" function="UO_StandardDialog.Shutdown" />
+            </EventHandlers>			
+			<Windows>
+                <!-- Default chrome. Alter this at your own peril. -->
+                <Window name="$parentChrome" inherits="UO_DefaultWindow">
+                  <Anchors>
+                    <Anchor point="topleft" relativePoint="topleft" />
+                    <Anchor point="bottomright" relativePoint="bottomright"/>
+                  </Anchors>
+                </Window>
+                <!-- End of default chrome boilerplate code -->		
+				
+                <ScrollWindow name="$parentScrolled" childscrollwindow="$parentChild" scrollbar="$parentScrollbar" lineheight="60"  draganddrop="true" autoHideScrollBar="true">
+                    <Size>
+                        <AbsPoint x="315" y="350" />
+                    </Size>                        
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="20" y="55" />
+						</Anchor>
+					</Anchors>    
+					<Windows>
+						<VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" />
+
+						<Window name ="$parentChild" >
+							<Size>
+								<AbsPoint x="315" y="0"/>
+							</Size>
+                            <Windows>
+                                <Label name="$parentText" inherits="UO_Default_Label_With_Links" font="UO_DefaultText" textalign="left" autoresize="true" maxchars="1024" linespacing="20" wordwrap="true" >
+									<Size>
+										<AbsPoint x="315" y="0" />
+									</Size>
+									<Anchors>
+										<Anchor point="topleft" relativePoint="topleft">
+										</Anchor>
+									</Anchors>
+									<Color r="255" g="255" b="255" a="255" />
+								</Label>
+							</Windows>
+						</Window>
+					</Windows>
+				</ScrollWindow>
+				<Label name="$parentNormalText" inherits="UO_Default_Label_With_Links" font="UO_DefaultText" textalign="left" autoresize="true" maxchars="1024" linespacing="20" wordwrap="true">
+                    <Size>
+                        <AbsPoint x="315" y="0" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="20" y="55" />
+                        </Anchor>
+                    </Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+                </Label>
+            </Windows>			
+        </Window>
+	</Windows>
+</Interface>

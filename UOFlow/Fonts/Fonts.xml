@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Assets>
+		<!--  *************** Examples ***************  -->
+		<!-- <Font name="font_arialblack12" face="Arial Black" file="fonts/ariblk.ttf" height="12" texsize="256" antialias="true" hinting="false" autohinting="true" outline="false" shadow="false"/> -->
+		<!-- <Font name="font_arialblack16" face="Arial Black" file="fonts/ariblk.ttf" height="16" texsize="512" antialias="true" hinting="true" autohinting="true" outline="false" shadow="true" shadowsize="1" /> -->
+		<!--  ****************************************  -->
+	</Assets>
+</Interface>

@@ -1,0 +1,147 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Windows>
+    <HorizontalResizeImage name="CharacterSheetHRDef" inherits="UO_Default_Horizontal_Rule">
+      <Size>
+        <AbsPoint x="340" y="2"/>
+      </Size>
+    </HorizontalResizeImage>
+
+    <Window name="AttributeTemplate" >
+      <Size>
+        <AbsPoint x="360" y="24"/>
+      </Size>
+      <Windows>
+        <DynamicImage name="$parentSquareIcon" texturescale="0.78" handleinput="true">
+          <Size>
+            <AbsPoint x="27" y="27" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="left">
+              <AbsPoint x="6" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonDown" function="CharacterSheet.StatLButtonDown" />
+            <EventHandler event="OnMouseOver" function="CharacterSheet.StatMouseOver" />
+			<EventHandler event="OnMouseOverEnd" function="ItemProperties.ClearMouseOverItem" />
+          </EventHandlers>
+        </DynamicImage>
+        <Label name="$parentAttributeName" inherits="UO_Default_Label_Color" font="UO_DefaultText" maxchars="128" textalign="left" autoresize="true" handleinput="false" >
+          <Size>
+            <AbsPoint x="270" y="20"/>
+          </Size>
+          <Anchors>
+            <Anchor point="right" relativePoint="left"  relativeTo="$parentSquareIcon">
+              <AbsPoint x="10" y="0"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Label name="$parentAttributeValue" font="UO_DefaultText" maxchars="64" textalign="left" autoresize="true" handleinput="false" >
+          <Size>
+            <AbsPoint x="80" y="20"/>
+          </Size>
+          <Anchors>
+            <Anchor point="right" relativePoint="right" relativeTo="$parent">
+              <AbsPoint x="0" y="0"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+        <Button name="$parentLockButton" >
+          <!--inherits="UpArrow"-->
+          <Size>
+            <AbsPoint x="17" y="15" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="right" relativeTo="$parentAttributeValue">
+              <AbsPoint x="-5" y="0"/>
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonDown" function="CharacterSheet.ClickStatLock"/>
+            <EventHandler event="OnMouseOver" function="CharacterSheet.LockMouseOver" />
+          </EventHandlers>
+        </Button>
+        <Label name="$parentExtra" font="UO_DefaultText" maxchars="32" textalign="left" autoresize="true" handleinput="false" >
+          <Size>
+            <AbsPoint x="110" y="20"/>
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="right" relativeTo="$parentAttributeValue">
+              <AbsPoint x="-5" y="0"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+      </Windows>
+    </Window>
+
+    <Window name="CharacterSheet" movable="true" >
+      <Size>
+        <AbsPoint x="366" y="630" />
+      </Size>
+      <Anchors>
+        <Anchor point="topleft" relativePoint="topleft" >
+          <AbsPoint x="620" y="0" />
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="CharacterSheet.Initialize" />
+        <EventHandler event="OnShutdown" function="CharacterSheet.Shutdown" />
+        <EventHandler event="OnShown" function="CharacterSheet.OnShown" />
+        <EventHandler event="OnHidden" function="CharacterSheet.OnHidden" />
+      </EventHandlers>
+      <Windows>
+        <!-- Default chrome. Alter this at your own peril. -->
+        <Window name="$parentChrome" inherits="UO_DefaultWindow">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+        </Window>
+        <!-- End of default chrome boilerplate code -->
+
+        <Window name="$parentTopArrows">
+          <Size>
+            <AbsPoint x="350" y="30"/>
+          </Size>
+          <Windows>
+            <Button name="$parentPrevButton" inherits="UO_Default_SmallPreviousButton">
+              <Size>
+                <AbsPoint x="30" y="23" />
+              </Size>
+              <Anchors>
+                <Anchor point="left" relativePoint="left" >
+                  <AbsPoint x="10" y="0" />
+                </Anchor>
+              </Anchors>
+              <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="CharacterSheet.LeftArrowPressed" />
+              </EventHandlers>
+            </Button>
+            <Button name="$parentNextButton" inherits="UO_Default_SmallNextButton">
+              <Size>
+                <AbsPoint x="30" y="23" />
+              </Size>
+              <Anchors>
+                <Anchor point="right" relativePoint="right" >
+                  <AbsPoint x="-10" y="0"/>
+                </Anchor>
+              </Anchors>
+              <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="CharacterSheet.RightArrowPressed" />
+              </EventHandlers>
+            </Button>
+            <Label name="$parentText" inherits="UO_Default_Label_Color" font="UO_DefaultText" maxchars="2048" textalign="center" autoresize="true" handleinput="false" wordwrap="true">
+              <Size>
+                <AbsPoint x="214" y="0" />
+              </Size>
+              <Anchors>
+                <Anchor point="center" relativePoint="center" />
+              </Anchors>
+            </Label>
+          </Windows>
+        </Window>
+      </Windows>
+    </Window>
+
+  </Windows>
+</Interface>

@@ -1,0 +1,195 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Scripts>
+		<Script file="Source/QueryWindow.lua" />
+	</Scripts>
+	<Windows>
+		<Window name="QueryWindowTemplate" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="620" y="480" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<Windows>
+				<Window name="$parentChrome" inherits="UO_DefaultWindow">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</Window>
+
+				<Label name="$parentText" font="UO_DefaultText" maxchars="512" textalign="left" wordwrap="true" autoresize="true">
+					<Size>
+						<AbsPoint x="560" y="25" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+							<AbsPoint x="20" y="40" />
+						</Anchor>
+					</Anchors>
+					<Color r="243" g="227" b="49" a="255" />
+				</Label>
+
+				<Button name="$parentOkayButton" inherits="UO_Default_GumpButton">
+					<Anchors>
+						<Anchor point="bottomright" relativePoint="bottomright" >
+							<AbsPoint x="-15" y="-15" />
+						</Anchor>
+					</Anchors>
+					<EventHandlers>
+						<EventHandler event="OnLButtonUp" function="QueryWindow.Okay_OnLButtonUp" />
+					</EventHandlers>
+				</Button>
+			</Windows>
+		</Window>
+
+		<Window name="QueryWindowItemSelection">
+			<Size>
+				<AbsPoint x="510" y="22" />
+			</Size>
+			<Windows>
+				<Button name="$parentButton" backgroundtexture="UO_Core" highlighttexture="UO_Core" >
+					<Size>
+						<AbsPoint x="22" y="22" />
+					</Size>
+					<Anchors>
+						<Anchor point="left" relativePoint="left">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<TexCoords>
+						<Normal x="166" y="25" />
+						<NormalHighlit x="166" y="25" />
+						<Pressed x="193" y="25" />
+						<PressedHighlit x="193" y="25" />
+						<Disabled x="166" y="25" />
+					</TexCoords>
+				</Button>
+				<Label name="$parentLabel" font="UO_DefaultText" maxchars="512" textalign="left" wordwrap="true" autoresize="true">
+					<Size>
+						<AbsPoint x="478" y="22"/>
+					</Size>
+					<Anchors>
+						<Anchor point="right" relativePoint="left" relativeTo="$parentButton">
+							<AbsPoint x="10" y="0" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+			</Windows>
+		</Window>
+
+		<Window name="QueryWindowTwoSelectionTemplate">
+			<Size>
+				<AbsPoint x="560" y="460" />
+			</Size>
+			<Anchors>
+				<Anchor point="topleft" relativePoint="topleft">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<Windows>
+				<FullResizeImage name="$parentHorizontalLine" inherits="UO_Default_Horizontal_Gold_Line" >
+					<Size>
+						<AbsPoint x="560" y="2" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="0" y="10" />
+						</Anchor>
+					</Anchors>
+				</FullResizeImage>	 
+				
+				<Label name="$parentText" font="UO_DefaultText" maxchars="512" textalign="left" wordwrap="true" autoresize="true">
+					<Size>
+						<AbsPoint x="560" y="50"/>
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentHorizontalLine">
+							<AbsPoint x="0" y="10" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<Window name="$parentButtonOne" inherits="QueryWindowItemSelection">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentText">
+							<AbsPoint x="0" y="10" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<Window name="$parentButtonTwo" inherits="QueryWindowItemSelection">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentButtonOne">
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+					</Anchors>
+				</Window>
+			</Windows>
+		</Window>
+
+		<Window name="QueryWindowThreeSelectionTemplate">
+			<Size>
+				<AbsPoint x="560" y="460" />
+			</Size>
+			<Anchors>
+				<Anchor point="topleft" relativePoint="topleft">
+					<AbsPoint x="0" y="0" />
+				</Anchor>
+			</Anchors>
+			<Windows>
+				<FullResizeImage name="$parentHorizontalLine" inherits="UO_Default_Horizontal_Gold_Line" >
+					<Size>
+						<AbsPoint x="560" y="2" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="0" y="10" />
+						</Anchor>
+					</Anchors>
+				</FullResizeImage>
+
+				<Label name="$parentText" font="UO_DefaultText" maxchars="512" textalign="left" wordwrap="true" autoresize="true">
+					<Size>
+						<AbsPoint x="560" y="50"/>
+					</Size>
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentHorizontalLine">
+							<AbsPoint x="0" y="10" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+
+				<Window name="$parentButtonOne" inherits="QueryWindowItemSelection">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentText">
+							<AbsPoint x="0" y="10" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<Window name="$parentButtonTwo" inherits="QueryWindowItemSelection">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentButtonOne">
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+					</Anchors>
+				</Window>
+
+				<Window name="$parentButtonThree" inherits="QueryWindowItemSelection">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentButtonTwo">
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+					</Anchors>
+				</Window>
+			</Windows>
+		</Window>
+
+	</Windows>
+</Interface>

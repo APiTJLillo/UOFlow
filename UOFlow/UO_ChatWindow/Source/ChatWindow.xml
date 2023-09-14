@@ -1,0 +1,815 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+    <Scripts>
+        <Script file="Source/ChatWindow.lua" />
+    </Scripts>
+    <Windows>
+        <!--# Window: UO_Window_ChatDefaultFrame                  
+            This the Chat default window frame used for the chat log display background.
+            Although it is not a FullResizeImage, it behaves like one.
+            
+            Code:
+            (begin code)
+             <Window name="UO_Window_ChatDefaultFrame" handleinput="false" layer="background">
+             ...
+             </Window>
+            (end)
+        -->
+        <Window name="UO_Window_ChatDefaultFrame" handleinput="false" layer="background">
+            <Size>
+                <AbsPoint x="156" y="102" />
+            </Size>
+            <Windows>
+                <FullResizeImage name="$parentBackground" inherits="UO_Simple_Black_Background" >
+                  <Anchors>
+                    <Anchor point="topright" relativePoint="topright" >
+                      <AbsPoint x="0" y="4" />
+                    </Anchor>
+                    <Anchor point="bottomleft" relativePoint="bottomleft" />
+                  </Anchors>
+                </FullResizeImage>
+                <FullResizeImage name="$parentBackgroundFrame" inherits="UO_FullResizeImage_ChatDefaultFrame" >
+                  <Anchors>
+                    <Anchor point="topright" relativePoint="topright" >
+                      <AbsPoint x="0" y="4" />
+                    </Anchor>
+                    <Anchor point="bottomleft" relativePoint="bottomleft" />
+                  </Anchors>
+                </FullResizeImage>
+            </Windows>
+        </Window>
+
+        <!--# Window: UO_Window_ChatDefaultFrame                  
+            This the Chat default window frame used for the chat log display background.
+            Although it is not a FullResizeImage, it behaves like one.  This is the frame
+            that is shown when the main frame is faded out.
+            
+            Code:
+            (begin code)
+             <Window name="EA_Window_ChatDefaultForegroundFrame" handleinput="false" layer="background">
+             ...
+             </Window>
+            (end)
+        -->
+        <!-- DAB TODO: Chat window is invisible when faded out -->
+        <!--<Window name="UO_Window_ChatDefaultForegroundFrame" handleinput="false" layer="background">
+            <Size>
+                <AbsPoint x="168" y="214" />
+            </Size>
+            <Windows>
+                <HorizontalResizeImage name="$parentForeground" inherits="EA_FullResizeImage_ChatFadedOutTransparent" >
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topright" >
+                            <AbsPoint x="-70" y="0" />
+                        </Anchor>
+                        <Anchor point="bottomleft" relativePoint="bottomleft" />
+                    </Anchors>
+                </HorizontalResizeImage>
+                <DynamicImage name="$parentForegroundEndCap" alpha="0.8" texture="EA_HUD_01" slice="ChatGradientBackground-RightEndCap" handleinput="false" layer="background" sticky="false">
+                    <Size>
+                        <AbsPoint x="70" y="214" />
+                    </Size>
+                    <TexCoords x="98" y="278" />
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topleft" relativeTo="$parentForeground">
+                            <AbsPoint x="0" y="0" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright"/>
+                    </Anchors>
+                </DynamicImage>
+            </Windows>
+        </Window>-->
+
+      <FullResizeImage name="UO_FullResizeImage_ChatDefaultFrame"  handleinput="false" layer="background" texture="UO_Core" frameonly="false">
+        <Sizes>
+          <TopLeft x="9" y="9" />
+          <Middle x="28" y="7" />
+          <BottomRight x="9" y="6" />
+        </Sizes>
+        <TexCoords>
+          <TopLeft x="2" y="415" />
+          <TopCenter x="11" y="415" />
+          <TopRight x="39" y="415" />
+          <MiddleLeft x="2" y="424" />
+          <MiddleCenter x="11" y="424" />
+          <MiddleRight x="39" y="424" />
+          <BottomLeft x="2" y="431" />
+          <BottomCenter x="11" y="431" />
+          <BottomRight x="39" y="431" />
+        </TexCoords>
+      </FullResizeImage>
+      
+<!--
+        <FullResizeImage name="UO_FullResizeImage_ChatInputDefaultFrame"  handleinput="false" layer="background" texture="chat" frameonly="false">
+            <Sizes>
+                <TopLeft x="8" y="6" />
+                <BottomRight x="8" y="6" />
+                <Middle x="8" y="15" />
+            </Sizes>
+            <TexCoords>
+                <TopLeft x="4" y="151" />
+                <TopCenter x="12" y="151" />
+                <TopRight x="752" y="151" />
+                <MiddleLeft x="4" y="157" />
+                <MiddleCenter x="12" y="157" />
+                <MiddleRight x="752" y="157" />
+                <BottomLeft x="4" y="172" />
+                <BottomCenter x="12" y="172" />
+                <BottomRight x="752" y="172" />
+            </TexCoords>
+        </FullResizeImage>        
+-->
+      <FullResizeImage name="UO_FullResizeImage_ChatInputDefaultFrame"  handleinput="false" layer="background" texture="UO_Core" frameonly="false">
+        <Sizes>
+          <TopLeft x="9" y="9" />
+          <BottomRight x="9" y="9" />
+          <Middle x="4" y="4" />
+        </Sizes>
+        <TexCoords>
+          <TopLeft x="1" y="438" />
+          <TopCenter x="10" y="438" />
+          <TopRight x="40" y="438" />
+          <MiddleLeft x="1" y="444" />
+          <MiddleCenter x="10" y="444" />
+          <MiddleRight x="40" y="444" />
+          <BottomLeft x="1" y="448" />
+          <BottomCenter x="10" y="448" />
+          <BottomRight x="40" y="448" />
+        </TexCoords>
+      </FullResizeImage>
+      
+      <!--
+        <FullResizeImage name="ChatWindowTabNormal" alpha="0.45" texture="chat" >
+            <Size>
+                <AbsPoint x="0" y="25" />
+            </Size>
+            <Sizes>
+                <TopLeft x="7" y="7" />
+                <BottomRight x="7" y="7" />
+                <Middle x="7" y="11" />
+            </Sizes>
+            <TexCoords>
+                <TopLeft x="0" y="230" />
+                <TopCenter x="7" y="230" />
+                <TopRight x="96" y="230" />
+                <MiddleLeft x="0" y="237" />
+                <MiddleCenter x="7" y="237" />
+                <MiddleRight x="96" y="237" />
+                <BottomLeft x="0" y="248" />
+                <BottomCenter x="7" y="248" />
+                <BottomRight x="96" y="248" />
+            </TexCoords>
+        </FullResizeImage>
+      -->
+
+      <HorizontalResizeImage name="ChatWindowTabNormal" inherits="UO_Default_Medium_Tab_Enabled" />
+      
+      <Button name="ChatWindowTabTemplate" inherits="UO_Default_PaperDollTabButton" >
+            <Size>
+                <AbsPoint x="125" y="92" />
+            </Size>
+            <ResizeImages>
+                <Normal def="ChatWindowTabNormal" />
+                <Pressed def="ChatWindowTabNormal" />
+            </ResizeImages>
+        </Button>
+      
+      <!-- THIS CONTROLS BOTH TABS -->
+        <Button name="ChatTabButton" inherits="ChatWindowTabTemplate" layer="popup" popable="false" autoresizewidth="true" textalign="left">
+            <TextOffset x="15" y="8" />
+            <Size>
+                <AbsPoint x="125" y="33" />
+            </Size>
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="ChatWindow.OnSelectTab" />
+                <EventHandler event="OnRButtonUp" function="ChatWindow.OnOpenChatMenu" />
+                <EventHandler event="OnMouseOver" function="ChatWindow.OnMouseOver" />
+                <EventHandler event="OnMouseOverEnd" function="ChatWindow.OnMouseOverEnd" />
+            </EventHandlers>
+        </Button>
+
+        <!--
+            Chat Log Template
+            A template that traps the OnLButtonDown event in order to allow the chat window to remain
+            stationary when the user clicks on the log display.  The ChatWindow may be moved by
+            dragging in the open areas next to the chat tabs.
+        -->
+        <LogDisplay name="ChatLogDisplay" font="UO_ChatText" scrollbar="$parentScrollbar" scrollbarPosition="left" textFadeTime="2" background="" maxchars="4092" >
+            <Size>
+                <AbsPoint x="550" y="260" />
+            </Size>
+            <Anchors>
+                <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentChatTab">
+                    <AbsPoint x="-24" y="-9" />
+                </Anchor>
+                <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parentBackground">
+                    <AbsPoint x="0" y="9" />
+                </Anchor>
+            </Anchors>
+            <Windows>
+                <VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" layer="popup">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="5" y="7"/>
+                        </Anchor>
+                        <Anchor point="bottomleft" relativePoint="bottomright">
+                            <AbsPoint x="16" y="-17"/>
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="ChatWindow.OnMouseOver" />
+                        <EventHandler event="OnMouseOverEnd" function="ChatWindow.OnMouseOverEnd" />
+                    </EventHandlers>
+                </VerticalScrollbar>
+            </Windows>
+            <EventHandlers>
+                <EventHandler event="OnHotSpotMouseOver" function="ChatWindow.OnHotSpotMouseOver" />
+                <EventHandler event="OnHotSpotClicked" function="ChatWindow.OnHotSpotClicked" />
+                <EventHandler event="OnMouseOver" function="ChatWindow.OnMouseOver" />
+                <EventHandler event="OnMouseOverEnd" function="ChatWindow.OnMouseOverEnd" />
+            </EventHandlers>
+            <TextOffset x="10" y="10" />
+        </LogDisplay>
+
+        <!-- Moving the buttons outside the chat window to physically be outside the chat window.       -->
+        <!-- This is to solve the issue of invisible portions of the chat window overlaying portions    -->
+        <!-- of the UI and preventing tooltips from appearing.                                          -->
+
+        <Button name="ChatWindowInputTextButton" layer="secondary" sticky="true" backgroundtexture="UO_Core" highlighttexture="UO_Core" texturescale="1.2">
+            <Size>
+                <AbsPoint x="32" y="32" />
+            </Size>        
+            <TexCoords>
+                <Normal x="188" y="482" />
+                <NormalHighlit x="188" y="452" />
+                <Pressed x="188" y="452" />
+                <PressedHighlit x="188" y="452" />
+            </TexCoords>            
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="ChatWindow.OnOpenChannelMenu" />
+                <EventHandler event="OnRButtonUp" function="ChatWindow.OnOpenTabMenu" />
+                <EventHandler event="OnMouseOver" function="ChatWindow.OnInputTextButtonMouseOver" />             
+            </EventHandlers>
+        </Button>
+
+      <Window name="ChatWindowSetOpacityWindow" movable="true" layer="popup" >
+        <Size>
+          <AbsPoint x="300" y="250" />
+        </Size>
+        <EventHandlers>
+          <EventHandler event="OnLButtonDown" function="WindowUtils.TrapClick" />
+        </EventHandlers>
+        <Windows>
+          <!-- Default chrome. Alter this at your own peril. -->
+          <Window name="$parentChrome" inherits="UO_DefaultWindow">
+            <Anchors>
+              <Anchor point="topleft" relativePoint="topleft"/>
+              <Anchor point="bottomright" relativePoint="bottomright"/>
+            </Anchors>
+          </Window>
+          <!-- End of default chrome boilerplate code -->
+          <Label name="$parentLabelMinAlpha" font="UO_DefaultText" maxchars="256" textalign="center" handleinput="false">
+            <Size>
+              <AbsPoint x="245" y="28" />
+            </Size>
+            <Anchors>
+              <Anchor point="top" relativePoint="top">
+                <AbsPoint x="0" y="45" />
+              </Anchor>
+            </Anchors>
+          </Label>
+          <SliderBar name="$parentSliderMinAlpha" inherits="UO_Default_Horizontal_SliderBar" >
+            <Size>
+              <AbsPoint x="240" y="33" />
+            </Size>
+            <Anchors>
+              <Anchor point="bottom" relativePoint="top" relativeTo="$parentLabelMinAlpha">
+                <AbsPoint x="0" y="0" />
+              </Anchor>
+            </Anchors>
+            <EventHandlers>
+              <EventHandler event="OnSlide" function="ChatWindow.OnSlideWindowOptionsMinAlpha" />
+            </EventHandlers>
+          </SliderBar>
+          <Label name="$parentLabelMaxAlpha" font="UO_DefaultText" maxchars="256" textalign="center" handleinput="false">
+            <Size>
+              <AbsPoint x="245" y="28" />
+            </Size>
+            <Anchors>
+              <Anchor point="bottom" relativePoint="top" relativeTo="$parentSliderMinAlpha">
+                <AbsPoint x="0" y="5" />
+              </Anchor>
+            </Anchors>
+          </Label>
+          <SliderBar name="$parentSliderMaxAlpha" inherits="UO_Default_Horizontal_SliderBar" >
+            <Size>
+              <AbsPoint x="240" y="33" />
+            </Size>
+            <Anchors>
+              <Anchor point="bottom" relativePoint="top" relativeTo="$parentLabelMaxAlpha">
+                <AbsPoint x="0" y="0" />
+              </Anchor>
+            </Anchors>
+            <EventHandlers>
+              <EventHandler event="OnSlide" function="ChatWindow.OnSlideWindowOptionsMaxAlpha" />
+            </EventHandlers>
+          </SliderBar>
+          <Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button" >
+            <Anchors>
+              <Anchor point="bottom" relativePoint="top" relativeTo="$parentSliderMaxAlpha">
+                <AbsPoint x="0" y="5" />
+              </Anchor>
+            </Anchors>
+            <EventHandlers>
+              <EventHandler event="OnLButtonUp" function="UO_DefaultWindow.CloseDialog" />
+            </EventHandlers>
+          </Button>
+        </Windows>
+      </Window>
+        
+        <!-- Chat Window Template Definition -->
+        <DockableWindow name="ChatWindowTemplate" szTabDef="ChatTabButton" layer="default" movable="true" savesettings="false" sticky="true">
+            <Size>
+                <AbsPoint x="485" y="205" />
+            </Size>
+            <EventHandlers>
+                <EventHandler event="OnUpdate" function="ChatWindow.OnUpdate" />
+                <EventHandler event="OnMouseOver" function="ChatWindow.OnMouseOver" />
+                <EventHandler event="OnMouseOverEnd" function="ChatWindow.OnMouseOverEnd" />
+                <EventHandler event="OnDock" function="ChatWindow.OnDock" />
+                <EventHandler event="OnUnDock" function="ChatWindow.OnUnDock" />
+                <EventHandler event="OnSetTopDockWindow" function="ChatWindow.OnSetTopDockWindow" />
+                <EventHandler event="OnSizeUpdated" function="ChatWindow.OnSizeUpdated" />
+                <EventHandler event="OnSetMoving" function="ChatWindow.OnSetMoving" />
+            </EventHandlers>
+            <Windows>
+                <Window name="$parentBackground" inherits="UO_Window_ChatDefaultFrame" >
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" >
+                            <AbsPoint x="0" y="29" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright" >
+                            <AbsPoint x="0" y="0" />
+                        </Anchor>
+                    </Anchors>
+                </Window>
+                <!-- DAB TODO: Chat window is invisible when faded out -->
+                <!--<Window name="$parentForeground" inherits="EA_Window_ChatDefaultForegroundFrame" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="bottomleft" >
+                            <AbsPoint x="0" y="0" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="topright" >
+                            <AbsPoint x="0" y="-184" />
+                        </Anchor>
+                    </Anchors>
+                </Window>-->
+                <Button name="$parentResizeButton" inherits="CoreWindowResizeButtonTopRight" layer="popup" >
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topright" relativeTo="$parentBackground" >
+                            <AbsPoint x="-1" y="5" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonDown" function="ChatWindow.OnResizeBegin" />
+                        <EventHandler event="OnMouseOver" function="ChatWindow.OnMouseOver" />
+                        <EventHandler event="OnMouseOverEnd" function="ChatWindow.OnMouseOverEnd" />
+                    </EventHandlers>
+                </Button>
+                <Button name="$parentChatTab" inherits="ChatTabButton" id="1">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="">
+                            <AbsPoint x="25" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+
+                <LogDisplay name="$parentChatLogDisplay" inherits="ChatLogDisplay"/>
+                <!-- DAB TODO: No To Bottom Button -->
+                <!--<Button name="$parentToBottomButton" inherits="ChatWindowToBottomButton" id="1">
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentChatLogDisplayScrollbar">
+                            <AbsPoint x="0" y="0" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <DynamicImage name="$parentToBottomButtonAlert" inherits="ChatWindowToBottomButtonAlert" id="1">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parentToBottomButton">
+                            <AbsPoint x="5" y="7" />
+                        </Anchor>
+                    </Anchors>
+                </DynamicImage>-->
+            </Windows>
+        </DockableWindow>
+
+        <Button name="ChannelMenuButton" font="UO_DefaultText" textalign="left">
+            <Size>
+                <AbsPoint x="131" y="18" />
+            </Size>
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="ChatWindow.SwitchToSelectedChannel" />
+                <EventHandler event="OnMouseOver" function="ChatWindow.UpdateMenuSelection" />
+            </EventHandlers>
+        </Button>
+        <!-- Channel Selection Menu -->
+        <Window name="ChatChannelSelectionWindow" movable="false" layer="secondary" savesettings="false" >
+            <Size>
+                <AbsPoint x="200" y="200" />
+            </Size>
+            <EventHandlers>
+                <EventHandler event="OnKeyEscape" function="ChatWindow.HideChannelSelectionMenu" />
+            </EventHandlers>
+            <Windows>
+                <!-- Body background -->
+                <FullResizeImage name="$parentWindowBackground" inherits="UO_Simple_Black_Background" layer="background">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft"/>
+                        <Anchor point="bottomright" relativePoint="bottomright"/>
+                    </Anchors>
+                </FullResizeImage>
+
+                <!-- Inner Frame Boilerplate -->
+                <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" layer="background">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                        <Anchor point="bottomright" relativePoint="bottomright" />
+                    </Anchors>
+                </FullResizeImage>
+                <!-- End of Inner Frame Boilerplate -->
+
+                <FullResizeImage name="$parentSelection" inherits="UO_Context_Item_Selection">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                        <Anchor point="topright" relativePoint="bottomright" >
+                            <AbsPoint x="0" y="85" />
+                        </Anchor>
+                    </Anchors>
+                </FullResizeImage>
+                
+                <ComboBox name="$parentGChatActiveFriendSelectCombo" inherits="UO_Default_ComboBox" >
+								<EventHandlers>
+									<EventHandler event="OnSelChanged" function="ChatWindow.SwitchToGChatSelectedChannel" />                 
+								</EventHandlers>
+								<Anchors>
+									<Anchor point="topleft" relativePoint="topleft">
+										<AbsPoint x="9" y="7" />
+									</Anchor>
+								</Anchors>
+								</ComboBox>
+                <Button name="$parentChatButton" inherits="ChannelMenuButton">
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentGChatActiveFriendSelectCombo">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+								<Button name="$parentYellButton" inherits="ChannelMenuButton" >
+									<Anchors>
+										<Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentChatButton">
+											<AbsPoint x="0" y="8" />
+										</Anchor>
+									</Anchors>
+								</Button>
+                <Button name="$parentAllianceButton" inherits="ChannelMenuButton" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentYellButton">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentGuildButton" inherits="ChannelMenuButton" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentAllianceButton">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentPartyButton" inherits="ChannelMenuButton" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentGuildButton">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSayButton" inherits="ChannelMenuButton" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentPartyButton">
+                            <AbsPoint x="0" y="8" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+            </Windows>
+        </Window>
+        
+
+        <!-- Chat Submenu Button (button that has menu to show on mouseover) Template -->
+        <Button name="ChatContextMenuItemWithMenu" inherits="EA_Button_DefaultMenuButton" autoresize="false">
+            <Size>
+                <AbsPoint x="245" y="28" />
+            </Size>
+            <Windows>
+                <DynamicImage name="$parentNestedMenuButton" texture="hud_image" layer="popup" popable="false" sticky="false" handleinput="false">
+                    <Size>
+                        <AbsPoint x="17" y="18" />
+                    </Size>
+                    <TexCoords x="64" y="940" />
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topright">
+                            <AbsPoint x="0" y="4" />
+                        </Anchor>
+                    </Anchors>
+                </DynamicImage>
+            </Windows>
+        </Button>
+        <!-- Chat Checkbox Button Template -->
+        <Button name="ChatContextMenuItemCheckBox" inherits="EA_Button_DefaultMenuButton" textalign="left" autoresize="false">
+            <Size>
+                <AbsPoint x="245" y="28" />
+            </Size>
+            <Windows>
+                <Button name="$parentButton" inherits="UO_Default_Check_Button" handleinput="false">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="4" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Label name="$parentLabel" font="UO_DefaultText" maxchars="256" textalign="left" handleinput="false">
+                    <Size>
+                        <AbsPoint x="245" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="30" y="4" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+            </Windows>
+        </Button>
+      <!-- Chat Checkbox Button Template -->
+      <Button name="ChatContextMenuItemDivider" autoresize="false" >
+        <Size>
+          <AbsPoint x="245" y="8" />
+        </Size>
+        <ResizeImages>
+          <Normal          def="UO_Default_Horizontal_Rule"  />
+          <NormalHighlit   def="UO_Default_Horizontal_Rule" />
+          <Pressed         def="UO_Default_Horizontal_Rule" />
+          <PressedHighlit  def="UO_Default_Horizontal_Rule"  />
+          <Disabled        def="UO_Default_Horizontal_Rule"  />
+          <DisabledPressed def="UO_Default_Horizontal_Rule"  />
+        </ResizeImages>
+      </Button>
+
+
+        <!-- Filter Menu Items (Toggle And Color) -->
+        <!--<Button name="ChatMenuFilterStatusButton" inherits="DefaultSmallBoldTextButton" textalign="left">
+            <Size>
+                <AbsPoint x="20" y="20" />
+            </Size>
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="ChatWindow.OnFilterToggle" />
+            </EventHandlers>
+        </Button>
+
+        <Button name="ChatMenuFilterNameButton" inherits="DefaultSmallBoldTextButton" textalign="left">
+            <Size>
+                <AbsPoint x="210" y="20" />
+            </Size>
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="ChatWindow.OnFilterToggle" />
+            </EventHandlers>
+        </Button>-->
+
+        <!--Filters Menu-->
+        <!--<Window name="ChatMenuFiltersWindow" movable="false" layer="popup"  savesettings="false" >
+            <Size>
+                <AbsPoint x="395" y="400" />
+            </Size>
+            <Anchors>
+                <Anchor point="topRight" relativePoint="topleft" relativeTo="ChatMenuWindowFiltersButton">
+                    <AbsPoint x="-30" y="0" />
+                </Anchor>
+            </Anchors>
+            <Windows>
+                <Window name="$parentBackground" inherits="EA_Window_DefaultFrame" >
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft"/>
+                        <Anchor point="bottomright" relativePoint="bottomright"/>
+                    </Anchors>
+                </Window>
+            </Windows>
+        </Window>-->
+
+        <!-- Rename Window -->
+        <Window name="ChatWindowRenameWindow" movable="false" layer="popup"  savesettings="false" >
+            <Size>
+                <AbsPoint x="400" y="150" />
+            </Size>
+            <Anchors>
+                <Anchor point="top" relativePoint="top" relativeTo="">
+                    <AbsPoint x="0" y="325" />
+                </Anchor>
+            </Anchors>
+            <Windows>
+                <!-- Body background -->
+                <FullResizeImage name="$parentWindowBackground" inherits="UO_Simple_Black_Background">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft"/>
+                        <Anchor point="bottomright" relativePoint="bottomright"/>
+                    </Anchors>
+                </FullResizeImage>
+
+                <!-- Inner Frame Boilerplate -->
+                <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                        <Anchor point="bottomright" relativePoint="bottomright" />
+                    </Anchors>
+                </FullResizeImage>
+                <!-- End of Inner Frame Boilerplate -->
+
+                <Label name="$parentLabel" font="UO_DefaultText" maxchars="256" textalign="center">
+                    <Size>
+                        <AbsPoint x="400" y="25" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="top" relativePoint="top">
+                            <AbsPoint x="0" y="10" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+                <EditBox name="$parentText" inherits="TextEntrySingleLineEditBox" maxchars="8" taborder="1">
+                    <Size>
+                        <AbsPoint x="300" y="35" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="bottom" relativePoint="top" relativeTo="$parentLabel" >
+                            <AbsPoint x="0" y="10" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnTextChanged" function="ChatWindow.OnRenameTextChanged" />
+                        <EventHandler event="OnKeyEnter" function="ChatWindow.OnRename" />
+                        <EventHandler event="OnKeyEscape" function="ChatWindow.OnCancelRename" />
+                    </EventHandlers>
+                </EditBox>
+
+                <Button name="$parentRenameButton" inherits="UO_Default_Medium_Select_Button" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="topleft" relativeTo="$parentText">
+                            <AbsPoint x="-15" y="15"/>
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="ChatWindow.OnRename"/>
+                    </EventHandlers>
+                </Button>
+
+                <Button name="$parentCancelButton" inherits="UO_Default_Medium_Select_Button" >
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topleft" relativeTo="$parentRenameButton">
+                            <AbsPoint x="5" y="0"/>
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="ChatWindow.OnCancelRename"/>
+                    </EventHandlers>
+                </Button>
+            </Windows>
+        </Window>
+
+        <!--*******************************************************************-->
+        <!--                      Chat Window Definition                       -->
+        <!--*******************************************************************-->
+        <DockableWindow name="ChatWindow" inherits="ChatWindowTemplate" id="1" savesettings="false">
+            <Size>
+                <AbsPoint x="485" y="205" />
+            </Size>
+            <Anchors>
+              <Anchor point="bottomleft" relativePoint="bottomleft" >
+                <AbsPoint x="0" y="-125" />
+              </Anchor>
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnInitialize" function="ChatWindow.Initialize"/>
+                <EventHandler event="OnShutdown" function="ChatWindow.Shutdown"/>
+                <EventHandler event="OnUpdate" function="ChatWindow.OnUpdate"/>
+                <EventHandler event="OnMouseOver" function="ChatWindow.OnMouseOver" />
+                <EventHandler event="OnMouseOverEnd" function="ChatWindow.OnMouseOverEnd" />
+                <EventHandler event="OnDock" function="ChatWindow.OnDock" />
+                <EventHandler event="OnUnDock" function="ChatWindow.OnUnDock" />
+                <EventHandler event="OnSetTopDockWindow" function="ChatWindow.OnSetTopDockWindow" />
+                <EventHandler event="OnSizeUpdated" function="ChatWindow.OnSizeUpdated" />
+                <EventHandler event="OnSetMoving" function="ChatWindow.OnSetMoving" />
+            </EventHandlers>
+        </DockableWindow>
+
+        <!--
+                This is the crazy resizing label/edit box window...
+                ____________________________________________________________
+                |1_________  ______________________________________________ | Main window with background image
+                | |        | |                                             ||
+                | | Chat   | |  EditBox....neither of these have bg images ||
+                | | Channel|2|                                             || The numbers are the anchor points (not for bg image)
+                | | Label  | |                                             || FullResizeImage is anchored to main window
+                | |________| |_____________________________________________|| ChatWindowChannelLabel should resize automatically
+                |__________________________________________________________3| and the EditBox should adjust...right anchor should
+                                                                              never move on the EditBox. (Might be the problem)
+                -->
+
+        <Window name="ChatWindowContainer" layer="default" sticky="false">
+            <Size>
+                <AbsPoint x="550" y="35" />
+            </Size>
+            <Anchors>
+                <Anchor point="bottomleft" relativePoint="topleft" relativeTo="ChatWindowChatLogDisplay">
+                    <AbsPoint x="26" y="-10" />
+                </Anchor>
+                <Anchor point="bottomright" relativePoint="topright" relativeTo="ChatWindowChatLogDisplay">
+                    <AbsPoint x="2" y="4" />
+                </Anchor>
+            </Anchors>
+            <Windows>
+                <FullResizeImage name="$parentBG" inherits="UO_FullResizeImage_ChatInputDefaultFrame" handleinput="false" layer="background" sticky="false">
+                  <Anchors>
+                      <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent" />
+                      <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" />
+                  </Anchors>
+                </FullResizeImage>
+                <Label name="$parentChannelLabel" font="UO_ChatText" wordwrap="false" autoresizewidth="true" maxchars="50" textalign="left" sticky="false">
+                    <Size>
+                        <AbsPoint x="250" y="34" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="12" y="8" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+                <EditBox name="$parentTextInput" maxchars="256" scrolling="horz" font="UO_ChatText" history="15" layer="popup" sticky="false">
+                    <TextOffset x="0" y="3" />
+                    <Size>
+                        <AbsPoint x="300" y="35" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topleft" relativeTo="$parentChannelLabel" >
+                            <AbsPoint x="2" y="-6" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parent" >
+                            <AbsPoint x="0" y="2" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnKeyEnter" function="ChatWindow.OnKeyEnter" />
+                        <EventHandler event="OnKeyEscape" function="ChatWindow.OnKeyEscape" />
+                        <EventHandler event="OnKeyTab" function="ChatWindow.OnKeyTab" />
+                    </EventHandlers>
+                    <Windows>
+                      <!-- DAB TODO: Removed language toggle thing -->
+                      <!--<Button name="$parentInputLanguageButton" inherits="EA_Button_DefaultText" layer="popup" sticky="false">
+                        <Size>
+                         <AbsPoint x="32" y="32" />
+                         </Size>
+                       <Anchors>
+                           <Anchor point="right" relativePoint="right" relativeTo="$parent">
+                           <AbsPoint x="-8" y="-2" />
+                           </Anchor>
+                        </Anchors>
+                        <EventHandlers>
+                          <EventHandler event="OnLButtonUp" function="ChatWindow.ToggleInputLanguage" />
+                          <EventHandler event="OnMouseOver" function="ChatWindow.MouseOverTextInputItem" />
+                          <EventHandler event="OnMouseOverEnd" function="ChatWindow.MouseOverEndTextInputItem" />
+                       </EventHandlers>
+                      </Button>-->
+                    </Windows>
+                </EditBox>
+            </Windows>
+        </Window>
+
+        <!-- Social Window Toggle -->
+        <!--<Button name="SocialWindowButton" backgroundtexture="EA_HUD_01" highlighttexture="EA_HUD_01" layer="default" savesettings="false">
+            <Size>
+                <AbsPoint x="50" y="77" />
+            </Size>
+            <Anchors>
+                <Anchor point="topleft" relativePoint="bottomleft" relativeTo="ChatWindow" >
+                    <AbsPoint x="0" y="32" />
+                </Anchor>
+            </Anchors>
+            <TexCoords>
+                <Normal x="118" y="492" />
+                <NormalHighlit x="168" y="492" />
+                <Pressed x="118" y="492" />
+                <PressedHighlit x="168" y="492" />
+            </TexCoords>
+            <EventHandlers>
+                <EventHandler event="OnInitialize" function="ChatWindow.InitializeSocialButton" />
+                <EventHandler event="OnLButtonUp" function="SocialWindow.ShowSocialContextMenu" />
+                <EventHandler event="OnMouseOver" function="ChatWindow.OnMouseoverSocialBtn" />
+            </EventHandlers>
+        </Button>-->
+        
+        
+    </Windows>
+</Interface>

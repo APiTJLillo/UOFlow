@@ -1,0 +1,73 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Scripts>
+    <Script file="Source/FontSelector.lua" />
+  </Scripts>
+  <Windows>
+
+    <!--*******************************************************************-->
+    <!--                              Templates                            -->
+    <!--*******************************************************************-->
+
+    <Button name="FontRowTemplate" id="1">
+       <EventHandlers>
+        <EventHandler event="OnMouseOver" function="FontSelector.ItemMouseOver" />
+        <EventHandler event="OnMouseOverEnd" function="FontSelector.ClearMouseOverItem" />
+        <EventHandler event="OnLButtonUp" function="FontSelector.SetFontToSelection" />
+      </EventHandlers>
+      <Windows>
+        <Label name="$parentLabel" font="UO_DefaultText" maxchars="256" textalign="leftcenter" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="350" y="25" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="25" y="0" />
+            </Anchor>
+          </Anchors>
+        </Label>
+        <DynamicImage name="$parentCheck" texture="Tick" layer="popup" popable="false" sticky="false" handleinput="false" >
+          <Size>
+            <AbsPoint x="17" y="17" />
+          </Size>
+          <TexCoords x="0" y="0" />
+          <Anchors>
+            <Anchor point="left" relativePoint="center" relativeTo="$parentLabel">
+              <AbsPoint x="-17" y="0" />
+            </Anchor>
+          </Anchors>
+        </DynamicImage>
+      </Windows>
+    </Button>
+
+    <!--*******************************************************************-->
+    <!--                      Whole Window Definition                      -->
+    <!--*******************************************************************-->
+    <Window name="FontSelector" movable="true" layer="secondary">
+      <Size>
+        <AbsPoint x="400" y="750" />
+      </Size>
+      <Anchors>
+        <Anchor point="topleft" relativePoint="topleft" relativeTo="">
+          <AbsPoint x="30" y="100" />
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="FontSelector.Initialize"/>
+        <EventHandler event="OnShutdown" function="FontSelector.Shutdown"/>
+        <EventHandler event="OnShown" function="FontSelector.OnShown"/>
+      </EventHandlers>
+      <Windows>
+        <!-- Default chrome. Alter this at your own peril. -->
+        <Window name="$parentChrome" inherits="UO_DefaultWindow" layer ="background">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+        </Window>
+        <!-- End of default chrome boilerplate code -->
+      </Windows>
+
+    </Window>
+
+  </Windows>
+</Interface>

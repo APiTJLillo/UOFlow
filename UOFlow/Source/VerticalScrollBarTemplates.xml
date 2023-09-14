@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+
+        <!-- PARCHMENT SCROLL BAR !!! -->
+        <VerticalScrollbar name="ParchmentVertScroll" inherits="StandardVertScroll" up="ParchmentVertScrollUpBtn" down="ParchmentVertScrollDownBtn" thumb="ParchmentVertScrollThumb" gutter="ParchmentVertScrollGutter" />
+			
+		<Button name="ParchmentVertScrollUpBtn" backgroundtexture="map_parchment_widgets" highlighttexture="map_parchment_widgets">
+			<Size>
+				<AbsPoint x="19" y="15" />
+			</Size>
+			<TexCoords>
+				<Normal x="212" y="179" />
+				<NormalHighlit x="180" y="179" />
+				<Pressed x="180" y="179" />
+				<PressedHighlit x="180" y="179" />
+				<!--<Disabled x="356" y="8" />-->
+			</TexCoords>
+		</Button>
+		<Button name="ParchmentVertScrollDownBtn" backgroundtexture="map_parchment_widgets" highlighttexture="map_parchment_widgets">
+			<Size>
+				<AbsPoint x="17" y="15" />
+			</Size>
+			<TexCoords>
+				<Normal x="340" y="161" />
+				<NormalHighlit x="308" y="161" />
+				<Pressed x="308" y="161" />
+				<PressedHighlit x="308" y="161" />
+				<!--<Disabled x="420" y="0" />-->
+			</TexCoords>
+		</Button>
+		<VerticalResizeImage name="ParchmentVertScrollThumb" texture="map_parchment_widgets">
+		    <Size>
+				<AbsPoint x="16" y="33" />
+			</Size>
+            <Sizes top="10" middle="2" bottom="10" />
+			<TexCoords>
+                <Top x="245" y="162" />
+                <Middle x="245" y="176" />
+                <Bottom x="245" y="184" />
+			</TexCoords>
+		</VerticalResizeImage>
+		<VerticalResizeImage name="ParchmentVertScrollGutter" texture="map_parchment_widgets">
+			<Size>
+				<AbsPoint x="15" y="8" />
+			</Size>
+			<Sizes top="5" middle="8" bottom="5"/>
+			<TexCoords>
+				<Top x="59" y="38" />
+				<Middle x="277" y="165" />
+				<Bottom x="59" y="38" />
+			</TexCoords>
+		</VerticalResizeImage>
+
+	</Windows>
+</Interface>

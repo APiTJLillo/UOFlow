@@ -1,0 +1,183 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Windows>
+    <Label name="CP_ItemTitle" font="UO_DefaultText" linespacing="20" autoresize="true" wordwrap="true" maxchars="64" textalign="left">
+      <Color r="255" g="255" b="255" a="255" />
+      <EventHandlers>
+        <EventHandler event="OnMouseOver" function="CrystalPortal.LabelOnMouseOver" />
+      </EventHandlers>
+    </Label>
+    <Window name="CP_LabelRadioButton">
+      <Size>
+        <AbsPoint x="350" y="32" />
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnLButtonDown" function="CrystalPortal.CheckEnable" />
+      </EventHandlers>
+      <Windows>
+        <Button name="$parentButton" backgroundtexture="UO_Core" highlighttexture="UO_Core" >
+          <Size>
+            <AbsPoint x="22" y="22" />
+          </Size>
+          <Anchors>
+            <Anchor point="left" relativePoint="left">
+              <AbsPoint x="5" y="0"/>
+            </Anchor>
+          </Anchors>
+          <TexCoords>
+            <Normal x="166" y="25" />
+            <NormalHighlit x="166" y="25" />
+            <Pressed x="193" y="25" />
+            <PressedHighlit x="193" y="25" />
+            <Disabled x="166" y="25" />
+          </TexCoords>
+          <EventHandlers>
+            <EventHandler event="OnLButtonDown" function="CrystalPortal.CheckEnable" />
+          </EventHandlers>
+        </Button>
+        <Label name="$parentLabel" inherits="CP_ItemTitle">
+          <Size>
+            <AbsPoint x="700" y="16" />
+          </Size>
+          <Anchors>
+            <Anchor point="right" relativePoint="left" relativeTo="$parentButton">
+              <AbsPoint x="10" y="0" />
+            </Anchor>
+          </Anchors>
+          <Color r="255" g="255" b="255" a="255" />
+        </Label>
+        <EventHandlers>
+          <EventHandler event="OnLButtonDown" function="CrystalPortal.CheckEnable" />
+        </EventHandlers>
+      </Windows>
+    </Window>
+    
+    <Window name="CrystalPortal" movable="true" layer="popup">
+      <Size>
+        <AbsPoint x="400" y="500" />
+      </Size>
+      <Anchors>
+        <Anchor point="center" relativePoint="center" relativeTo="ResizeWindow">
+          <AbsPoint x="10" y="-20"/>
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="CrystalPortal.Initialize" />
+        <EventHandler event="OnShown" function="CrystalPortal.OnShown" />
+        <EventHandler event="OnShutdown" function="CrystalPortal.Shutdown" />
+      </EventHandlers>
+      <Windows>
+        <!-- Default chrome. Alter this at your own peril. -->
+        <Window name="$parentChrome" inherits="UO_DefaultWindow" frameonly="false">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft" />
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+        </Window>
+        
+        <Window name="$parentTrammel" inherits="CP_LabelRadioButton" >
+          <Size>
+            <AbsPoint x="150" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="top" relativePoint="center" relativeTo="$parent">
+              <AbsPoint x="-60" y="100" />
+            </Anchor>
+          </Anchors>
+        </Window>
+        <Window name="$parentFelucca" inherits="CP_LabelRadioButton" >
+          <Size>
+            <AbsPoint x="150" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topright" relativeTo="$parentTrammel">
+              <AbsPoint x="150" y="0" />
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <FullResizeImage name="$parentGoldLine1" inherits="UO_Default_Horizontal_Gold_Line" layer="popup">
+          <Size>
+            <AbsPoint x="300" y="2" />
+          </Size>
+          <Anchors>
+            <Anchor point="top" relativePoint="center" relativeTo="$parent">
+              <AbsPoint x="-10" y="160" />
+            </Anchor>
+          </Anchors>
+        </FullResizeImage>
+
+        <Window name="$parentBank" inherits="CP_LabelRadioButton" >
+          <Size>
+            <AbsPoint x="150" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="top" relativePoint="center" relativeTo="$parentGoldLine1">
+              <AbsPoint x="-60" y="60" />
+            </Anchor>
+          </Anchors>
+        </Window>
+        <Window name="$parentMoongate" inherits="CP_LabelRadioButton" >
+          <Size>
+            <AbsPoint x="150" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="topright" relativePoint="topright" relativeTo="$parentBank">
+              <AbsPoint x="150" y="0" />
+            </Anchor>
+          </Anchors>
+        </Window>
+        <Window name="$parentDungeon" inherits="CP_LabelRadioButton" >
+          <Size>
+            <AbsPoint x="150" y="32" />
+          </Size>
+          <Anchors>
+            <Anchor point="top" relativePoint="center" relativeTo="$parentBank">
+              <AbsPoint x="0" y="60" />
+            </Anchor>
+          </Anchors>
+        </Window>
+
+        <FullResizeImage name="$parentGoldLine2" inherits="UO_Default_Horizontal_Gold_Line" layer="popup">
+          <Size>
+            <AbsPoint x="300" y="2" />
+          </Size>
+          <Anchors>
+            <Anchor point="top" relativePoint="center" relativeTo="$parentBank">
+              <AbsPoint x="60" y="120" />
+            </Anchor>
+          </Anchors>
+        </FullResizeImage>
+
+          <Label name="$parentDestLabel" inherits="CP_ItemTitle" >
+            <Size>
+              <AbsPoint x="250" y="20" />
+            </Size>
+            <Anchors>
+              <Anchor point="top" relativePoint="center" relativeTo="$parentGoldLine2">
+                <AbsPoint x="0" y="50" />
+              </Anchor>
+            </Anchors>
+            <Color r="255" g="255" b="255" a="255" />
+          </Label>
+          <ComboBox name="$parentDestCombo" inherits="UO_Default_LongComboBox" >
+            <Anchors>
+              <Anchor point="top" relativePoint="center" relativeTo="$parentDestLabel">
+                <AbsPoint x="0" y="60" />
+              </Anchor>
+            </Anchors>
+          </ComboBox>
+          <Button name="$parentGo" inherits="UO_Default_GumpButton" >
+            <Anchors>
+              <Anchor point="top" relativePoint="center" relativeTo="$parentDestCombo">
+                <AbsPoint x="0" y="60" />
+              </Anchor>
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="CrystalPortal.GO"/>
+            </EventHandlers>
+        </Button>        
+      </Windows>      
+    </Window>    
+  </Windows>
+</Interface>

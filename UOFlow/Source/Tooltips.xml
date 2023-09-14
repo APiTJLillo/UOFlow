@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/1001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+		
+		<Window name="TooltipRow" layer="overlay">
+			<Windows>
+				<Label name="$parentCol1Text" inherits="UO_Default_Label_Color" font="UO_DefaultText" maxchars="2048" textalign="topleft" autoresize="true" wordwrap="true">
+					<Size>
+						<AbsPoint x="0" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>	
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+				                              
+				<Label name="$parentCol2Text" inherits="UO_Default_Label_Color" font="UO_DefaultText" maxchars="2048" textalign="topleft" autoresize="true" wordwrap="true">
+					<Size>
+						<AbsPoint x="0" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topright" relativePoint="topright">
+							<AbsPoint x="0" y="0" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255" a="255" />
+				</Label>
+			</Windows>
+		</Window>
+
+		<Window name="DefaultTooltip" layer="overlay" sticky="true" handleinput="false">
+			<Size>
+				<AbsPoint x="400" y="64" />
+			</Size>
+			<Anchors>
+				<Anchor point="center" relativePoint="center" />
+			</Anchors>
+			<Windows>
+				<FullResizeImage name="$parentBackground" inherits="UO_Simple_Black_Background">
+					<Size>
+						<AbsPoint x="0" y="0" />
+					</Size>
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>					
+					<Windows>
+						<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+							<Size>
+								<AbsPoint x="10" y="10"/>
+							</Size>
+							<Anchors>
+								<Anchor point="topleft" relativePoint="topleft" />
+								<Anchor point="bottomright" relativePoint="bottomright" />
+							</Anchors>					
+						</FullResizeImage>
+					</Windows>
+				</FullResizeImage>
+				<Window name="DefaultTooltipRow1" inherits="TooltipRow">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft">
+							<AbsPoint x="10" y="5" />
+						</Anchor>
+						<Anchor point="topright" relativePoint="topright">
+							<AbsPoint x="-10" y="5" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<Window name="DefaultTooltipRow2" inherits="TooltipRow">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="DefaultTooltipRow1">
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="topright" relativeTo="DefaultTooltipRow1" >
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<Window name="DefaultTooltipRow3" inherits="TooltipRow">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="DefaultTooltipRow2" >
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="topright" relativeTo="DefaultTooltipRow2" >
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+					</Anchors>
+				</Window>	
+				<Window name="DefaultTooltipRow4" inherits="TooltipRow">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="DefaultTooltipRow3" >
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="topright" relativeTo="DefaultTooltipRow3" >
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+					</Anchors>
+				</Window>
+				<Window name="DefaultTooltipRow5" inherits="TooltipRow">
+					<Anchors>
+						<Anchor point="bottomleft" relativePoint="topleft" relativeTo="DefaultTooltipRow4" >
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+						<Anchor point="bottomright" relativePoint="topright" relativeTo="DefaultTooltipRow4" >
+							<AbsPoint x="0" y="5" />
+						</Anchor>
+					</Anchors>
+				</Window>			
+			</Windows>
+		</Window>				
+	</Windows>
+</Interface>
+	

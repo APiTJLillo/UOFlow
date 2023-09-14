@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Assets>
+
+		<!--  *************** Examples ( These are defined in the CoreInterface ) ***************  -->
+		<!-- <Texture name="shield_texture" file="Textures/ShieldButton.dds" /> -->
+		<!-- <Texture name="buttons" file="Textures/Buttons.dds" />	-->
+		<!--  *********************************************************************************** -->
+
+		<Texture name="WindowTitle" file="Textures/WindowTitle.dds" />
+		<Texture name="UO_Background" file="Textures/window_background.dds" />
+		<Texture name="Simple_Background" file="Textures/simpleBackground.dds" />
+		<Texture name="Simple_Frame" file="Textures/simpleFrame.dds" />
+		<Texture name="Outer_Frame" file="Textures/outerFrame.dds" />
+		<Texture name="Inner_Frame" file="Textures/innerFrame.dds" />
+		<Texture name="Main_Menu_Frame" file="Textures/mainMenuFrame.dds" />
+		<Texture name="UO_ResizeFrame" file="Textures/ResizeFrame.dds" />
+		<Texture name="ComboBox_small" file="Textures/comboBox.dds" />
+		<Texture name="ComboBox_long" file="Textures/comboBox_long.dds" />
+		<Texture name="Context_Item_Selection" file="Textures/contextItemSelection.dds" />
+		<Texture name="Tick" file="Textures/tick.dds" />
+		<Texture name="Menu_Selection" file="Textures/selection.dds" />
+		<Texture name="Default_Frame" file="Textures/frame.dds" />
+		<Texture name="Default_Slot" file="Textures/defaultSlot.dds" />
+		<Texture name="Large_Divider" file="Textures/largeDivider.dds" />
+
+		<Texture name="CloseButton" file="Textures/buttons/closeX.dds" />
+		<Texture name="Medium_Select_Button" file="Textures/buttons/mediumSelectButton.dds" />
+		<Texture name="Default_Gump_Button" file="Textures/buttons/defaultGumpButton.dds" />
+		<Texture name="Prev_Button" file="Textures/buttons/prevButton.dds" />
+		<Texture name="Big_Prev_Button" file="Textures/buttons/bigPrevButton.dds" />
+		<Texture name="Next_Button" file="Textures/buttons/nextButton.dds" />
+		<Texture name="Big_Next_Button" file="Textures/buttons/bigNextButton.dds" />
+		<Texture name="CheckBox" file="Textures/buttons/checkBox.dds" />
+		<Texture name="RadioButton" file="Textures/buttons/radioButton.dds" />
+		<Texture name="Resize_Top_Right" file="Textures/buttons/resizeTopRight.dds" />
+		<Texture name="Resize_Top_Left" file="Textures/buttons/resizeTopLeft.dds" />
+		<Texture name="Resize_Up_Left" file="Textures/buttons/resizeUpLeft.dds" />
+		<Texture name="Resize_Up_Right" file="Textures/buttons/resizeUpRight.dds" />
+		<Texture name="Scrollbar_Up" file="Textures/buttons/scrollbarUpArrow.dds" />
+		<Texture name="Scrollbar_Down" file="Textures/buttons/scrollbarDownArrow.dds" />
+		<Texture name="Scrollbar_Vertical" file="Textures/buttons/scrollBarV.dds" />
+		<Texture name="Scrollbar_Vertical_BG" file="Textures/buttons/scrollBarVBG.dds" />
+		<Texture name="Scrollbar_Left" file="Textures/buttons/scrollbarLeftArrow.dds" />
+		<Texture name="Scrollbar_Right" file="Textures/buttons/scrollbarRightArrow.dds" />
+		<Texture name="Scrollbar_Horizontal" file="Textures/buttons/scrollBarH.dds" />
+		<Texture name="Scrollbar_Horizontal_BG" file="Textures/buttons/scrollBarHBG.dds" />
+		<Texture name="Swirl_Button" file="Textures/buttons/swirlButton.dds" />
+		<Texture name="Dot_Button" file="Textures/buttons/dotButton.dds" />
+		<Texture name="Chat_Baloon" file="Textures/buttons/chatBaloon.dds" />
+		<Texture name="Samll_Select" file="Textures/buttons/smallSelect.dds" />
+		<Texture name="Plus" file="Textures/buttons/plus.dds" />
+		<Texture name="Minus" file="Textures/buttons/minus.dds" />
+		<Texture name="Arrow_Button_Right" file="Textures/buttons/arrowButtonRight.dds" />
+		<Texture name="Arrow_Button_Left" file="Textures/buttons/arrowButtonLeft.dds" />
+		<Texture name="Purple_Diamond" file="Textures/buttons/purpleDiamond.dds" />
+		<Texture name="Turquoise_Diamond" file="Textures/buttons/turquoiseDiamond.dds" />
+		<Texture name="Gray_Diamond" file="Textures/buttons/grayDiamond.dds" />
+		<Texture name="Green_Diamond" file="Textures/buttons/greenDiamond.dds" />
+		<Texture name="Brown_Diamond" file="Textures/buttons/brownDiamond.dds" />
+		<Texture name="Circle_Selection" file="Textures/buttons/circleSelection.dds" />
+		<Texture name="Tab_Button" file="Textures/buttons/tabButton.dds" />
+		<Texture name="Golden_Tab_Button" file="Textures/buttons/goldenTabButton.dds" />
+		<Texture name="arrowdown" file="Textures/buttons/arrowdown.dds"/>
+		<Texture name="arrowup" file="Textures/buttons/arrowup.dds"/>
+		<Texture name="Lock_Button" file="Textures/buttons/lockButton.dds"/>
+		<Texture name="Lock" file="Textures/buttons/Lock.dds"/>
+		<Texture name="UnLock" file="Textures/buttons/UnLock.dds"/>
+		<Texture name="Large_Close_Button" file="Textures/buttons/largeCloseButton.dds"/>
+		<Texture name="Object_Handle" file="Textures/buttons/objectHandle.dds"/>
+		<Texture name="Color_Button" file="Textures/buttons/colorButton.dds"/>
+		<Texture name="Color_Ring" file="Textures/buttons/colorRing.dds"/>
+		<Texture name="Slot_Button" file="Textures/buttons/slotButton.dds"/>
+		<Texture name="Slot_Shadow" file="Textures/buttons/slotShadow.dds"/>
+		<Texture name="Slot_White_Frame" file="Textures/buttons/slotWhiteFrame.dds"/>		
+		
+		<!-- BUTTONS Textures -->
+		<Texture name="invisB" file="Textures/buttons/invisButton.dds"/>
+		<Texture name="healB" file="Textures/buttons/healButton.dds"/>
+		<Texture name="cureB" file="Textures/buttons/cureButton.dds"/>
+		<Texture name="guards" file="Textures/buttons/guards.dds"/>
+		<Texture name="Loot_ALL" file="Textures/buttons/lootall.dds" />
+		<Texture name="Search" file="Textures/buttons/search.dds" />
+		<Texture name="WOD" file="Textures/buttons/wod.dds"/>
+		<Texture name="bod" file="Textures/buttons/bod.dds"/>
+		<Texture name="talk" file="Textures/buttons/talk.dds"/>
+		<Texture name="bpack" file="Textures/buttons/backpack.dds"/>
+		<Texture name="bank" file="Textures/buttons/bankbox.dds"/>
+		<Texture name="Help" file="Textures/buttons/help.dds"/>
+		<Texture name="ExtractLeft" file="Textures/buttons/ExtractLeft.dds"/>
+		<Texture name="ExtractRight" file="Textures/buttons/ExtractRight.dds"/>
+		<Texture name="updown" file="Textures/buttons/updown.dds"/>
+		<Texture name="CloseButton" file="Textures/buttons/closeX.dds" />
+		<Texture name="WarShield" file="Textures/buttons/warShield.dds" />
+
+		<Texture name="HLine" file="Textures/hline.dds"/>
+		<Texture name="VLine" file="Textures/vline.dds"/>
+		<Texture name="HDotLine" file="Textures/hdotline.dds"/>
+		<Texture name="VDotLine" file="Textures/vdotline.dds"/>
+
+		<Texture name="UO_Core" file="Textures/CoreTextures.dds" />
+		<Texture name="CC_Widgets" file="Textures/character_widgets.dds" />
+		<Texture name="UO_Common" file="Textures/UO_Common.dds" />
+		<Texture name="UO_Legacy_Book" file="Textures/Legacy_Book.dds" />
+
+		<Texture name="Shard_Selection" file="Textures/Shard_Selection.dds" />
+
+	</Assets>
+</Interface>

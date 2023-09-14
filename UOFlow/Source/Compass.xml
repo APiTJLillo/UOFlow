@@ -1,0 +1,53 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Windows>
+		<Window name="Compass" movable="true" layer="overlay">
+			<Size>
+				<AbsPoint x="180" y="180" />
+			</Size>
+			<Anchors>
+				<Anchor point="topright" relativePoint="topleft" relativeTo="ResizeWindow" />
+			</Anchors>
+			<EventHandlers>
+				<EventHandler event="OnUpdate" function="Compass.Magnetize" />
+				<EventHandler event="OnInitialize" function="Compass.Initialize" />
+				<EventHandler event="OnShutdown" function="Compass.Shutdown" />
+				<EventHandler event="OnRButtonUp" function="Compass.Close" />
+			</EventHandlers>
+			<Windows>
+				<DynamicImage name="$parentImage" texture="hud_image" texturescale="0.8" layer="overlay" handleinput="false">
+					<Size>
+						<AbsPoint x="180" y="180" />
+					</Size>
+					<TexCoords x="194" y="629"/>
+					<Anchors>
+						<Anchor point="center" relativePoint="center" relativeTo="$parent" />
+					</Anchors>
+				</DynamicImage>
+
+				<DynamicImage name="$parentNeedle" texture="compassNeedle" layer="background" handleinput="false" textureScale="1">
+					<Size>
+						<AbsPoint x="17" y="127" />
+					</Size>
+					<TexCoords x="0" y="0" />
+					<Anchors>
+						<Anchor point="center" relativePoint="center" relativeTo="$parentImage" />
+					</Anchors>
+				</DynamicImage>
+
+				<Label name="$parentLabel" font="UO_GoldButtonText" maxchars="80" textalign="center" autoresize="true" layer="popup" handleinput="false">
+					<Size>
+						<AbsPoint x="180" y="30" />
+					</Size>
+					<Anchors>
+						<Anchor point="bottom" relativePoint="top" relativeTo="$parent" >
+							<AbsPoint x="0" y="-5" />
+						</Anchor>
+					</Anchors>
+					<Color r="255" g="255" b="255"/>
+
+				</Label>
+			</Windows>
+		</Window>
+	</Windows>
+</Interface>

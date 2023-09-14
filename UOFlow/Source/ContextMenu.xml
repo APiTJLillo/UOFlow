@@ -1,0 +1,82 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+	<Scripts>
+		<Script file="Source/ContextMenu.lua" />
+	</Scripts>
+	<Windows>
+		<Button name="ContextMenuEntryDef" texturescale="1.1" backgroundtexture="blackBg" font="UO_DefaultText" textalign="left" highlighttexture="blackBg">
+	        <Size>
+				<AbsPoint x="267" y="25" />
+	        </Size>
+	        <TexCoords>
+		        <NormalHighlit x="0" y="0" />
+		        <PressedHighlit x="0" y="0" />
+	        </TexCoords>
+	        <TextColors>
+	        	<Normal r="255" g="255" b="255" a="255"/>
+	        	<NormalHighlit r="243" g="227" b="49" a="255"/>
+	        	<Pressed r="255" g="0" b="0" a="255"/>
+	        	<PressedHighlit r="255" g="0" b="0" a="255"/>
+	        	<Disabled r="128" g="128" b="128" a="128"/>
+	        </TextColors>
+	        <TextOffset x="7" y="4" />
+	        <EventHandlers>
+	        	<EventHandler event="OnLButtonUp" function="ContextMenu.MenuItemLButtonUp"/>
+	        	<EventHandler event="OnLButtonDown" function="ContextMenu.MenuItemLButtonDown"/>
+	        	<EventHandler event="OnMouseOver" function="ContextMenu.MenuItemMouseOver"/>
+	        	<EventHandler event="OnMouseOverEnd" function="ContextMenu.MenuItemMouseLeave"/>
+	        </EventHandlers>
+        </Button>	
+		
+		<Window name="ContextMenu" movable="true" layer="popup">
+			<Size>
+				<AbsPoint x="275" y="0" />
+			</Size>
+			<EventHandlers>
+				<EventHandler event="OnInitialize" function="ContextMenu.Initialize" />
+				<EventHandler event="OnShown" function="ContextMenu.Show" />
+				<EventHandler event="OnHidden" function="ContextMenu.Hide" />
+			</EventHandlers>
+			<Windows>
+				<!-- Body background -->
+				<FullResizeImage name="$parentWindowBackground" inherits="UO_Simple_Black_Background">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"/>
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</FullResizeImage>
+
+				<!-- Inner Frame Boilerplate -->
+				<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+				<!-- End of Inner Frame Boilerplate -->
+			</Windows>
+		</Window>
+		<Window name="ContextMenuSubMenu" movable="false" layer="popup">
+			<Size>
+				<AbsPoint x="275" y="0" />
+			</Size>
+			<Windows>
+				<!-- Body background -->
+				<FullResizeImage name="$parentWindowBackground" inherits="UO_Simple_Black_Background">
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft"/>
+						<Anchor point="bottomright" relativePoint="bottomright"/>
+					</Anchors>
+				</FullResizeImage>
+
+				<!-- Inner Frame Boilerplate -->
+				<FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame" >
+					<Anchors>
+						<Anchor point="topleft" relativePoint="topleft" />
+						<Anchor point="bottomright" relativePoint="bottomright" />
+					</Anchors>
+				</FullResizeImage>
+				<!-- End of Inner Frame Boilerplate -->					
+			</Windows>
+		</Window>
+	</Windows>
+</Interface>
