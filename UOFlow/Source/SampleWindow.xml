@@ -1,0 +1,42 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+    <Scripts>
+        <Script file="Source/SampleWindow.lua"/>
+    </Scripts>
+    <Windows>
+
+      <!-- MAIN WINDOW DEFINITION -->
+      <Window name="SampleWindow" movable="true" layer="secondary">
+      <Size>
+        <AbsPoint x="800" y="600"/>
+      </Size>
+      <Anchors>
+        <Anchor point="topleft" relativePoint="topleft" relativeTo="">
+          <AbsPoint x="16" y="16"/>
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="SampleWindow.Initialize"/>
+        <EventHandler event="OnShutdown" function="SampleWindow.Shutdown"/>
+      </EventHandlers>
+
+              <Windows>
+                <!-- General Window Settings -->
+                <FullResizeImage name="$parentBackground" inherits="UO_Simple_Black_Background">
+                  <Anchors>
+                    <Anchor point="topleft" relativePoint="topleft" relativeTo=""/>
+                    <Anchor point="bottomright" relativePoint="bottomright" relativeTo=""/>
+                  </Anchors>
+                </FullResizeImage>
+
+                <!-- Title Bar -->
+                <Window name="$parentTitleBar">
+                    <Button name="$parentClose" backgroundtexture="CloseButton" highlighttexture="CloseButton" texturescale="1.15" layer="popup">
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="SampleWindow.Hide"/>
+                    </EventHandlers>
+                    </Button>
+                </Window>
+              </Windows>
+        </Window>
+    </Windows>
+</Interface>

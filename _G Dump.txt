@@ -1,0 +1,5167 @@
+IsObjectIdPet
+NewPlayerInstruction
+NewPlayerInstruction.setDataFunction
+NewPlayerInstruction.OnCloseWindow
+NewPlayerInstruction.Init
+NewPlayerInstruction.getActiveWindowData
+NewPlayerInstruction.ButtonFunction
+NewPlayerInstruction.setFields
+NewPlayerInstruction.Initialize
+NewPlayerInstruction.Shutdown
+NewPlayerInstruction.ButtonPressed
+NewPlayerInstruction.new
+WindowIsSticky
+HousingSetRoofZOffset
+WindowRegisterCoreEventHandler
+UserActionMacroGetRepeatEnabled
+LogDisplayIsScrolledToTop
+UORadarIsLocationInArea
+UserActionEquipItemsAddItem
+WindowGetParent
+UpdateStatLock
+Damage
+Damage.blue
+Damage.numWindow
+Damage.mobileId
+Damage.y
+Damage.x
+Damage.damageNumber
+Damage.height
+Damage.green
+Damage.destroyWindow
+Damage.red
+UserActionArmDisarmSelectSlot
+SelectCharacter
+BuffDebuff
+BuffDebuff.BuffData
+BuffDebuff.Timers
+BuffDebuff.TID
+BuffDebuff.ActiveBuffs
+BuffDebuff.Update
+BuffDebuff.Fade
+BuffDebuff.ReverseOrder
+BuffDebuff.BuffWindowId
+BuffDebuff.HandleBuffRemoved
+BuffDebuff.IconSize
+BuffDebuff.Good
+BuffDebuff.UpdateTimer
+BuffDebuff.Shutdown
+BuffDebuff.ShouldCreateNewBuff
+BuffDebuff.FadeRaising
+BuffDebuff.MouseOver
+BuffDebuff.Gap
+BuffDebuff.MaxLength
+BuffDebuff.ResizeOuterWindow
+BuffDebuff.CreateNewBuff
+BuffDebuff.TableOrder
+BuffDebuff.Initialize
+BuffDebuff.UpdateStatus
+BuffDebuff.retrieveBuffData
+BuffDebuff.Neutral
+BuffDebuff.DeltaTime
+UOSetWaypointMapFacet
+tonumber
+HotbarHasItem
+barName
+UOGetPhysicalRadarFacet
+ColorPickerAddColor
+WindowClearAnchors
+_LabelGetText
+DockableWindowGetRootName
+WindowRegisterEventHandler
+GetCourseMapData
+HandleSingleLeftClkTarget
+GetWeaponAbilityId
+UserActionUseRacialAbility
+UORadarGetAreaDimensions
+ButtonGetDisabledFlag
+ChannelWindow
+ChannelWindow.CreateChannel
+ChannelWindow.ToggleChannel
+ChannelWindow.CreateCancel_OnLButtonUp
+ChannelWindow.currentSelection
+ChannelWindow.CreateWindowInitialize
+ChannelWindow.Join_OnLButtonUp
+ChannelWindow.Create_OnLButtonUp
+ChannelWindow.Shutdown
+ChannelWindow.Initialize
+ChannelWindow.TID
+ChannelWindow.UpdateCurrentChannel
+ChannelWindow.Leave_OnLButtonUp
+DragSlotDropAction
+GumpManagerSendAuthorTitle
+StatusWindow
+StatusWindow.OnLButtonUp
+StatusWindow.Latency_OnMouseOver
+StatusWindow.OnMouseOver
+StatusWindow.UpdateLatency
+StatusWindow.alternate
+StatusWindow.ToggleButtons
+StatusWindow.TCToolsOver
+StatusWindow.HPLocked
+StatusWindow.OnLButtonDown
+StatusWindow.LockHP
+StatusWindow.EditStr
+StatusWindow.SetHealth
+StatusWindow.GuardsButton_OnLButtonUp
+StatusWindow.OnRButtonUp
+StatusWindow.Notoriety
+StatusWindow.Locked
+StatusWindow.OnHPLButtonDown
+StatusWindow.SetMana
+StatusWindow.OnMouseDlbClk
+StatusWindow.LastMPHeight
+StatusWindow.MPWidth
+StatusWindow.OnHPLButtonUp
+StatusWindow.LockTooltipSTAM
+StatusWindow.LockMANA
+StatusWindow.MPHeight
+StatusWindow.TextColors
+StatusWindow.Initialize
+StatusWindow.GuardsButton_OnMouseOver
+StatusWindow.TCToolsOverend
+StatusWindow.ClickOutside
+StatusWindow.TCContextMenuCallback
+StatusWindow.STAMLocked
+StatusWindow.TCToolsHandle
+StatusWindow.HPWidth
+StatusWindow.OnMLANAButtonUp
+StatusWindow.TempDisabled
+StatusWindow.ChangeStyle
+StatusWindow.EditSkill
+StatusWindow.LockTooltip
+StatusWindow.TCToolsOnLButtonDown
+StatusWindow.TCTools
+StatusWindow.ToggleStrLabel
+StatusWindow.Lock
+StatusWindow.EnableInput
+StatusWindow.LastHPHeight
+StatusWindow.UpdateLabelContent
+StatusWindow.TCToolsTooltip
+StatusWindow.LockSTAM
+StatusWindow.OnMouseOverEnd
+StatusWindow.OnSTAMLButtonUp
+StatusWindow.CurPlayerId
+StatusWindow.OnSTAMLButtonDown
+StatusWindow.OnMANALButtonDown
+StatusWindow.Shutdown
+StatusWindow.LockTooltipMANA
+StatusWindow.HPHeight
+StatusWindow.UpdateStatus
+StatusWindow.Menu
+StatusWindow.MANALocked
+StatusWindow.DisableDelta
+StatusWindow.Skills
+StatusWindow.MenuTooltip
+StatusWindow.LockTooltipHP
+ScrollWindowSetOffset
+UORadarSetWindowOffset
+AdvancedBuff
+AdvancedBuff.EvilLocked
+AdvancedBuff.TableOrderGood
+AdvancedBuff.PrevIconsEvil
+AdvancedBuff.LockTooltip
+AdvancedBuff.OnLButtonDown
+AdvancedBuff.EvilDirection
+AdvancedBuff.ReverseOrderGood
+AdvancedBuff.WindowNameEvil
+AdvancedBuff.GoodDirection
+AdvancedBuff.HandleReAnchorBuffEvil
+AdvancedBuff.HandleReAnchorBuffGood
+AdvancedBuff.GoodLocked
+AdvancedBuff.WindowNameGood
+AdvancedBuff.ContextToolsTooltip
+AdvancedBuff.ReverseOrderEvil
+AdvancedBuff.LockMe
+AdvancedBuff.TableOrderEvil
+AdvancedBuff.PrevIconsGood
+AdvancedBuff.UpdateDirections
+AdvancedBuff.Rotate
+AdvancedBuff.Shutdown
+AdvancedBuff.Initialize
+TID_INTERACTIVE
+PrintWStringToChatWindow
+OFFSET_DESC
+WindowSetMovable
+PetWindow
+PetWindow.CloseLeft
+PetWindow.UpdatePet
+PetWindow.windowY
+PetWindow.ShowPet
+PetWindow.windowX
+PetWindow.HideAll
+PetWindow.ShowWindow
+PetWindow.HidePet
+PetWindow.OnLButtonUp
+PetWindow.CheckTime
+PetWindow.Lock
+PetWindow.Locked
+PetWindow.UpdateAnchors
+PetWindow.OffetSize
+PetWindow.ShowPetToolTip
+PetWindow.ShowPetToolTipEnd
+PetWindow.HidePetToolTip
+PetWindow.HidePetToolTipEnd
+PetWindow.Update
+PetWindow.windowOffset
+PetWindow.PetWindowHidden
+PetWindow.Delta
+PetWindow.OnMouseDrag
+PetWindow.ContextMenuCallback
+PetWindow.LockMe
+PetWindow.LockTooltip
+PetWindow.SortedPet
+PetWindow.Shutdown
+PetWindow.Initialize
+PetWindow.tid
+PetWindow.ButtonRotation
+_LabelGetTextColor
+HotbarExecuteItem
+UserActionUseObjectTypeGetIconObjectTypeHue
+GumpsParsing
+GumpsParsing.SOSGump
+GumpsParsing.CheckGumpType
+GumpsParsing.GumpMaps
+GumpsParsing.SOSTids
+GumpsParsing.CreateSOSWaypoint
+GumpsParsing.ParsedGumps
+GumpsParsing.DestroyGump
+GumpsParsing.PressButton
+GumpsParsing.ShowHide
+GumpsParsing.GetSOSCoords
+GumpsParsing.SixMonthsRewardGump
+GumpsParsing.MainParsingCheck
+GumpsParsing.TextentryGetText
+GumpsParsing.ToShow
+PageWindowRemoveSplitableWindow
+LogDisplayGetShowLogName
+LogDisplayGetShowFilterName
+showing
+GetAllMobileTargets
+WarShield
+WarShield.ShieldOverend
+WarShield.Shutdown
+WarShield.OnInitialize
+WarShield.ShieldOnLButtonDown
+WarShield.ShieldOver
+WarShield.ShieldHandle
+AcceptCriminalNotification
+RequestTargetInfo
+LogDisplayGetFilterState
+WindowSetAlpha
+collectgarbage
+UserActionMacroGetRepeatCount
+CooldownDisplaySetCooldown
+TextLogDestroy
+ListBoxSetVisibleRowCount
+UO_GenericGump
+UO_GenericGump.broadcastButtonPress
+UO_GenericGump.broadcastTextEntryUReply
+UO_GenericGump.broadcastSelections
+UO_GenericGump.DEFAULT_CLOSE_BUTTON_ID
+UO_GenericGump.retrieveWindowData
+UO_GenericGump.retreiveWindowDataStrings
+UO_GenericGump.broadcastTextEntries
+UO_GenericGump.EMPTY_LINE
+UO_GenericGump.broadcastTextEntryReply
+UO_GenericGump.writeBasicGumpData
+UO_GenericGump.debug
+IsInPlayerBackPack
+TextEditBoxInsertText
+math
+math.log
+math.max
+math.acos
+math.huge
+math.ldexp
+math.pi
+math.cos
+math.tanh
+math.pow
+math.deg
+math.tan
+math.cosh
+math.sinh
+math.random
+math.randomseed
+math.frexp
+math.ceil
+math.floor
+math.rad
+math.abs
+math.sqrt
+math.modf
+math.asin
+math.min
+math.mod
+math.fmod
+math.log10
+math.atan2
+math.exp
+math.sin
+math.atan
+RequestContextMenu
+WindowSetFontAlpha
+WindowStartScaleAnimation
+TextLogAddSingleByteEntry
+MoveItemToContainer
+UserActionArmDisarmGetSlotNumber
+Knumber
+TextLogSetIncrementalSaving
+TextParsing
+TextParsing.Taunts
+TextParsing.COLD
+TextParsing.ForceOverhead
+TextParsing.Neutral
+TextParsing.SpecialColorsString
+TextParsing.IgnoreTextManager
+TextParsing.Curse
+TextParsing.Paralyze
+TextParsing.Chaos
+TextParsing.TauntsTable
+TextParsing.POISON
+TextParsing.SpecialColors
+TextParsing.OverHeadErrorsString
+TextParsing.OverHeadError
+TextParsing.ENERGY
+TextParsing.PHYSICAL
+TextParsing.FIRE
+TextParsing.Fame
+TextParsing.CenterScreenText
+TextParsing.ColorizeText
+TextParsing.Emotize
+TextParsing.Specials
+TextParsing.Karma
+TextParsing.TimersNbuff
+TextParsing.Heal
+TextParsing.OverHeadErrors
+TextParsing.Green
+TextParsing.PoisonMessages
+TextParsing.SpellCasting
+TextParsing.SpecialColor
+TextParsing.SpecialTexts
+SelectShard
+TrackingPointer
+TrackingPointer.UpdateAll
+TrackingPointer.TrackWaypoints
+TrackingPointer.OnInitialize
+TrackingPointer.Update
+TrackingPointer.OnShutdown
+ReleaseTileArt
+UserSettingsChanged
+TextEditBoxSelectAll
+SnapUtils
+SnapUtils.ANCHOR_POINT_TOP
+SnapUtils.ANCHOR_POINT_BOTTOM_RIGHT
+SnapUtils.ANCHOR_POINT_TOP_LEFT
+SnapUtils.FindSnap
+SnapUtils.ANCHOR_POINT_LEFT
+SnapUtils.ComputeAnchorScreenPositions
+SnapUtils.SnapUpdate
+SnapUtils.ANCHOR_POINT_RIGHT
+SnapUtils.EndWindowSnap
+SnapUtils.SNAP_PAIRS
+SnapUtils.ANCHOR_POINT_BOTTOM
+SnapUtils.ANCHOR_POINT_BOTTOM_LEFT
+SnapUtils.SnappableWindows
+SnapUtils.ANCHOR_POINT_CENTER
+SnapUtils.StartWindowSnap
+SnapUtils.ANCHOR_POINT_TOP_RIGHT
+SnapUtils.GetAnchorDistance
+SnapUtils.ANCHOR_POINTS
+gcinfo
+ComboBoxGetSelectedMenuItem
+DockableWindowGetTopWindowName
+SliderBarGetDisabledFlag
+k
+DebugData
+DebugData.DebugString
+IsRiding
+TextLogAddEntry
+ItemPropertiesInfo
+ItemPropertiesInfo.QuantityTid
+ItemPropertiesInfo.LifeSpanTid
+ItemPropertiesInfo.WeightTid
+ItemPropertiesInfo.QuestGiverTid
+ItemPropertiesInfo.TamedTid
+ItemPropertiesInfo.ChargesTid
+ItemPropertiesInfo.WeightONLYTid
+ItemPropertiesInfo.LostItemTid
+ItemPropertiesInfo.NinjaBeltTid
+elementSquareDMG
+ActionButtonGroupSetTintColor
+UserActionIsSpeechType
+SendChat
+ActionButtonGroupSetText
+HasEntitlement
+WindowStartAlphaAnimation
+GetCheckForCircularDependencies
+WindowSetParent
+StringsCompare
+SetCheckForCircularDependencies
+LoadTextFile
+ModulesLoadFromListFile
+LogDisplayResetLineFadeTime
+UserActionTargetByResourceGetUseObjectInstanceId
+CourseMapIsPlotting
+_WindowGetDimensions
+SendRaceChangeResponse
+VerticalScrollbarSetPageSize
+WindowForceProcessAnchors
+SkillsTracker
+SkillsTracker.Created
+SkillsTracker.Init
+SkillsTracker.UpdateSkill
+SkillsTracker.Update
+SkillsTracker.Initialize
+SkillsTracker.ShowAllMySkills
+SkillsTracker.ContextMenuCallback
+SkillsTracker.Context
+SkillsTracker.Shutdown
+SMALL_SPACER
+WindowSetDrawWhenInterfaceHidden
+UORadarGetFacetLabel
+wy
+WindowBreakPoint
+ScrollWindowGetOffset
+LogDisplayScrollToTop
+xpcall
+IsMobile
+WindowSetGameActionTrigger
+_VERSION
+HorizontalScrollWindowSetOffset
+LabelGetWordWrap
+CSVUtilities
+CSVUtilities.getNumRows
+CSVUtilities.getRowIdWithColumnValue
+UserActionUseSkill
+StatusBarSetMaximumValue
+WindowSetResizing
+LogDisplayGetFilterColor
+next
+InterfaceCore
+InterfaceCore.ShowPopupMessage
+InterfaceCore.HandleGameserverConnectFailed
+InterfaceCore.CreateTitleInterface
+InterfaceCore.scale
+InterfaceCore.diagNum
+InterfaceCore.Update
+InterfaceCore.HandleGameserverConnectLost
+InterfaceCore.OnExitGame
+InterfaceCore.CreateLoginInterface
+InterfaceCore.IsInGame
+InterfaceCore.RegisterRootWindowEventHandler
+InterfaceCore.TID
+InterfaceCore.DummyWindowSetShutdown
+InterfaceCore.BreakPoint
+InterfaceCore.UpdateScale
+InterfaceCore.ButtonStates
+InterfaceCore.CreatePlayInterface
+InterfaceCore.Initialize
+InterfaceCore.HandleLoginRejected
+InterfaceCore.ReloadUI
+InterfaceCore.WindowSetCommon
+InterfaceCore.Shutdown
+UserActionEquipItemsRemoveItem
+UOCenterRadarOnLocation
+DragWindow
+DragWindow.Shutdown
+DragWindow.CurrentItem
+DragWindow.Update
+DragWindow.Initialize
+ComboBoxExternalOpenMenu
+WindowRestoreDefaultSettings
+iconId
+WStringsCompare
+DockableWindowSetMovable
+Tooltips
+Tooltips.AnchorTooltip
+Tooltips.SetTooltipText
+Tooltips.AnchorTooltipManual
+Tooltips.Update
+Tooltips.ANCHOR_WINDOW_RIGHT
+Tooltips.SetTooltipColor
+Tooltips.ANCHOR_WINDOW_LEFT
+Tooltips.ROW_SPACING
+Tooltips.BORDER_SIZE
+Tooltips.ANCHOR_WINDOW_BOTTOM
+Tooltips.CreateCustomTooltip
+Tooltips.Finalize
+Tooltips.MAX_WIDTH
+Tooltips.SetTooltipFont
+Tooltips.SetTooltipAlpha
+Tooltips.ClearTooltip
+Tooltips.SetUpdateCallback
+Tooltips.NUM_COLUMNS
+Tooltips.Initialize
+Tooltips.NUM_ROWS
+Tooltips.CreateTextOnlyTooltip
+Tooltips.ANCHOR_SCREEN_BOTTOM_RIGHT
+Tooltips.ANCHOR_WINDOW_TOP
+HorizontalScrollbarSetMaxScrollPosition
+ActionButtonGroupSetTimeAbbreviations
+List
+List.popright
+List.pushleft
+List.popleft
+List.pushright
+List.new
+WindowGetHandleInput
+RegisterWindowData
+SliderBarSetDisabledFlag
+select
+wfacet
+MacroSystemDoLegacyMacrosExist
+ColorPickerClear
+ObjectHandle
+ObjectHandle.DestroyObjectWindow
+CreateWindowFromTemplateShow
+tostring
+DeleteCharacter
+DragSlotPickupAction
+UOCreateUserWaypoint
+UnregisterEventHandler
+WindowHasFocus
+GetStringUpppercaseFromTid
+ButtonSetDisabledFlag
+ok
+ColorPickerGetColorAtPoint
+ChatCreateChannel
+UODeleteUserWaypoint
+assert
+CheckForNewChannel
+IsPartyRequestPending
+MainMenuWindow
+MainMenuWindow.OnLogOut
+MainMenuWindow.OnOpenMacros
+MainMenuWindow.OnToggleAgentsSettings
+MainMenuWindow.ToggleBugReportWindow
+MainMenuWindow.ToggleSettingsWindow
+MainMenuWindow.OnOpenUOStore
+MainMenuWindow.OnOpenActions
+MainMenuWindow.OnOpenBugReportItem
+MainMenuWindow.Shutdown
+MainMenuWindow.OnOpenHelp
+MainMenuWindow.OnOpenUserSettings
+MainMenuWindow.Initialize
+MainMenuWindow.TID
+StatusBarGetMaximumValue
+RCWgender
+DeclinePartyInvite
+ButtonGetHighlightFlag
+ListBoxSetDataTable
+GetStringFromTid
+ChatOptionsWindow
+ChatOptionsWindow.OnShown
+ChatOptionsWindow.ClearSelectionImage
+ChatOptionsWindow.SelectedMessageTypeIndex
+ChatOptionsWindow.TID
+ChatOptionsWindow.channelListCurrentStatus
+ChatOptionsWindow.SetAllColorChanges
+ChatOptionsWindow.OnLButtonUpColorPicker
+ChatOptionsWindow.UpdateChatOptionRow
+ChatOptionsWindow.Hide
+ChatOptionsWindow.SelectedMessageTypeWindowIndex
+ChatOptionsWindow.OnLButtonUpChannelLabel
+ChatOptionsWindow.SpeechHueIndex
+ChatOptionsWindow.SetChannelColor
+ChatOptionsWindow.channelListOrder
+ChatOptionsWindow.Initialize
+ChatOptionsWindow.OnSetCustomColor
+ChatOptionsWindow.Shutdown
+ChatOptionsWindow.channelListData
+ChatOptionsWindow.OnHidden
+RegisterWindowSet
+ClearCurrentTarget
+pairsByKeys
+ResetLegacyKeyBinding
+GumpManagerSetPlayerFaceType
+DragSlotDropObjectToObjectAtIndex
+GenericGumpOnDoubleClicked
+MacroSystemGetNumMacros
+iOffset
+BugReportWindowReportBoxText
+BugReportWindowReportBoxText.TextUpdated
+BugReportWindowReportBoxText.Text
+BugReportWindowReportBoxText.CursorPos
+LoadResources
+UserActionTargetByResourceSetResourceType
+UOGetWorldPosToRadar
+StatusBarGetCurrentValue
+UserActionUseItem
+table
+table.setn
+table.insert
+table.getn
+table.foreachi
+table.maxn
+table.foreach
+table.concat
+table.copy
+table.sort
+table.remove
+ColorPickerWindow
+ColorPickerWindow.SetAfterColorSelectionFunction
+ColorPickerWindow.colorSelected
+ColorPickerWindow.ClearWindow
+ColorPickerWindow.AfterColorSelectionFunction
+ColorPickerWindow.yPadding
+ColorPickerWindow.xPadding
+ColorPickerWindow.numColorsPerRow
+ColorPickerWindow.SetWindowPadding
+ColorPickerWindow.SetNumColorsPerRow
+ColorPickerWindow.SetColorTable
+ColorPickerWindow.SetCloseButtonEnabled
+ColorPickerWindow.SelectColor
+ColorPickerWindow.swatchSize
+ColorPickerWindow.colorTables
+ColorPickerWindow.SetSwatchSize
+ColorPickerWindow.closeButtonEnabled
+ColorPickerWindow.frameEnabled
+ColorPickerWindow.Initialize
+ColorPickerWindow.SetHue
+ColorPickerWindow.DrawColorTable
+ColorPickerWindow.SetFrameEnabled
+ColorPickerWindow.SetColor
+LegacyRunebookLoader
+LegacyRunebookLoader.ReloadSettings
+LegacyRunebookLoader.Initialize
+CourseMapMovePoint
+ColorPickerGetColorSpacing
+first
+LabelSetLinkColor
+ipairs
+UserActionTargetByResourceSetUseObjectId
+LabelGetTextDimensions
+LogSystem
+WindowStopAlphaAnimation
+RequestGumpArt
+TID_REQUIRES
+DockableWindowGetTabShowing
+SetLoginServer
+RequestTexture
+WindowAssignFocus
+WindowGetTintColor
+ChatWindowRenameWindowText
+ChatWindowRenameWindowText.TextUpdated
+ChatWindowRenameWindowText.Text
+ChatWindowRenameWindowText.CursorPos
+UserActionGetTargetId
+UserActionGetSpecialId
+GetDistanceFromPlayer
+WindowName
+GetScreenResolution
+HuePickerWindow
+HuePickerWindow.Color16Up
+HuePickerWindow.Color6Up
+HuePickerWindow.OnSlide
+HuePickerWindow.Color2Up
+HuePickerWindow.Color5Up
+HuePickerWindow.Color8Up
+HuePickerWindow.Color15Up
+HuePickerWindow.RequestTargetInfoReceived
+HuePickerWindow.Color11Up
+HuePickerWindow.Color13Up
+HuePickerWindow.Color10Up
+HuePickerWindow.PickColor
+HuePickerWindow.COLORS_PER_ROW
+HuePickerWindow.Initialize
+HuePickerWindow.UpdateHueTable
+HuePickerWindow.SWATCH_SIZE
+HuePickerWindow.Color4Up
+HuePickerWindow.Color17Up
+HuePickerWindow.ColorPicked
+HuePickerWindow.Color14Up
+HuePickerWindow.RequestTargetInfo
+HuePickerWindow.Color12Up
+HuePickerWindow.PickColorTarget
+HuePickerWindow.Shutdown
+HuePickerWindow.Color3Up
+HuePickerWindow.Color7Up
+HuePickerWindow.NUM_COLORS
+HuePickerWindow.Color18Up
+WindowStartPositionAnimation
+UserActionDelaySetDelay
+DockableWindowSetAllTabsAlphas
+UOGetRadarPosToWorld
+MapWindow
+MapWindow.OnMouseOver
+MapWindow.ToggleFacetDownOnLButtonUp
+MapWindow.MapOnLButtonDblClk
+MapWindow.TypeEnabled
+MapWindow.ToggleFacetUpOnLButtonUp
+MapWindow.PopulateMapLegend
+MapWindow.SelectFacet
+MapWindow.OnUpdate
+MapWindow.OnShown
+MapWindow.ZoomOutOnMouseOver
+MapWindow.ZoomScale
+MapWindow.BigOnMouseOver
+MapWindow.CloseMap
+MapWindow.OnResizeBegin
+MapWindow.ToggleCombos
+MapWindow.OnHidden
+MapWindow.IsDragging
+MapWindow.BigToggle
+MapWindow.ToggleAreaDownOnLButtonUp
+MapWindow.OnLegendButtonMouseOver
+MapWindow.Initialize
+MapWindow.MapOnLButtonUp
+MapWindow.MapMouseDrag
+MapWindow.OnResizeEnd
+MapWindow.MAP_HEIGHT_DIFFERENCE
+MapWindow.ZoomInOnMouseOver
+MapWindow.IsMouseOver
+MapWindow.OnLegendToggle
+MapWindow.ZoomOutOnLButtonUp
+MapWindow.OnMouseOverEnd
+MapWindow.MapOnLButtonDown
+MapWindow.CenterOnPlayer
+MapWindow.LockTooltip
+MapWindow.TiltOnLButtonUp
+MapWindow.ComboBCK
+MapWindow.LegendVisible
+MapWindow.Lock
+MapWindow.UpdateMap
+MapWindow.WINDOW_HEIGHT_MAX
+MapWindow.UpdateWaypoints
+MapWindow.CenterOnPlayerOnLButtonUp
+MapWindow.LegendIconOnLButtonUp
+MapWindow.Tilt
+MapWindow.MAP_WIDTH_DIFFERENCE
+MapWindow.MapOnMouseWheel
+MapWindow.SelectArea
+MapWindow.ZoomInOnLButtonUp
+MapWindow.LegendItemTextColors
+MapWindow.OnMouseDrag
+MapWindow.Rotation
+MapWindow.ToggleAreaUpOnLButtonUp
+MapWindow.Big
+MapWindow.Shutdown
+MapWindow.WINDOW_WIDTH_MAX
+MapWindow.ActivateMap
+MapWindow.Locked
+MapWindow.MapOnRButtonUp
+WindowSetScale
+ReleaseTexture
+HorizontalScrollbarSetLineSize
+TextEditBoxGetFont
+PageWindowAddSplitableWindow
+CourseMapPlotToggle
+SetHousingMode
+Compass
+Compass.MagnetPoint
+Compass.Label
+Compass.WindowName
+Compass.delta
+Compass.Initialize
+Compass.Magnetize
+Compass.Needle
+Compass.Close
+Compass.Shutdown
+UserActionFindSlot
+GetCurrentDateTime
+windowName
+DoesWindowNameExist
+UserActionCastSpell
+UOSetRadarZoom
+RegisterEventHandler
+RequestTileArt
+_G
+GetRacialAbilityId
+ButtonGetText
+UserActionMacroGetName
+ChatJoinChannel
+Button
+Button.ButtonState
+MacroSystemAddMacroItem
+UORadarGetAreaLabel
+deepPrint
+TID_SKILLS
+SortFunc
+DoesWindowExist
+maxOffset
+TID_WINDOW_NAME
+VendorSearch
+VendorSearch.RemoveCriteriaTooltip
+VendorSearch.SetLoading
+VendorSearch.OnUpdate
+VendorSearch.CountCriteria
+VendorSearch.UpdateButtonsMap
+VendorSearch.NumberOfCatagories
+VendorSearch.ToggleAuctionButton
+VendorSearch.OnMinPriceTextChanged
+VendorSearch.OnComboSelChanged
+VendorSearch.SearchPrice
+VendorSearch.PriceSortSet
+VendorSearch.ClearAll
+VendorSearch.SearchThis
+VendorSearch.TotalCriteriaExpected
+VendorSearch.ToggleAuctionButtonTooltip
+VendorSearch.SearchCombo
+VendorSearch.RemoveCriteria
+VendorSearch.LowHighButton
+VendorSearch.OnTextChanged
+VendorSearch.GetError
+VendorSearch.OldCriteriaLabels
+VendorSearch.WindowName
+VendorSearch.Shutdown
+VendorSearch.SearchGumpId
+VendorSearch.SearchName
+VendorSearch.OnMaxPriceTextChanged
+VendorSearch.LowHighButtonTooltip
+VendorSearch.Initialize
+VendorSearch.CriteriaBlink
+VendorSearch.OnItemNameTextChanged
+VendorSearch.ADDButtonTooltip
+VendorSearch.HoldOn
+DragSlotSetExistingActionMouseClickData
+IsTamable
+gridIndex
+listIndex
+UndoLogin
+TID_SKILLDECREASE_TOK
+HealthBarManager
+HealthBarManager.GetMemberIndex
+HealthBarManager.SkillUpdate
+HealthBarManager.UpdateRemovedHealthBarCount
+HealthBarManager.MAX_PARTY_MEMBERS
+HealthBarManager.SpellSchools
+HealthBarManager.IsPartyMember
+HealthBarManager.HandlePartyMemberUpdate
+HealthBarManager.OnEndDragHealthBar
+HealthBarManager.LastHandledHealthBar
+HealthBarManager.Initialize
+HealthBarManager.UseSchool
+HealthBarManager.CappedNumServerHealthBars
+HealthBarManager.OnBeginDragHealthBar
+HealthBarManager.NumHealthBars
+HealthBarManager.partyMemberIndex
+IsConnectedToNLServer
+containedItems
+containedItems.1
+containedItems.2
+containedItems.3
+containedItems.4
+containedItems.5
+containedItems.6
+containedItems.7
+containedItems.8
+containedItems.9
+containedItems.10
+containedItems.11
+containedItems.12
+containedItems.13
+containedItems.14
+containedItems.15
+containedItems.16
+containedItems.17
+containedItems.18
+containedItems.19
+MacroSystemDeleteMacroItem
+HorizontalScrollbarGetScrollPosition
+UORadarGetMaxZoomForMap
+OrganizerWindow
+OrganizerWindow.UpdateCombo
+OrganizerWindow.OnAddTypeButton
+OrganizerWindow.AddRemDefCont
+OrganizerWindow.Combo
+OrganizerWindow.AutoClose
+OrganizerWindow.AddDefCont
+OrganizerWindow.ClearList
+OrganizerWindow.DefaultButtonMouseOver
+OrganizerWindow.VisibleItems
+OrganizerWindow.ItemMouseOver
+OrganizerWindow.AddIDRequestTargetInfoReceived
+OrganizerWindow.OnAddIDButton
+OrganizerWindow.PlusItemMouseOver
+OrganizerWindow.Shutdown
+OrganizerWindow.EditAmount
+OrganizerWindow.SetDefault
+OrganizerWindow.removeAgent
+OrganizerWindow.OnSelChanged
+OrganizerWindow.ExeRemoveItem
+OrganizerWindow.Initialize
+OrganizerWindow.AddTypeRequestTargetInfoReceived
+OrganizerWindow.UpdateList
+OrganizerWindow.AgentMinus
+OrganizerWindow.ClearMouseOverItem
+OrganizerWindow.AgentRename
+OrganizerWindow.ComboCustomName
+OrganizerWindow.AgentPlus
+OrganizerWindow.RemoveItem
+OrganizerWindow.ContextMenuCallback
+OrganizerWindow.renameAgent
+MiniTexturePack
+MiniTexturePack.DB
+MiniTexturePack.Current
+MiniTexturePack.Overlays
+GumpManagerSendBookPages
+item
+item.iconName
+item.iconScale
+item.shopQuantity
+item.id
+item.quantity
+item.shopName
+item.containerId
+item.newWidth
+item.hueId
+item.name
+item.newHeight
+item.hue
+item.objectType
+item.shopValue
+item.iconId
+GumpManagerOnCloseContainer
+unpack
+UserActionTargetByResourceGetUseObjectId
+GetCooldown
+LogDisplayGetFont
+GumpData
+GumpData.Gumps
+HS_HideTargetingCursor
+wg
+setmetatable
+slotName
+ColorPickerGetCoordinatesForColor
+LogLuaMessage
+ComboBoxIsMenuOpen
+ReturnWindowData
+ReturnWindowData.SkillSystem
+ReturnWindowData.HousingSystem
+ReturnWindowData.CustomizedHousing
+ReturnWindowData.GG_Core
+PageWindowAddPageBreak
+SetHousingTileSelected
+AcceptPartyInvite
+DynamicImageSetTextureOrientation
+wname
+UserActionGetType
+getmetatable
+HasAccessibleInventory
+wtype
+QueryWindow
+QueryWindow.ScannedLegacyMacros_OptionTwo_OnLButtonUp
+QueryWindow.QueriedLegacySettings_OptionOne_OnLButtonUp
+QueryWindow.CheckQueries
+QueryWindow.TID
+QueryWindow.Okay_OnLButtonUp
+QueryWindow.QueriedLegacySettings_OptionTwo_OnLButtonUp
+QueryWindow.QueriedLegacySettings_OptionThree_OnLButtonUp
+QueryWindow.xDimensions
+QueryWindow.CheckScannedLegacyMacros
+QueryWindow.ScannedLegacyMacros_OptionOne_OnLButtonUp
+QueryWindow.Initialize
+QueryWindow.CheckQueriedLegacySettings
+QueryWindow.yDimensions
+QueryWindow.lastWindowAnchor
+QueryWindow.CreateQueryWindow
+WindowGetMoving
+UserActionUseWeaponAbility
+KnownAreas
+KnownAreas.Serpentine Passage
+KnownAreas.Heartwood
+KnownAreas.Orc Fortress
+KnownAreas.Buccaneer's Den
+KnownAreas.Lizard passage
+KnownAreas.Sleeping Dragon
+KnownAreas.Kirin passage
+KnownAreas.Serpent's Hold
+KnownAreas.Doom
+KnownAreas.Painted Caves
+KnownAreas.Ratman Cave
+KnownAreas.Orc Cave
+KnownAreas.Ver Lor Reg
+KnownAreas.Faction Strongholds
+KnownAreas.The Deuce's Vinculum Inn
+KnownAreas.Wrong
+KnownAreas.Cyclops Temple
+KnownAreas.Medusa's Lair
+KnownAreas.Ancient Citadel
+KnownAreas.Haven Misc Areas
+KnownAreas.Rat Fort
+KnownAreas.Hythloth
+KnownAreas.Luna
+KnownAreas.Volcanic Lair
+KnownAreas.Skara Brae
+KnownAreas.Floating Market
+KnownAreas.Minoc
+KnownAreas.Jhelom
+KnownAreas.Solen Hive
+KnownAreas.Yew
+KnownAreas.Royal City
+KnownAreas.Stygian Dragon's Lair
+KnownAreas.Blighted Grove
+KnownAreas.Oasis Champion Spawn
+KnownAreas.City of Death Champion Spawn
+KnownAreas.New Magincia
+KnownAreas.Nujel'm
+KnownAreas.Ice West Champion Spawn
+KnownAreas.Delucia
+KnownAreas.Wind
+KnownAreas.Cove Orc Fort
+KnownAreas.Corgul Island
+KnownAreas.Mistas
+KnownAreas.Cove
+KnownAreas.Graveyards
+KnownAreas.Papua
+KnownAreas.Covetous
+KnownAreas.Prism of Light
+KnownAreas.New Haven
+KnownAreas.Old Haven
+KnownAreas.Unique Areas
+KnownAreas.Twisted Weald
+KnownAreas.Yomotsu Mines
+KnownAreas.Meer Village
+KnownAreas.Tomb of the Kings
+KnownAreas.Khaldun
+KnownAreas.Star Room
+KnownAreas.Moonglow
+KnownAreas.Shame
+KnownAreas.Zento
+KnownAreas.Ocllo
+KnownAreas.Twin Oaks Tavern
+KnownAreas.Arena
+KnownAreas.Umbra
+KnownAreas.Primeval Lich Champion Spawn
+KnownAreas.Valor Champion Spawn
+KnownAreas.Abyssal Infernal Champion Spawn
+KnownAreas.Tomb of Maabus
+KnownAreas.Grand Arena
+KnownAreas.Hidden Valley
+KnownAreas.Hopper Bog Champion Spawn
+KnownAreas.Damwin Champion Spawn
+KnownAreas.Ice East Champion Spawn
+KnownAreas.Terathan Keep
+KnownAreas.Britain Sewers
+KnownAreas.Khaldun Champion Spawn
+KnownAreas.Terra Sanctum Champion Spawn
+KnownAreas.Doom Gauntlet
+KnownAreas.Britain
+KnownAreas.Tortoise Champion Spawn
+KnownAreas.Desert Champion Spawn
+KnownAreas.Exodus Dungeon
+KnownAreas.Savage Camp
+KnownAreas.Meer Catacombs
+KnownAreas.Deceit
+KnownAreas.Humility Champion Spawn
+KnownAreas.Fire
+KnownAreas.Navrey's Lair
+KnownAreas.Palace of Paroxysmus
+KnownAreas.Destard
+KnownAreas.Spider Cave
+KnownAreas.Rock Dungeon
+KnownAreas.Forest Lord Champion Spawn
+KnownAreas.Ancient Lair
+KnownAreas.Vesper
+KnownAreas.Hanse's Hostel
+KnownAreas.Ankh Dungeon
+KnownAreas.Underworld
+KnownAreas.Fan Dancer's Dojo
+KnownAreas.Holy City
+KnownAreas.Castle Blackthorn Dungeon
+KnownAreas.Lord Blackthorn's Castle
+KnownAreas.Marble Champion Spawn
+KnownAreas.Spectre Dungeon
+KnownAreas.Shrine
+KnownAreas.Despise
+KnownAreas.Labyrinth
+KnownAreas.Fishermen Village
+KnownAreas.Citadel
+KnownAreas.Mushroom Cave
+KnownAreas.Bedlam
+KnownAreas.Blood Dungeon
+KnownAreas.Trinsic
+KnownAreas.Sanctuary
+KnownAreas.Wisp Dungeon
+KnownAreas.Stygian Abyss
+KnownAreas.Delucia Passage
+KnownAreas.Sorcerer's Dungeon
+KnownAreas.Wreck of the Ararat
+KnownAreas.Guarded Moongates
+KnownAreas.Ice
+rawset
+data
+data.hue
+data.iconScale
+data.newWidth
+data.hueId
+data.newHeight
+data.objectType
+data.slotId
+data.iconName
+elementRoundBroken
+LabelSetFont
+elementRoundDMG
+GumpManagerGetPlayerFaceType
+y2
+HorizontalScrollbarGetPageSize
+WindowSetMoving
+StringUtils
+StringUtils.FormatNumberWString
+StringUtils.SORT_ORDER_DOWN
+StringUtils.SORT_ORDER_UP
+StringUtils.SortByString
+BugReportWindow
+BugReportWindow.TID
+BugReportWindow.selectedType
+BugReportWindow.Update
+BugReportWindow.NUM_MACROS
+BugReportWindow.OnSelectBugType
+BugReportWindow.Size
+BugReportWindow.NUM_MACRO_ICONS
+BugReportWindow.iconNum
+BugReportWindow.MACRO_ICONS_ID_BASE
+BugReportWindow.OnOpen
+BugReportWindow.OnSubmit
+BugReportWindow.OnClear
+BugReportWindow.SelectBugType
+BugReportWindow.activeId
+BugReportWindow.Initialize
+BugReportWindow.bugTypes
+BugReportWindow.Shutdown
+BugReportWindow.OnClose
+BugReportWindow.Hide
+CircleImageSetTextureScale
+TextLogCreate
+ModuleLoad
+ruleName
+ColorPickerGetColorById
+numIcons
+WindowSetUpdateFrequency
+PlaySound
+IsVendor
+LuaGetTerrainType
+serverId
+BookTemplate
+BookTemplate.EnterTitle
+BookTemplate.UpdatePageNumbers
+BookTemplate.StoreText
+BookTemplate.PageUp
+BookTemplate.PageDown
+BookTemplate.CloseBook
+BookTemplate.Shutdown
+BookTemplate.OpenBooks
+BookTemplate.bDebug
+BookTemplate.UpdatePageText
+BookTemplate.Initialize
+RenameWindow
+RenameWindow.OnClear
+RenameWindow.OnTextChanged
+RenameWindow.OnKeyCancel
+RenameWindow.Initialize
+RenameWindow.OnCancel
+RenameWindow.Shutdown
+RenameWindow.Create
+RenameWindow.OnSubmit
+ChatFiltersWindowList
+ChatFiltersWindowList.Table
+ChatFiltersWindowList.numVisibleRows
+DynamicImageClearCustomShader
+LabelSetText
+GumpManagerRequestBookPages
+ChatFontWindow
+ChatFontWindow.ClearMouseOverItem
+ChatFontWindow.Shutdown
+ChatFontWindow.Initialize
+ChatFontWindow.TID
+ChatFontWindow.CloseFontWindow
+ChatFontWindow.SetFontToSelection
+ChatFontWindow.ItemMouseOver
+ChatFiltersWindow
+ChatFiltersWindow.OnShown
+ChatFiltersWindow.channelListOrder
+ChatFiltersWindow.TID
+ChatFiltersWindow.SetDefaultFilters
+ChatFiltersWindow.SetAllFiltersChanges
+ChatFiltersWindow.channelFiltersState
+ChatFiltersWindow.channelListData
+ChatFiltersWindow.TabChanged
+ChatFiltersWindow.OnToggleChannel
+ChatFiltersWindow.Initialize
+ChatFiltersWindow.Shutdown
+ChatFiltersWindow.OnHidden
+ChatFiltersWindow.UpdateChatOptionRow
+ChatFiltersWindow.Hide
+ChatWindow
+ChatWindow.OnOpenChannelMenu
+ChatWindow.OnSelectTab
+ChatWindow.FADE_OUT_DELAY
+ChatWindow.SelectedTabNumber
+ChatWindow.CurrentVersion
+ChatWindow.firstGChatSelect
+ChatWindow.LoadSettings
+ChatWindow.RemoveWindow
+ChatWindow.HandleTellCommand
+ChatWindow.ResetRootDockableWindowDataVariables
+ChatWindow.OnRename
+ChatWindow.AddSizeToFontSizeMenu
+ChatWindow.GetAvailableTabLogNames
+ChatWindow.OnRButtonDownProcessed
+ChatWindow.UpdateMenuSelection
+ChatWindow.ScrollToBottom
+ChatWindow.FormatWhisperPrompt
+ChatWindow.OnSelectFontNameButton
+ChatWindow.SpawnFontSelectionMenu
+ChatWindow.OnEnterChatText
+ChatWindow.OnInputTextButtonMouseOver
+ChatWindow.GetCurrentTabName
+ChatWindow.topWindow
+ChatWindow.OnGChatRosterUpdate
+ChatWindow.LockWindow
+ChatWindow.OnUnDock
+ChatWindow.SwitchToChatChannel
+ChatWindow.Windows
+ChatWindow.CloseSetOpacityWindow
+ChatWindow.OnLockButtonClicked
+ChatWindow.UpdateChatSettings
+ChatWindow.OnOpenTabMenu
+ChatWindow.OnMouseOverEnd
+ChatWindow.OnRenameTab
+ChatWindow.LoadChatWindowFromSlot
+ChatWindow.OnSizeButton
+ChatWindow.OnWindowOptionsSetAlpha
+ChatWindow.HideFontSelectionMenu
+ChatWindow.ToggleTimestamp
+ChatWindow.AddFontToFontMenu
+ChatWindow.HideChannelSelectionMenu
+ChatWindow.OnSizeUpdated
+ChatWindow.Shutdown
+ChatWindow.windowLocked
+ChatWindow.OnDock
+ChatWindow.OnRemoveTab
+ChatWindow.SaveChatWindowToSlot
+ChatWindow.SetupNewTab
+ChatWindow.LoadChatWindowSettings
+ChatWindow.OnViewChatFilters
+ChatWindow.OnOpenChatMenu
+ChatWindow.BaseVersion
+ChatWindow.RemoveTab
+ChatWindow.ClearChatSaveSlot
+ChatWindow.OnTabSelected
+ChatWindow.ResetScrollLimits
+ChatWindow.SetFontToSelection
+ChatWindow.Settings
+ChatWindow.ToggleAutoHide
+ChatWindow.OnSetMoving
+ChatWindow.IsMainWindowGroup
+ChatWindow.OnUpdate
+ChatWindow.CreateNewTab
+ChatWindow.UpdateNewTextAlert
+ChatWindow.GetCurrentTabID
+ChatWindow.OnLock
+ChatWindow.PerformFadeOut
+ChatWindow.SwitchChannelWithExistingText
+ChatWindow.OnRenameTextChanged
+ChatWindow.SwitchToGChatSelectedChannel
+ChatWindow.OnSlideWindowOptionsMinAlpha
+ChatWindow.SwitchToSelectedChannel
+ChatWindow.OnViewChatOptions
+ChatWindow.dockableWindowData
+ChatWindow.Initialize
+ChatWindow.SetActiveWindow
+ChatWindow.GetAvailableWindowName
+ChatWindow.UpdateCurrentChannel
+ChatWindow.HideMenu
+ChatWindow.OnKeyEnter
+ChatWindow.AddDockableWindow
+ChatWindow.OnMouseOver
+ChatWindow.OnKeyTab
+ChatWindow.ALPHA_FADE_TIMER
+ChatWindow.PerformFadeIn
+ChatWindow.ResetTextBox
+ChatWindow.OnSetTopDockWindow
+ChatWindow.ToggleInputText
+ChatWindow.autohide
+ChatWindow.OnLButtonDownProcessed
+ChatWindow.ShowMenu
+ChatWindow.InitRootChatTab
+ChatWindow.OnSlideWindowOptionsMaxAlpha
+ChatWindow.UpdateResizeButtons
+ChatWindow.DoChatTextReplacement
+ChatWindow.ShowTab
+ChatWindow.SAVE_DELAY
+ChatWindow.OnViewChatFonts
+ChatWindow.OnUnlock
+ChatWindow.OnCancelRename
+ChatWindow.TID
+ChatWindow.OnHotSpotMouseOver
+ChatWindow.FADE_IN_DELAY
+ChatWindow.OnResizeBegin
+ChatWindow.GetMenuTab
+ChatWindow.InitializeChannelMenuSelectionWindow
+ChatWindow.OnKeyEscape
+ChatWindow.Print
+ChatWindow.SaveSettings
+ChatWindow.UpdateAllChannelColors
+ChatWindow.OnNewWindow
+CourseMapAddPoint
+ScaleInterface
+ChatSettings
+ChatSettings.SetupChannels
+ChatSettings.Channels
+ChatSettings.ChannelSwitches
+ChatSettings.Ordering
+ChatSettings.SetupFontDefaults
+ChatSettings.ChannelColors
+ChatSettings.Colors
+ChatSettings.SetupChannelColorDefaults
+ChatSettings.Fonts
+CreaturesDB
+CreaturesDB.zealot of khaldun the knight
+CreaturesDB.lifestealer
+CreaturesDB.betballem
+CreaturesDB.bone knight
+CreaturesDB.kraken
+CreaturesDB.air elemental shame
+CreaturesDB.ophidian warrior
+CreaturesDB.vile mage
+CreaturesDB.dark guardian
+CreaturesDB.walrus
+CreaturesDB.vampire mongbat
+CreaturesDB.golem
+CreaturesDB.brigand
+CreaturesDB.hellcat
+CreaturesDB.lady marai
+CreaturesDB.bake kitsune
+CreaturesDB.silver serpent
+CreaturesDB.renegade changeling
+CreaturesDB.skeletal lich
+CreaturesDB.swamp dragon
+CreaturesDB.air elemental
+CreaturesDB.flame elemental guardian
+CreaturesDB.forest ostard
+CreaturesDB.fire daemon covetous
+CreaturesDB.ophidian justicar
+CreaturesDB.the squatter
+CreaturesDB.plague beast lord
+CreaturesDB.black order assassin
+CreaturesDB.corrupted wyvern covetous prison
+CreaturesDB.night terror
+CreaturesDB.effete undead gargoyle
+CreaturesDB.horse
+CreaturesDB.saliva
+CreaturesDB.void manifestation
+CreaturesDB.ettin
+CreaturesDB.scorpion
+CreaturesDB.gray goblin scout
+CreaturesDB.frost troll
+CreaturesDB.diseased lich
+CreaturesDB.executioner wrong
+CreaturesDB.diseased blood elemental
+CreaturesDB.wolf spider
+CreaturesDB.vile cadaver
+CreaturesDB.ice snake
+CreaturesDB.vampire bat
+CreaturesDB.water elemental (summoned)
+CreaturesDB.bloodworm
+CreaturesDB.snake
+CreaturesDB.rotworm
+CreaturesDB.shade
+CreaturesDB.bone magi
+CreaturesDB.ancient lich
+CreaturesDB.black order high executioner
+CreaturesDB.covetous revenant
+CreaturesDB.fire beetle
+CreaturesDB.eagle
+CreaturesDB.water elemental
+CreaturesDB.brigand cannibal
+CreaturesDB.rikktor
+CreaturesDB.abscess
+CreaturesDB.pit fiend
+CreaturesDB.chaos dragoon elite
+CreaturesDB.blackrock elemental
+CreaturesDB.llama
+CreaturesDB.shadow fiend the unseen
+CreaturesDB.eternal gazer
+CreaturesDB.earth elemental
+CreaturesDB.black solen infiltrator queen
+CreaturesDB.monstrous interred grizzle
+CreaturesDB.bone daemon
+CreaturesDB.coral snake
+CreaturesDB.earth elemental shame
+CreaturesDB.ophidian zealot
+CreaturesDB.crystal lattice seeker
+CreaturesDB.leviathan
+CreaturesDB.phoenix
+CreaturesDB.air elemental (summoned)
+CreaturesDB.elven brigand
+CreaturesDB.IsController
+CreaturesDB.hell hound
+CreaturesDB.grim
+CreaturesDB.blackrock golem
+CreaturesDB.troll
+CreaturesDB.tangle
+CreaturesDB.hellsteed
+CreaturesDB.enslaved goblin mage
+CreaturesDB.balron
+CreaturesDB.bogling
+CreaturesDB.exodus juggernaut
+CreaturesDB.lowland boura
+CreaturesDB.dire wolf
+CreaturesDB.magma lizard
+CreaturesDB.ophidian matriarch
+CreaturesDB.effete putrid gargoyle
+CreaturesDB.ant lion
+CreaturesDB.yomotsu elder
+CreaturesDB.harpy
+CreaturesDB.sentinel spider
+CreaturesDB.cat
+CreaturesDB.exodus drone
+CreaturesDB.mud pie
+CreaturesDB.elite ninja
+CreaturesDB.chicken
+CreaturesDB.drake
+CreaturesDB.shadow iron elemental
+CreaturesDB.enslaved gargoyle
+CreaturesDB.jack rabbit
+CreaturesDB.slasher of veils
+CreaturesDB.rat
+CreaturesDB.leather wolf
+CreaturesDB.DarkFathers
+CreaturesDB.revenant
+CreaturesDB.clan chitter tinkerer
+CreaturesDB.meer mage
+CreaturesDB.corrupted wyvern
+CreaturesDB.rai-ju
+CreaturesDB.orc scout
+CreaturesDB.Orcs
+CreaturesDB.bone swordslinger
+CreaturesDB.cyclopean warrior
+CreaturesDB.controller
+CreaturesDB.blade spirit
+CreaturesDB.IsDarkFather
+CreaturesDB.executioner
+CreaturesDB.black order thief
+CreaturesDB.arcane daemon
+CreaturesDB.daemon
+CreaturesDB.crystal elemental
+CreaturesDB.gorilla
+CreaturesDB.corporeal brume
+CreaturesDB.moloch
+CreaturesDB.dark wisp
+CreaturesDB.dream wraith
+CreaturesDB.cursed
+CreaturesDB.parasitic eel
+CreaturesDB.abyssmal horror
+CreaturesDB.giant beetle
+CreaturesDB.lady of the snow
+CreaturesDB.magma lizard covetous prison
+CreaturesDB.vicious drake
+CreaturesDB.orc captain
+CreaturesDB.Lizardmen
+CreaturesDB.ophidian knight-errant
+CreaturesDB.NameToType
+CreaturesDB.giant black widow
+CreaturesDB.bane dragon
+CreaturesDB.ethereal warrior
+CreaturesDB.GetBardDiff
+CreaturesDB.fan dancer
+CreaturesDB.zombie
+CreaturesDB.navrey night-eyes
+CreaturesDB.acid elemental
+CreaturesDB.horde minion
+CreaturesDB.wandering healer
+CreaturesDB.deep sea serpent
+CreaturesDB.predator hellcat
+CreaturesDB.abyssal infernal
+CreaturesDB.soulbound spell slinger
+CreaturesDB.szavetra
+CreaturesDB.gargoyle destroyer
+CreaturesDB.soulbound apprentice mage
+CreaturesDB.red solen worker
+CreaturesDB.lesser oni
+CreaturesDB.ophidian apprentice mage
+CreaturesDB.sewer rat
+CreaturesDB.osiredon the scalis enforcer
+CreaturesDB.sand vortex
+CreaturesDB.raging grizzly bear
+CreaturesDB.doppleganger
+CreaturesDB.enslaved goblin keeper
+CreaturesDB.protector
+CreaturesDB.chaos vortex
+CreaturesDB.desert ostard
+CreaturesDB.orc ship captain
+CreaturesDB.exodus minion
+CreaturesDB.giant turkey
+CreaturesDB.chief paroxysmus
+CreaturesDB.skeletal dragon
+CreaturesDB.dark wolf (summoned)
+CreaturesDB.crystal daemon
+CreaturesDB.hiryu
+CreaturesDB.rabbit
+CreaturesDB.archdemon
+CreaturesDB.dolphin
+CreaturesDB.enslaved gray goblin
+CreaturesDB.Birds
+CreaturesDB.savage warrior
+CreaturesDB.ophidian shaman
+CreaturesDB.fire daemon renowned
+CreaturesDB.gazer larva
+CreaturesDB.purifying blood elemental
+CreaturesDB.snow leopard
+CreaturesDB.morg bergen
+CreaturesDB.devourer of souls
+CreaturesDB.putrid undead guardian
+CreaturesDB.thrasher
+CreaturesDB.IsBird
+CreaturesDB.green goblin
+CreaturesDB.jwilson
+CreaturesDB.clan scratch savage wolf
+CreaturesDB.lizardman witchdoctor
+CreaturesDB.clay golem
+CreaturesDB.anlorvaglem
+CreaturesDB.ratman
+CreaturesDB.IsDarknightCreeper
+CreaturesDB.corgul the soulbinder
+CreaturesDB.kappa
+CreaturesDB.feral treefellow
+CreaturesDB.chaos daemon
+CreaturesDB.barracoon the piper
+CreaturesDB.plague beast
+CreaturesDB.dazzled harpy
+CreaturesDB.lava serpent
+CreaturesDB.clan scratch henchrat
+CreaturesDB.gazer
+CreaturesDB.lysander gathenwale
+CreaturesDB.ratman archer
+CreaturesDB.ogre
+CreaturesDB.fire rabbit
+CreaturesDB.evil mage lord wrong
+CreaturesDB.orc footsoldier
+CreaturesDB.panther
+CreaturesDB.goat
+CreaturesDB.satyr
+CreaturesDB.pestilent bandage
+CreaturesDB.Initialize
+CreaturesDB.ghoul
+CreaturesDB.darknight creeper
+CreaturesDB.arctic ogre lord
+CreaturesDB.ferret
+CreaturesDB.relanord
+CreaturesDB.juka warrior
+CreaturesDB.ravager
+CreaturesDB.nature's fury
+CreaturesDB.anzuanord
+CreaturesDB.ridgeback
+CreaturesDB.chicken lizard
+CreaturesDB.bulbous putrification
+CreaturesDB.lich
+CreaturesDB.ballem
+CreaturesDB.IsCentaur
+CreaturesDB.black solen infiltrator warrior
+CreaturesDB.mummy
+CreaturesDB.gremlin
+CreaturesDB.ophidian avenger
+CreaturesDB.quartz elemental
+CreaturesDB.cu sidhe
+CreaturesDB.lurg
+CreaturesDB.twaulo of the glade
+CreaturesDB.pixie
+CreaturesDB.grey wolf
+CreaturesDB.EtherealWarriors
+CreaturesDB.black order mage
+CreaturesDB.green goblin alchemist
+CreaturesDB.clan scratch scrounger
+CreaturesDB.clan chitter assistant
+CreaturesDB.niporailem the thief
+CreaturesDB.meer captain
+CreaturesDB.terathan warrior
+CreaturesDB.insane dryad
+CreaturesDB.fire steed
+CreaturesDB.dull copper elemental
+CreaturesDB.treefellow
+CreaturesDB.skittering hopper
+CreaturesDB.gray goblin mage
+CreaturesDB.great hart
+CreaturesDB.acid elemental renowned
+CreaturesDB.lord oaks
+CreaturesDB.dragon
+CreaturesDB.snow elemental
+CreaturesDB.trapdoor spider
+CreaturesDB.undead guardian
+CreaturesDB.polar bear
+CreaturesDB.ruddy boura
+CreaturesDB.imp
+CreaturesDB.enraged colossus
+CreaturesDB.guile
+CreaturesDB.revenant lion
+CreaturesDB.tavara sewel
+CreaturesDB.ki-rin
+CreaturesDB.alligator
+CreaturesDB.war alligator
+CreaturesDB.frenzied ostard
+CreaturesDB.timber wolf
+CreaturesDB.IsEtherealWarrior
+CreaturesDB.changeling
+CreaturesDB.clan ribbon plague rat
+CreaturesDB.lesser hiryu
+CreaturesDB.the true harrower
+CreaturesDB.anlorlem
+CreaturesDB.miasma
+CreaturesDB.shadow wyrm
+CreaturesDB.pack llama
+CreaturesDB.white wolf
+CreaturesDB.doppleganger covetous
+CreaturesDB.gargoyle enforcer
+CreaturesDB.treefellow guardian
+CreaturesDB.gray goblin keeper
+CreaturesDB.blood elemental
+CreaturesDB.tempest
+CreaturesDB.clan ribbon supplicant
+CreaturesDB.putrid undead gargoyle
+CreaturesDB.chaos dragoon
+CreaturesDB.ronin
+CreaturesDB.enslaved goblin scout
+CreaturesDB.iron beetle
+CreaturesDB.fire daemon
+CreaturesDB.whipping vine
+CreaturesDB.spite
+CreaturesDB.anlorzen
+CreaturesDB.centaur
+CreaturesDB.frost dragon
+CreaturesDB.gargoyle
+CreaturesDB.orc
+CreaturesDB.battle chicken lizard
+CreaturesDB.sphynx
+CreaturesDB.cow
+CreaturesDB.evil mage wrong
+CreaturesDB.hydra
+CreaturesDB.lizardman
+CreaturesDB.daemon mongbat
+CreaturesDB.greater mongbat
+CreaturesDB.efreet
+CreaturesDB.dog
+CreaturesDB.dread warhorse
+CreaturesDB.crystal sea serpent
+CreaturesDB.IsAncientLich
+CreaturesDB.angered spirit
+CreaturesDB.lady lissith
+CreaturesDB.tropical bird
+CreaturesDB.IsEvilMageLord
+CreaturesDB.Pixies
+CreaturesDB.interred grizzle
+CreaturesDB.IsPixie
+CreaturesDB.mound of maggots
+CreaturesDB.giant ice serpent
+CreaturesDB.death adder (summoned)
+CreaturesDB.greater dragon
+CreaturesDB.IsBalron
+CreaturesDB.IsShadowKnight
+CreaturesDB.bound soul
+CreaturesDB.clan ribbon courtier
+CreaturesDB.AnimalLoreTamables
+CreaturesDB.lady melisande
+CreaturesDB.corpser
+CreaturesDB.IsOrc
+CreaturesDB.IsSavage
+CreaturesDB.ancient lich renowned
+CreaturesDB.oni
+CreaturesDB.brigand cannibal mage
+CreaturesDB.IsLizardman
+CreaturesDB.black solen warrior
+CreaturesDB.cave troll
+CreaturesDB.IsDaemon
+CreaturesDB.GetName
+CreaturesDB.updateSummonTimes
+CreaturesDB.wanderer of the void
+CreaturesDB.Controllers
+CreaturesDB.AncientLichs
+CreaturesDB.ratman mage
+CreaturesDB.EvilMageLords
+CreaturesDB.titan rockhurler
+CreaturesDB.mephitis
+CreaturesDB.silvani
+CreaturesDB.Balrons
+CreaturesDB.coil
+CreaturesDB.ShadowKnights
+CreaturesDB.Impalers
+CreaturesDB.stone harpy
+CreaturesDB.enslaved green goblin
+CreaturesDB.SummonTimes
+CreaturesDB.bull
+CreaturesDB.sir patrick
+CreaturesDB.semidar
+CreaturesDB.lava lizard
+CreaturesDB.ridable llama
+CreaturesDB.terathan avenger
+CreaturesDB.cave troll the wall guardian
+CreaturesDB.imp (summoned)
+CreaturesDB.yomotsu priest
+CreaturesDB.unicorn
+CreaturesDB.stone gargoyle
+CreaturesDB.wyvern renowned
+CreaturesDB.wyvern
+CreaturesDB.wraith
+CreaturesDB.high plains boura
+CreaturesDB.wisp
+CreaturesDB.wind elemental guardian
+CreaturesDB.earth elemental covetous
+CreaturesDB.mistral
+CreaturesDB.wind elemental
+CreaturesDB.putrefier
+CreaturesDB.wight
+CreaturesDB.giant tentacle
+CreaturesDB.white wyrm
+CreaturesDB.water elemental shame
+CreaturesDB.blood elemental shame
+CreaturesDB.water elemental covetous
+CreaturesDB.war horse
+CreaturesDB.kepetch ambusher
+CreaturesDB.red solen queen
+CreaturesDB.war alligator covetous prison
+CreaturesDB.wailing banshee
+CreaturesDB.black solen worker
+CreaturesDB.exodus overseer
+CreaturesDB.vortex elemental
+CreaturesDB.vorpal bunny
+CreaturesDB.vollem
+CreaturesDB.acid slug
+CreaturesDB.vitavi renowned
+CreaturesDB.virulent
+CreaturesDB.vicious drake covetous prison
+CreaturesDB.kaze kemono
+CreaturesDB.headless miner
+CreaturesDB.venom elemental
+CreaturesDB.dark father
+CreaturesDB.horde minion (summoned)
+CreaturesDB.valorite elemental
+CreaturesDB.ice elemental
+CreaturesDB.usagralem ballem
+CreaturesDB.cora the sorceress
+CreaturesDB.plague spawn
+CreaturesDB.covetous wyrm
+CreaturesDB.yamandon
+CreaturesDB.giant ice worm
+CreaturesDB.gore fiend
+CreaturesDB.IsEvilMage
+CreaturesDB.drelgor the impaler
+CreaturesDB.lady sabrix
+CreaturesDB.corrosive slime
+CreaturesDB.master jonath
+CreaturesDB.unbound energy vortex
+CreaturesDB.master theophilus the necromancer
+CreaturesDB.undead gargoyle
+CreaturesDB.maddening horror
+CreaturesDB.fire elemental renowned
+CreaturesDB.travesty
+CreaturesDB.giant spider
+CreaturesDB.serado the awakened
+CreaturesDB.toxic slith
+CreaturesDB.elder gazer
+CreaturesDB.tormented minotaur
+CreaturesDB.daemon (summoned)
+CreaturesDB.EvilMages
+CreaturesDB.tsuki wolf
+CreaturesDB.tikitavi renowned
+CreaturesDB.soulbound swashbuckler
+CreaturesDB.terathan drone
+CreaturesDB.yomotsu warrior
+CreaturesDB.molten earth elemental
+CreaturesDB.soulbound battle mage
+CreaturesDB.giant serpent
+CreaturesDB.the defender
+CreaturesDB.tangling roots
+CreaturesDB.poison elemental shame
+CreaturesDB.swamp tentacle
+CreaturesDB.burning
+CreaturesDB.skeletal knight
+CreaturesDB.savage rider
+CreaturesDB.stygian dragon
+CreaturesDB.minion of scelestus
+CreaturesDB.shimmering effusion
+CreaturesDB.strange gazer
+CreaturesDB.squirrel
+CreaturesDB.crystal vortex
+CreaturesDB.fire ant
+CreaturesDB.DarknightCreepers
+CreaturesDB.slith
+CreaturesDB.stone elemental
+CreaturesDB.slime
+CreaturesDB.spectral spellbinder
+CreaturesDB.shadow wisp (summoned)
+CreaturesDB.spectral armor
+CreaturesDB.hind
+CreaturesDB.ophidian enforcer
+CreaturesDB.speckled scorpion
+CreaturesDB.terathan matriarch
+CreaturesDB.medusa
+CreaturesDB.soulbound pirate raider
+CreaturesDB.soulbound pirate captain
+CreaturesDB.tentacles of the harrower
+CreaturesDB.bird
+CreaturesDB.spectre
+CreaturesDB.skree
+CreaturesDB.earth elemental (summoned)
+CreaturesDB.skeleton
+CreaturesDB.skeletal steed
+CreaturesDB.fairy dragon
+CreaturesDB.clockwork scorpion
+CreaturesDB.skeletal mage
+CreaturesDB.sudiva
+CreaturesDB.skeletal drake
+CreaturesDB.sheep
+CreaturesDB.skeletal dragon renowned
+CreaturesDB.Daemons
+CreaturesDB.Centaurs
+CreaturesDB.red solen infiltrator queen
+CreaturesDB.minotaur scout
+CreaturesDB.ogre bonecrusher
+CreaturesDB.silk
+CreaturesDB.shadow wisp
+CreaturesDB.flurry
+CreaturesDB.orc brute
+CreaturesDB.poison elemental
+CreaturesDB.minotaur captain
+CreaturesDB.ancient wyrm
+CreaturesDB.greater earth elemental
+CreaturesDB.black bear
+CreaturesDB.dryad
+CreaturesDB.sea serpent
+CreaturesDB.gaman
+CreaturesDB.juka mage
+CreaturesDB.savage shaman
+CreaturesDB.IsImpaler
+CreaturesDB.pig
+CreaturesDB.succubus
+CreaturesDB.restless soul
+CreaturesDB.rune beetle
+CreaturesDB.rotting corpse
+CreaturesDB.zealot of khaldun the summoner
+CreaturesDB.evil mage lord
+CreaturesDB.reptalon
+CreaturesDB.enraged earth elemental
+CreaturesDB.rend
+CreaturesDB.red solen warrior
+CreaturesDB.red solen infiltrator warrior
+CreaturesDB.flesh golem
+CreaturesDB.reaper
+CreaturesDB.ratman assassin
+CreaturesDB.raptor
+CreaturesDB.neira the necromancer
+CreaturesDB.quagmire
+CreaturesDB.pyre
+CreaturesDB.fleshrenderer
+CreaturesDB.mantra effervescence
+CreaturesDB.giant toad
+CreaturesDB.priest of mondain
+CreaturesDB.headless one
+CreaturesDB.dread spider
+CreaturesDB.swoop
+CreaturesDB.flame elemental
+CreaturesDB.shadow knight
+CreaturesDB.black solen queen
+CreaturesDB.minotaur
+CreaturesDB.crane
+CreaturesDB.frost spider
+CreaturesDB.chiikkaha the toothed
+CreaturesDB.korpre
+CreaturesDB.pixie renowned
+CreaturesDB.mongbat
+CreaturesDB.grey goblin mage renowned
+CreaturesDB.lava elemental
+CreaturesDB.deathwatch beetle hatchling
+CreaturesDB.pack horse
+CreaturesDB.crystal wisp
+CreaturesDB.orcish mage sea
+CreaturesDB.orcish mage
+CreaturesDB.lich lord
+CreaturesDB.orcish lord
+CreaturesDB.betrayer
+CreaturesDB.orc chopper
+CreaturesDB.orc bomber
+CreaturesDB.ogre lord
+CreaturesDB.nightmare
+CreaturesDB.rakktavi renowned
+CreaturesDB.mud elemental
+CreaturesDB.mountain goat
+CreaturesDB.lava snake
+CreaturesDB.patchwork skeleton
+CreaturesDB.serpentine dragon
+CreaturesDB.meraktus the tormented
+CreaturesDB.meer warrior
+CreaturesDB.ortanord
+CreaturesDB.titan
+CreaturesDB.master mikael
+CreaturesDB.malefic
+CreaturesDB.troglodyte
+CreaturesDB.moug-guur
+CreaturesDB.savage ridgeback
+CreaturesDB.lady jennifyr
+CreaturesDB.kepetch
+CreaturesDB.juka lord
+CreaturesDB.irk
+CreaturesDB.bogle
+CreaturesDB.savage pack wolf
+CreaturesDB.hell hound - RED
+CreaturesDB.cougar
+CreaturesDB.ice fiend
+CreaturesDB.vampire bat (summoned)
+CreaturesDB.ilhenir the stained
+CreaturesDB.verite elemental
+CreaturesDB.the harrower
+CreaturesDB.hungry ogre
+CreaturesDB.grubber
+CreaturesDB.grobu
+CreaturesDB.grizzly bear
+CreaturesDB.gray goblin
+CreaturesDB.grey goblin alchemist renowned
+CreaturesDB.grimmoch drummel
+CreaturesDB.greater poison elemental
+CreaturesDB.unfrozen mummy
+CreaturesDB.golden elemental
+CreaturesDB.gnaw
+CreaturesDB.gibberling
+CreaturesDB.exodus minion lord
+CreaturesDB.primeval lich
+CreaturesDB.giant rat
+CreaturesDB.gargoyle shade
+CreaturesDB.charybdis
+CreaturesDB.boar
+CreaturesDB.gargoyle assassin
+CreaturesDB.frost ooze
+CreaturesDB.forgotten servant
+CreaturesDB.bane chosen guard
+CreaturesDB.red death
+CreaturesDB.minotaur general
+CreaturesDB.fire gargoyle
+CreaturesDB.fire elemental (summoned)
+CreaturesDB.crystal hydra
+CreaturesDB.challenger of ol'haven
+CreaturesDB.stone slith
+CreaturesDB.blackthorn juggernaut
+CreaturesDB.deathwatch beetle
+CreaturesDB.fire elemental
+CreaturesDB.exodus sentinel
+CreaturesDB.agapite elemental
+CreaturesDB.revenant (summoned)
+CreaturesDB.abyssmal abomination
+CreaturesDB.evil mage
+CreaturesDB.Savages
+CreaturesDB.devourer of souls renowned
+CreaturesDB.fezzik the ogre cook
+CreaturesDB.bullfrog
+CreaturesDB.cold drake
+CreaturesDB.energy vortex
+CreaturesDB.brown bear
+CreaturesDB.searing elemental
+CreaturesDB.dread horn
+CreaturesDB.enslaved goblin alchemist
+CreaturesDB.vasanord
+CreaturesDB.meer eternal
+CreaturesDB.fetid essence
+CreaturesDB.crazed
+CreaturesDB.covetous wyrm covetous prison
+CreaturesDB.corrupted mage
+CreaturesDB.copper elemental
+CreaturesDB.bronze elemental
+CreaturesDB.impaler
+CreaturesDB.bog thing
+EA_Window_ContextMenu
+EA_Window_ContextMenu.CONTEXT_MENU_1
+EA_Window_ContextMenu.Finalize
+EA_Window_ContextMenu.OnLock
+EA_Window_ContextMenu.CreateContextMenu
+EA_Window_ContextMenu.HideAll
+EA_Window_ContextMenu.CreateDefaultContextMenu
+EA_Window_ContextMenu.OnLButtonProcessed
+EA_Window_ContextMenu.TrapClick
+EA_Window_ContextMenu.CloseSetOpacityWindow
+EA_Window_ContextMenu.OnSlideWindowOptionsAlpha
+EA_Window_ContextMenu.Hide
+EA_Window_ContextMenu.numContextMenus
+EA_Window_ContextMenu.OnLButtonDownMenuItem
+EA_Window_ContextMenu.AddMenuItem
+EA_Window_ContextMenu.CONTEXT_MENU_2
+EA_Window_ContextMenu.OnWindowOptionsSetAlpha
+EA_Window_ContextMenu.CONTEXT_MENU_3
+EA_Window_ContextMenu.OnUnlock
+EA_Window_ContextMenu.MINIMUM_X_OFFSET
+EA_Window_ContextMenu.Show
+EA_Window_ContextMenu.OnRButtonProcessed
+EA_Window_ContextMenu.contextMenus
+EA_Window_ContextMenu.Shutdown
+EA_Window_ContextMenu.AddUserDefinedMenuItem
+EA_Window_ContextMenu.CreateOpacityOnlyContextMenu
+EA_Window_ContextMenu.MIN_WIDTH
+EA_Window_ContextMenu.Initialize
+HorizontalScrollbarGetLineSize
+TextEditBoxSetHistory
+SetAgreementAccepted
+color
+color.b
+color.g
+color.r
+text
+PropertiesInfoWindowSearchBox
+PropertiesInfoWindowSearchBox.TextUpdated
+PropertiesInfoWindowSearchBox.Text
+PropertiesInfoWindowSearchBox.CursorPos
+FaceSelectionWindow
+FaceSelectionWindow.ToggleFaceDown
+FaceSelectionWindow.ELF
+FaceSelectionWindow.Cancel
+FaceSelectionWindow.ToggleFaceUp
+FaceSelectionWindow.FaceIndex
+FaceSelectionWindow.createWearableTable
+FaceSelectionWindow.revertPaperdollWindowViewState
+FaceSelectionWindow.OK
+FaceSelectionWindow.GARGOYLE
+FaceSelectionWindow.faceStyles
+FaceSelectionWindow.UpdateFaceLabel
+FaceSelectionWindow.HUMAN
+FaceSelectionWindow.Shutdown
+FaceSelectionWindow.paperdollWindowWasShown
+FaceSelectionWindow.Initialize
+FaceSelectionWindow.TID
+GetHueFromRGB
+ProfileWindowProfileEditScrollWChildText
+ProfileWindowProfileEditScrollWChildText.TextUpdated
+ProfileWindowProfileEditScrollWChildText.Text
+ProfileWindowProfileEditScrollWChildText.CursorPos
+DynamicImageSetTextureDimensions
+WindowGetId
+ButtonGetCheckButtonFlag
+TextEditBoxGetTextLines
+MapFindWindowSearchBox
+MapFindWindowSearchBox.TextUpdated
+MapFindWindowSearchBox.Text
+MapFindWindowSearchBox.CursorPos
+this
+RenameWindowTextEntryBox
+RenameWindowTextEntryBox.TextUpdated
+RenameWindowTextEntryBox.Text
+RenameWindowTextEntryBox.CursorPos
+UserActionIsActionTypeTargetModeCompat
+ContainerSearchWindowSearchBox
+ContainerSearchWindowSearchBox.TextUpdated
+ContainerSearchWindowSearchBox.Text
+ContainerSearchWindowSearchBox.CursorPos
+tabIndex
+UserWaypointWindowYTextEditBox
+UserWaypointWindowYTextEditBox.TextUpdated
+UserWaypointWindowYTextEditBox.Text
+UserWaypointWindowYTextEditBox.CursorPos
+ModulesLoadFromDirectory
+WindowUnregisterEventHandler
+StartIgnoreListAdd
+UserWaypointWindowLongTextEditBox
+UserWaypointWindowLongTextEditBox.TextUpdated
+UserWaypointWindowLongTextEditBox.Text
+UserWaypointWindowLongTextEditBox.CursorPos
+UserWaypointWindowLatTextEditBox
+UserWaypointWindowLatTextEditBox.TextUpdated
+UserWaypointWindowLatTextEditBox.Text
+UserWaypointWindowLatTextEditBox.CursorPos
+UserWaypointWindowFacetTextEditBox
+UserWaypointWindowFacetTextEditBox.TextUpdated
+UserWaypointWindowFacetTextEditBox.Text
+UserWaypointWindowFacetTextEditBox.CursorPos
+ComboBoxSetSelectedMenuItem
+UserWaypointWindowNameTextEditBox
+UserWaypointWindowNameTextEditBox.TextUpdated
+UserWaypointWindowNameTextEditBox.Text
+UserWaypointWindowNameTextEditBox.CursorPos
+ActionEditMacroNameEntry
+ActionEditMacroNameEntry.TextUpdated
+ActionEditMacroNameEntry.Text
+ActionEditMacroNameEntry.CursorPos
+PaperdollWindow
+PaperdollWindow.ArmorSlots
+PaperdollWindow.ELF
+PaperdollWindow.SlotLButtonUp
+PaperdollWindow.TID
+PaperdollWindow.RefreshPlayer
+PaperdollWindow.MenuRequest
+PaperdollWindow.UpdatePaperdoll
+PaperdollWindow.BlockClosing
+PaperdollWindow.OnPaperdollTextureMouseOver
+PaperdollWindow.OnUpdate
+PaperdollWindow.ToggleInventoryWindow
+PaperdollWindow.WINDOWSCALE
+PaperdollWindow.OnPaperdollTextureLButtonDblClk
+PaperdollWindow.OnMouseOverToggleCharacterSheet
+PaperdollWindow.CurrentBG
+PaperdollWindow.ActivePaperdollImage
+PaperdollWindow.OnPaperdollTextureMouseEnd
+PaperdollWindow.CanPickUp
+PaperdollWindow.TimePassedSincePickUp
+PaperdollWindow.Initialize
+PaperdollWindow.CloseWindow
+PaperdollWindow.OnPaperdollTextureLButtonDown
+PaperdollWindow.PAPERDOLLSLOTID
+PaperdollWindow.HandleUpdatePaperdollEvent
+PaperdollWindow.OnItemSeverelyDamaged
+PaperdollWindow.OnItemDamaged
+PaperdollWindow.UpdateDurabilities
+PaperdollWindow.GotDamage
+PaperdollWindow.BlankSlot
+PaperdollWindow.LockTooltip
+PaperdollWindow.GARGOYLE
+PaperdollWindow.OnMouseOverToggleInventory
+PaperdollWindow.BlockPaperdolls
+PaperdollWindow.Lock
+PaperdollWindow.Locked
+PaperdollWindow.SlotLButtonDown
+PaperdollWindow.GetMouseSlotId
+PaperdollWindow.OpenPaperdolls
+PaperdollWindow.ToggleCharacterSheet
+PaperdollWindow.UpdateCharProfile
+PaperdollWindow.OnPaperdollTextureRButtonDown
+PaperdollWindow.ActivePaperdollObject
+PaperdollWindow.ToggleCharacterAbilities
+PaperdollWindow.OnMouseOverToggleCharacterAbilities
+PaperdollWindow.ToggleProfile
+PaperdollWindow.OnMouseDrag
+PaperdollWindow.ItemMouseOver
+PaperdollWindow.SlotRButtonDown
+PaperdollWindow.Organize
+PaperdollWindow.Shutdown
+PaperdollWindow.ToggleProfileTooltip
+PaperdollWindow.OnPaperdollTextureLButtonUp
+PaperdollWindow.HUMAN
+PaperdollWindow.SlotLButtonDblClk
+ListBoxGetDataIndex
+UserActionRemoveSlot
+TextLogClear
+ActionEditTextEntry
+ActionEditTextEntry.TextUpdated
+ActionEditTextEntry.Text
+ActionEditTextEntry.CursorPos
+wnd
+WindowSetId
+parent
+result
+texture
+iconName
+SkillsWindow
+SkillsWindow.DoNothing
+SkillsWindow.UpdateSkill
+SkillsWindow.CycleMouseOver
+SkillsWindow.OnUpdate
+SkillsWindow.ToggleSkillsWindow
+SkillsWindow.CheckSkillForUpdate
+SkillsWindow.ToggleTab
+SkillsWindow.ToggleHelpButton
+SkillsWindow.SkillRButtonUp
+SkillsWindow.ForceActiveTabSetting
+SkillsWindow.SetAutoLock
+SkillsWindow.ContextMenuCallback
+SkillsWindow.FormatSkillValue
+SkillsWindow.SaveCurrentSkillValues
+SkillsWindow.SaveCurrentSkillValue
+SkillsWindow.SkillLButtonDown
+SkillsWindow.Initialize
+SkillsWindow.UpdateTotalSkillPoints
+SkillsWindow.CheckAllSkillsForUpdate
+SkillsWindow.TID_CUSTOM_HELP
+SkillsWindow.SkillValueTypeToggleLButtonUp
+SkillsWindow.GetSkillTitle
+SkillsWindow.EnableAllTabs
+SkillsWindow.UpdateSkillsTrackerToggleButtonText
+SkillsWindow.SkillsTrackerToggleLButtonUp
+SkillsWindow.UpdateSkillCapToggleButtonText
+SkillsWindow.SkillCapToggleLButtonUp
+SkillsWindow.SkillMouseOver
+SkillsWindow.MoreInfoOnMouseOver
+SkillsWindow.CycleLButtonUp
+SkillsWindow.SetStateButton
+SkillsWindow.UpdateSkillValueTypeToggleButtonText
+SkillsWindow.UseSkill
+SkillsWindow.SkillDataMode
+SkillsWindow.SkillLButtonUp
+SkillsWindow.DownSkills
+SkillsWindow.SkillTargetVals
+SkillsWindow.ShowTab
+SkillsWindow.NUM_SKILLS_PER_TAB
+SkillsWindow.ContextReturnCodes
+SkillsWindow.SkillsDownLButtonUp
+SkillsWindow.DisableTab
+SkillsWindow.CUSTOM_TAB_NUM
+SkillsWindow.Delta
+SkillsWindow.TID_REMOVE_CUSTOM
+SkillsWindow.LockSkills
+SkillsWindow.SkillsTrackerMode
+SkillsWindow.UpdateAllSkills
+SkillsWindow.Shutdown
+SkillsWindow.SessionGains
+SkillsWindow.TID_ADD_TO_CUSTOM
+SkillsWindow.SkillCapMode
+SkillsWindow.SkillsLockLButtonUp
+WStringToString
+NewPlayerInstructionManager
+NewPlayerInstructionManager.stripMarkup
+NewPlayerInstructionManager.printTable
+NewPlayerInstructionManager.ConcatStringFromTID
+NewPlayerInstructionManager.registerWindow
+NewPlayerInstructionManager.QUIT_TID
+NewPlayerInstructionManager.registerOnCreateCallback
+NewPlayerInstructionManager.onCreateCallback
+NewPlayerInstructionManager.OKAY_TID
+NewPlayerInstructionManager.TELL_BETA_TESTERS_WE_KNOW
+NewPlayerInstructionManager.CLOSE_TID
+NewPlayerInstructionManager.RESIGN_TID
+NewPlayerInstructionManager.REFUSE_TID
+NewPlayerInstructionManager.WindowPositionGroup
+NewPlayerInstructionManager.Initialize
+NewPlayerInstructionManager.getAllWindowsForID
+NewPlayerInstructionManager.unregisterOnCreateCallback
+NewPlayerInstructionManager.NEW_GUMP_HAS_BEEN_HANDLED
+NewPlayerInstructionManager.CANCEL_TID
+NewPlayerInstructionManager.getAllKnownWindows
+NewPlayerInstructionManager.DISPLAY_GUMPNOTFOUND
+NewPlayerInstructionManager.ASK_BETA_TESTERS_FOR_HELP
+NewPlayerInstructionManager.knownWindows
+NewPlayerInstructionManager.translateTID
+NewPlayerInstructionManager.unregisterWindow
+NewPlayerInstructionManager.NumOfGumps
+NewPlayerInstructionManager.DONT_DELETE_DATA_YET
+NewPlayerInstructionManager.GumpName
+NewPlayerInstructionManager.WindowName
+NewPlayerInstructionManager.GGParseData
+NewPlayerInstructionManager.ACCEPT_TID
+NewPlayerInstructionManager.convertToWString
+NewPlayerInstructionManager.tableToString
+NewPlayerInstructionManager.BetaTesterHelpMessage
+NewPlayerInstructionManager.GGClose
+NewPlayerInstructionManager.BACK_TID
+NewPlayerInstructionManager.GGArrived
+NewPlayerInstructionManager.destroyActiveWindow
+NewPlayerInstructionManager.DELETE_DATA
+NewPlayerInstructionManager.destroyWindow
+NewPlayerInstructionManager.unregisterActiveWindow
+FontSelector
+FontSelector.OnShown
+FontSelector.RunicFontItem
+FontSelector.SetFontToSelection
+FontSelector.Fonts
+FontSelector.Selection
+FontSelector.Shutdown
+FontSelector.ClearMouseOverItem
+FontSelector.Initialize
+FontSelector.CloseFontWindow
+FontSelector.ItemMouseOver
+UserActionGetNumSlots
+DebugWindow
+DebugWindow.UpdateLoadLuaDebugLibrary
+DebugWindow.ToggleOptions
+DebugWindow.ReloadUIHover
+DebugWindow.OnResizeBegin
+DebugWindow.UpdateCodeErrorHandling
+DebugWindow.Shutdown
+DebugWindow.Initialize
+DebugWindow.logging
+DebugWindow.ToggleLogging
+DebugWindow.UpdateDisplayFilter
+DebugWindow.UpdateLuaErrorHandling
+ResetMMOKeyBinding
+DoesPlayerHaveItem
+IsLoginBefore
+IsMobileVisible
+CourseMapClearCourse
+ListBoxSetDisplayOrder
+TwoButtonDialogManager
+TwoButtonDialogManager.stripMarkup
+TwoButtonDialogManager.printTable
+TwoButtonDialogManager.ConcatStringFromTID
+TwoButtonDialogManager.registerWindow
+TwoButtonDialogManager.QUIT_TID
+TwoButtonDialogManager.registerOnCreateCallback
+TwoButtonDialogManager.onCreateCallback
+TwoButtonDialogManager.OKAY_TID
+TwoButtonDialogManager.TELL_BETA_TESTERS_WE_KNOW
+TwoButtonDialogManager.CLOSE_TID
+TwoButtonDialogManager.RESIGN_TID
+TwoButtonDialogManager.REFUSE_TID
+TwoButtonDialogManager.WindowPositionGroup
+TwoButtonDialogManager.Initialize
+TwoButtonDialogManager.getAllWindowsForID
+TwoButtonDialogManager.unregisterOnCreateCallback
+TwoButtonDialogManager.NEW_GUMP_HAS_BEEN_HANDLED
+TwoButtonDialogManager.CANCEL_TID
+TwoButtonDialogManager.getAllKnownWindows
+TwoButtonDialogManager.DISPLAY_GUMPNOTFOUND
+TwoButtonDialogManager.ASK_BETA_TESTERS_FOR_HELP
+TwoButtonDialogManager.knownWindows
+TwoButtonDialogManager.translateTID
+TwoButtonDialogManager.unregisterWindow
+TwoButtonDialogManager.NumOfGumps
+TwoButtonDialogManager.DONT_DELETE_DATA_YET
+TwoButtonDialogManager.GumpName
+TwoButtonDialogManager.WindowName
+TwoButtonDialogManager.GGParseData
+TwoButtonDialogManager.ACCEPT_TID
+TwoButtonDialogManager.convertToWString
+TwoButtonDialogManager.tableToString
+TwoButtonDialogManager.BetaTesterHelpMessage
+TwoButtonDialogManager.GGClose
+TwoButtonDialogManager.BACK_TID
+TwoButtonDialogManager.GGArrived
+TwoButtonDialogManager.destroyActiveWindow
+TwoButtonDialogManager.DELETE_DATA
+TwoButtonDialogManager.destroyWindow
+TwoButtonDialogManager.unregisterActiveWindow
+UserActionAddSlot
+BuildTableFromCSV
+IsPlayerDead
+RCWfacialHairStyle
+TwoButtonDialog
+TwoButtonDialog.parseDescAsTitleTextAndTwoButtons
+TwoButtonDialog.parseData
+TwoButtonDialog.Init
+TwoButtonDialog.getActiveWindowData
+TwoButtonDialog.OnCloseWindow
+TwoButtonDialog.parseDescAsTextAndTwoButtons
+TwoButtonDialog.DefaultButtonFunction
+TwoButtonDialog.parseDescAsText
+TwoButtonDialog.RightButtonPressed
+TwoButtonDialog.Initialize
+TwoButtonDialog.LeftButtonPressed
+TwoButtonDialog.setFields
+TwoButtonDialog.parseDescAsTitleSubtitleTextAndTwoButtons
+TwoButtonDialog.new
+LogDisplayAddLog
+VerticalScrollbarSetLineSize
+SendHousingSystemMsg
+TextEditBoxGetText
+LogDisplaySetFilterState
+UserActionTargetByResourceSetResourceCategory
+QuickStats
+QuickStats.PickColor
+QuickStats.Save
+QuickStats.ColorPicked
+QuickStats.Settings
+QuickStats.DeleteSettings
+QuickStats.Destroy
+QuickStats.AmountSettings
+QuickStats.OnUpdate
+QuickStats.ContextMenuCallback
+QuickStats.Initialized
+QuickStats.Context
+QuickStats.FindQuickStatMovingBlock
+QuickStats.InMovement
+QuickStats.Max
+QuickStats.StatOnLButtonUp
+QuickStats.GetId
+QuickStats.LabelsRefreshRate
+QuickStats.StatLButtonDown
+QuickStats.UpdateLabel
+QuickStats.Delta
+QuickStats.Initialize
+QuickStats.DoesLabelExist
+QuickStats.Shutdown
+QuickStats.Load
+QuickStats.Labels
+CrystalPortal
+CrystalPortal.LastArea
+CrystalPortal.Toggle
+CrystalPortal.LabelOnMouseOver
+CrystalPortal.LastSelection
+CrystalPortal.WindowName
+CrystalPortal.OnShown
+CrystalPortal.GO
+CrystalPortal.CheckEnable
+CrystalPortal.Shutdown
+CrystalPortal.Felucca
+CrystalPortal.Initialize
+CrystalPortal.Trammel
+CrystalPortal.currentBase
+CrystalPortal.LastMap
+CrystalPortal.NoWind
+GenericQuantity
+GenericQuantity.UpdateQuantity
+GenericQuantity.HandleAnchorWindow
+GenericQuantity.OnKeyEnter
+GenericQuantity.OnTextChanged
+GenericQuantity.OnOkay
+GenericQuantity.Shutdown
+GenericQuantity.OnCancel
+GenericQuantity.maxAmount
+GenericQuantity.Initialize
+GenericQuantity.OnKeyEscape
+UOSetWaypointTypeDisplayInfo
+NewPlayerGuide
+NewPlayerGuide.SetText
+NewPlayerGuide.Shutdown
+NewPlayerGuide.Initialize
+HighlightEffectManager
+HighlightEffectManager.knownWindows
+HighlightEffect
+HighlightEffect.OnCloseWindow
+HighlightEffect.Initialize
+HighlightEffect.OnShutdown
+HighlightEffect.Init
+HighlightEffect.Update
+HighlightEffect.new
+TipoftheDayWindow
+TipoftheDayWindow.TID
+TipoftheDayWindow.GetRandomTip
+TipoftheDayWindow.saveOnClose
+TipoftheDayWindow.ButtonUpNext
+TipoftheDayWindow.Shutdown
+TipoftheDayWindow.ButtonUpClose
+TipoftheDayWindow.ButtonUpShowOption
+TipoftheDayWindow.tipIndex
+TipoftheDayWindow.Initialize
+ActionsWindow
+ActionsWindow.LeftArrowPressed
+ActionsWindow.UpdateCurrentGroup
+ActionsWindow.GetActionDataForType
+ActionsWindow.ShowActiveGroup
+ActionsWindow.ITEM_HEIGHT
+ActionsWindow.GetIdByType
+ActionsWindow.RefreshList
+ActionsWindow.RightArrowPressed
+ActionsWindow.Groups
+ActionsWindow.ActionData
+ActionsWindow.isAction
+ActionsWindow.Context
+ActionsWindow.GetActionDataForID
+ActionsWindow.Initialize
+ActionsWindow.OFFSET_FROM_BOTTOM
+ActionsWindow.OFFSET_FROM_TOP
+ActionsWindow.ContextTooltip
+ActionsWindow.ItemMouseOver
+ActionsWindow.CurrentGroup
+ActionsWindow.ItemLButtonDown
+ActionsWindow.ITEM_WIDTH
+ActionsWindow.Shutdown
+ActionsWindow.SetGroupLabel
+ActionsWindow.InitActionData
+ActionsWindow.SIDE_OFFSET
+ActionsWindow.DefaultTypes
+ActionsWindow.HideAllGroups
+ActionsWindow.ContextMenuCallback
+ActionsWindow.CustomEdit
+SystemData
+SystemData.TrackingPointer
+SystemData.BindingActionString
+SystemData.RecordedKey
+SystemData.PlayState
+SystemData.Directories
+SystemData.ActiveWindowSet
+SystemData.TextChannelID
+SystemData.TextIDToks
+SystemData.MouseOverWindow
+SystemData.ActiveWindow
+SystemData.IsRecordingSettings
+SystemData.SourceName
+SystemData.TextLogUpdate
+SystemData.UpdateProcessed
+SystemData.PaperdollTexture
+SystemData.RecordedKeySmallDisplay
+SystemData.Events
+SystemData.Settings
+SystemData.RequestInfo
+SystemData.ActiveMobile
+SystemData.IsInternalBuild
+SystemData.MacroSystem
+SystemData.TextAlwaysShow
+SystemData.BindingConflictHotbarId
+SystemData.TextEntryUnicodeId
+SystemData.ActiveContainer
+SystemData.ChatLogFilters
+SystemData.screenResolution
+SystemData.InputProcessed
+SystemData.TextEntryUnicodeSender
+SystemData.BindType
+SystemData.AvailableResolutions
+SystemData.DragSource
+SystemData.DragItem
+SystemData.FreeformInventory
+SystemData.TextID
+SystemData.UserAction
+SystemData.ActiveObject
+SystemData.DynamicWindowId
+SystemData.UiLogFilters
+SystemData.BindingConflictItemIndex
+SystemData.Waypoint
+SystemData.Text
+SystemData.Login
+SystemData.MousePosition
+SystemData.TextSourceID
+SystemData.BindingConflictType
+SystemData.CustomUIList
+SystemData.TextEntryUnicodeCode
+SystemData.ButtonFlags
+SystemData.Hotbar
+SystemData.TextColor
+SystemData.Paperdoll
+PartyInviteWindow
+PartyInviteWindow.Accept_OnLButtonUp
+PartyInviteWindow.Check_OnLButtonUp
+PartyInviteWindow.Decline_OnLButtonUp
+PartyInviteWindow.Initialize
+PartyInviteWindow.TID
+PartyInviteWindow.CloseWindow
+PartyInviteWindow.Shutdown
+PartyInviteWindow.checkboxFlag
+ResizeWindow
+ResizeWindow.SendViewportData
+ResizeWindow.Update
+ResizeWindow.LockTooltip
+ResizeWindow.IsMoving
+ResizeWindow.UpdateWindow
+ResizeWindow.Lock
+ResizeWindow.Locked
+ResizeWindow.StartMoving
+ResizeWindow.UpdateHandles
+ResizeWindow.UpdateViewport
+ResizeWindow.StopMoving
+ResizeWindow.OnResizeBegin
+ResizeWindow.Initialize
+ResizeWindow.HANDLE_SIZE
+ResizeWindow.OnViewportChanged
+ResizeWindow.OnResizeEnd
+ResizeWindow.Shutdown
+lines
+ComboBoxAddMenuItem
+TextEditBoxSetHandleKeyDown
+WIDE_SPACER
+CourseMapDeletePoint
+WindowSetOffsetFromParent
+TID_REQ_NOTHING
+AttachWindowToWorldObject
+HueRGBAValue
+DestroyWindow
+GetStringFromTable
+UORadarSetWindowSize
+DamageWindow
+DamageWindow.OTHERGETDAMAGE_COLOR
+DamageWindow.FadeDiff
+DamageWindow.DefaultAnchorY
+DamageWindow.AttachedId
+DamageWindow.OverheadMove
+DamageWindow.MaxAnchorYOverlap
+DamageWindow.AddText
+DamageWindow.DamageArray
+DamageWindow.YOUGETAMAGE_COLOR
+DamageWindow.OverheadAlive
+DamageWindow.ShiftYAmount
+DamageWindow.IsOverlap
+DamageWindow.UpdateTime
+DamageWindow.GetNextId
+DamageWindow.ShiftYWindowUp
+DamageWindow.Init
+DamageWindow.Initialize
+DamageWindow.LastDamaged
+DamageWindow.PETGETDAMAGE_COLOR
+DamageWindow.FadeStart
+DamageWindow.AnchorY
+RaceChangeWindow
+RaceChangeWindow.HideColorPickerWindows
+RaceChangeWindow.ToggleAppearanceItemDown
+RaceChangeWindow.TID
+RaceChangeWindow.HandleOkButton
+RaceChangeWindow.UserClosedWindow
+RaceChangeWindow.ColorHair
+RaceChangeWindow.UpdatePaperdollTextureSize
+RaceChangeWindow.OnCloseWindow
+RaceChangeWindow.ColorFacialHair
+RaceChangeWindow.WindowName
+RaceChangeWindow.ToggleAppearanceItemUp
+RaceChangeWindow.ColorSkin
+RaceChangeWindow.createWearableTable
+RaceChangeWindow.Initialize
+RaceChangeWindow.Shutdown
+RaceChangeWindow.UpdateCharacterPaperdoll
+RaceChangeWindow.ShowColorPicker
+RaceChangeWindow.updateWearableItemIndex
+TID_AUTOMATIC
+NameColor
+NameColor.TextColors
+NameColor.UpdateLabelNameColor
+NameColor.UpdateEditBoxNameColor
+NameColor.AuraColors
+NameColor.Notoriety
+SetStaticHotbarPage
+TID_DIRECT
+elementIcon
+WindowGetResizing
+OFFSET_CLASS
+ChatOptionsWindowList
+ChatOptionsWindowList.Table
+ChatOptionsWindowList.numVisibleRows
+GetMaxRacialAbilities
+DynamicImageSetRotation
+OFFSET_AUTO
+pcall
+TextLogGetNumEntries
+WindowGetScale
+DragSlotDropObjectToPaperdoll
+Debug
+Debug.PrintToDebugConsole
+Debug.Stringable
+Debug.DumpToConsole
+Debug.Dump
+Debug.Print
+Debug.PrintToChat
+StaticTextWindow
+StaticTextWindow.HandleAnchorWindow
+StaticTextWindow.numWindow
+StaticTextWindow.CreateWindow
+StaticTextWindow.TimePassed
+StaticTextWindow.FadeStartTime
+StaticTextWindow.Update
+StaticTextWindow.Shutdown
+StaticTextWindow.AlphaDiff
+StaticTextWindow.Initialize
+StaticTextWindow.DestroyAllWindows
+StaticTextWindow.AlphaStart
+StaticTextWindow.Gray
+StaticTextWindow.FadeTimeId
+OFFSET_REQ
+PageWindowGetNumPagesDisplayed
+colName
+WindowStopScaleAnimation
+UOEditUserWaypoint
+UserActionHasTargetType
+CenterScreenText
+CenterScreenText.EnableIgnoreSummons
+CenterScreenText.LOWHPPetStarted
+CenterScreenText.LowHPPETPercDisabled
+CenterScreenText.LOWHPMEStarted
+CenterScreenText.LowHPPerc
+CenterScreenText.SendCenterScreenTexture
+CenterScreenText.LowPETHPPerc
+CenterScreenText.OnUpdate
+CenterScreenText.LowHPPercDisabled
+HotbarClearItem
+ForceProcessAllWindowAnchors
+TradeWindow
+TradeWindow.OnItemRelease
+TradeWindow.UpdateContents
+TradeWindow.MyTradeTotalPlatMouseOver
+TradeWindow.UpdateBalance
+TradeWindow.HideAllContents
+TradeWindow.HandleUpdateObjectEvent
+TradeWindow.OnLButtonDown
+TradeWindow.OnAccept
+TradeWindow.MiniModelUpdate
+TradeWindow.OnUpdate
+TradeWindow.OnCloseDialog
+TradeWindow.IsPlayerContainer
+TradeWindow.OnItemDblClicked
+TradeWindow.DropObjectInContainer
+TradeWindow.TheirTradeTotalGoldMouseOver
+TradeWindow.Initialize
+TradeWindow.OpenContainers
+TradeWindow.CloseWindow
+TradeWindow.UpdateObject
+TradeWindow.OnKeyTab
+TradeWindow.DangerMouseOver
+TradeWindow.OnTextChanged
+TradeWindow.NumCreatedSlots
+TradeWindow.RegisteredItems
+TradeWindow.OnKeyEnter
+TradeWindow.OnKeyDown
+TradeWindow.BalancePlatMouseOver
+TradeWindow.BalanceGoldMouseOver
+TradeWindow.TradeInfo
+TradeWindow.TheirTradeTotalPlatMouseOver
+TradeWindow.IsTraderContainer
+TradeWindow.CreateSlots
+TradeWindow.MyTradeTotalGoldMouseOver
+TradeWindow.ReleaseRegisteredInfo
+TradeWindow.ModifyTheirGold
+TradeWindow.StringText
+TradeWindow.Shutdown
+TradeWindow.AcceptMessage
+TradeWindow.OnContainerRelease
+TradeWindow.ReleaseRegisteredObjects
+TradeWindow.ItemMouseOver
+FaceSelectionWindow_GumpData
+DockableWindowSetTopWindow
+CustomizeHouseVisibility
+CustomizeHouseVisibility.SetVisibility
+CustomizeHouseVisibility.STORY_TID
+CustomizeHouseVisibility.Shutdown
+CustomizeHouseVisibility.HandleVisibilityChange
+CustomizeHouseVisibility.HIDDEN
+CustomizeHouseVisibility.TRANSLUCENT
+CustomizeHouseVisibility.TILE_TYPE_TIDS
+CustomizeHouseVisibility.SetCurrentStory
+CustomizeHouseVisibility.HandleStoryChanged
+CustomizeHouseVisibility.SetNumOfStories
+CustomizeHouseVisibility.TILE_TYPE_NAMES
+CustomizeHouseVisibility.Initialize
+CustomizeHouseVisibility.OPTION_TIDS
+CustomizeHouseVisibility.NUM_OF_VISIBILITY_OPTIONS
+CustomizeHouseVisibility.OPTION_NAMES
+CustomizeHouseVisibility.SHOWING
+CustomizeHouseWindow
+CustomizeHouseWindow.HandleWallsButton
+CustomizeHouseWindow.MAX_NUM_OF_STORIES
+CustomizeHouseWindow.TOOLTIP_TID_STORY_VIS1
+CustomizeHouseWindow.EYE_DROPPER_MODE
+CustomizeHouseWindow.TOOLTIP_TID_STORY_VIS4
+CustomizeHouseWindow.TOOLTIP_TID_COMPONENTS
+CustomizeHouseWindow.createTileStruct
+CustomizeHouseWindow.TOOLTIP_TID_EYEDROP
+CustomizeHouseWindow.TILE_TYPE_WALL
+CustomizeHouseWindow.TILE_TYPE_ROOF
+CustomizeHouseWindow.currentWindowNum
+CustomizeHouseWindow.TOOLTIP_TID_ROOF
+CustomizeHouseWindow.MAX_ROOF_Z_OFFSET
+CustomizeHouseWindow.displayCategory
+CustomizeHouseWindow.TOOLTIP_TID_REVERT
+CustomizeHouseWindow.displayRoofButtons
+CustomizeHouseWindow.TOOLTIP_TID_BACKUP
+CustomizeHouseWindow.BUTTON_TID_CLEAR
+CustomizeHouseWindow.DOOR_SWING_DIRECTION_ICONS
+CustomizeHouseWindow.TOOLTIP_TID_SYNCH
+CustomizeHouseWindow.SYS_MSG_RESTORE
+CustomizeHouseWindow.Shutdown
+CustomizeHouseWindow.OnCloseWindow
+CustomizeHouseWindow.TOOLTIP_TID_STORY_VIS2
+CustomizeHouseWindow.deleteIcons
+CustomizeHouseWindow.Update
+CustomizeHouseWindow.TOOLTIP_TID_WINDOWS
+CustomizeHouseWindow.OnMouseOver
+CustomizeHouseWindow.TILE_TYPE_DOOR
+CustomizeHouseWindow.turnOffFrameAroundWindow
+CustomizeHouseWindow.turnOnFrameAroundWindow
+CustomizeHouseWindow.BUTTON_TID_BACKUP
+CustomizeHouseWindow.ScrollToIconInHorizontalScrollWindow
+CustomizeHouseWindow.displayIcons
+CustomizeHouseWindow.findMaxScale
+CustomizeHouseWindow.insertIcon
+CustomizeHouseWindow.insertDynamicImage
+CustomizeHouseWindow.Initialize
+CustomizeHouseWindow.HandleRoofUpButton
+CustomizeHouseWindow.TOOLTIP_TID_DOORS
+CustomizeHouseWindow.NUM_OF_TILE_TYPE
+CustomizeHouseWindow.TOOLTIP_TID_STORY_VIS3
+CustomizeHouseWindow.lastIconID
+CustomizeHouseWindow.HandleChangeStoryButton
+CustomizeHouseWindow.TOOLTIP_TID_FIXTURES
+CustomizeHouseWindow.getDoorSwingDirectionIcon
+CustomizeHouseWindow.entitlementTIDs
+CustomizeHouseWindow.TILE_TYPE_STAIRS
+CustomizeHouseWindow.SetStoryButtonPressed
+CustomizeHouseWindow.MIN_NUM_OF_STORIES
+CustomizeHouseWindow.TOOLTIP_TID_RAISE_ROOF_LEVEL
+CustomizeHouseWindow.TOOLTIP_TID_WALLS
+CustomizeHouseWindow.entitlements
+CustomizeHouseWindow.HandleRestoreButton
+CustomizeHouseWindow.SYS_MSG_BACKUP
+CustomizeHouseWindow.SYS_MSG_REVERT
+CustomizeHouseWindow.HandleClearButton
+CustomizeHouseWindow.TOOLTIP_TID_STAIRS
+CustomizeHouseWindow.HandleSynchButton
+CustomizeHouseWindow.HandleBackupButton
+CustomizeHouseWindow.multiID
+CustomizeHouseWindow.placeTile
+CustomizeHouseWindow.TOOLTIP_TID_ROOF_LEVEL
+CustomizeHouseWindow.NOT_ENTITLED
+CustomizeHouseWindow.HandleEyeDropperButton
+CustomizeHouseWindow.MIN_ROOF_Z_OFFSET
+CustomizeHouseWindow.TOOLTIP_TID_STORY3
+CustomizeHouseWindow.HandleEraseButton
+CustomizeHouseWindow.HandleDoorsButton
+CustomizeHouseWindow.BUTTON_TID_COMMIT
+CustomizeHouseWindow.HandleMiscButton
+CustomizeHouseWindow.HandleRoofsButton
+CustomizeHouseWindow.BUTTON_TID_SYNCH
+CustomizeHouseWindow.TOOLTIP_TID_COMMIT
+CustomizeHouseWindow.SYS_MSG_CLEAR
+CustomizeHouseWindow.HandleStairsButton
+CustomizeHouseWindow.HandleFloorsButton
+CustomizeHouseWindow.HandleTeleportersButton
+CustomizeHouseWindow.roofZOffset
+CustomizeHouseWindow.HandleTileTypeButton
+CustomizeHouseWindow.TOOLTIP_TID_PRICE
+CustomizeHouseWindow.TOOLTIP_TID_STORY2
+CustomizeHouseWindow.HandlePreviousButton
+CustomizeHouseWindow.TILE_TYPE_TELEPORTERS
+CustomizeHouseWindow.TOOLTIP_TID_VISIBILITY
+CustomizeHouseWindow.TILE_TYPE_MISC
+CustomizeHouseWindow.TOOLTIP_TID_TELEPORTERS
+CustomizeHouseWindow.OnIconSelected
+CustomizeHouseWindow.BUTTON_TID_REVERT
+CustomizeHouseWindow.readAllTileData
+CustomizeHouseWindow.SYS_MSG_SYNC
+CustomizeHouseWindow.TOOLTIP_TID_STORY1
+CustomizeHouseWindow.HandleRoofDownButton
+CustomizeHouseWindow.TOOLTIP_TID_SYSTEM
+CustomizeHouseWindow.TOOLTIP_TID_CATEGORY
+CustomizeHouseWindow.TOOLTIP_TID_LOWER_ROOF_LEVEL
+CustomizeHouseWindow.TOOLTIP_TID_ROOFS
+CustomizeHouseWindow.HandleCommitButton
+CustomizeHouseWindow.HandleRevertButton
+CustomizeHouseWindow.TOOLTIP_TID_MISC
+CustomizeHouseWindow.ERASE_MODE
+CustomizeHouseWindow.SYS_MSG_COMMIT
+CustomizeHouseWindow.TILE_TYPE_NONE
+CustomizeHouseWindow.BUTTON_TID_RESTORE
+CustomizeHouseWindow.TOOLTIP_TID_HELP
+CustomizeHouseWindow.TOOLTIP_TID_STORY4
+CustomizeHouseWindow.ForceTileSelection
+CustomizeHouseWindow.TILE_TYPE_FLOOR
+CustomizeHouseWindow.TILE_PLACEMENT_MODE
+CustomizeHouseWindow.TOOLTIP_TID_RESTORE
+CustomizeHouseWindow.TOOLTIP_TID_CLEAR
+CustomizeHouseWindow.TOOLTIP_TID_ERASE
+CustomizeHouseWindow.ToggleVisibilityWindow
+CustomizeHouseWindow.TOOLTIP_TID_FLOORS
+CustomizeHouseWindow.currentStory
+GetUseLuaErrorHandling
+GetMapIconData
+RCWrace
+DockableWindowSetOffsetOnRootDelete
+RCWhairColor
+UserActionMacroSetRepeatCount
+RCWhairStyle
+WindowSetDimensions
+RCWskinColor
+Shopkeeper
+Shopkeeper.OnBuyMore
+Shopkeeper.CancelPurchase
+Shopkeeper.OnLButtonUpSearch
+Shopkeeper.OnItemClicked
+Shopkeeper.TID
+Shopkeeper.UpdateBuyObject
+Shopkeeper.HandleUpdateObjectEvent
+Shopkeeper.BuyTooltip
+Shopkeeper.GetItemIndexById
+Shopkeeper.REFRESH_DELAY
+Shopkeeper.OnUpdate
+Shopkeeper.SellTooltip
+Shopkeeper.UpdateBuyItems
+Shopkeeper.Restart
+Shopkeeper.RIGHT_SIDE_ID
+Shopkeeper.Patterns
+Shopkeeper.Initialize
+Shopkeeper.BuyContext
+Shopkeeper.UpdateItemIcon
+Shopkeeper.Buying
+Shopkeeper.UpdatePlayersGold
+Shopkeeper.QUANTITY_DELAY
+Shopkeeper.BuyAgent
+Shopkeeper.OnBuyLess
+Shopkeeper.stripFirstNumber
+Shopkeeper.PurchaseItems
+Shopkeeper.ContextMenuCallback
+Shopkeeper.OnBuyOne
+Shopkeeper.UpdateSellItems
+Shopkeeper.UpdateItemRightQuantity
+Shopkeeper.SellContext
+Shopkeeper.HandleUpdateBuyItemsEvent
+Shopkeeper.OnBuyAll
+Shopkeeper.OnStopUpdating
+Shopkeeper.BuyHowMuch
+Shopkeeper.RemoveFiltersTooltip
+Shopkeeper.HandleUpdateObjectNameEvent
+Shopkeeper.SearchTooltip
+Shopkeeper.SellAgent
+Shopkeeper.ContextSellMenuCallback
+Shopkeeper.Shutdown
+Shopkeeper.LEFT_SIDE_ID
+Shopkeeper.RefreshLists
+Shopkeeper.CurrentAmountArray
+Shopkeeper.ItemMouseOver
+SingleLineTextEntry_GumpData
+UnregisterWindowData
+UserActionSetId
+getfenv
+IsPlayer
+HorizontalScrollbarSetScrollPosition
+GetCourseMapWindowDimensions
+UserWaypointWindow
+UserWaypointWindow.OnOkay
+UserWaypointWindow.OnKeyTab
+UserWaypointWindow.TID
+UserWaypointWindow.IconScaleUp
+UserWaypointWindow.ScaleUpOnMouseOver
+UserWaypointWindow.OnCancel
+UserWaypointWindow.InitializeCreateWaypointData
+UserWaypointWindow.OnKeyCancel
+UserWaypointWindow.OnSelChanged
+UserWaypointWindow.XYcoords
+UserWaypointWindow.IconScaleDown
+UserWaypointWindow.ScaleDownOnMouseOver
+UserWaypointWindow.UpdateCoordInfo
+UserWaypointWindow.ToggleCoordMouseOver
+UserWaypointWindow.Initialize
+UserWaypointWindow.Icons
+UserWaypointWindow.ToggleCoord
+UserWaypointWindow.InitializeViewWaypointData
+UserWaypointWindow.Shutdown
+WindowGetAnchor
+CharacterSheet
+CharacterSheet.LeftArrowPressed
+CharacterSheet.OnShown
+CharacterSheet.StatMouseOver
+CharacterSheet.TID
+CharacterSheet.ClickStatLock
+CharacterSheet.StatsSize
+CharacterSheet.Caps
+CharacterSheet.RightArrowPressed
+CharacterSheet.Attributes
+CharacterSheet.Separators
+CharacterSheet.SetStatLock
+CharacterSheet.HealthStaminaManaBonus
+CharacterSheet.HideAllButFirstGroups
+CharacterSheet.Groups
+CharacterSheet.SetGroupLabel
+CharacterSheet.SetMiniIconStats
+CharacterSheet.ShowActiveAndFirstGroups
+CharacterSheet.LockMouseOver
+CharacterSheet.CurrentGroup
+CharacterSheet.Stats
+CharacterSheet.UpdateSpecialStats
+CharacterSheet.StatLButtonDown
+CharacterSheet.StrDexIntBonus
+CharacterSheet.Shutdown
+CharacterSheet.Initialize
+CharacterSheet.UpdateStatus
+CharacterSheet.CapsBonus
+CharacterSheet.ValidateGroup
+CharacterSheet.OnHidden
+GChatRoster
+GChatRoster.GC_SHOW_CHAT
+GChatRoster.OnPresenceChange
+GChatRoster.OfflineTooltip
+GChatRoster.RemoveTooltip
+GChatRoster.Presence
+GChatRoster.NUM_PRESENCE
+GChatRoster.OnlineTooltip
+GChatRoster.OnAddFriend
+GChatRoster.OnGChatRosterUpdate
+GChatRoster.SelectActiveFriend
+GChatRoster.GC_SHOW_UNAVAILABLE
+GChatRoster.RemoveFriend
+GChatRoster.UpdateFriendPresence
+GChatRoster.DEFAULT_START_POSITION
+GChatRoster.Shutdown
+GChatRoster.RemoveGChatIndex
+GChatRoster.OnGChatPresenceUpdate
+GChatRoster.TID
+GChatRoster.Initialize
+WindowGetAlpha
+IsPartyMember
+TextEditBoxSetFont
+GetParentContainer
+CircleImageSetTexture
+s1
+GetIconData
+TargetWindow
+TargetWindow.HandleTintHealthBarEvent
+TargetWindow.RefreshButtons
+TargetWindow.PreviousTargets
+TargetWindow.ClearPreviousTarget
+TargetWindow.OnLClick
+TargetWindow.UpdateMobile
+TargetWindow.GetActionsList
+TargetWindow.Buttons
+TargetWindow.OnItemDblClicked
+TargetWindow.RegisterTime
+TargetWindow.TintHealthBar
+TargetWindow.UpdateTarget
+TargetWindow.Initialize
+TargetWindow.ButtonsUse
+TargetWindow.UnregisterPreviousTargetData
+TargetWindow.UpdateObject
+TargetWindow.KnownPlayers
+TargetWindow.MobileType
+TargetWindow.TargetType
+TargetWindow.OnMoveStart
+TargetWindow.LockTooltip
+TargetWindow.MobileStatusUpdate
+TargetWindow.Locked
+TargetWindow.ObjectType
+TargetWindow.OnRClick
+TargetWindow.Lock
+TargetWindow.OnMouseOver
+TargetWindow.OnMouseOverEnd
+TargetWindow.UpdateObjectInfo
+TargetWindow.TargetId
+TargetWindow.CorpseType
+TargetWindow.KnownTamable
+TargetWindow.Delta
+TargetWindow.DeltaC
+TargetWindow.UpdateName
+TargetWindow.UpdateCorpse
+TargetWindow.ForceUpdate
+TargetWindow.Shutdown
+TargetWindow.UpdateStatus
+TargetWindow.HandleUpdateNameEvent
+TargetWindow.HasTarget
+TargetWindow.UpdateButtons
+GenericGump
+GenericGump.OnLabelInit
+GenericGump.OnClicked
+GenericGump.OnMouseOver
+GenericGump.OnHyperLinkClicked
+GenericGump.LastGumpLabels
+GenericGump.LastGump
+GenericGump.GumpsList
+GenericGump.Shutdown
+GenericGump.OnDoubleClicked
+GenericGump.OnRClicked
+GenericGump.Initialize
+TID_SKILLINCREASE_TOK
+WindowBatchDraw
+IsValidObject
+ModulesInitializeRestricted
+UserActionDelayGetDelay
+MapCommon
+MapCommon.IgnoreWaypoint
+MapCommon.CheckSquare
+MapCommon.GetWPDataFromString
+MapCommon.TID
+MapCommon.WaypointMouseOver
+MapCommon.CurrentArea
+MapCommon.sextantDefaultCenterY
+MapCommon.AdjustZoom
+MapCommon.WaypointMouseOverEnd
+MapCommon.WaypointPlayerType
+MapCommon.CheckSquareByCenter
+MapCommon.WaypointPlayerId
+MapCommon.PlayerLocation
+MapCommon.GetWaypointScale
+MapCommon.GetSextantLocationStrings
+MapCommon.UpdateZoomValues
+MapCommon.WaypointMaxId
+MapCommon.MAP_RADAR
+MapCommon.ActiveView
+MapCommon.RefreshDelta
+MapCommon.sextantLostLandCenterX
+MapCommon.sextantLostLandTopLeftX
+MapCommon.ContextReturnCodes
+MapCommon.ConvertToXYMinutes
+MapCommon.AreaDelta
+MapCommon.sextantMaximumX
+MapCommon.MAP_ATLAS
+MapCommon.WaypointViewInfo
+MapCommon.RefreshDelay
+MapCommon.CreateWPOnLocation
+MapCommon.WaypointsIconScale
+MapCommon.ForcedUpdate
+MapCommon.OnWater
+MapCommon.sextantMaximumY
+MapCommon.WaypointsTypes
+MapCommon.WaypointPlayerVisible
+MapCommon.WaypointCustomType
+MapCommon.sextantDefaultCenterX
+MapCommon.Initialize
+MapCommon.AreaDescription
+MapCommon.ContextMenuCallback
+MapCommon.UpdateWaypointIcon
+MapCommon.ClearWaypoints
+MapCommon.ChangeMap
+MapCommon.CheckSquareTable
+MapCommon.DrawPlayer
+MapCommon.UpdateAreaInfo
+MapCommon.NumFacets
+MapCommon.GetSextantCenterByArea
+MapCommon.MAP_HIDDEN
+MapCommon.sextantTrammelLostLands
+MapCommon.isChampionSpawn
+MapCommon.WaypointsIcon
+MapCommon.WaypointIsMouseOver
+MapCommon.GetRadarBorders
+MapCommon.UpdateWaypoints
+MapCommon.CheckCircle
+MapCommon.WaypointOnRButtonUp
+MapCommon.WaypointsDirty
+MapCommon.MapBorder
+MapCommon.WaypointUpdateRequest
+MapCommon.GetSextantCenter
+MapCommon.sextantLostLandTopLeftY
+MapCommon.ZoomLevel
+MapCommon.sextantLostLandCenterY
+MapCommon.SetWaypointsEnabled
+MapCommon.MAP_MODE_NAME
+MapCommon.Shutdown
+MapCommon.Update
+MapCommon.sextantFeluccaLostLands
+MapCommon.WaypointsIconFacet
+MapCommon.ConvertToMinutesXY
+MapCommon.RADAR_MODE_NAME
+GetStringFormatFromTable
+ReleaseGumpArt
+DetachWindowFromWorldObject
+LogDisplaySetFilterColor
+ItemsInfo
+ItemsInfo.Data
+ItemsInfo.Reagents
+WindowGetState
+ButtonSetPressedFlag
+ItemSlot
+ItemSlot.NUM_BUTTONS
+ItemSlot.ObjectTypes
+ItemSlot.BUTTONSTATE_EMPTY
+ItemSlot.BUTTONSTATE_ACTIVE
+ItemSlot.BUTTONSTATE_NORMAL
+ItemSlot.ItemIds
+ItemSlot.ButtonStates
+ItemSlot.BUTTONSTATE_DISABLED
+LogDisplaySetShowLogName
+Cooldown
+Cooldown.Frames
+Cooldown.Initialize
+TextLogCreateWithLimit
+DockableWindowSetTabString
+UserActionCastSpellOnId
+ProfileWindow
+ProfileWindow.ProfileLoaded
+ProfileWindow.ProfileId
+ProfileWindow.Retries
+ProfileWindow.delta
+ProfileWindow.UpdateProfile
+ProfileWindow.Shutdown
+ProfileWindow.TextChange
+ProfileWindow.Close
+ProfileWindow.Initialize
+ProfileWindow.WindowName
+SpellsInfo
+SpellsInfo.AnimalFormSkillRequirements
+SpellsInfo.GetButtonID
+SpellsInfo.SumonFamiliarSkillRequirements
+SpellsInfo.Chaos
+SpellsInfo.POISON
+SpellsInfo.GetRecoverySpeed
+SpellsInfo.GetButtonIDST
+SpellsInfo.ENERGY
+SpellsInfo.PHYSICAL
+SpellsInfo.FIRE
+SpellsInfo.GetMaxSkill
+SpellsInfo.GetSkillID
+SpellsInfo.SpellsData
+SpellsInfo.GetVariation
+SpellsInfo.Initialize
+SpellsInfo.COLD
+SpellsInfo.GetSpellSpeed
+SpellsInfo.GetMinSkill
+SpellsInfo.GetSpellDamage
+WindowStopPositionAnimation
+ModulesInitializeAllEnabled
+TextEditBoxGetHistory
+waypointId
+TextLogGetUpdateEventId
+Waypoints
+Waypoints.UOGetWaypointInfo
+Waypoints.Facet
+ComboBoxClearMenuItems
+DynamicImageSetTexture
+MapFind
+MapFind.OnLButtonUpSearch
+MapFind.Close
+MapFind.ClearItemList
+MapFind.Toggle
+MapFind.InSearch
+MapFind.SearchText
+MapFind.Restart
+MapFind.MagnifyTooltip
+MapFind.RemoveFiltersTooltip
+MapFind.Items
+MapFind.Locate
+MapFind.ItemMouseOver
+MapFind.Shutdown
+MapFind.TotalItems
+MapFind.Initialize
+MapFind.SearchTooltip
+MapFind.Reset
+ContainerSearch
+ContainerSearch.UpdateList
+ContainerSearch.OnLButtonUpSearch
+ContainerSearch.Close
+ContainerSearch.ScanSubCont
+ContainerSearch.Slots
+ContainerSearch.ClearItemList
+ContainerSearch.Toggle
+ContainerSearch.Container
+ContainerSearch.SearchResult
+ContainerSearch.ItemMouseOver
+ContainerSearch.SearchText
+ContainerSearch.Restart
+ContainerSearch.MaxItems
+ContainerSearch.Tooltip
+ContainerSearch.SearchTooltip
+ContainerSearch.OnItemClicked
+ContainerSearch.Items
+ContainerSearch.Patterns
+ContainerSearch.RemoveFiltersTooltip
+ContainerSearch.Shutdown
+ContainerSearch.TotalItems
+ContainerSearch.ScanQuantities
+ContainerSearch.Initialize
+ContainerSearch.Reset
+VerticalScrollbarGetScrollPosition
+IsOldQuestGiver
+Organizer
+Organizer.ActiveUndress
+Organizer.ActiveSell
+Organizer.Buys_Desc
+Organizer.Organizers_Items
+Organizer.Organizers_CloseCont
+Organizer.Scavengers
+Organizer.Restocks
+Organizer.Restock
+Organizer.Sells_Items
+Organizer.Scavengers_Items
+Organizer.Restocks_Items
+Organizer.Buys_Items
+Organizer.Restocks_Desc
+Organizer.Sells_Desc
+Organizer.Sell
+Organizer.Undress
+Organizer.Organizers_Cont
+Organizer.ActiveScavenger
+Organizer.Organizers
+Organizer.Undresses_Items
+Organizer.Undresses_Cont
+Organizer.ActiveOrganizer
+Organizer.GetOrganizerName
+Organizer.Scavengers_Desc
+Organizer.ActiveBuy
+Organizer.Initialize
+Organizer.Scavenger
+Organizer.Buy
+Organizer.Undresses
+Organizer.Organizers_Desc
+Organizer.Buys
+Organizer.Organizer
+Organizer.Scavengers_Cont
+Organizer.Sells
+Organizer.Undresses_Desc
+Organizer.Restocks_Cont
+Organizer.ActiveRestock
+UserActionMacroSetName
+numItems
+UORadarGetFacetDimensions
+LabelSetTextAlign
+UserActionIsTargetModeCompat
+OFFSET_DIRECT
+TextLogSetEnabled
+HealthBarColor
+HealthBarColor.HealthVisualState
+HealthBarColor.BarColor
+HealthBarColor.UpdateHealthBarColor
+ObjectHandleWindow
+ObjectHandleWindow.OnLButtonUp
+ObjectHandleWindow.whiteColor
+ObjectHandleWindow.Active
+ObjectHandleWindow.grayColor
+ObjectHandleWindow.OnMouseOver
+ObjectHandleWindow.OnDblClick
+ObjectHandleWindow.CurrentFilter
+ObjectHandleWindow.OnUpdate
+ObjectHandleWindow.ObjectHandleScale
+ObjectHandleWindow.lastItem
+ObjectHandleWindow.Notoriety
+ObjectHandleWindow.REFRESH_DELAY
+ObjectHandleWindow.ObjectHandleAlpha
+ObjectHandleWindow.hasWindow
+ObjectHandleWindow.CreateObjectHandles
+ObjectHandleWindow.OnMouseOverEnd
+ObjectHandleWindow.OnItemClicked
+ObjectHandleWindow.WindowShiftOffset
+ObjectHandleWindow.OnRClick
+ObjectHandleWindow.TextColors
+ObjectHandleWindow.ReverseObjectLookUp
+ObjectHandleWindow.RefreshTimer
+ObjectHandleWindow.retrieveObjectsData
+ObjectHandleWindow.CreateSingle
+ObjectHandleWindow.mouseOverId
+ObjectHandleWindow.Initialize
+ObjectHandleWindow.DestroyObjectHandles
+ObjectHandleWindow.ObjectsData
+ObjectHandleWindow.cooldown
+ObjectHandleWindow.OnClickClose
+OverheadText
+OverheadText.OnLButtonUp
+OverheadText.NameOnMouseOverEnd
+OverheadText.FadeStartTime
+OverheadText.ActiveIdList
+OverheadText.ChangelingNameCheck
+OverheadText.SpellsFontIndex
+OverheadText.MaxOverheadHeight
+OverheadText.FadeTimeId
+OverheadText.NameParsed
+OverheadText.OnOverheadChatShutdown
+OverheadText.HandleSettingsUpdate
+OverheadText.ChatData
+OverheadText.NameFontIndex
+OverheadText.UpdateName
+OverheadText.Initialize
+OverheadText.HandleMobileNameUpdate
+OverheadText.AlphaStart
+OverheadText.DamageFontIndex
+OverheadText.FontIndex
+OverheadText.HideName
+OverheadText.UpdateSettings
+OverheadText.QuestMarkerDelta
+OverheadText.ShowOverheadText
+OverheadText.NameOnMouseOver
+OverheadText.clickableNames
+OverheadText.TimePassed
+OverheadText.NameOnLClick
+OverheadText.OnShown
+OverheadText.UpdateOverheadAnchors
+OverheadText.ShowName
+OverheadText.OverhedTextSize
+OverheadText.InitializeEvents
+OverheadText.Update
+OverheadText.QuestMarkers
+OverheadText.HandleFlashTempNames
+OverheadText.OverheadAlive
+OverheadText.AlphaDiff
+OverheadText.Shutdown
+OverheadText.NameOnDblClick
+OverheadText.mouseOverId
+OverheadText.GetsOverhead
+OverheadText.LastSeeName
+HorizontalScrollWindowGetOffset
+towstring
+PrintTidToChatWindow
+HotbarSystem
+HotbarSystem.Alt
+HotbarSystem.ObjectSlotsSize
+HotbarSystem.BandageDelayTime
+HotbarSystem.ObjectSlots
+HotbarSystem.STATIC_HOTBAR_ID
+HotbarSystem.TID_OBJECT_ID
+HotbarSystem.UpdateMacroReferenceSlot
+HotbarSystem.GetKeyName
+HotbarSystem.StunTime
+HotbarSystem.RegisteredSpellIcons
+HotbarSystem.TID_LOCK_HOTBAR
+HotbarSystem.SpawnNewHotbar
+HotbarSystem.Plain
+HotbarSystem.TID_UNLOCK_HOTBAR
+HotbarSystem.ControlAlt
+HotbarSystem.ReplaceKey
+HotbarSystem.MacroReferenceSlots
+HotbarSystem.RegisteredGenericObjectType
+HotbarSystem.UpdateItemSlot
+HotbarSystem.OffsetX
+HotbarSystem.LightItemLabel
+HotbarSystem.AltShift
+HotbarSystem.TID_DESTROY_HOTBAR
+HotbarSystem.HighlightSpellIconInput
+HotbarSystem.ContextReturnCodes
+HotbarSystem.EvasionCooldown
+HotbarSystem.BindingsBackup
+HotbarSystem.TID_REQUEST_TARGET_ID_DESC
+HotbarSystem.DarkItemLabel
+HotbarSystem.TID_ENABLE_REPEAT
+HotbarSystem.HealPotDelayTime
+HotbarSystem.ControlAltShift
+HotbarSystem.UpdateQuantityForOneSlot
+HotbarSystem.UnbindKey
+HotbarSystem.UpdateBinding
+HotbarSystem.BindKey
+HotbarSystem.SpecialActions
+HotbarSystem.HighlightSpellIcon
+HotbarSystem.TID_DISABLE_REPEAT
+HotbarSystem.SkillDelayTime
+HotbarSystem.RequestTargetInfoReceived
+HotbarSystem.ControlShift
+HotbarSystem.OldQTA
+HotbarSystem.UpdateTargetTypeIndicator
+HotbarSystem.UnhighlightSpellIcon
+HotbarSystem.DestroyHotbarGroup
+HotbarSystem.RegisterSpellIcon
+HotbarSystem.Initialize
+HotbarSystem.TID_NEW_HOTBAR
+HotbarSystem.TID_CURSOR
+HotbarSystem.CreateUserActionContextMenuOptions
+HotbarSystem.Update
+HotbarSystem.AttunementCooldown
+HotbarSystem.RegisteredObjects
+HotbarSystem.ClearActionIcon
+HotbarSystem.SetHotbarIcon
+HotbarSystem.UpdateQuantity
+HotbarSystem.Spells
+HotbarSystem.TID_DESTROY_CONFIRM
+HotbarSystem.QTA
+HotbarSystem.RequestTargetInfo
+HotbarSystem.UpdateCooldownSlot
+HotbarSystem.TID_EDIT_ITEM
+HotbarSystem.Control
+HotbarSystem.ReflectionCooldown
+HotbarSystem.OffsetIncrement
+HotbarSystem.ContextMenuCallback
+HotbarSystem.CountdownTimer
+HotbarSystem.UpdateActionButton
+HotbarSystem.RegisterAction
+HotbarSystem.GetNextHotbarId
+HotbarSystem.TID_SELF
+HotbarSystem.UnregisterSpellIcon
+HotbarSystem.DestroyHotbar
+HotbarSystem.Shutdown
+HotbarSystem.PlayerStatsElements
+HotbarSystem.TID_CLEAR_ITEM
+HotbarSystem.UpdatePlayerStat
+HotbarSystem.MAX_HOTBAR_ID
+HotbarSystem.UpdatePlayerStatLabel
+HotbarSystem.Shift
+HotbarSystem.TargetTypeTintColors
+HotbarSystem.AppleDelayTime
+HotbarSystem.ReferencedTextures
+HotbarSystem.TalismanTimers
+HotbarSystem.WARNINGLEVEL
+HotbarSystem.Virtues
+HotbarSystem.TID_CURRENT
+HotbarSystem.SetActionOnHotbar
+HotbarSystem.SkillDelayTimeMax
+HotbarSystem.Delta
+HotbarSystem.GrapeDelayTime
+HotbarSystem.TID_ASSIGN_HOTKEY_DESC
+HotbarSystem.HandleUpdateActionItem
+HotbarSystem.Specials
+HotbarSystem.EtherealVoyageCooldown
+HotbarSystem.TID_TARGET
+HotbarSystem.Skills
+HotbarSystem.TID_ASSIGN_HOTKEY
+HotbarSystem.OffsetY
+MacroWindow
+MacroWindow.OnShown
+MacroWindow.TID_NO_KEYBINDING
+MacroWindow.TID_NO
+MacroWindow.TID_CREATE
+MacroWindow.TID_BINDING_CONFLICT_QUESTION
+MacroWindow.RecordingKey
+MacroWindow.TID_MACROCOLON
+MacroWindow.TID_NOMACRO
+MacroWindow.RecordingIndex
+MacroWindow.KeyRecorded
+MacroWindow.KeyCancelRecord
+MacroWindow.NumItemsCreated
+MacroWindow.TID_YES
+MacroWindow.TID_MACROS
+MacroWindow.TID_MACRO
+MacroWindow.OnItemRButtonUp
+MacroWindow.TID_BINDING_CONFLICT_TITLE
+MacroWindow.PickupMacro
+MacroWindow.TID_DESTROY_MACRO
+MacroWindow.DisplayMacroList
+MacroWindow.Initialize
+MacroWindow.AddMacro
+MacroWindow.Shutdown
+MacroWindow.ContextMenuCallback
+MacroWindow.TID_BINDING_CONFLICT_BODY
+DockableWindowSetTabShowing
+MacroPickerWindow
+MacroPickerWindow.SetNumMacrosPerRow
+MacroPickerWindow.MacroIcons
+MacroPickerWindow.SetAfterMacroSelectionFunction
+MacroPickerWindow.SetMacroId
+MacroPickerWindow.numMacrosPerRow
+MacroPickerWindow.Initialize
+MacroPickerWindow.DrawMacroTable
+MacroPickerWindow.SetMacro
+MacroPickerWindow.AfterMacroSelectionFunction
+AnimatedImageStopAnimation
+DynamicImageSetTextureSlice
+ActionEditWindow
+ActionEditWindow.UpdateEquipIcon
+ActionEditWindow.ArmDisarmSelectSlot
+ActionEditWindow.CreateArmDisarmSlots
+ActionEditWindow.UpdateTargetByObjectId
+ActionEditWindow.UnequipPosSelected
+ActionEditWindow.TargetByResourceMouseOver
+ActionEditWindow.ArmDisarmOK
+ActionEditWindow.Equip
+ActionEditWindow.TargetByResourceResetComboBox
+ActionEditWindow.TargetByResourceUpdateObject
+ActionEditWindow.TID_OK
+ActionEditWindow.TID_ADDEQUIPPED
+ActionEditWindow.ResourceType
+ActionEditWindow.OpenEditWindow
+ActionEditWindow.Initialize
+ActionEditWindow.UpdateTextEdit
+ActionEditWindow.UpdateSliderEdit
+ActionEditWindow.SliderUpdate
+ActionEditWindow.RequestTargetInfoReceived
+ActionEditWindow.TargetByObjectIdOK
+ActionEditWindow.EquipMouseOver
+ActionEditWindow.SliderEditOK
+ActionEditWindow.TargetByResourceLButtonUp
+ActionEditWindow.UpdateTargetByResourceEdit
+ActionEditWindow.UpdateTargetByResourceIcon
+ActionEditWindow.UnEquip
+ActionEditWindow.EquipItemAddEquipped
+ActionEditWindow.UpdateArmDisarmEdit
+ActionEditWindow.CreateUnequipSlots
+ActionEditWindow.ResourceRegisteredObject
+ActionEditWindow.CustomDelay
+ActionEditWindow.EquipClearEquipped
+ActionEditWindow.UpdateUnequipEdit
+ActionEditWindow.UnregisterEquipItems
+ActionEditWindow.ResourceCategory
+ActionEditWindow.UnEquipOK
+ActionEditWindow.EquipLButtonUp
+ActionEditWindow.TargetByResourceOK
+ActionEditWindow.EquipItemOK
+ActionEditWindow.TextEditOK
+ActionEditWindow.GetActionInfo
+ActionEditWindow.RESOURCE_TID
+ActionEditWindow.Shutdown
+ActionEditWindow.UpdateEquipItemEdit
+ActionEditWindow.EquipRButtonUp
+ActionEditWindow.ArmDisarmMaxLength
+ActionEditWindow.EquipUpdateObject
+UserActionEquipItemsGetItem
+GenericGumpGetToolTipText
+GetAbilityData
+ToggleWindowByName
+_LabelGetLinkColor
+SliderBarGetCurrentPosition
+LogDisplayScrollToBottom
+TextLogAddFilterType
+GetPaperdollObject
+VerticalScrollbarSetMaxScrollPosition
+TextLogGetEntry
+UserActionEquipItemsGetNumItems
+MobilesOnScreen
+MobilesOnScreen.MobilesGrey
+MobilesOnScreen.IsInTable
+MobilesOnScreen.UpdateFilterSettings
+MobilesOnScreen.QueuedDelta
+MobilesOnScreen.IsSummon
+MobilesOnScreen.ManagedMobilesList
+MobilesOnScreen.CurrentHandledCount
+MobilesOnScreen.OnFilterOkayButton
+MobilesOnScreen.locked
+MobilesOnScreen.OnFilterHidden
+MobilesOnScreen.Clear
+MobilesOnScreen.isDirty
+MobilesOnScreen.GreenEnabled
+MobilesOnScreen.Summons
+MobilesOnScreen.MobilesYellow
+MobilesOnScreen.ReloadFilterSettings
+MobilesOnScreen.UpdateLimit
+MobilesOnScreen.STRFilter
+MobilesOnScreen.Filter
+MobilesOnScreen.CappedNumServerHealthBars
+MobilesOnScreen.DistanceSort
+MobilesOnScreen.RemoveFromMobilesSort
+MobilesOnScreen.MobilesOrange
+MobilesOnScreen.HandleAnchorsForCategory
+MobilesOnScreen.OrangeWindows
+MobilesOnScreen.PetUpdateFreq
+MobilesOnScreen.GetVisible
+MobilesOnScreen.QueuedMobilesForDelete
+MobilesOnScreen.MobilesSort
+MobilesOnScreen.Dockspot_OnLButtonUp
+MobilesOnScreen.BlueWindows
+MobilesOnScreen.ReversePet
+MobilesOnScreen.GreyWindows
+MobilesOnScreen.Hidden
+MobilesOnScreen.QueuedDeltaLimit
+MobilesOnScreen.IsPet
+MobilesOnScreen.SaveFilterSettings
+MobilesOnScreen.YellowEnabled
+MobilesOnScreen.Shutdown
+MobilesOnScreen.RedWindows
+MobilesOnScreen.MarkHealthBarForDeletion
+MobilesOnScreen.CleanMobileSortCache
+MobilesOnScreen.CloseLeft
+MobilesOnScreen.RemoveMobileOnScreenCount
+MobilesOnScreen.MobilesGreen
+MobilesOnScreen.InUpdate
+MobilesOnScreen.BlueEnabled
+MobilesOnScreen.Refilter
+MobilesOnScreen.UpdateAnchors
+MobilesOnScreen.SlowUpdate
+MobilesOnScreen.HidePetToolTipEnd
+MobilesOnScreen.IgnoredMobile
+MobilesOnScreen.AnchorUpdateRequest
+MobilesOnScreen.HandleAnchors
+MobilesOnScreen.AddMobileOnScreenCount
+MobilesOnScreen.MobilesRed
+MobilesOnScreen.ManagedMobilesMap
+MobilesOnScreen.CanAddMobileOnScreen
+MobilesOnScreen.ReloadSettings
+MobilesOnScreen.ShowWindow
+MobilesOnScreen.LockTooltip
+MobilesOnScreen.YellowWindows
+MobilesOnScreen.delta
+MobilesOnScreen.ShowPet
+MobilesOnScreen.IsManagedMobileOnScreen
+MobilesOnScreen.Lock
+MobilesOnScreen.LockMe
+MobilesOnScreen.Initialize
+MobilesOnScreen.SetFilter
+MobilesOnScreen.FarmNames
+MobilesOnScreen.ContextMenuCallback
+MobilesOnScreen.ButtonRotation
+MobilesOnScreen.SavedFilter
+MobilesOnScreen.Dockspotlocked
+MobilesOnScreen.GreenWindows
+MobilesOnScreen.Dockspot_OnLButtonDown
+MobilesOnScreen.IsMarkedHealthBarForDeletion
+MobilesOnScreen.windowOffset
+MobilesOnScreen.HideAll
+MobilesOnScreen.HidePet
+MobilesOnScreen.RemoveHealthBar
+MobilesOnScreen.Sort
+MobilesOnScreen.UnMarkHealthBarForDeletion
+MobilesOnScreen.GreyEnabled
+MobilesOnScreen.OnSlide
+MobilesOnScreen.ShowPetToolTip
+MobilesOnScreen.IsFarm
+MobilesOnScreen.AddHealthbar
+MobilesOnScreen.ShowPetToolTipEnd
+MobilesOnScreen.HidePetToolTip
+MobilesOnScreen.RedEnabled
+MobilesOnScreen.OnMouseDrag
+MobilesOnScreen.Mobiles
+MobilesOnScreen.PetUpdateTime
+MobilesOnScreen.SortByDistance
+MobilesOnScreen.BarScale
+MobilesOnScreen.OrangeEnabled
+MobilesOnScreen.DeltaClean
+MobilesOnScreen.MobilesBlue
+MobilesOnScreen.UnSorted
+MobilesOnScreen.NeedsUpdate
+MobilesOnScreen.UnsortedWindows
+MobilesOnScreen.BarsY
+MobilesOnScreen.MobilesSortReverse
+MobileHealthBar
+MobileHealthBar.OnLButtonUp
+MobileHealthBar.kill
+MobileHealthBar.HandleBackGround
+MobileHealthBar.Irks
+MobileHealthBar.PetLegacyCloseStyle
+MobileHealthBar.OnBPackLButtonUp
+MobileHealthBar.OnRButtonUp
+MobileHealthBar.OnLButtonDown
+MobileHealthBar.UpdateHealthBarState
+MobileHealthBar.Spites
+MobileHealthBar.Travestys
+MobileHealthBar.hasWindow
+MobileHealthBar.CloseAllHealthbars
+MobileHealthBar.LegacyCloseStyle
+MobileHealthBar.RegisterTime
+MobileHealthBar.ExtractWindow
+MobileHealthBar.CloseButton_OnMouseOver
+MobileHealthBar.UpdateName
+MobileHealthBar.CreateTime
+MobileHealthBar.HandleMobileNameUpdate
+MobileHealthBar.CloseWindow
+MobileHealthBar.Null
+MobileHealthBar.OnMouseDrag
+MobileHealthBar.OnTalkLButtonUp
+MobileHealthBar.Guiles
+MobileHealthBar.Extract_OnMouseOver
+MobileHealthBar.WodButton_OnMouseOver
+MobileHealthBar.WodButton_OnLButtonUp
+MobileHealthBar.OnShutdown
+MobileHealthBar.OnLButtonDblClk
+MobileHealthBar.OnMouseOver
+MobileHealthBar.RegisterHealthBar
+MobileHealthBar.OnBodLButtonUp
+MobileHealthBar.HealthbarCloseWindow
+MobileHealthBar.UnregisterHealthBar
+MobileHealthBar.CloseWindowByMobileId
+MobileHealthBar.HasWindow
+MobileHealthBar.HandleHealthBarColorUpdate
+MobileHealthBar.OnMouseOverEnd
+MobileHealthBar.HandleMobileStatusUpdate
+MobileHealthBar.Handled
+MobileHealthBar.OnBankLButtonUp
+MobileHealthBar.windowDisabled
+MobileHealthBar.HandleAnchorWindow
+MobileHealthBar.GetWindowName
+MobileHealthBar.HandleHealthBarStateUpdate
+MobileHealthBar.CreateHealthBar
+MobileHealthBar.mouseOverId
+MobileHealthBar.SummonTimer
+MobileHealthBar.UpdateStatus
+MobileHealthBar.Changelings
+MobileHealthBar.UpdateHealthBarColor
+MobileHealthBar.CheckStatus
+x2
+ClosePaperdoll
+ContainerWindow
+ContainerWindow.OnItemRelease
+ContainerWindow.MAX_INVENTORY_SLOTS
+ContainerWindow.UpdateContents
+ContainerWindow.ScanSubCont
+ContainerWindow.MAX_VALUES
+ContainerWindow.Grid
+ContainerWindow.HandleUpdateObjectEvent
+ContainerWindow.OrganizeTooltip
+ContainerWindow.GHOUL_SKIN_BACKPACK
+ContainerWindow.POSITION_OFFSET
+ContainerWindow.RestockTargetInfoReceived
+ContainerWindow.ReleaseRegisteredObjects
+ContainerWindow.OnItemDblClicked
+ContainerWindow.POLAR_BEAR_BACKPACK
+ContainerWindow.ReleaseRegisteredObjectsByID
+ContainerWindow.UnpackTransferCrate
+ContainerWindow.CanPickUp
+ContainerWindow.OpenContainers
+ContainerWindow.TODO
+ContainerWindow.CreateListViewSlots
+ContainerWindow.LegacyGridDock
+ContainerWindow.UpdateListViewSockets
+ContainerWindow.SetLegacyContainer
+ContainerWindow.RestockTooltip
+ContainerWindow.Locked
+ContainerWindow.RegisteredItems
+ContainerWindow.RestockContext
+ContainerWindow.Scrolling
+ContainerWindow.CurrentUses
+ContainerWindow.IsCascading
+ContainerWindow.Cascade
+ContainerWindow.CreateGridViewSockets
+ContainerWindow.AddToCascade
+ContainerWindow.UpdateUses
+ContainerWindow.RemoveFromCascade
+ContainerWindow.DEFAULT_START_POSITION
+ContainerWindow.Shutdown
+ContainerWindow.OrganizerContext
+ContainerWindow.ScanQuantities
+ContainerWindow.MaxSlotsPerGrid
+ContainerWindow.ItemMouseOver
+ContainerWindow.HideAllContents
+ContainerWindow.DestroyGridViewSockets
+ContainerWindow.PickupWaitTime
+ContainerWindow.OnItemClicked
+ContainerWindow.UpdateGridViewSockets
+ContainerWindow.OnResizeEnd
+ContainerWindow.BACKGAMMON_GUMP
+ContainerWindow.TID_FREEFORM_MODE
+ContainerWindow.OnItemRButtonUp
+ContainerWindow.UpdatePickupTimer
+ContainerWindow.SearchAllTooltip
+ContainerWindow.lastLooted
+ContainerWindow.OnSetMoving
+ContainerWindow.LastUsesDelta
+ContainerWindow.BaseGridColor
+ContainerWindow.LootAll
+ContainerWindow.ViewButtonMouseOver
+ContainerWindow.PLAGUE_BEAST_GUMP
+ContainerWindow.OnContainerRelease
+ContainerWindow.Lock
+ContainerWindow.PlayerBackpack
+ContainerWindow.DeltaRefresh
+ContainerWindow.ItemContainerMap
+ContainerWindow.OrganizeTargetInfoReceived
+ContainerWindow.ScrollbarWidth
+ContainerWindow.UpdateUsesByID
+ContainerWindow.TID_LIST_MODE
+ContainerWindow.Initialize
+ContainerWindow.GetUses
+ContainerWindow.GetContentDelta
+ContainerWindow.RefreshRate
+ContainerWindow.GetContent
+ContainerWindow.UpdateObject
+ContainerWindow.AlternateBackpack
+ContainerWindow.RestockContextMenuCallback
+ContainerWindow.BackpackItemsCheck
+ContainerWindow.MiniModelUpdate
+ContainerWindow.GetTopOfCascade
+ContainerWindow.EnableAutoIgnoreCorpses
+ContainerWindow.ViewModes
+ContainerWindow.IgnoreItems
+ContainerWindow.SetInventoryButtonPressed
+ContainerWindow.MAX_BANK_SLOTS
+ContainerWindow.List
+ContainerWindow.GetSlotNumFromGridIndex
+ContainerWindow.Restocks
+ContainerWindow.CHESS_GUMP
+ContainerWindow.LootAllBtn
+ContainerWindow.UpdateGridItemSlots
+ContainerWindow.ToggleView
+ContainerWindow.PlayerBank
+ContainerWindow.OpenedCorpse
+ContainerWindow.TID_GRID_MODE
+ContainerWindow.delta
+ContainerWindow.ContextMenuCallback
+ContainerWindow.ShortUsesDelta
+ContainerWindow.OnResizeBegin
+ContainerWindow.TimePassedSincePickUp
+ContainerWindow.OnItemGet
+ContainerWindow.LockTooltip
+ContainerWindow.Organizes
+ContainerWindow.LootAllTooltip
+ContainerWindow.SearchItem
+ContainerWindow.SUEDE_BACKPACK
+WindowGetPopable
+IgnoreWindow
+IgnoreWindow.Cancel_OnLButtonUp
+IgnoreWindow.Initialize
+IgnoreWindow.currentSelection
+IgnoreWindow.Add_OnLButtonUp
+IgnoreWindow.TID
+IgnoreWindow.SelectPlayer
+CharacterAbilities
+CharacterAbilities.OnShown
+CharacterAbilities.WEAPONABILITY_MAX
+CharacterAbilities.TID
+CharacterAbilities.UnselectAllTabs
+CharacterAbilities.WEAPONABILITY_OFFSET
+CharacterAbilities.ShutdownWeaponTab
+CharacterAbilities.ItemLButtonUp
+CharacterAbilities.ResetWeaponAbility
+CharacterAbilities.ItemLButtonDown
+CharacterAbilities.ToggleTab
+CharacterAbilities.ItemMouseOver
+CharacterAbilities.UpdateRacialTab
+CharacterAbilities.ShutdownRacialTab
+CharacterAbilities.InitRacialTab
+CharacterAbilities.SelectTab
+CharacterAbilities.Initialize
+CharacterAbilities.ManaBefore
+CharacterAbilities.MaxRacialAbilities
+CharacterAbilities.UpdateWeaponAbilities
+CharacterAbilities.Shutdown
+CharacterAbilities.InitWeaponTab
+CharacterAbilities.RACIALABILITY_OFFSET
+CharacterAbilities.ActivateWeaponAbility
+CharacterAbilities.OnHidden
+ItemProperties
+ItemProperties.GetObjectPropertiesParamsForTid
+ItemProperties.GetActiveProperties
+ItemProperties.GetCurrentWindow
+ItemProperties.CurrentItemData
+ItemProperties.SetActiveItem
+ItemProperties.GetCharges
+ItemProperties.BuildParamsArray
+ItemProperties.GetObjectProperties
+ItemProperties.HideAllPropsLabels
+ItemProperties.BODY_COLOR
+ItemProperties.GetObjectPropertiesTidParams
+ItemProperties.GetObjectPropertiesTid
+ItemProperties.OnPlayerBackpackMouseover
+ItemProperties.DETAIL_SHORT
+ItemProperties.DETAIL_LONG
+ItemProperties.GetObjectPropertiesArray
+ItemProperties.ClearMouseOverItem
+ItemProperties.TITLE_COLOR
+ItemProperties.Shutdown
+ItemProperties.UpdateItemPropertiesData
+ItemProperties.Initialize
+ItemProperties.CreatePropsLabels
+ItemProperties.VirtueData
+_LabelGetTextDimensions
+UOGetWaypointInfo
+UserActionGetId
+Actions
+Actions.ToggleHelpWindow
+Actions.TrapboxTargetReceived
+Actions.ScanSubCont
+Actions.ViewQuestLog
+Actions.EnhanceItem
+Actions.TargetPetball
+Actions.InjuredParty
+Actions.CancelProtection
+Actions.QuestItem
+Actions.TargetMount
+Actions.SetDefaultItem
+Actions.ToggleFootsteps
+Actions.GetHueID
+Actions.EnablePVPWarning
+Actions.UndressItems
+Actions.CloseAllCorpses
+Actions.ToggleCharacterAbilities
+Actions.ReleaseCoownership
+Actions.GetHealthbar
+Actions.ToggleItemInsurance
+Actions.ToggleMacros
+Actions.DressHolding
+Actions.TargetFirstContainerObject
+Actions.RequestContItems
+Actions.ToggleActions
+Actions.NearTarget
+Actions.InjuredFollower
+Actions.ToggleMainMenu
+Actions.MassOrganizer
+Actions.SearchValidPrevTarget
+Actions.ToggleCharacterSheet
+Actions.TargetAllowed
+Actions.MakeLast
+Actions.AlterItem
+Actions.ToggleSkillsWindow
+Actions.UnravelItem
+Actions.ToggleTrades
+Actions.TitlesMenu
+Actions.ImbueLast
+Actions.Shuriken
+Actions.IsMobileVisible
+Actions.LoyaltyRating
+Actions.ToggleVirtuesWindow
+Actions.WarMode
+Actions.SetDefaultPet
+Actions.IgnoreTargettedItem
+Actions.QuestConversation
+Actions.UndressTargetInfoReceived
+Actions.ToggleUOStoreWindow
+Actions.UndressMe
+Actions.ObjectHandleContextMenu
+Actions.MassOrganizerStart
+Actions.ToggleScaleMode
+Actions.IgnoreItemRequestTargetInfoReceived
+Actions.LoadShuri
+Actions.ClearIgnoreList
+Actions.UndressAgent
+Actions.ColorRequestTargetInfoReceived
+Actions.ToggleGuildWindow
+Actions.ToggleFoliage
+Actions.GetTypeID
+Actions.ToggleSound
+Actions.TargetDefaultItem
+Actions.ToggleSoundEffects
+Actions.ObjectHandleContextMenuCallback
+Actions.ToggleAlphaMode
+Actions.ToggleLootbag
+Actions.LootbagTargetReceived
+Actions.AutoLoadShurikens
+Actions.MountRequestTargetInfoReceived
+Actions.ToggleLegacyContainers
+Actions.DropHolding
+Actions.ToggleChatWindow
+Actions.ToggleUserSettings
+Actions.AutoLoadShuri
+Actions.TargetByType
+Actions.NextTarget
+Actions.Nextshuri
+Actions.TargetDefaultPet
+Actions.ToggleEnglishNames
+Actions.ToggleBlockPaperdolls
+Actions.ObjectHandleSetFilter
+Actions.ToggleTrapBox
+Actions.TargetType
+Actions.MassOrganize
+Actions.CloseAllContainers
+Actions.ItemIDRequestTargetInfoReceived
+Actions.SiegeBlessItem
+Actions.VoidPool
+Actions.ExportContainerItems
+Actions.TogglePaperdollWindow
+Actions.IgnorePlayer
+Actions.ToggleInventoryWindow
+Actions.InjuredMobile
+Actions.CancelQuest
+Actions.IgnoreActionSelf
+Actions.InsuranceMenu
+Actions.ToggleMusic
+Actions.SmeltItem
+Actions.ToggleQuestWindow
+Actions.PrevTarget
+Actions.Ignore
+Actions.ToggleWarMode
+Actions.nxt
+Actions.ToggleMapWindow
+Actions.LeaveHouse
+Actions.PetballRequestTargetInfoReceived
+Actions.TypeRequestTargetInfoReceived
+Actions.ScanQuantities
+Actions.RepairItem
+SingleLineTextEntry
+SingleLineTextEntry.OnClear
+SingleLineTextEntry.Shutdown
+SingleLineTextEntry.OnCloseWindow
+SingleLineTextEntry.Initialize
+SingleLineTextEntry.OnCancel
+SingleLineTextEntry.UserClosedGump
+SingleLineTextEntry.OnSubmit
+SingleLineTextEntry.CheckForUnicodeChars
+OFFSET_MORE
+StatusBarSetForegroundTint
+ButtonGetTextDimensions
+OFFSET_TITLE
+UO_StandardDialog
+UO_StandardDialog.DIALOG_EDGE_PADDING
+UO_StandardDialog.TID_OKAY
+UO_StandardDialog.DialogData
+UO_StandardDialog.TID_CANCEL
+UO_StandardDialog.Y_PADDING
+UO_StandardDialog.OnLButtonUp
+UO_StandardDialog.Initialize
+UO_StandardDialog.Shutdown
+UO_StandardDialog.CreateDialog
+UO_StandardDialog.DefaultButtons
+UO_StandardDialog.MIN_HEIGHT
+SendBugReport
+IsHealthBarEnabled
+WindowSetHandleInput
+ButtonSetStayDownFlag
+WINDOW_WIDTH
+WindowSetTintColor
+setfenv
+UOGetRadarFacet
+WStringSplit
+StringSplit
+s2
+IsPlayerInvisible
+IsPlayerParalyzed
+DockableWindowGetTabString
+PlayerIsOnWater
+IsQuestGiver
+ButtonSetTexture
+IsBodDealer
+GameData
+GameData.ChatData
+GameData.UseRequests
+GameData.ActiveIcon
+DragSlotAutoPickupObject
+IsContainer
+WindowGetAnchorCount
+ListNew
+LuaUtils
+LuaUtils.stripHTML
+LuaUtils.stripBeginEndSpace
+LabelGetText
+DragSlotDropObjectToSource
+ButtonSetHighlightFlag
+LabelGetLinkColor
+ChatLeaveChannel
+pairs
+ActionButtonGroupSetGameActionTrigger
+UserActionSpeechGetText
+LabelGetTextColor
+newproxy
+ModuleRestrictedLoad
+WindowGetShowing
+Interface
+Interface.GreenButton
+Interface.SOSWaypointsCleaner
+Interface.UpdateLatency
+Interface.CreateWindows
+Interface.ShowMapCombos
+Interface.SpellsTimer
+Interface.TimeSinceLogin
+Interface.LatencyDelta
+Interface.ChatWindowPerformFadeOut
+Interface.BlueButton2
+Interface.OnCloseCallBack
+Interface.CountNamesData
+Interface.noPoisonOthers
+Interface.OnSpellCastedSuccessfully
+Interface.AuraEnabled
+Interface.BlockOthersPaperdoll
+Interface.UseNewChat
+Interface.BackpackCheck
+Interface.IsFighting
+Interface.AirReceived
+Interface.Update
+Interface.LoadVariables
+Interface.HandleSingleLeftClkTarget
+Interface.ExtraBrightContainers
+Interface.BeatMed
+Interface.ChatWindowResetTextBox
+Interface.ChatFixer
+Interface.RegisterEvents
+Interface.ToggleContentsInfo
+Interface.DefaultPet1
+Interface.ShowCloseExtract
+Interface.SeedsReceived
+Interface.LastSpell
+Interface.chatFixed
+Interface.DefaultPet5
+Interface.SOSWaypointsInitialized
+Interface.OnMobileMouseOver
+Interface.CreateTCTools
+Interface.DefaultPet2
+Interface.DefaultPet4
+Interface.TokensReceived
+Interface.SaveColor
+Interface.BlueButton3
+Interface.ChatWindowOnKeyEnter
+Interface.LastItem
+Interface.UpdateWarButton
+Interface.org_WindowRegisterEventHandler
+Interface.ForceFamiliar
+Interface.LoadNumber
+Interface.IsFightingLastTime
+Interface.WarShield
+Interface.AcceptCriminalNotification
+Interface.LoginTimeoutCheck
+Interface.BeatSlow
+Interface.OnObjectMouseOver
+Interface.DeleteSetting
+Interface.GreenButton2
+Interface.ForcePolymorph
+Interface.ArcaneFocusLevel
+Interface.SOSWaypointsAll
+Interface.OnActionMouseOver
+Interface.LastJournalMSG
+Interface.ItemsCooldown
+Interface.HeartBeat
+Interface.Clock
+Interface.org_DragSlotQuantityRequestResult
+Interface.BeatFast
+Interface.DisableSpells
+Interface.org_RequestContextMenu
+Interface.org_RegisterWindowData
+Interface.BlockThisPaperdoll
+Interface.FirstImprovement
+Interface.MenuBar
+Interface.OnSpecialMoveDamageReceived
+Interface.DefaultObject5
+Interface.DefaultObject4
+Interface.BeatSoundStartDelta
+Interface.MobileArrowOver
+Interface.SpecialsCooldown
+Interface.BardMastery
+Interface.HealthBarWod
+Interface.InterfaceInitialize
+Interface.DefaultObject2
+Interface.DefaultObject1
+Interface.MobileArrowManager
+Interface.RenameComplete
+Interface.InitBugReport
+Interface.SOSWaypointsCleanerDelta
+Interface.TID
+Interface.CountContainersData
+Interface.NewPlayerWarToggled
+Interface.StatusButtons
+Interface.LoadBoolean
+Interface.SpellRecovery
+Interface.RedButton3
+Interface.RedButton
+Interface.PaperdollCheck
+Interface.SaveWString
+Interface.SaveString
+Interface.SaveNumber
+Interface.BackpackOpen
+Interface.LootBoxID
+Interface.SaveBoolean
+Interface.TrapBoxID
+Interface.CountObjectData
+Interface.OnSpecialMoveUsedSuccessfully
+Interface.ClockUpdater
+Interface.OnSpellCastFailed
+Interface.PaperdollOpen
+Interface.HonorMobileConfirm
+Interface.ErrorTracker
+Interface.BlueDef
+Interface.SpecialMoveUseRequest
+Interface.VirtueUseRequest
+Interface.RedDef
+Interface.Latency
+Interface.SpellUseRequest
+Interface.PropsCacheClear
+Interface.ItemUseRequest
+Interface.OnTarget
+Interface.CurrentSpell
+Interface.ShowPartyInvite
+Interface.TotalUnregister
+Interface.InitializeWindows
+Interface.EnableMobileArrow
+Interface.UpdateWindowsSettings
+Interface.RetrieveCharacterSettings
+Interface.CreateOverrides
+Interface.ReloadSettings
+Interface.LastSpecialMoveTime
+Interface.LockChatLine
+Interface.TogglePaperdollWindow
+Interface.LoadColor
+Interface.CanLogout
+Interface.NewPlayerPaperdollToggled
+Interface.OnDebugPrint
+Interface.DeltaTime
+Interface.CountPaperdollData
+Interface.CountMobileStatusData
+Interface.CountPropsData
+Interface.ChatWindowSwitchChannelWithExistingText
+Interface.ShowCriminalNotificationGump
+Interface.SpellsCooldown
+Interface.UpdateHealthbarStatus
+Interface.ArteReceived
+Interface.Shutdown
+Interface.NewPlayerInventoryToggled
+Interface.GetMobileData
+Interface.SummonsManager
+Interface.RenamePet
+Interface.NewChatText
+Interface.ForceSpellTrigger
+Interface.LoadWString
+Interface.RequestContextMenu
+Interface.GreenButton3
+Interface.InitialPositions
+Interface.WindowRegisterEventHandler
+Interface.CurrentHonor
+Interface.MapRefresh
+Interface.org_HandleSingleLeftClkTarget
+Interface.CountWinData
+Interface.ClearWindowData
+Interface.BackPackItems
+Interface.AlternateGrid
+Interface.LowHPManager
+Interface.BeatSoundLength
+Interface.Beat
+Interface.InitializeSOSWaypoints
+Interface.NewPlayerMapToggled
+Interface.SkillUseRequest
+Interface.LoadString
+Interface.AllowTrades
+Interface.SkillLocker
+Interface.EnableSnapping
+Interface.DefaultPet3
+Interface.ForceEnchant
+Interface.AlacrityStart
+Interface.SkillsTrackerUpdate
+Interface.CreatePlayWindowSet
+Interface.BlueButton
+Interface.GreenDef
+Interface.SpecialMovesManaCooldown
+Interface.OverhedTextSize
+Interface.StatusWindowStyle
+Interface.DragSlotQuantityRequestResult
+Interface.UnpackTransferCrate
+Interface.GridLegacy
+Interface.CheckLastTargetChanged
+Interface.SpellweavingID
+Interface.RedButton2
+Interface.OnMouseOverItemChanged
+Interface.MenuId
+Interface.CheckColor
+Interface.EnableContainerGrid
+Interface.RedButtonSpells
+Interface.RegisterWindowData
+Interface.Cooldowns
+Interface.DebugMode
+Interface.ResReceived
+Interface.OpeningBpk
+Interface.LoadedSettings
+Interface.ShowSpellName
+Interface.ForceAnimal
+Interface.DestroyWindowOnClose
+Interface.DefaultObject3
+Interface.LastSpecialMove
+Interface.PLAYWINDOWSET
+Interface.SkillsCooldown
+Interface.SOSWaypoints
+Interface.BlueButtonSpells
+Interface.VirtuesCooldown
+Interface.GreenButtonSpells
+TextLogDisplayShowScrollbar
+UserData
+UserData.Settings
+Window
+Window.TimeFormat
+Window.Layers
+Window.AnimationType
+Window.GameActionButtons
+wz
+UOUnloadCSVTable
+LabelSetWordWrap
+DevData
+DevData.useDevErrorHandling
+DevData.loadLuaDebugLibrary
+DevData.DebugWindow
+LogDisplaySetShowFilterName
+ColorPickerGetColorSize
+ColorPickerGetTexDims
+ColorPickerAddColorAtPosition
+LabelGetFont
+UserActionTargetByResourceSetUseObjectInstanceId
+StatusBarSetBackgroundTint
+StatusBarStopInterpolating
+UserActionMacroUpdateBinding
+StatusBarSetCurrentValue
+ComboBoxGetDisabledFlag
+LogDisplayHideFilterSubType
+HS_ShowTargetingCursor
+ComboBoxGetSelectedText
+FormatProperly
+CircleImageSetRotation
+CircleImageSetTextureSlice
+WindowSetLayer
+DockableWindowSetTabOffset
+CircleImageSetFillParams
+AnimatedImageSetPlaySpeed
+MacroEditWindow
+MacroEditWindow.MACRO_SCROLLWINDOW_WIDTH
+MacroEditWindow.MacroActionLButtonDown
+MacroEditWindow.EmptyButtonMouseOver
+MacroEditWindow.MacroActionMouseOverEnd
+MacroEditWindow.TID_REPEAT_TIMES
+MacroEditWindow.MacroActionMouseOver
+MacroEditWindow.UpdateTextEdit
+MacroEditWindow.MacroIconMouseOver
+MacroEditWindow.MacroEditIconCallback
+MacroEditWindow.MacroActionRButtonUp
+MacroEditWindow.TID_MACRO_DRAG_TARGET_BY_RESOURCE_TOOLTIP
+MacroEditWindow.TID_EDIT_MACRO
+MacroEditWindow.UpdateSliderBar
+MacroEditWindow.Shutdown
+MacroEditWindow.MacroActionLButtonUp
+MacroEditWindow.Macro
+MacroEditWindow.TID_MACRO_DRAG_EQUIP_TOOLTIP
+MacroEditWindow.TID_MACRO_DRAG_TOOLTIP
+MacroEditWindow.MacroEditOK
+MacroEditWindow.MacroEditIcon
+MacroEditWindow.UpdateMacroEdit
+MacroEditWindow.UpdateMacroActionList
+MacroEditWindow.Initialize
+MacroEditWindow.MACRO_ACTION_WIDTH
+MacroEditWindow.TID_REPEAT
+MacroEditWindow.ContextMenuCallback
+MacroEditWindow.TID_MACRO_ICON_TOOLTIP
+TranslatePointer
+AnimatedImageSetTexture
+ActionButtonGroupSetTimeFormat
+ActionButtonGroupSetNumButtons
+SkillsInfo
+SkillsInfo.UpdateGump
+SkillsInfo.Initialize
+SkillsInfo.ClearGump
+SkillsInfo.DisplaySkill
+SkillsInfo.Shutdown
+ActionButtonGroupSetTimer
+AddPlayerToIgnoreList
+OpenWebBrowser
+ActionButtonGroupSetIcon
+HotbarUpdateBinding
+string
+string.gmatch_aux
+string.split
+string.match
+string.gmatch
+string.upper
+string.gsub
+string.format
+string.lower
+string.sub
+string.pack
+string.gfind
+string.find
+string.char
+string.dump
+string.trim
+string.reverse
+string.byte
+string.unpack
+string.len
+string.rep
+DockableWindowIsChildOf
+RCWfacialHairColor
+DockableWindowGetChildName
+GetLoginServers
+GetLoadLuaDebugLibrary
+SendTextEntry
+UOResetWaypointMapFacet
+LogDisplayGetTextFadeTime
+SetLoadLuaDebugLibrary
+IsConnectedToKRServer
+UserActionEquipItemsAddEquippedItems
+ScrollWindowUpdateScrollRect
+CourseMapWindow
+CourseMapWindow.DragMapPoint
+CourseMapWindow.TID
+CourseMapWindow.MapPoint_OnLButtonDown
+CourseMapWindow.ClearCourse_OnLButtonUp
+CourseMapWindow.Map_OnLButtonUp
+CourseMapWindow.OnUpdate
+CourseMapWindow.WINDOWSCALE
+CourseMapWindow.NumPointsCreated
+CourseMapWindow.MapPoints
+CourseMapWindow.TreasureMaps
+CourseMapWindow.UpdateState
+CourseMapWindow.Y_PADDING
+CourseMapWindow.PlotToggle_OnLButtonUp
+CourseMapWindow.Y_MAPPOINT_PADDING
+CourseMapWindow.UpdatePoints
+CourseMapWindow.Shutdown
+CourseMapWindow.X_PADDING
+CourseMapWindow.isTmap
+CourseMapWindow.Initialize
+CourseMapWindow.Map_OnLButtonDown
+CourseMapWindow.X_MAPPOINT_PADDING
+UOSetRadarRotation
+UserActionSetTargetId
+DockableWindowUnDock
+DockableWindowDock
+CreateWindowFromTemplate
+UserActionMacroGetBinding
+VerticalScrollbarGetMaxScrollPosition
+UO_DefaultWindow
+UO_DefaultWindow.CloseParent
+UO_DefaultWindow.Initialize
+UO_DefaultWindow.CloseDialog
+UO_DefaultWindow.CloseTooltip
+UO_DefaultWindow.WindowDestroyQueue
+DragSlotDropObjectToContainer
+HorizontalScrollWindowUpdateScrollRect
+GetRandomNumber
+ActionButtonGroupSetGameActionData
+TextEditBoxSetTextColor
+WindowGetLayer
+ReplaceTokens
+TextLogSaveLog
+wx
+UserWaypointWindowXTextEditBox
+UserWaypointWindowXTextEditBox.TextUpdated
+UserWaypointWindowXTextEditBox.Text
+UserWaypointWindowXTextEditBox.CursorPos
+UOGetRadarArea
+UOBuildTableFromCSV
+AnimatedImageStartAnimation
+TextEditBoxSetText
+WindowGetScreenPosition
+UserActionTargetByResourceGetResourceType
+VerticalScrollbarGetLineSize
+LoadStringTable
+UOGetRadarCenter
+DockSpotFirstAnchoring
+PropertiesInfo
+PropertiesInfo.RemoveAfterSymbol
+PropertiesInfo.OnLButtonUpSearch
+PropertiesInfo.Close
+PropertiesInfo.MoreInfoOnMouseOver
+PropertiesInfo.ClearItemList
+PropertiesInfo.Toggle
+PropertiesInfo.InSearch
+PropertiesInfo.SearchText
+PropertiesInfo.Restart
+PropertiesInfo.SearchTooltip
+PropertiesInfo.ItemMouseOver
+PropertiesInfo.Items
+PropertiesInfo.ITEMPROPICON
+PropertiesInfo.ITEMPROPERTY_OFFSET
+PropertiesInfo.Shutdown
+PropertiesInfo.TotalItems
+PropertiesInfo.RemoveFiltersTooltip
+PropertiesInfo.Initialize
+PropertiesInfo.Reset
+WindowIsGameActionLocked
+LogDisplaySetFont
+LogDisplayIsScrollbarActive
+DragSlotSetObjectMouseClickData
+hue
+hue.b
+hue.g
+hue.r
+type
+print
+GenericGumpOnRClicked
+LogDisplaySetTextFadeTime
+UserActionGetTargetType
+UserActionUseObjectTypeSetIconObjectTypeHue
+Spellbook
+Spellbook.OpenSpellbooks
+Spellbook.TID_MASTERY_ANIMAL_TAMING
+Spellbook.OnMasteryUpdate
+Spellbook.UpdateMasteryBook
+Spellbook.TID
+Spellbook.TID_MASTERY_PARRY
+Spellbook.TID_MASTERY_MACE
+Spellbook.IsMasteryBook
+Spellbook.TithMouseOver
+Spellbook.ActiveMasteryIndex
+Spellbook.SetMiniIconStats
+Spellbook.ActiveMastery
+Spellbook.numSpellsPerTab
+Spellbook.TithLButtonDown
+Spellbook.baseTid
+Spellbook.TID_MASTERY_FENCING
+Spellbook.TID_MASTERY_CHIVALRY
+Spellbook.ToggleTab
+Spellbook.AnimWin
+Spellbook.MAX_MASTERY_SPELL_COUNT
+Spellbook.RegisterSpellIcon
+Spellbook.SpellMouseOver
+Spellbook.MasteryBookTIDs
+Spellbook.SpellLButtonUp
+Spellbook.TID_MASTERY_NECRO
+Spellbook.Hide
+Spellbook.Shutdown
+Spellbook.Initialize
+Spellbook.TID_MASTERY_THROWING
+Spellbook.uniqueOrdinals
+Spellbook.ShowTab
+Spellbook.CreateTabs
+Spellbook.OnUpdate
+Spellbook.TID_MASTERY_PROVOCATION
+Spellbook.TID_MASTERY_MYSTICISM
+Spellbook.tithId
+Spellbook.InitMasteryIndexTab
+Spellbook.UnselectAllTabs
+Spellbook.TID_MASTERY_ARCHERY
+Spellbook.UpdateSpells
+Spellbook.MASTERY_COUNT
+Spellbook.TID_MASTERY_POISON
+Spellbook.delta
+Spellbook.endStart
+Spellbook.TID_MASTERY_PEACEMAKING
+Spellbook.TID_MASTERY_NINJITSU
+Spellbook.OnShown
+Spellbook.CreateTabsLarge
+Spellbook.TID_MASTERY_WRESTILING
+Spellbook.SpellLButtonDown
+Spellbook.TID_MASTERY_DISCORD
+Spellbook.Init
+Spellbook.SpellContext
+Spellbook.startStart
+Spellbook.SelectTab
+Spellbook.UpdateTithing
+Spellbook.ShutdownSpellIcon
+Spellbook.TID_MASTERY_MAGERY
+Spellbook.TID_MASTERY_BUSHIDO
+Spellbook.TID_MASTERY_SWORDS
+Spellbook.MAX_SPELLS_PER_TAB
+Spellbook.OnKeyHide
+Spellbook.bardMasteries
+Spellbook.TID_MASTERY_SPELLWEAVING
+ComboBoxSetDisabledFlag
+UOSetWaypointDisplayMode
+ContainersInfo
+ContainersInfo.LegacyContentLabelLocation
+ContainersInfo.DefaultGump
+ContainersInfo.DefaultCorpse
+ContainersInfo.Data
+ContainersInfo.GetGump
+LogDisplayGetShowTimestamp
+WindowData
+WindowData.RecentChatPlayerNameList
+WindowData.SkillAllSkillsOther
+WindowData.PlayerEquipmentSlot
+WindowData.IgnoreConfIdList
+WindowData.PartyInviteName
+WindowData.BadWordListCount
+WindowData.GChatNameList
+WindowData.GChatPresenceList
+WindowData.IgnoreNameList
+WindowData.PlayerLocation
+WindowData.HealthBarColor
+WindowData.BadWordList
+WindowData.PlayerStatsDataCSV
+WindowData.AllSkillsSelf
+WindowData.IgnoreListCount
+WindowData.CustomHouseInfo
+WindowData.Cursor
+WindowData.CustomizedHousing
+WindowData.GG_Core
+WindowData.PlayerStatus
+WindowData.IgnoreConfListCount
+WindowData.Waypoint
+WindowData.ContextMenu
+WindowData.RaceChange
+WindowData.WaypointDisplay
+WindowData.Chat
+WindowData.CustomHouseEyedropper
+WindowData.SkillsCSV
+WindowData.MountedObjId
+WindowData.PartyMember
+WindowData.IgnoreIdList
+WindowData.ObjectInfo
+WindowData.HighlightEffect
+WindowData.PlayerItemPropCSV
+WindowData.BuffDataCSV
+WindowData.ResourceTypeDataCSV
+WindowData.BuffDebuffSystem
+WindowData.RecentChatPlayerListCount
+WindowData.WaypointList
+WindowData.GChatIndex
+WindowData.RecentChatPlayerIdList
+WindowData.ChannelListCount
+WindowData.ContainerWindow
+WindowData.Paperdoll
+WindowData.HouseInfoChange
+WindowData.BugReport
+WindowData.CloseGG
+WindowData.CharacterCreation
+WindowData.RemoveGChatIndex
+WindowData.BuffDebuff
+WindowData.GChatMyPresence
+WindowData.Pets
+WindowData.UpdateInstanceId
+WindowData.Radar
+WindowData.ChannelList
+WindowData.ObjectTypeQuantity
+WindowData.SkillDynamicData
+WindowData.MobileStatus
+WindowData.IgnoreConfNameList
+WindowData.Spellbook
+WindowData.GChat
+WindowData.CurrentTarget
+WindowData.CurrentChannel
+WindowData.SkillList
+WindowData.MobileName
+WindowData.GChatCount
+WindowData.ItemProperties
+WindowData.GChatMyJID
+UserActionGetNextObjectId
+LegacyRunebook
+LegacyRunebook.NumActiveRunes
+LegacyRunebook.ResetData
+LegacyRunebook.ButtonIdLoc
+LegacyRunebook.DefaultRuneLabel
+LegacyRunebook.selectRuneType
+LegacyRunebook.CurrentSelection
+LegacyRunebook.EnableAlpha
+LegacyRunebook.CHARGE_LABEL
+LegacyRunebook.LegacyLabelColors
+LegacyRunebook.Initialize
+LegacyRunebook.Hues
+LegacyRunebook.DefaultNum
+LegacyRunebook.DisableDefaultButtons
+LegacyRunebook.CreateRuneWindows
+LegacyRunebook.EnableDefaultButtons
+LegacyRunebook.SelectedRuneLocation
+LegacyRunebook.knownWindows
+LegacyRunebook.KeymapTID
+LegacyRunebook.CreateRuneButton
+LegacyRunebook.OnDefaultClicked
+LegacyRunebook.RuneColor
+LegacyRunebook.SendServerButtonInfo
+LegacyRunebook.ResetDefaultIconText
+LegacyRunebook.DisabledAlpha
+LegacyRunebook.OnKeyTab
+LegacyRunebook.OnRuneClicked
+LegacyRunebook.UpdateCoordTextandLoc
+LegacyRunebook.Shutdown
+LegacyRunebook.DestroyWindow
+LegacyRunebook.BlackItemLabel
+LegacyRunebook.KeymapLabel
+LegacyRunebook.ResetRuneDefaultIconText
+LegacyRunebook.MAXCHARGES_STRING
+LegacyRunebook.NUM_DEFAULT_LABELS
+LegacyRunebook.TID_LegacyRunebook
+LegacyRunebook.DefaultItemLabel
+LegacyRunebook.SelectItemLabel
+LegacyRunebook.CHARGES_STRING
+CreatePartyWP
+WindowSetShowing
+IsInternalBuild
+UserActionMacroSetRepeatEnabled
+LogDisplaySetShowTimestamp
+ExitGame
+UserActionTargetByResourceGetResourceCategory
+HotbarRegisterNew
+LogSetLimit
+UOGetTextureSize
+LogDisplayRemoveLog
+PartyHealthBar
+PartyHealthBar.OnLButtonUp
+PartyHealthBar.CloseWindowByIndex
+PartyHealthBar.OnMouseOver
+PartyHealthBar.OnLButtonDblClk
+PartyHealthBar.UpdateHealthBarColor
+PartyHealthBar.OnRButtonUp
+PartyHealthBar.OnLButtonDown
+PartyHealthBar.UpdateHealthBarState
+PartyHealthBar.RedButton_OnLButtonUp
+PartyHealthBar.WINDOW_HEIGHT
+PartyHealthBar.DEFAULT_WINDOW_START_Y
+PartyHealthBar.Button_OnRButtonUp
+PartyHealthBar.HandleAnchorWindow
+PartyHealthBar.Spells
+PartyHealthBar.CrownMouseOver
+PartyHealthBar.PartyMembers
+PartyHealthBar.RedButton_OnMouseOver
+PartyHealthBar.UpdateName
+PartyHealthBar.SpellsTID
+PartyHealthBar.HandleMobileNameUpdate
+PartyHealthBar.CloseWindow
+PartyHealthBar.ContextMenuCallback
+PartyHealthBar.OnShutdown
+PartyHealthBar.BlueButton_OnMouseOver
+PartyHealthBar.BlueButton_OnLButtonUp
+PartyHealthBar.RegisterHealthBar
+PartyHealthBar.GreenButton_OnMouseOver
+PartyHealthBar.GreenButton_OnLButtonUp
+PartyHealthBar.UnregisterHealthBar
+PartyHealthBar.CloseWindowByMobileId
+PartyHealthBar.HasWindow
+PartyHealthBar.HandleHealthBarColorUpdate
+PartyHealthBar.OnMouseOverEnd
+PartyHealthBar.HandleMobileStatusUpdate
+PartyHealthBar.OnMouseDrag
+PartyHealthBar.hasWindow
+PartyHealthBar.windowDisabled
+PartyHealthBar.UpdateStatus
+PartyHealthBar.GetWindowName
+PartyHealthBar.HandleHealthBarStateUpdate
+PartyHealthBar.WINDOW_WIDTH
+PartyHealthBar.mouseOverId
+PartyHealthBar.RefreshHealthBar
+PartyHealthBar.DEFAULT_WINDOW_START_X
+PartyHealthBar.HasWindowByIndex
+PartyHealthBar.CreateHealthBar
+PartyHealthBar.hasPortrait
+UserActionMacroAddNewAction
+WindowSetTabOrder
+SliderBarSetCurrentPosition
+RequestLegacyTileArt
+GGManager
+GGManager.stripMarkup
+GGManager.printTable
+GGManager.ConcatStringFromTID
+GGManager.registerWindow
+GGManager.QUIT_TID
+GGManager.registerOnCreateCallback
+GGManager.onCreateCallback
+GGManager.OKAY_TID
+GGManager.TELL_BETA_TESTERS_WE_KNOW
+GGManager.CLOSE_TID
+GGManager.RESIGN_TID
+GGManager.REFUSE_TID
+GGManager.WindowPositionGroup
+GGManager.Initialize
+GGManager.getAllWindowsForID
+GGManager.unregisterOnCreateCallback
+GGManager.NEW_GUMP_HAS_BEEN_HANDLED
+GGManager.CANCEL_TID
+GGManager.getAllKnownWindows
+GGManager.DISPLAY_GUMPNOTFOUND
+GGManager.ASK_BETA_TESTERS_FOR_HELP
+GGManager.knownWindows
+GGManager.translateTID
+GGManager.unregisterWindow
+GGManager.NumOfGumps
+GGManager.DONT_DELETE_DATA_YET
+GGManager.GumpName
+GGManager.WindowName
+GGManager.GGParseData
+GGManager.ACCEPT_TID
+GGManager.convertToWString
+GGManager.tableToString
+GGManager.BetaTesterHelpMessage
+GGManager.GGClose
+GGManager.BACK_TID
+GGManager.GGArrived
+GGManager.destroyActiveWindow
+GGManager.DELETE_DATA
+GGManager.destroyWindow
+GGManager.unregisterActiveWindow
+UserActionInvokeVirtue
+HorizontalScrollbarSetPageSize
+HorizontalScrollbarGetMaxScrollPosition
+DragSlotDropObjectToObject
+IsOneCharPerAcct
+rawget
+PageWindowRemovePageBreak
+HotbarCreateNewItem
+PageWindowClearPageBreaks
+PageWindowUpdatePages
+UserActionIsSkillAvalible
+ButtonSetCheckButtonFlag
+UserActionGetIconId
+UserActionSpeechSetText
+PageWindowGetNumPages
+GenericGumpGetItemPropertiesId
+UpdatePortrait
+WindowGetFontAlpha
+WindowSetGameActionData
+ColorPickerCreateWithColorTable
+DragSlotSetActionMouseClickData
+VerticalScrollbarGetPageSize
+DockableWindowGetTabOffset
+SetUseLuaErrorHandling
+VerticalScrollbarSetScrollPosition
+OFFSET_INTER
+TextLogGetEnabled
+HousingTileIDTableBuilt
+UpdateCharProfile
+PageWindowGetCurrentPage
+TextLogLoadFromFile
+TextLogGetIncrementalSaving
+GetShardPingInfo
+BIG_SPACER
+TryLogin
+HuePickerColorSelected
+ModuleInitialize
+ModuleSetEnabled
+rawequal
+ModulesGetData
+WindowGetDimensions
+SettingsWindow
+SettingsWindow.OnResetButton
+SettingsWindow.TID_RESETLEGACYBINDINGS_CHAT
+SettingsWindow.OnIgnoreListAddButton
+SettingsWindow.TID
+SettingsWindow.ResetLegacyKeyBindings
+SettingsWindow.PreviousIgnoreConfListCount
+SettingsWindow.ObjectHandleSizes
+SettingsWindow.UpdateGammaVal
+SettingsWindow.TID_FILTERS
+SettingsWindow.NUM_FADE_TIMES
+SettingsWindow.DamageFont
+SettingsWindow.KeyCancelRecord
+SettingsWindow.TID_YES
+SettingsWindow.CurIgnoreConfListIdx
+SettingsWindow.TID_BINDING_CONFLICT_TITLE
+SettingsWindow.OnIgnoreConfListAddButton
+SettingsWindow.NUM_LEGACYBACKPACKSTYLES
+SettingsWindow.ChatFont
+SettingsWindow.NUM_DELAY_VALUES
+SettingsWindow.ProfanityListUpdated
+SettingsWindow.OpenOverheadTextTab
+SettingsWindow.OnResetUILocButton
+SettingsWindow.UpdateSettings
+SettingsWindow.NUM_SCROLLWHEELBEHAVIORS
+SettingsWindow.NUM_SHOWNAMES
+SettingsWindow.NON_LEGACY_BINDING_MAX
+SettingsWindow.CurIgnoreListIdx
+SettingsWindow.OpenLegacyTab
+SettingsWindow.NUM_SCROLLWHEELBEHAVIORS_LEGACY
+SettingsWindow.NUM_OBJHANDLE_FILTERS
+SettingsWindow.IGNORE_LIST_CONF
+SettingsWindow.OnApplyButton
+SettingsWindow.ColorPicked
+SettingsWindow.ScrollWheelBehaviors_Legacy
+SettingsWindow.TID_BINDING_CONFLICT_BODY
+SettingsWindow.UpdateSliderSettings
+SettingsWindow.CheckEnable
+SettingsWindow.IncreaseTextSize
+SettingsWindow.FontSizes
+SettingsWindow.Modes
+SettingsWindow.PickColor
+SettingsWindow.UpdateLegacyTargetBindingsText
+SettingsWindow.ResizeContainers
+SettingsWindow.OnDefaultKeyPressed
+SettingsWindow.OpenMobilesTab
+SettingsWindow.PopulateProfanityList
+SettingsWindow.TID_NO
+SettingsWindow.DecreaseTextSize
+SettingsWindow.TID_RESETDEFAULTBINDINGS
+SettingsWindow.OpenOptionsTab
+SettingsWindow.LegacyTargetingButtonOnLButtonUp
+SettingsWindow.DetailTID
+SettingsWindow.OnShowResetLegacyDialog
+SettingsWindow.PreviousBadWordCount
+SettingsWindow.TID_INFO
+SettingsWindow.OnIgnoreConfListItemClicked
+SettingsWindow.OpenKeyBindingsTab
+SettingsWindow.OnIgnoreListItemClicked
+SettingsWindow.ResetScrollWheelOptions
+SettingsWindow.NON_LEGACY_BINDING_MIN
+SettingsWindow.IGNORE_LIST_ALL
+SettingsWindow.RefreshScrollWheelComboBoxes
+SettingsWindow.OnIgnoreListChatListButton
+SettingsWindow.OnIgnoreConfListChatListButton
+SettingsWindow.ShowNames
+SettingsWindow.NamesFont
+SettingsWindow.ClearTempKeybindings
+SettingsWindow.OnIgnoreListDeleteButton
+SettingsWindow.KeyRecorded
+SettingsWindow.Initialize
+SettingsWindow.OnKeyPicked
+SettingsWindow.OpenContainersTab
+SettingsWindow.TID_RESETCHATSETTINGS
+SettingsWindow.ClearTabStates
+SettingsWindow.DelayValues
+SettingsWindow.DestroyContainers
+SettingsWindow.OpenProfanityTab
+SettingsWindow.LabelOnMouseOver
+SettingsWindow.OpenSoundTab
+SettingsWindow.OpenGraphicsTab
+SettingsWindow.TID_BINDING_CONFLICT_QUESTION
+SettingsWindow.OpenHealthbarsTab
+SettingsWindow.TID_ANIMATION
+SettingsWindow.LegacyBackpackStyle
+SettingsWindow.OnCancelButton
+SettingsWindow.ContainerViewOptions
+SettingsWindow.Languages
+SettingsWindow.OnIgnoreConfListDeleteButton
+SettingsWindow.NUM_FONT_SIZES
+SettingsWindow.ChatFadeTime
+SettingsWindow.ResetMMOKeyBindings
+SettingsWindow.PreviousIgnoreListCount
+SettingsWindow.NUM_LANGUAGES
+SettingsWindow.ObjectHandles
+SettingsWindow.ScrollWheelBehaviors
+SettingsWindow.SpellFont
+SettingsWindow.ToggleSettingsWindow
+SettingsWindow.RecordingKey
+SettingsWindow.Keybindings
+SettingsWindow.TID_FRAMERATE
+SettingsWindow.UpdateKeyBindings
+SettingsWindow.UpdateVolumeSliderSettings
+SettingsWindow.Check
+SettingsWindow.OnOkayButton
+SettingsWindow.TID_DETAILS
+SettingsWindow.ignoreListType
+ContextMenu
+ContextMenu.HighlightColor
+ContextMenu.DefaultValues
+ContextMenu.RequestContextAction
+ContextMenu.CreateMenuItems
+ContextMenu.ExecuteMenuItem
+ContextMenu.Update
+ContextMenu.GREYEDOUT
+ContextMenu.HideAllItems
+ContextMenu.ActivateLuaContextMenu
+ContextMenu.MenuItemLButtonDown
+ContextMenu.Show
+ContextMenu.MenuItemMouseLeave
+ContextMenu.MenuItemLButtonUp
+ContextMenu.MenuItemMouseOver
+ContextMenu.Hide
+ContextMenu.FillMenuItems
+ContextMenu.CreateLuaContextMenuItem
+ContextMenu.NumItemsCreated
+ContextMenu.LuaMenuOptions
+ContextMenu.Initialize
+ContextMenu.GetMenuItemData
+ContextMenu.NormalColor
+ContextMenu.IsLuaDriven
+ContextMenu.ITEM_WINDOW_HEIGHT
+ContextMenu.WINDOW_WIDTH
+ContextMenu.ITEM_WINDOW_SPACING
+ContextMenu.DisabledColor
+ContextMenu.CreateLuaContextMenuItemWithString
+ContextMenu.HIGHLIGHTED
+ContextMenu.ITEM_WINDOW_WIDTH
+ContextMenu.SECONDTIER
+UserActionMacroRemoveAction
+elementSquareBroken
+ChatWindowContainerTextInput
+ChatWindowContainerTextInput.TextUpdated
+ChatWindowContainerTextInput.Text
+ChatWindowContainerTextInput.CursorPos
+UORadarGetAreaCount
+PageWindowSetCurrentPage
+HotbarCreateNewAction
+ButtonSetTextColor
+IsBanker
+ButtonGetStayDownFlag
+ButtonGetPressedFlag
+WindowAddAnchor
+UserActionSetIconId
+ButtonSetText
+UnloadStringTable
+Settings
+Settings.LoadChatSettings
+GetBuildVersion
+LabelSetTextColor
+TextEditBoxGetTextColor
+ReleaseLegacyTileArt
+HasReceivedServerFeatures
+DynamicImageSetTextureScale
+DynamicImageHasTexture
+DynamicImageSetCustomShader
+UserActionToggleWarMode
+AbilitiesInfo
+AbilitiesInfo.RequiresNinjitsu
+AbilitiesInfo.GetManaCost
+AbilitiesInfo.CanUse
+AbilitiesInfo.RequiresBushido
+AbilitiesInfo.isPrimary
+AbilitiesInfo.Data
+AbilitiesInfo.MessageToID
+AbilitiesInfo.RequiresBushidoOrNinjitsu
+ReleaseCourseMap
+WindowResizeOnChildren
+PageWindowClearSplitableWindows
+wstring
+wstring.gmatch_aux
+wstring.lualex
+wstring.match
+wstring.gmatch
+wstring.upper
+wstring.gsub
+wstring.format
+wstring.lower
+wstring.sub
+wstring.gfind
+wstring.rep
+wstring.char
+wstring.reverse
+wstring.byte
+wstring.trim
+wstring.len
+wstring.find
+SetIsCustomizingHouse
+WindowSetRelativeScale
+HousingClearCurrentTarget
+UserActionSetTargetType
+WindowUtils
+WindowUtils.SendWindowSettings
+WindowUtils.RetrieveWindowSettings
+WindowUtils.DestroyWindowOutline
+WindowUtils.FitTextToLabel
+WindowUtils.LoadAlpha
+WindowUtils.SendOverheadText
+WindowUtils.EndDrag
+WindowUtils.ToggleAlpha
+WindowUtils.GetActiveDialog
+WindowUtils.resizeMin
+WindowUtils.trackSize
+WindowUtils.SetWindowTitle
+WindowUtils.ClearWindowPosition
+WindowUtils.Dec2Hex
+WindowUtils.ChatPrint
+WindowUtils.DRAG_DISTANCE
+WindowUtils.ForceResetWindowPositions
+WindowUtils.ScrollToElementInHorizontalScrollWindow
+WindowUtils.DrawObjectIcon
+WindowUtils.Initialize
+WindowUtils.FONT_DEFAULT_SUB_HEADING_LINESPACING
+WindowUtils.Commalines
+WindowUtils.Decapitalizing
+WindowUtils.ForceResetWindowPosition
+WindowUtils.RestoreWindowPosition
+WindowUtils.CreateWindowOutline
+WindowUtils.LoadScale
+WindowUtils.Scale
+WindowUtils.AddCommasToNumber
+WindowUtils.resizeAnchor
+WindowUtils.Update
+WindowUtils.translateMarkup
+WindowUtils.FONT_DEFAULT_TEXT_LINESPACING
+WindowUtils.BeginDrag
+WindowUtils.SaveWindowPosition
+WindowUtils.Aplpha
+WindowUtils.dragging
+WindowUtils.TrapClick
+WindowUtils.LastMessage
+WindowUtils.CopySize
+WindowUtils.translateLinkTag
+WindowUtils.CopyAnchors
+WindowUtils.CopyScreenPosition
+WindowUtils.ToggleScale
+WindowUtils.ScrollToElementInScrollWindow
+WindowUtils.SetActiveDialogTitle
+WindowUtils.ProcessLink
+WindowUtils.OnLButtonUp
+WindowUtils.DRAG_PICKUP_TIME
+WindowUtils.resizing
+WindowUtils.CanRestorePosition
+WindowUtils.GetScaledScreenPosition
+WindowUtils.openWindows
+WindowUtils.dragTime
+WindowUtils.BeginResize
+WindowUtils.GetTopmostDialog
+HuesInfo
+HuesInfo.Data
+WindowGetMovable
+WindowSetPopable
+EquipmentData
+EquipmentData.EQPOS_CAPE
+EquipmentData.EQPOS_TORSO
+EquipmentData.ActivateAbility
+EquipmentData.EQPOS_SKIRT
+EquipmentData.EQPOS_DRESS
+EquipmentData.RegisterWeaponAbilitySlot
+EquipmentData.EQPOS_HANDS
+EquipmentData.EQPOS_CHEST
+EquipmentData.EQPOS_HEAD
+EquipmentData.EQPOS_EARS
+EquipmentData.EQPOS_MAX
+EquipmentData.EQPOS_ARMS
+EquipmentData.EQPOS_RIGHTHAND
+EquipmentData.EQPOS_SHOP_MAX
+EquipmentData.WEAPONABILITY_PRIMARY
+EquipmentData.EQPOS_LEGS
+EquipmentData.Initialize
+EquipmentData.EQPOS_WAIST
+EquipmentData.EQPOS_FACIALHAIR
+EquipmentData.EQPOS_HAIR
+EquipmentData.EQPOS_BACKPACK
+EquipmentData.WEAPONABILITY_ABILITYOFFSET
+EquipmentData.UpdateWeaponAbilities
+EquipmentData.EQPOS_LWRIST
+EquipmentData.EQPOS_BUYS
+EquipmentData.EQPOS_RIDING
+EquipmentData.RegisteredAbilityIcons
+EquipmentData.GetWeaponAbilityId
+EquipmentData.UpdateItemIcon
+EquipmentData.ResetAbility
+EquipmentData.UnregisterWeaponAbilitySlot
+EquipmentData.UpdateAbilityIcon
+EquipmentData.EQPOS_INVENT
+EquipmentData.EQPOS_TALISMAN
+EquipmentData.EQPOS_FEETLEGS
+EquipmentData.CurrentWeaponAbilities
+EquipmentData.WEAPONABILITY_SECONDARY
+EquipmentData.EQPOS_RWRIST
+EquipmentData.EQPOS_FEET
+EquipmentData.EQPOS_FINGER1
+EquipmentData.EQPOS_NECK
+EquipmentData.EQPOS_DRAG
+EquipmentData.Shutdown
+EquipmentData.EQPOS_ABOVECHEST
+EquipmentData.EQPOS_SELLS
+EquipmentData.EQPOS_LEFTHAND
+EquipmentData.EQPOS_BANK
+StringToWString
+DragSlotQuantityRequestResult
+_WindowGetShowing
+UserActionMacroGetNumActions
+WindowGetOffsetFromParent
+qt
+WindowGetTabOrder
+SetItemDragging
+UORadarSetCenterOnPlayer
+WindowUnregisterCoreEventHandler
+DragSlotDropObjectToPaperdollEquipment
+DeleteFromIgnoreList
+CreateUIDocumentFile
+HotbarUnregister
+TID_MORE
+LogDisplayIsScrolledToBottom
+BroadcastEvent
+CreateWindow
+UpdateCustomUI
+GenericGumpOnClicked
+SetFloorVisibility
+SetHousingMultiSelected
+UserActionUseObjectTypeGetObjectTypeHue
+IsShiftDown
+UpdateViewport
+MacroSystemGetMacroIndexById
+Hotbar
+Hotbar.HANDLE_OFFSET
+Hotbar.ItemLButtonUp
+Hotbar.TID_NO
+Hotbar.TID_BINDING_CONFLICT_BODY
+Hotbar.UseSlot
+Hotbar.IsShrunken
+Hotbar.OnHandleLButtonDown
+Hotbar.Enlarge
+Hotbar.RecordingSlot
+Hotbar.Shrink
+Hotbar.SetLocked
+Hotbar.ShowBar
+Hotbar.CurrentUseHotbar
+Hotbar.KeyCancelRecord
+Hotbar.ShrinkBDown
+Hotbar.TID_YES
+Hotbar.ColorPicked
+Hotbar.PickColor
+Hotbar.SetText
+Hotbar.TID_BINDING_CONFLICT_TITLE
+Hotbar.NUM_BUTTONS
+Hotbar.DarkItemLabel
+Hotbar.OnHandleLButUp
+Hotbar.TID_BINDING
+Hotbar.ItemMouseOverEnd
+Hotbar.CreateNew
+Hotbar.ContextMenuCallback
+Hotbar.ContextMenuCallbackLock
+Hotbar.ItemRButtonUp
+Hotbar.OnResizeBegin
+Hotbar.Initialize
+Hotbar.HideBar
+Hotbar.HandleMouseOver
+Hotbar.FindHotbarGroup
+Hotbar.TID_BINDING_CONFLICT_QUESTION
+Hotbar.LockTooltip
+Hotbar.RecordingHotbar
+Hotbar.OnHandleLButDown
+Hotbar.OnResizeEnd
+Hotbar.Lock
+Hotbar.KeyRecorded
+Hotbar.LightItemLabel
+Hotbar.ItemMouseOver
+Hotbar.TID_TARGET
+Hotbar.SpecialLock
+Hotbar.ReloadHotbar
+Hotbar.ClearHotbarItem
+Hotbar.InMovement
+Hotbar.TID_SLOT
+Hotbar.FindHotbarEnlargeBlock
+Hotbar.ItemLButtonDown
+Hotbar.RecordingKey
+Hotbar.FindHotbarMovingBlock
+Hotbar.FindHotbarShrinkBlock
+Hotbar.Shutdown
+Hotbar.TID_HOTBAR
+Hotbar.BUTTON_SIZE
+Hotbar.SetHotbarItem
+Hotbar.ShrinkTooltip
+Hotbar.CurrentUseSlot
+error
+SetCurrentHouseFloorView

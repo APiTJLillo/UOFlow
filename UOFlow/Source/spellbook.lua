@@ -756,6 +756,7 @@ end
 function Spellbook.SpellLButtonUp()
 	local this = WindowUtils.GetActiveDialog()
     local id = WindowGetId(this)
+	Debug.Print(id)
     local data = WindowData.Spellbook[id]    
     local index = WindowGetId(SystemData.ActiveWindow.name)
     local curSpell = 0

@@ -706,6 +706,7 @@ function Interface.CreateWindows()
 	CreateWindow( "CenterScreenText", true)
 	CreateWindow( "WarShield", Interface.WarShield)
 	CreateWindow( "CrystalPortal", false)
+	CreateWindow( "SampleWindow", false )
 	Interface.CreateTCTools()
 	
 	if( SystemData.Settings.Interface.showTipoftheDay ) then
