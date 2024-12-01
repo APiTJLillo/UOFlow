@@ -89,6 +89,7 @@
 	<Include file="Source/QuickStats.xml"/>		
 	<Include file="Source/FontSelector.xml"/>
 	<Include file="Source/LegacyRunebook.xml"/>
+	<Include file="Source/VisualProgrammingInterface.xml"/>
 	
 	<!-- Remove this one once all the gumps are fixed -->
 	<!--<Include file="Source/Generic/KnownBrokenGump.xml" />-->
@@ -197,6 +198,7 @@
 		<Script file="Source/QuickStats.lua"/>
 		<Script file="Source/LegacyRunebook.lua"/>
 		<Script file="Source/LegacyRunebookLoader.lua"/>
+			<Script file="Source/VisualProgrammingInterface.lua"/>
 		<!--<Load Settings Last/>-->
 		<Script file="Source/SettingsWindow.lua" />		
 	</Scripts>
