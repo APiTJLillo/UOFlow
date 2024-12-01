@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+    <Windows>
+        <Window name="VisualProgrammingInterfaceWindow" movable="true" handleinput="true" >
+            <Size>
+                <AbsPoint x="800" y="600" />
+            </Size>
+            <Anchors>
+                <Anchor point="center" relativePoint="center" />
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnInitialize" function="VisualProgrammingInterface.Initialize" />
+                <EventHandler event="OnShutdown" function="VisualProgrammingInterface.Hide" />
+            </EventHandlers>
+            <Windows>
+                <Label name="$parentTitle" font="UO_DefaultText" text="Visual Programming Interface" textalign="center" />
+                <Button name="$parentCloseButton" inherits="UO_Default_CloseButton" >
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topright" />
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.Hide" />
+                    </EventHandlers>
+                </Button>
+                <ScrollWindow name="$parentScrollWindow" childscrollwindow="$parentScrollChild" scrollbar="$parentScrollbar" >
+                    <Size>
+                        <AbsPoint x="780" y="540" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="bottomleft" relativeTo="$parentTitle" />
+                    </Anchors>
+                    <Windows>
+                        <VerticalScrollbar name="$parentScrollbar" inherits="StandardVertScroll" />
+                        <Window name="$parentScrollChild" >
+                            <Size>
+                                <AbsPoint x="780" y="540" />
+                            </Size>
+                        </Window>
+                    </Windows>
+                </ScrollWindow>
+                <Button name="$parentZoomInButton" inherits="UO_Default_Button" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentScrollWindow" />
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.ZoomIn" />
+                    </EventHandlers>
+                </Button>
+                <Button name="$parentZoomOutButton" inherits="UO_Default_Button" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentZoomInButton" />
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.ZoomOut" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentHelpLabel" font="UO_DefaultText" text="Use the mouse wheel to zoom in and out. Drag to pan." textalign="center" />
+                <Button name="$parentTutorialButton" inherits="UO_Default_Button" >
+                    <Anchors>
+                        <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parentScrollWindow" />
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.ShowTutorial" />
+                    </EventHandlers>
+                </Button>
+            </Windows>
+        </Window>
+    </Windows>
+</Interface>

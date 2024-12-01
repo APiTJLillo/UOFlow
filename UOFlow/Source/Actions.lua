@@ -1,4 +1,3 @@
-
 Actions = {}
 
 Actions.WarMode = 0
@@ -1693,4 +1692,6 @@ function Actions.RepairItem()
 	end	
 end
 
-
+function Actions.ToggleVisualProgrammingInterface()
+    VisualProgrammingInterface.Toggle()
+end
