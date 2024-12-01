@@ -1700,7 +1700,7 @@ function Interface.LowHPManager(timePassed)
 			Interface.Beat = true
 		else
 			if (Interface.Beat) then
-				--PlaySound(2, 0, WindowData.PlayerLocation.x, WindowData.PlayerLocation.y, WindowData.PlayerLocation.z)
+				--	PlaySound(2, 0, WindowData.PlayerLocation.x, WindowData.PlayerLocation.y, WindowData.PlayerLocation.z)
 				Interface.Beat = false
 				Interface.BeatSlow = false
 				Interface.BeatMed = false
@@ -2053,81 +2053,6 @@ function Interface.TotalUnregister()
 	PaperdollWindow.WearedItems = {}
 end
 
--------------------------------------------------------------------------------
---
--- WindowData Counting
---
--------------------------------------------------------------------------------
-function Interface.CountWinData()
-	Debug.Print("Registerd Names: " .. Interface.CountNamesData())
-	Debug.Print("Registerd Items: " .. Interface.CountObjectData())
-	Debug.Print("Registerd Properties: " .. Interface.CountPropsData())
-	Debug.Print("Registerd Containers: " .. Interface.CountContainersData())
-	Debug.Print("Registerd Paperdolls: " .. Interface.CountPaperdollData())
-	Debug.Print("Registerd Status: " .. Interface.CountMobileStatusData())
-end
-
-
-function Interface.CountNamesData()
-	local a = 0
-	for key, value in pairs(WindowData.MobileName) do
-		if tonumber(key) then
-			a = a + 1
-		end
-	end
-	return a
-end
-
-function Interface.CountObjectData()
-	local a = 0
-	for key, value in pairs(WindowData.ObjectInfo) do
-		if tonumber(key) then
-			a = a + 1
-		end
-	end
-	return a
-end
-
-function Interface.CountContainersData()
-	local a = 0
-	for key, value in pairs(WindowData.ContainerWindow) do
-		if tonumber(key) then
-			a = a + 1
-		end
-	end
-	return a
-end
-
-function Interface.CountPropsData()
-	local a = 0
-	for key, value in pairs(WindowData.ItemProperties) do
-		if tonumber(key) and key ~= 0 then
-			a = a + 1
-		end
-	end
-	return a
-end
-
-
-function Interface.CountMobileStatusData()
-	local a = 0
-	for key, value in pairs(WindowData.MobileStatus) do
-		if tonumber(key) then
-			a = a + 1
-		end
-	end
-	return a
-end
-
-function Interface.CountPaperdollData()
-	local a = 0
-	for key, value in pairs(WindowData.Paperdoll) do
-		if tonumber(key) then
-			a = a + 1
-		end
-	end
-	return a
-end
 -------------------------------------------------------------------------------
 --
 -- EVENTS
@@ -2778,3 +2703,33 @@ function Interface.LoadWString( settingName, defaultValue )
 	return defaultValue
 end
 
+-------------------------------------------------------------------------------
+-- Initialize the visual programming interface
+-------------------------------------------------------------------------------
+function Interface.InitializeVisualProgrammingInterface()
+	CreateWindow("VisualProgrammingInterfaceWindow", true)
+end
+
+-------------------------------------------------------------------------------
+-- Register the visual programming interface window
+-------------------------------------------------------------------------------
+function Interface.RegisterVisualProgrammingInterfaceWindow()
+	WindowRegisterEventHandler("Root", SystemData.Events.TOGGLE_VISUAL_PROGRAMMING_INTERFACE_WINDOW, "Interface.ToggleVisualProgrammingInterfaceWindow")
+end
+
+-------------------------------------------------------------------------------
+-- Toggle the visual programming interface window
+-------------------------------------------------------------------------------
+function Interface.ToggleVisualProgrammingInterfaceWindow()
+	ToggleWindowByName("VisualProgrammingInterfaceWindow", "", nil, nil, nil)
+end
+
+-------------------------------------------------------------------------------
+-- Update the interface initialization logic to include the visual programming interface
+-------------------------------------------------------------------------------
+function Interface.InterfaceInitialize()
+	-- Existing initialization logic...
+
+	-- Initialize the visual programming interface
+	Interface.InitializeVisualProgrammingInterface()
+end
