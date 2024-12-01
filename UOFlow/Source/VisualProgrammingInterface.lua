@@ -12,7 +12,8 @@ function VisualProgrammingInterface.Block:new(id, type, x, y)
         type = type,
         x = x,
         y = y,
-        connections = {}
+        connections = {},
+        isDragging = false
     }
     setmetatable(block, VisualProgrammingInterface.Block)
     return block
@@ -22,6 +23,31 @@ function VisualProgrammingInterface.Block:addConnection(targetBlock)
     table.insert(self.connections, targetBlock)
 end
 
+function VisualProgrammingInterface.Block:startDrag()
+    self.isDragging = true
+end
+
+function VisualProgrammingInterface.Block:stopDrag()
+    self.isDragging = false
+end
+
+function VisualProgrammingInterface.Block:drag(x, y)
+    if self.isDragging then
+        self.x = x
+        self.y = y
+    end
+end
+
+function VisualProgrammingInterface.Block:showContextMenu()
+    -- Show context menu with options: edit, delete, add connection
+end
+
+function VisualProgrammingInterface.Block:drawConnections()
+    for _, connection in ipairs(self.connections) do
+        -- Draw line or arrow from this block to the connected block
+    end
+end
+
 -- Class for managing visual programming interface
 VisualProgrammingInterface.Manager = {}
 VisualProgrammingInterface.Manager.__index = VisualProgrammingInterface.Manager
@@ -29,7 +55,8 @@ VisualProgrammingInterface.Manager.__index = VisualProgrammingInterface.Manager
 function VisualProgrammingInterface.Manager:new()
     local manager = {
         blocks = {},
-        nextBlockId = 1
+        nextBlockId = 1,
+        blockTypes = {}
     }
     setmetatable(manager, VisualProgrammingInterface.Manager)
     return manager
@@ -55,6 +82,33 @@ function VisualProgrammingInterface.Manager:connectBlocks(sourceId, targetId)
     local targetBlock = self:getBlock(targetId)
     if sourceBlock and targetBlock then
         sourceBlock:addConnection(targetBlock)
+    end
+end
+
+function VisualProgrammingInterface.Manager:addBlockType(type, icon)
+    self.blockTypes[type] = icon
+end
+
+function VisualProgrammingInterface.Manager:saveConfiguration()
+    local config = {}
+    for id, block in pairs(self.blocks) do
+        table.insert(config, {
+            id = block.id,
+            type = block.type,
+            x = block.x,
+            y = block.y,
+            connections = block.connections
+        })
+    end
+    return config
+end
+
+function VisualProgrammingInterface.Manager:loadConfiguration(config)
+    self.blocks = {}
+    for _, blockData in ipairs(config) do
+        local block = VisualProgrammingInterface.Block:new(blockData.id, blockData.type, blockData.x, blockData.y)
+        block.connections = blockData.connections
+        self.blocks[blockData.id] = block
     end
 end
 
@@ -84,62 +138,5 @@ function VisualProgrammingInterface.Toggle()
         VisualProgrammingInterface.Hide()
     else
         VisualProgrammingInterface.Show()
-    end
-end
-
--- Add support for different types of blocks
-function VisualProgrammingInterface.Manager:addBlockType(type, icon)
-    self.blockTypes[type] = icon
-end
-
--- Implement drag-and-drop feature
-function VisualProgrammingInterface.Block:startDrag()
-    self.isDragging = true
-end
-
-function VisualProgrammingInterface.Block:stopDrag()
-    self.isDragging = false
-end
-
-function VisualProgrammingInterface.Block:drag(x, y)
-    if self.isDragging then
-        self.x = x
-        self.y = y
-    end
-end
-
--- Add context menu for each block
-function VisualProgrammingInterface.Block:showContextMenu()
-    -- Show context menu with options: edit, delete, add connection
-end
-
--- Implement save and load feature
-function VisualProgrammingInterface.Manager:saveConfiguration()
-    local config = {}
-    for id, block in pairs(self.blocks) do
-        table.insert(config, {
-            id = block.id,
-            type = block.type,
-            x = block.x,
-            y = block.y,
-            connections = block.connections
-        })
-    end
-    return config
-end
-
-function VisualProgrammingInterface.Manager:loadConfiguration(config)
-    self.blocks = {}
-    for _, blockData in ipairs(config) do
-        local block = VisualProgrammingInterface.Block:new(blockData.id, blockData.type, blockData.x, blockData.y)
-        block.connections = blockData.connections
-        self.blocks[blockData.id] = block
-    end
-end
-
--- Add visual indicators for connections
-function VisualProgrammingInterface.Block:drawConnections()
-    for _, connection in ipairs(self.connections) do
-        -- Draw line or arrow from this block to the connected block
     end
 end
