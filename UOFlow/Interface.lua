@@ -489,6 +489,7 @@ function Interface.RegisterEvents()
 	WindowRegisterEventHandler("Root", SystemData.Events.TOGGLE_QUEST_LOG_WINDOW, "Actions.ToggleQuestWindow")
 	WindowRegisterEventHandler("Root", SystemData.Events.TOGGLE_HELP_WINDOW, "Actions.ToggleHelpWindow")
 	WindowRegisterEventHandler("Root", SystemData.Events.TOGGLE_WORLD_MAP_WINDOW, "Actions.ToggleMapWindow")
+	WindowRegisterEventHandler("Root", SystemData.Events.TOGGLE_VISUAL_PROGRAMMING_INTERFACE_WINDOW, "Interface.ToggleVisualProgrammingInterfaceWindow")
 end
 
 function Interface.LoadVariables()

@@ -10,6 +10,8 @@
             </Anchors>
             <EventHandlers>
                 <EventHandler event="OnInitialize" function="VisualProgrammingInterface.Initialize" />
+                <EventHandler event="OnShow" function="VisualProgrammingInterface.Show" />
+                <EventHandler event="OnHide" function="VisualProgrammingInterface.Hide" />
                 <EventHandler event="OnShutdown" function="VisualProgrammingInterface.Hide" />
             </EventHandlers>
             <Windows>
