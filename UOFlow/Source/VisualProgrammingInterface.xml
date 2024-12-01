@@ -38,6 +38,31 @@
                         </Window>
                     </Windows>
                 </ScrollWindow>
+                <Button name="$parentZoomInButton" inherits="UO_Default_Button" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentScrollWindow" />
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.ZoomIn" />
+                    </EventHandlers>
+                </Button>
+                <Button name="$parentZoomOutButton" inherits="UO_Default_Button" >
+                    <Anchors>
+                        <Anchor point="bottomleft" relativePoint="bottomleft" relativeTo="$parentZoomInButton" />
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.ZoomOut" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentHelpLabel" font="UO_DefaultText" text="Use the mouse wheel to zoom in and out. Drag to pan." textalign="center" />
+                <Button name="$parentTutorialButton" inherits="UO_Default_Button" >
+                    <Anchors>
+                        <Anchor point="bottomright" relativePoint="bottomright" relativeTo="$parentScrollWindow" />
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.ShowTutorial" />
+                    </EventHandlers>
+                </Button>
             </Windows>
         </Window>
     </Windows>

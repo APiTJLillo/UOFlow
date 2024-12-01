@@ -933,6 +933,9 @@ function Interface.InterfaceInitialize()
 		Interface.SaveBoolean("InitialPositions", Interface.InitialPositions )
 		
 	end
+
+	-- Initialize the visual programming interface
+	Interface.InitializeVisualProgrammingInterface()
 end
 
 function Interface.InitBugReport()
