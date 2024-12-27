@@ -8,7 +8,6 @@ function VisualProgrammingInterface.Block:new(id, type, x, y)
         type = type,
         x = x,
         y = y,
-        connections = {},
         isDragging = false,
         params = {},
         state = "pending" -- pending, running, completed, error
@@ -121,10 +120,6 @@ function VisualProgrammingInterface.Block:updateVisuals()
     end
 end
 
-function VisualProgrammingInterface.Block:addConnection(targetBlock)
-    table.insert(self.connections, targetBlock)
-end
-
 function VisualProgrammingInterface.Block:startDrag()
     self.isDragging = true
 end
@@ -137,60 +132,5 @@ function VisualProgrammingInterface.Block:drag(x, y)
     if self.isDragging then
         self.x = x
         self.y = y
-        -- Update connections when block is dragged
-        VisualProgrammingInterface.UpdateConnections()
-    end
-end
-
-function VisualProgrammingInterface.Block:drawConnections()
-    for _, connection in ipairs(self.connections) do
-        local sourceBlock = "Block" .. self.id
-        local targetBlock = "Block" .. connection.id
-        
-        if DoesWindowNameExist(sourceBlock) and DoesWindowNameExist(targetBlock) then
-            -- Get block positions relative to scroll child
-            local sourceX = 0  -- All blocks are aligned to left
-            local sourceY = self.y
-            local targetY = connection.y
-            
-            -- Calculate relative positions for arrow
-            local dx = 840  -- Full width of block
-            local dy = targetY - sourceY
-            
-            -- Clean up old arrow if it exists
-            local arrowName = "Arrow_" .. self.id .. "_" .. connection.id
-            if DoesWindowNameExist(arrowName) then
-                DestroyWindow(arrowName)
-            end
-            
-            -- Create new arrow
-            CreateWindowFromTemplate(arrowName, "ArrowTemplate", "VisualProgrammingInterfaceWindowScrollWindowScrollChild")
-            
-            -- Set up the line using UO horizontal rule
-            local arrowLine = arrowName .. "Line"
-            WindowSetTintColor(arrowLine, 206, 217, 242) -- UO Default text color
-            WindowSetAlpha(arrowLine, 0.8)
-            WindowSetShowing(arrowLine, true)
-            WindowSetLayer(arrowLine, Window.Layers.OVERLAY)
-
-            
-            -- Calculate arrow dimensions
-            local length = math.sqrt(dx * dx + dy * dy)
-            local angle = math.atan2(dy, dx)
-            
-            -- Position the arrow
-            WindowClearAnchors(arrowName)
-            WindowAddAnchor(arrowName, "center", sourceBlock, "right", 20, 35)
-            WindowSetDimensions(arrowName, length - 40, 32)
-            WindowSetShowing(arrowName, true)
-            WindowSetLayer(arrowName, Window.Layers.OVERLAY)
-            
-            -- Update arrow line
-            if DoesWindowNameExist(arrowLine) then
-                WindowSetDimensions(arrowLine, length - 40, 8)
-                WindowSetShowing(arrowLine, true)
-                WindowSetLayer(arrowLine, Window.Layers.OVERLAY)
-            end
-        end
     end
 end

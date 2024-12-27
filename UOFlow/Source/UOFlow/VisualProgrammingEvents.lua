@@ -11,8 +11,9 @@ function VisualProgrammingInterface.OnBlockRButtonUp()
     
     local contextMenuOptions = {
         { str = L"Configure...", flags = 0, returnCode = "configure", param = blockId },
-        { str = L"Delete", flags = 0, returnCode = "delete", param = blockName },
-        { str = L"Connect To...", flags = 0, returnCode = "connect_from", param = blockId }
+        { str = L"Move Up", flags = 0, returnCode = "move_up", param = blockId },
+        { str = L"Move Down", flags = 0, returnCode = "move_down", param = blockId },
+        { str = L"Delete", flags = 0, returnCode = "delete", param = blockName }
     }
     
     for _, option in ipairs(contextMenuOptions) do
@@ -45,7 +46,6 @@ function VisualProgrammingInterface.OnBlockDrag()
         
         block.y = newY
         
-        VisualProgrammingInterface.UpdateConnections()
     end
 end
 
@@ -73,7 +73,6 @@ function VisualProgrammingInterface.OnBlockDragEnd()
             end
         end
         
-        VisualProgrammingInterface.UpdateConnections()
     end
 end
 
@@ -99,41 +98,66 @@ function VisualProgrammingInterface.ContextMenuCallback(returnCode, param)
         if blockId then
             VisualProgrammingInterface.manager:removeBlock(blockId)
             DestroyWindow(param)
-            VisualProgrammingInterface.UpdateConnections()
         end
-    elseif returnCode == "connect_from" then
-        VisualProgrammingInterface.pendingConnection = tonumber(param)
+    elseif returnCode == "add_block" then
+        local sortedBlocks = {}
+        for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
+            table.insert(sortedBlocks, block)
+        end
+        table.sort(sortedBlocks, function(a, b) return a.y < b.y end)
         
-        local contextMenuOptions = {}
-        for id, block in pairs(VisualProgrammingInterface.manager.blocks) do
-            if id ~= VisualProgrammingInterface.pendingConnection then
-                table.insert(contextMenuOptions, {
-                    str = StringToWString("Connect to Block " .. id),
-                    flags = 0,
-                    returnCode = "connect_to",
-                    param = id
-                })
+        local newIndex = #sortedBlocks
+        Debug.Print("Adding new block of type: " .. tostring(param))
+        Debug.Print("Current block count: " .. tostring(newIndex))
+        
+        local block = VisualProgrammingInterface.CreateBlock(param, newIndex)
+        if block then
+            Debug.Print("Successfully created block with ID: " .. tostring(block.id))
+            ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindow")
+        end
+    elseif returnCode == "move_up" or returnCode == "move_down" then
+        local blockId = tonumber(param)
+        local block = VisualProgrammingInterface.manager:getBlock(blockId)
+        if not block then return end
+        
+        local sortedBlocks = {}
+        for _, b in pairs(VisualProgrammingInterface.manager.blocks) do
+            table.insert(sortedBlocks, b)
+        end
+        table.sort(sortedBlocks, function(a, b) return a.y < b.y end)
+        
+        local currentIndex = 1
+        for i, b in ipairs(sortedBlocks) do
+            if b.id == blockId then
+                currentIndex = i
+                break
             end
         end
         
-        for _, option in ipairs(contextMenuOptions) do
-            ContextMenu.CreateLuaContextMenuItemWithString(option.str, option.flags, option.returnCode, option.param)
-        end
-        ContextMenu.ActivateLuaContextMenu(VisualProgrammingInterface.ConnectionTargetCallback)
-    end
-end
-
-function VisualProgrammingInterface.ConnectionTargetCallback(returnCode, param)
-    if returnCode == "connect_to" and VisualProgrammingInterface.pendingConnection then
-        local sourceId = VisualProgrammingInterface.pendingConnection
-        local targetId = tonumber(param)
-        
-        if sourceId and targetId then
-            VisualProgrammingInterface.manager:connectBlocks(sourceId, targetId)
-            VisualProgrammingInterface.UpdateConnections()
+        local newIndex = currentIndex
+        if returnCode == "move_up" and currentIndex > 1 then
+            newIndex = currentIndex - 1
+        elseif returnCode == "move_down" and currentIndex < #sortedBlocks then
+            newIndex = currentIndex + 1
         end
         
-        VisualProgrammingInterface.pendingConnection = nil
+        if newIndex ~= currentIndex then
+            local temp = sortedBlocks[currentIndex]
+            sortedBlocks[currentIndex] = sortedBlocks[newIndex]
+            sortedBlocks[newIndex] = temp
+            
+            for index, b in ipairs(sortedBlocks) do
+                local newY = (index - 1) * 80
+                b.y = newY
+                
+                local bName = "Block" .. b.id
+                if DoesWindowNameExist(bName) then
+                    WindowClearAnchors(bName)
+                    WindowAddAnchor(bName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowScrollChild", "topleft", 0, newY)
+                end
+            end
+            
+        end
     end
 end
 
@@ -181,21 +205,19 @@ function VisualProgrammingInterface.StopButton()
 end
 
 function VisualProgrammingInterface.AddBlock()
-    -- Reset menu options
-    ContextMenu.LuaMenuOptions = {}
-    
     -- Get active categories
     local categories = VisualProgrammingInterface.Actions:getActiveCategories()
+    local yOffset = 0
     
-    -- Create category submenus
+    -- Create category headers and action items
     for _, category in ipairs(categories) do
--- Add category header
-        ContextMenu.CreateLuaContextMenuItemWithString(
-            StringToWString(category),
-            ContextMenu.HIGHLIGHTED,
-            "",
-            ""
-        )
+        -- Create category header
+        local headerName = "Category_" .. category
+        CreateWindowFromTemplate(headerName, "CategoryHeaderTemplate", "VisualProgrammingInterfaceWindowScrollWindowLeftScrollChildLeft")
+        WindowClearAnchors(headerName)
+        WindowAddAnchor(headerName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowLeftScrollChildLeft", "topleft", 0, yOffset)
+        LabelSetText(headerName .. "Text", StringToWString(category))
+        yOffset = yOffset + 30
         
         -- Add actions in this category
         local categoryActions = VisualProgrammingInterface.Actions:getByCategory(category)
@@ -205,48 +227,28 @@ function VisualProgrammingInterface.AddBlock()
         end
         table.sort(sortedActions, function(a, b) return a.name < b.name end)
         
-        -- Add actions to menu
+        -- Create action items
         for _, actionData in ipairs(sortedActions) do
-            local menuItem = {
-                str = StringToWString(actionData.name),
-                flags = 0,
-                returnCode = "add_block",
-                param = actionData.name
-            }
-            table.insert(ContextMenu.LuaMenuOptions, menuItem)
+            local actionName = "Action_" .. actionData.name
+            CreateWindowFromTemplate(actionName, "ActionItemTemplate", "VisualProgrammingInterfaceWindowScrollWindowLeftScrollChildLeft")
+            WindowClearAnchors(actionName)
+            WindowAddAnchor(actionName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowLeftScrollChildLeft", "topleft", 0, yOffset)
+            ButtonSetText(actionName, StringToWString(actionData.name))
+            WindowSetId(actionName, actionData.name)
+            yOffset = yOffset + 25
         end
         
-        -- Add separator if not last category
-        if category ~= categories[#categories] then
-            local separator = {
-                str = StringToWString(""),
-                flags = 0,
-                returnCode = "",
-                param = ""
-            }
-            table.insert(ContextMenu.LuaMenuOptions, separator)
-        end
+        -- Add spacing after category
+        yOffset = yOffset + 10
     end
     
-    ContextMenu.ActivateLuaContextMenu(VisualProgrammingInterface.BlockSelectionCallback)
+    -- Update scroll child height
+    WindowSetDimensions("VisualProgrammingInterfaceWindowScrollWindowLeftScrollChildLeft", 250, yOffset)
 end
 
-function VisualProgrammingInterface.BlockSelectionCallback(returnCode, param)
-    if returnCode == "add_block" then
-        local sortedBlocks = {}
-        for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
-            table.insert(sortedBlocks, block)
-        end
-        table.sort(sortedBlocks, function(a, b) return a.y < b.y end)
-        
-        local newIndex = #sortedBlocks
-        Debug.Print("Adding new block of type: " .. tostring(param))
-        Debug.Print("Current block count: " .. tostring(newIndex))
-        
-        local block = VisualProgrammingInterface.CreateBlock(param, newIndex)
-        if block then
-            Debug.Print("Successfully created block with ID: " .. tostring(block.id))
-            ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindow")
-        end
-    end
+function VisualProgrammingInterface.BlockSelectionCallback()
+    local actionName = SystemData.ActiveWindow.name:match("Action_(.+)$")
+    if not actionName then return end
+    
+    VisualProgrammingInterface.ContextMenuCallback("add_block", actionName)
 end

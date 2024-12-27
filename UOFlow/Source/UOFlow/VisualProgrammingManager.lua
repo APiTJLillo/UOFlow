@@ -53,26 +53,10 @@ function VisualProgrammingInterface.Manager:removeBlock(id)
     -- Update scroll window to reflect new content size
     ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindow")
     
-    -- Clean up any arrows connected to the removed block
-    for _, block in pairs(self.blocks) do
-        for i = #block.connections, 1, -1 do
-            if block.connections[i].id == id then
-                table.remove(block.connections, i)
-            end
-        end
-    end
 end
 
 function VisualProgrammingInterface.Manager:getBlock(id)
     return self.blocks[id]
-end
-
-function VisualProgrammingInterface.Manager:connectBlocks(sourceId, targetId)
-    local sourceBlock = self:getBlock(sourceId)
-    local targetBlock = self:getBlock(targetId)
-    if sourceBlock and targetBlock then
-        sourceBlock:addConnection(targetBlock)
-    end
 end
 
 function VisualProgrammingInterface.Manager:addBlockType(type, icon)
@@ -86,8 +70,7 @@ function VisualProgrammingInterface.Manager:saveConfiguration()
             id = block.id,
             type = block.type,
             x = block.x,
-            y = block.y,
-            connections = block.connections
+            y = block.y
         })
     end
     return config
@@ -97,7 +80,6 @@ function VisualProgrammingInterface.Manager:loadConfiguration(config)
     self.blocks = {}
     for _, blockData in ipairs(config) do
         local block = VisualProgrammingInterface.Block:new(blockData.id, blockData.type, blockData.x, blockData.y)
-        block.connections = blockData.connections
         self.blocks[blockData.id] = block
     end
 end

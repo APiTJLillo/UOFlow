@@ -392,12 +392,3 @@ function VisualProgrammingInterface.CreateBlock(type, index)
     
     return block
 end
-
--- Add function to update all connections
-function VisualProgrammingInterface.UpdateConnections()
-    if VisualProgrammingInterface.manager then
-        for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
-            block:drawConnections()
-        end
-    end
-end

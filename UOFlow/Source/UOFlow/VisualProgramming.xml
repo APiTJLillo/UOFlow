@@ -49,11 +49,11 @@
 
                 <ScrollWindow name="$parentScrollWindow" childscrollwindow="$parentScrollChild" scrollbar="$parentVerticalScrollbar" lineheight="60" draganddrop="true" autoHideScrollBar="true" layer="default">
                     <Size>
-                        <AbsPoint x="860" y="550" />
+                        <AbsPoint x="400" y="650" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="20" y="70" />
+                            <AbsPoint x="260" y="30" />
                         </Anchor>
                     </Anchors>
                     <Windows>
@@ -82,18 +82,82 @@
                     </Windows>
                 </ScrollWindow>
 
-                <Button name="$parentAddBlockButton" inherits="UO_Default_Medium_Select_Button" layer="popup">
+                <ScrollWindow name="$parentScrollWindowLeft" childscrollwindow="$parentScrollChildLeft" scrollbar="$parentVerticalScrollbar" lineheight="25" draganddrop="true" autoHideScrollBar="true" layer="default">
+                    <Size>
+                        <AbsPoint x="250" y="650" />
+                    </Size>
                     <Anchors>
-                        <Anchor point="top" relativePoint="bottom" relativeTo="$parentScrollWindow">
-                            <AbsPoint x="0" y="30" />
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="10" y="30" />
                         </Anchor>
                     </Anchors>
-                    <EventHandlers>
-                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.AddBlock" />
-                    </EventHandlers>
-                </Button>
+                    <Windows>
+                        <Window name="$parentScrollChildLeft" layer="default">
+                            <EventHandlers>
+                                <EventHandler event="OnInitialize" function="VisualProgrammingInterface.AddBlock" />
+                            </EventHandlers>
+                            <Size>
+                                <AbsPoint x="250" y="0"/>
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="0" y="0" />
+                                </Anchor>
+                            </Anchors>
+                        </Window>
+                        <VerticalScrollbar name="$parentVerticalScrollbarLeft" inherits="StandardVertScroll" layer="popup">
+                            <Anchors>
+                                <Anchor point="topright" relativePoint="topright"/>
+                                <Anchor point="bottom" relativePoint="bottom"/>
+                            </Anchors>
+                        </VerticalScrollbar>
+                        <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                    </Windows>
+                </ScrollWindow>
             </Windows>
         </Window>
+
+        <!-- Category Header Template -->
+        <Window name="CategoryHeaderTemplate" virtual="true" layer="default">
+            <Size>
+                <AbsPoint x="250" y="25" />
+            </Size>
+            <Windows>
+                <Label name="$parentText" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="false" wordwrap="true" layer="default">
+                    <Size>
+                        <AbsPoint x="250" y="25" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="10" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <Color r="100" g="149" b="237" a="255" />
+                </Label>
+            </Windows>
+        </Window>
+
+        <!-- Action Item Template -->
+        <Button name="ActionItemTemplate" virtual="true" layer="default" handleinput="true" textalign="left" font="UO_DefaultText">
+            <Size>
+                <AbsPoint x="250" y="25" />
+            </Size>
+            <TextColors>
+                <Normal r="255" g="255" b="255" a="255" />
+                <NormalHighlit r="255" g="255" b="100" a="255" />
+                <Pressed r="200" g="200" b="200" a="255" />
+                <PressedHighlit r="200" g="200" b="100" a="255" />
+                <Disabled r="128" g="128" b="128" a="255" />
+            </TextColors>
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.BlockSelectionCallback" />
+            </EventHandlers>
+        </Button>
 
         <!-- Button Templates -->
         <Button name="EmptyButtonTemplate" virtual="true" draganddrop="true" id="0">

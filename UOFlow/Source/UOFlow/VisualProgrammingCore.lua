@@ -82,14 +82,6 @@ function VisualProgrammingInterface.Initialize()
         end
     end
     
-    -- Create initial connections between blocks
-    for i = 1, #createdBlocks - 1 do
-        VisualProgrammingInterface.manager:connectBlocks(createdBlocks[i].id, createdBlocks[i + 1].id)
-    end
-    
-    -- Draw initial connections
-    VisualProgrammingInterface.UpdateConnections()
-    
     -- Set proper window layers
     if DoesWindowNameExist("ActionEditBackground") then
         WindowSetLayer("ActionEditBackground", Window.Layers.BACKGROUND)
