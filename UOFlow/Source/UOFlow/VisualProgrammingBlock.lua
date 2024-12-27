@@ -2,12 +2,13 @@
 VisualProgrammingInterface.Block = {}
 VisualProgrammingInterface.Block.__index = VisualProgrammingInterface.Block
 
-function VisualProgrammingInterface.Block:new(id, type, x, y)
+function VisualProgrammingInterface.Block:new(id, type, x, y, column)
     local block = {
         id = id,
         type = type,
         x = x,
         y = y,
+        column = column or "middle", -- middle or right
         isDragging = false,
         params = {},
         state = "pending" -- pending, running, completed, error
@@ -132,5 +133,20 @@ function VisualProgrammingInterface.Block:drag(x, y)
     if self.isDragging then
         self.x = x
         self.y = y
+        
+        -- Update column based on x position
+        local windowX = WindowGetScreenPosition("VisualProgrammingInterfaceWindowScrollWindowRight")
+        if windowX and x > windowX then
+            self.column = "right"
+        else
+            self.column = "middle"
+        end
     end
+end
+
+-- Helper function to get the parent window name based on column
+function VisualProgrammingInterface.Block:getParentWindow()
+    return self.column == "right" and 
+        "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight" or 
+        "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
 end

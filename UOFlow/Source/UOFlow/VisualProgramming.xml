@@ -20,12 +20,10 @@
         
         <!-- Features -->
         <Script file="Source/UOFlow/VisualProgrammingExecution.lua" />
-        <Script file="Source/UOFlow/VisualProgrammingConfig.lua" />
         
         <!-- Event handlers -->
         <Script file="Source/UOFlow/VisualProgrammingEvents.lua" />
     </Scripts>
-    <Include file="Source/UOFlow/VisualProgrammingConfig.xml" />
     <Windows>
         <Window name="VisualProgrammingInterfaceWindow" movable="true" layer="secondary">
             <Size>
@@ -49,7 +47,7 @@
 
                 <ScrollWindow name="$parentScrollWindow" childscrollwindow="$parentScrollChild" scrollbar="$parentVerticalScrollbar" lineheight="60" draganddrop="true" autoHideScrollBar="true" layer="default">
                     <Size>
-                        <AbsPoint x="400" y="650" />
+                        <AbsPoint x="380" y="650" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
@@ -59,7 +57,7 @@
                     <Windows>
                         <Window name="$parentScrollChild" layer="default">
                             <Size>
-                                <AbsPoint x="840" y="0"/>
+                                <AbsPoint x="300" y="0"/>
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
@@ -68,6 +66,41 @@
                             </Anchors>
                         </Window>
                         <VerticalScrollbar name="$parentVerticalScrollbar" inherits="StandardVertScroll" layer="popup">
+                            <Anchors>
+                                <Anchor point="topright" relativePoint="topright"/>
+                                <Anchor point="bottom" relativePoint="bottom"/>
+                            </Anchors>
+                        </VerticalScrollbar>
+                        <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                    </Windows>
+                </ScrollWindow>
+
+                <ScrollWindow name="$parentScrollWindowRight" childscrollwindow="$parentScrollChildRight" scrollbar="$parentVerticalScrollbarRight" lineheight="60" draganddrop="true" autoHideScrollBar="true" layer="default">
+                    <Size>
+                        <AbsPoint x="250" y="650" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="640" y="30" />
+                        </Anchor>
+                    </Anchors>
+                    <Windows>
+                        <Window name="$parentScrollChildRight" layer="default">
+                            <Size>
+                                <AbsPoint x="300" y="0"/>
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="0" y="40" />
+                                </Anchor>
+                            </Anchors>
+                        </Window>
+                        <VerticalScrollbar name="$parentVerticalScrollbarRight" inherits="StandardVertScroll" layer="popup">
                             <Anchors>
                                 <Anchor point="topright" relativePoint="topright"/>
                                 <Anchor point="bottom" relativePoint="bottom"/>
@@ -193,7 +226,7 @@
         <!-- Block Template -->
         <Window name="BlockTemplate" virtual="true" movable="false" layer="default">
             <Size>
-                <AbsPoint x="840" y="50" />
+                <AbsPoint x="300" y="50" />
             </Size>
             <EventHandlers>
                 <EventHandler event="OnRButtonUp" function="VisualProgrammingInterface.OnBlockRButtonUp" />
@@ -211,14 +244,14 @@
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
-                        <EventHandler event="OnLButtonUp" function="ActionEditWindow.EquipLButtonUp" />
-                        <EventHandler event="OnMouseOver" function="ActionEditWindow.EquipMouseOver" />
-                        <EventHandler event="OnLButtonDown" function="VisualProgrammingInterface.OnBlockDragStart" />
+                <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.OnBlockClick" />
+                <EventHandler event="OnMouseOver" function="ActionEditWindow.EquipMouseOver" />
+                <EventHandler event="OnLButtonDown" function="VisualProgrammingInterface.OnBlockDragStart" />
                     </EventHandlers>
                 </Button>
                 <Label name="$parentName" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="false" wordwrap="true" layer="default">
                     <Size>
-                        <AbsPoint x="760" y="25" />
+                        <AbsPoint x="220" y="25" />
                     </Size>
                     <Anchors>
                         <Anchor point="right" relativePoint="left" relativeTo="$parentIcon">
@@ -230,7 +263,7 @@
 
                 <Label name="$parentDescription" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="false" wordwrap="true" layer="default">
                     <Size>
-                        <AbsPoint x="760" y="25" />
+                        <AbsPoint x="220" y="25" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="bottomleft" relativeTo="$parentName">
@@ -240,6 +273,37 @@
                     <Color r="243" g="227" b="49" a="255" />
                 </Label>
             </Windows>
+        </Window>
+
+        <!-- Text Input Template -->
+        <Window name="UO_DefaultTextInput" virtual="true" layer="default">
+            <Size>
+                <AbsPoint x="260" y="25" />
+            </Size>
+            <Windows>
+                <TextEditBox name="$parent" font="UO_DefaultText" maxchars="256" textalign="left" textcolor="255 255 255" highlightcolor="255 255 100" disabledcolor="128 128 128">
+                    <Size>
+                        <AbsPoint x="260" y="25" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                    </Anchors>
+                    <BackgroundColor r="0" g="0" b="0" a="255" />
+                    <Border color="128 128 128" />
+                </TextEditBox>
+            </Windows>
+        </Window>
+
+        <!-- Scroll Child Template -->
+        <Window name="ScrollChild" virtual="true" layer="default">
+            <Size>
+                <AbsPoint x="300" y="0"/>
+            </Size>
+            <Anchors>
+                <Anchor point="topleft" relativePoint="topleft">
+                    <AbsPoint x="0" y="0" />
+                </Anchor>
+            </Anchors>
         </Window>
     </Windows>
 </Interface>

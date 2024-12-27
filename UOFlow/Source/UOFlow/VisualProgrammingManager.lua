@@ -12,8 +12,8 @@ function VisualProgrammingInterface.Manager:new()
     return manager
 end
 
-function VisualProgrammingInterface.Manager:createBlock(type, x, y)
-    local block = VisualProgrammingInterface.Block:new(self.nextBlockId, type, x, y)
+function VisualProgrammingInterface.Manager:createBlock(type, x, y, column)
+    local block = VisualProgrammingInterface.Block:new(self.nextBlockId, type, x, y, column)
     self.blocks[self.nextBlockId] = block
     self.nextBlockId = self.nextBlockId + 1
     return block
@@ -39,19 +39,37 @@ function VisualProgrammingInterface.Manager:removeBlock(id)
         local blockName = "Block" .. block.id
         if DoesWindowNameExist(blockName) then
             WindowClearAnchors(blockName)
-            WindowAddAnchor(blockName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowScrollChild", "topleft", 0, newY)
+            local parentWindow = block.column == "right" and 
+                "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight" or 
+                "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
+            WindowAddAnchor(blockName, "topleft", parentWindow, "topleft", 0, newY)
             WindowSetShowing(blockName, true)
             WindowSetLayer(blockName, Window.Layers.DEFAULT)
         end
     end
     
-    -- Update scroll child height based on number of remaining blocks
-    local scrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
-    local newHeight = math.max(#sortedBlocks * 80, 80)
-    WindowSetDimensions(scrollChild, 840, newHeight)
+    -- Update scroll child heights based on number of remaining blocks in each column
+    local middleBlocks = 0
+    local rightBlocks = 0
+    for _, b in pairs(sortedBlocks) do
+        if b.column == "right" then
+            rightBlocks = rightBlocks + 1
+        else
+            middleBlocks = middleBlocks + 1
+        end
+    end
     
-    -- Update scroll window to reflect new content size
+    -- Update middle column
+    local middleScrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
+    local middleHeight = math.max(middleBlocks * 80, 80)
+    WindowSetDimensions(middleScrollChild, 300, middleHeight)
     ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindow")
+    
+    -- Update right column
+    local rightScrollChild = "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight"
+    local rightHeight = math.max(rightBlocks * 80, 80)
+    WindowSetDimensions(rightScrollChild, 300, rightHeight)
+    ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindowRight")
     
 end
 
@@ -70,7 +88,8 @@ function VisualProgrammingInterface.Manager:saveConfiguration()
             id = block.id,
             type = block.type,
             x = block.x,
-            y = block.y
+            y = block.y,
+            column = block.column
         })
     end
     return config
@@ -79,7 +98,13 @@ end
 function VisualProgrammingInterface.Manager:loadConfiguration(config)
     self.blocks = {}
     for _, blockData in ipairs(config) do
-        local block = VisualProgrammingInterface.Block:new(blockData.id, blockData.type, blockData.x, blockData.y)
+        local block = VisualProgrammingInterface.Block:new(
+            blockData.id, 
+            blockData.type, 
+            blockData.x, 
+            blockData.y,
+            blockData.column or "middle" -- Default to middle for backward compatibility
+        )
         self.blocks[blockData.id] = block
     end
 end

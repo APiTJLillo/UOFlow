@@ -95,21 +95,7 @@ end
 function VisualProgrammingInterface.Initialize()
     Debug.Print("Initializing Visual Programming Interface")
     
-    -- Initialize Config system first since other systems depend on it
-    if not VisualProgrammingInterface.Config then
-        Debug.Print("Creating Config system")
-        VisualProgrammingInterface.Config = {
-            currentBlock = nil,
-            paramControls = {},
-            initialized = true,
-            Show = function(self, block) end,
-            Hide = function(self) end,
-            Save = function(self) end,
-            Cancel = function(self) end
-        }
-    end
-    
-    -- Initialize Actions system next
+    -- Initialize Actions system
     VisualProgrammingInterface.Actions:initialize()
     
     -- Initialize manager last
@@ -125,8 +111,5 @@ end
 
 -- Hide interface
 function VisualProgrammingInterface.Hide()
-    if VisualProgrammingInterface.Config then
-        VisualProgrammingInterface.Config:Hide()
-    end
     WindowSetShowing("VisualProgrammingInterfaceWindow", false)
 end
