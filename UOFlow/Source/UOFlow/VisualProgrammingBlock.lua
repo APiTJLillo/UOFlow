@@ -172,13 +172,7 @@ function VisualProgrammingInterface.Block:drawConnections()
             WindowSetAlpha(arrowLine, 0.8)
             WindowSetShowing(arrowLine, true)
             WindowSetLayer(arrowLine, Window.Layers.OVERLAY)
-            
-            -- Set up the arrowhead using UO texture
-            local arrowHead = arrowName .. "Arrowhead"
-            WindowSetTintColor(arrowHead, 206, 217, 242) -- UO Default text color
-            WindowSetAlpha(arrowHead, 0.8)
-            WindowSetShowing(arrowHead, true)
-            WindowSetLayer(arrowHead, Window.Layers.OVERLAY)
+
             
             -- Calculate arrow dimensions
             local length = math.sqrt(dx * dx + dy * dy)
@@ -186,7 +180,7 @@ function VisualProgrammingInterface.Block:drawConnections()
             
             -- Position the arrow
             WindowClearAnchors(arrowName)
-            WindowAddAnchor(arrowName, "center", sourceBlock, "right", 20, 15)
+            WindowAddAnchor(arrowName, "center", sourceBlock, "right", 20, 35)
             WindowSetDimensions(arrowName, length - 40, 32)
             WindowSetShowing(arrowName, true)
             WindowSetLayer(arrowName, Window.Layers.OVERLAY)
@@ -194,16 +188,8 @@ function VisualProgrammingInterface.Block:drawConnections()
             -- Update arrow line
             if DoesWindowNameExist(arrowLine) then
                 WindowSetDimensions(arrowLine, length - 40, 8)
-                DynamicImageSetRotation(arrowLine, angle)
                 WindowSetShowing(arrowLine, true)
                 WindowSetLayer(arrowLine, Window.Layers.OVERLAY)
-            end
-            
-            -- Update arrow head
-            if DoesWindowNameExist(arrowHead) then
-                DynamicImageSetRotation(arrowHead, angle)
-                WindowSetShowing(arrowHead, true)
-                WindowSetLayer(arrowHead, Window.Layers.OVERLAY)
             end
         end
     end

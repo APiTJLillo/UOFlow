@@ -26,8 +26,8 @@
 				<EventHandler event="OnShutdown" function="DebugWindow.Shutdown" />
 			</EventHandlers>
 			<Windows>			
-				<!-- Default chrome. Alter this at your own peril. --> 
-				<Window name="$parentChrome" inherits="UO_DefaultWindow" frameonly="false"> 
+				<!-- Default chrome. --> 
+				<Window name="$parentChrome" inherits="UO_DefaultWindow"> 
 					<Anchors> 
 						<Anchor point="topleft" relativePoint="topleft" /> 
 						<Anchor point="bottomright" relativePoint="bottomright"/> 

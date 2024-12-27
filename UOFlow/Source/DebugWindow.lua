@@ -62,7 +62,8 @@ function DebugWindow.Initialize()
     DebugWindow.logging = not TextLogGetEnabled( "UiLog" )
 	DebugWindow.ToggleLogging()
     
-    WindowSetAlpha("DebugWindow", 0.75)
+    -- Set window alpha
+    WindowSetAlpha("DebugWindow", 1.0)
     
     -- Load settings
     WindowSetShowing("DebugWindow", DevData.DebugWindow.isShowing )

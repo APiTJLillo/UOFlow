@@ -64,7 +64,7 @@ VisualProgrammingInterface.Config = {
         end
         
         -- Set window title
-        LabelSetText(dialogWindowName .. "TitleBarTitle", StringToWString("Configure " .. tostring(block.type or "Block")))
+        LabelSetText(dialogWindowName .. "Chrome_UO_TitleBar_WindowTitle", StringToWString("Configure " .. tostring(block.type or "Block")))
         
         -- Get scroll window and create scroll child
         local scrollWindow = dialogWindowName.."ContentScrollWindow"

@@ -27,7 +27,7 @@
     </Scripts>
     <Include file="Source/UOFlow/VisualProgrammingConfig.xml" />
     <Windows>
-        <Window name="VisualProgrammingInterfaceWindow" movable="true" handleinput="true" layer="secondary">
+        <Window name="VisualProgrammingInterfaceWindow" movable="true" layer="secondary">
             <Size>
                 <AbsPoint x="900" y="700" />
             </Size>
@@ -39,34 +39,13 @@
                 <EventHandler event="OnShutdown" function="VisualProgrammingInterface.Hide" />
             </EventHandlers>
             <Windows>
-                <FullResizeImage name="ActionEditBackground" inherits="UO_Simple_Black_Background" layer="background" handleinput="false">
-                    <Size>
-                        <AbsPoint x="0" y="0" />
-                    </Size>
+                <!-- Default chrome window for UO styling -->
+                <Window name="$parentChrome" inherits="UO_DefaultWindow">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" />
                         <Anchor point="bottomright" relativePoint="bottomright" />
                     </Anchors>
-                </FullResizeImage>
-
-                <Label name="$parentTitle" font="UO_DefaultText" text="Visual Programming Interface" textalign="center" layer="popup">
-                    <Size>
-                        <AbsPoint x="780" y="20" />
-                    </Size>
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft" />
-                    </Anchors>
-                    <Color r="255" g="255" b="255" a="255" />
-                </Label>
-                
-                <Button name="$parentCloseButton" inherits="UO_Default_Close_Button" layer="popup">
-                    <Anchors>
-                        <Anchor point="topright" relativePoint="topright" />
-                    </Anchors>
-                    <EventHandlers>
-                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.Hide" />
-                    </EventHandlers>
-                </Button>
+                </Window>
 
                 <ScrollWindow name="$parentScrollWindow" childscrollwindow="$parentScrollChild" scrollbar="$parentVerticalScrollbar" lineheight="60" draganddrop="true" autoHideScrollBar="true" layer="default">
                     <Size>
@@ -74,7 +53,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="20" y="30" />
+                            <AbsPoint x="20" y="70" />
                         </Anchor>
                     </Anchors>
                     <Windows>
@@ -83,7 +62,9 @@
                                 <AbsPoint x="840" y="0"/>
                             </Size>
                             <Anchors>
-                                <Anchor point="topleft" relativePoint="topleft"/>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="0" y="40" />
+                                </Anchor>
                             </Anchors>
                         </Window>
                         <VerticalScrollbar name="$parentVerticalScrollbar" inherits="StandardVertScroll" layer="popup">
@@ -142,14 +123,6 @@
                         <Anchor point="left" relativePoint="left" />
                     </Anchors>
                 </HorizontalResizeImage>
-                <DynamicImage name="$parentArrowhead" texture="UO_Core" layer="overlay">
-                    <Size>
-                        <AbsPoint x="8" y="12" />
-                    </Size>
-                    <Anchors>
-                        <Anchor point="left" relativePoint="right" relativeTo="$parentLine" />
-                    </Anchors>
-                </DynamicImage>
             </Windows>
         </Window>
 

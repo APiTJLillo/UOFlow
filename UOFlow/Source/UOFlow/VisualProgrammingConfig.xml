@@ -32,7 +32,7 @@
         </TextBox>
 
         <!-- Block Configuration Window Template -->
-        <Window name="BlockConfigWindow" inherits="UO_DefaultWindow" movable="true" layer="popup">
+        <Window name="BlockConfigWindow" movable="true" layer="popup">
             <Size>
                 <AbsPoint x="450" y="350" />
             </Size>
@@ -40,27 +40,12 @@
                 <Anchor point="center" relativePoint="center" />
             </Anchors>
             <Windows>
-                <!-- Title Bar -->
-                <Window name="$parentTitleBar" layer="default">
-                    <Size>
-                        <AbsPoint x="450" y="32" />
-                    </Size>
+                <!-- Default chrome window for UO styling -->
+                <Window name="$parentChrome" inherits="UO_DefaultWindow">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" />
-                        <Anchor point="topright" relativePoint="topright" />
+                        <Anchor point="bottomright" relativePoint="bottomright" />
                     </Anchors>
-                    <Windows>
-                        <!-- Title Text -->
-                        <Label name="$parentTitle" font="UO_DefaultText" maxchars="256" textalign="center" handleinput="false">
-                            <Size>
-                                <AbsPoint x="400" y="24" />
-                            </Size>
-                            <Anchors>
-                                <Anchor point="center" relativePoint="center" />
-                            </Anchors>
-                            <Color r="255" g="234" b="188" a="255" />
-                        </Label>
-                    </Windows>
                 </Window>
 
                 <!-- Content Area -->
@@ -110,11 +95,15 @@
                     </Windows>
                 </Window>
 
+                <!-- Close button handler -->
+                <Button name="$parentChrome_UO_WindowCloseButton">
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.ConfigCancelButton" />
+                    </EventHandlers>
+                </Button>
+
                 <!-- OK Button -->
-                <Button name="$parentOKButton" inherits="UO_Default_Small_Select_Button">
-                    <Size>
-                        <AbsPoint x="57" y="18" />
-                    </Size>
+                <Button name="$parentOKButton" inherits="UO_Default_Medium_Select_Button">
                     <Anchors>
                         <Anchor point="bottom" relativePoint="bottom">
                             <AbsPoint x="0" y="-10" />

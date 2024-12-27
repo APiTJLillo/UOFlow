@@ -117,6 +117,9 @@ function VisualProgrammingInterface.Initialize()
         VisualProgrammingInterface.manager:initialize()
     end
     
+    -- Set window title
+    LabelSetText("VisualProgrammingInterfaceWindow_UO_TitleBar_WindowTitle", StringToWString("Visual Programming Interface"))
+    
     Debug.Print("Visual Programming Interface initialized")
 end
 

@@ -28,8 +28,7 @@ function VisualProgrammingInterface.Initialize()
     end
     
     -- Set window text
-    LabelSetText(windowName .. "Title", L"Visual Programming Interface")
-    --ButtonSetText(windowName .. "OKButton", L"OK")
+    LabelSetText(windowName .. "Chrome_UO_TitleBar_WindowTitle", L"Visual Programming Interface")
     ButtonSetText(windowName .. "AddBlockButton", L"Add Block")
     
     -- Initialize scroll window and scroll child
