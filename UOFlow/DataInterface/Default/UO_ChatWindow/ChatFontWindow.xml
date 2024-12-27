@@ -1,0 +1,88 @@
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+  <Scripts>
+    <Script file="Source/ChatFontWindow.lua" />
+  </Scripts>
+  <Windows>
+
+    <!--*******************************************************************-->
+    <!--                              Templates                            -->
+    <!--*******************************************************************-->
+
+    <Button name="ChatFontRowTemplate" id="1">
+      <Size>
+        <AbsPoint x="350" y="25" />
+      </Size>
+      <EventHandlers>
+        <EventHandler event="OnMouseOver" function="ChatFontWindow.ItemMouseOver" />
+        <EventHandler event="OnMouseOverEnd" function="ChatFontWindow.ClearMouseOverItem" />
+        <EventHandler event="OnLButtonUp" function="ChatFontWindow.SetFontToSelection" />
+      </EventHandlers>
+      <Windows>
+        <DynamicImage name="$parentCheck" texture="UO_Core" layer="popup" popable="false" sticky="false" handleinput="false" >
+          <Size>
+            <AbsPoint x="17" y="17" />
+          </Size>
+          <TexCoords x="145" y="0" />
+          <Anchors>
+            <Anchor point="left" relativePoint="left">
+              <AbsPoint x="0" y="0" />
+            </Anchor>
+          </Anchors>
+        </DynamicImage>
+        <Label name="$parentLabel" font="UO_DefaultText" maxchars="256" textalign="leftcenter" autoresize="true" handleinput="false">
+          <Size>
+            <AbsPoint x="350" y="25" />
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="25" y="0" />
+            </Anchor>
+          </Anchors>
+        </Label>
+      </Windows>
+    </Button>
+
+    <!--*******************************************************************-->
+    <!--                      Whole Window Definition                      -->
+    <!--*******************************************************************-->
+    <Window name="ChatFontWindowTemplate" movable="true" layer="secondary">
+      <Size>
+        <AbsPoint x="400" y="450" />
+      </Size>
+      <Anchors>
+        <Anchor point="topleft" relativePoint="topleft" relativeTo="">
+          <AbsPoint x="30" y="100" />
+        </Anchor>
+      </Anchors>
+      <EventHandlers>
+        <EventHandler event="OnInitialize" function="ChatFontWindow.Initialize"/>
+        <EventHandler event="OnShutdown" function="ChatFontWindow.Shutdown"/>
+      </EventHandlers>
+      <Windows>
+
+        <!-- Default chrome. Alter this at your own peril. -->
+        <Window name="$parentChrome" inherits="UO_DefaultWindow">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+            <Anchor point="bottomright" relativePoint="bottomright"/>
+          </Anchors>
+        </Window>
+        <!-- End of default chrome boilerplate code -->
+
+        <Button name="$parentAcceptButton" inherits="UO_Default_Medium_Select_Button" >
+          <Anchors>
+            <Anchor point="bottom" relativePoint="bottom" relativeTo="">
+              <AbsPoint x="0" y="-25" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="ChatFontWindow.CloseFontWindow"/>
+          </EventHandlers>
+        </Button>
+
+
+      </Windows>
+    </Window>
+
+  </Windows>
+</Interface>

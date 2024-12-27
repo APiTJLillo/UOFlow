@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+    <Scripts>
+        <!-- Core UI dependencies -->
+        <Script file="Source/UO_DefaultWindow.lua" />
+        <Include file="Source/HorizontalScrollBarTemplates.xml" />
+        <Include file="Source/VerticalScrollBarTemplates.xml" />
+        
+        <!-- Base interface -->
+        <Script file="Source/UOFlow/VisualProgramming.lua" />
+        
+        <!-- Core systems -->
+        <Script file="Source/UOFlow/VisualProgrammingCore.lua" />
+        <Script file="Source/UOFlow/VisualProgrammingTypes.lua" />
+        <Script file="Source/UOFlow/VisualProgrammingActions.lua" />
+        
+        <!-- Core components -->
+        <Script file="Source/UOFlow/VisualProgrammingBlock.lua" />
+        <Script file="Source/UOFlow/VisualProgrammingManager.lua" />
+        
+        <!-- Features -->
+        <Script file="Source/UOFlow/VisualProgrammingExecution.lua" />
+        <Script file="Source/UOFlow/VisualProgrammingConfig.lua" />
+        
+        <!-- Event handlers -->
+        <Script file="Source/UOFlow/VisualProgrammingEvents.lua" />
+    </Scripts>
+    <Include file="Source/UOFlow/VisualProgrammingConfig.xml" />
+    <Windows>
+        <Window name="VisualProgrammingInterfaceWindow" movable="true" handleinput="true" layer="secondary">
+            <Size>
+                <AbsPoint x="900" y="700" />
+            </Size>
+            <Anchors>
+                <Anchor point="center" relativePoint="center" />
+            </Anchors>
+            <EventHandlers>
+                <EventHandler event="OnInitialize" function="VisualProgrammingInterface.Initialize" />
+                <EventHandler event="OnShutdown" function="VisualProgrammingInterface.Hide" />
+            </EventHandlers>
+            <Windows>
+                <FullResizeImage name="ActionEditBackground" inherits="UO_Simple_Black_Background" layer="background" handleinput="false">
+                    <Size>
+                        <AbsPoint x="0" y="0" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                        <Anchor point="bottomright" relativePoint="bottomright" />
+                    </Anchors>
+                </FullResizeImage>
+
+                <Label name="$parentTitle" font="UO_DefaultText" text="Visual Programming Interface" textalign="center" layer="popup">
+                    <Size>
+                        <AbsPoint x="780" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                    </Anchors>
+                    <Color r="255" g="255" b="255" a="255" />
+                </Label>
+                
+                <Button name="$parentCloseButton" inherits="UO_Default_Close_Button" layer="popup">
+                    <Anchors>
+                        <Anchor point="topright" relativePoint="topright" />
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.Hide" />
+                    </EventHandlers>
+                </Button>
+
+                <ScrollWindow name="$parentScrollWindow" childscrollwindow="$parentScrollChild" scrollbar="$parentVerticalScrollbar" lineheight="60" draganddrop="true" autoHideScrollBar="true" layer="default">
+                    <Size>
+                        <AbsPoint x="860" y="550" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="20" y="30" />
+                        </Anchor>
+                    </Anchors>
+                    <Windows>
+                        <Window name="$parentScrollChild" layer="default">
+                            <Size>
+                                <AbsPoint x="840" y="0"/>
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft"/>
+                            </Anchors>
+                        </Window>
+                        <VerticalScrollbar name="$parentVerticalScrollbar" inherits="StandardVertScroll" layer="popup">
+                            <Anchors>
+                                <Anchor point="topright" relativePoint="topright"/>
+                                <Anchor point="bottom" relativePoint="bottom"/>
+                            </Anchors>
+                        </VerticalScrollbar>
+                        <FullResizeImage name="$parentFrame" inherits="UO_Default_Inner_Window_Frame">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                    </Windows>
+                </ScrollWindow>
+
+                <Button name="$parentAddBlockButton" inherits="UO_Default_Medium_Select_Button" layer="popup">
+                    <Anchors>
+                        <Anchor point="top" relativePoint="bottom" relativeTo="$parentScrollWindow">
+                            <AbsPoint x="0" y="30" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.AddBlock" />
+                    </EventHandlers>
+                </Button>
+            </Windows>
+        </Window>
+
+        <!-- Button Templates -->
+        <Button name="EmptyButtonTemplate" virtual="true" draganddrop="true" id="0">
+            <Size>
+                <AbsPoint x="50" y="50" />
+            </Size>
+            <TexCoords>
+                <Normal texture="default_grid_backpack" x="0" y="0" />
+                <NormalHighlit texture="default_grid_backpack" x="50" y="0" />
+                <Disabled texture="default_grid_backpack" x="0" y="0" />
+                <Pressed texture="default_grid_backpack" x="0" y="0" />
+                <PressedHighlit texture="default_grid_backpack" x="50" y="0" />
+            </TexCoords>
+        </Button>
+
+        <!-- Arrow Template -->
+        <Window name="ArrowTemplate" virtual="true" layer="overlay">
+            <Size>
+                <AbsPoint x="100" y="20" />
+            </Size>
+            <Windows>
+                <HorizontalResizeImage name="$parentLine" inherits="UO_Default_Horizontal_Rule" layer="overlay">
+                    <Size>
+                        <AbsPoint x="90" y="8" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="left" relativePoint="left" />
+                    </Anchors>
+                </HorizontalResizeImage>
+                <DynamicImage name="$parentArrowhead" texture="UO_Core" layer="overlay">
+                    <Size>
+                        <AbsPoint x="8" y="12" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="left" relativePoint="right" relativeTo="$parentLine" />
+                    </Anchors>
+                </DynamicImage>
+            </Windows>
+        </Window>
+
+        <!-- Block Template -->
+        <Window name="BlockTemplate" virtual="true" movable="false" layer="default">
+            <Size>
+                <AbsPoint x="840" y="50" />
+            </Size>
+            <EventHandlers>
+                <EventHandler event="OnRButtonUp" function="VisualProgrammingInterface.OnBlockRButtonUp" />
+                <EventHandler event="OnMouseDrag" function="VisualProgrammingInterface.OnBlockDrag" />
+                <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.OnBlockDragEnd" />
+            </EventHandlers>
+            <Windows>
+                <Button name="$parentIcon" inherits="UO_Default_Small_Select_Button" draganddrop="true" id="0" layer="popup">
+                    <Size>
+                        <AbsPoint x="50" y="50" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="left" relativePoint="left" relativeTo="$parent">
+                            <AbsPoint x="10" y="0" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="ActionEditWindow.EquipLButtonUp" />
+                        <EventHandler event="OnMouseOver" function="ActionEditWindow.EquipMouseOver" />
+                        <EventHandler event="OnLButtonDown" function="VisualProgrammingInterface.OnBlockDragStart" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentName" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="false" wordwrap="true" layer="default">
+                    <Size>
+                        <AbsPoint x="760" y="25" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="right" relativePoint="left" relativeTo="$parentIcon">
+                            <AbsPoint x="10" y="10" />
+                        </Anchor>
+                    </Anchors>
+                    <Color r="255" g="255" b="255" a="255" />
+                </Label>
+
+                <Label name="$parentDescription" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="false" wordwrap="true" layer="default">
+                    <Size>
+                        <AbsPoint x="760" y="25" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="bottomleft" relativeTo="$parentName">
+                            <AbsPoint x="0" y="3" />
+                        </Anchor>
+                    </Anchors>
+                    <Color r="243" g="227" b="49" a="255" />
+                </Label>
+            </Windows>
+        </Window>
+    </Windows>
+</Interface>

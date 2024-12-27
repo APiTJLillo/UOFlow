@@ -89,7 +89,7 @@
 	<Include file="Source/QuickStats.xml"/>		
 	<Include file="Source/FontSelector.xml"/>
 	<Include file="Source/LegacyRunebook.xml"/>
-	<Include file="Source/VisualProgrammingInterface.xml"/>
+	<Include file="Source/UOFlow/VisualProgramming.xml"/>
 	
 	<!-- Remove this one once all the gumps are fixed -->
 	<!--<Include file="Source/Generic/KnownBrokenGump.xml" />-->

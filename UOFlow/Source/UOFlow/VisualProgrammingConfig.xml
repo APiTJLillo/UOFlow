@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
+    <Scripts>
+        <!-- Core UI dependencies -->
+        <Script file="Source/UO_DefaultWindow.lua" />
+        <Include file="Source/HorizontalScrollBarTemplates.xml" />
+        <Include file="Source/VerticalScrollBarTemplates.xml" />
+    </Scripts>
+    <Windows>
+        <!-- Parameter Label Template -->
+        <Label name="UO_Default_Label" font="UO_DefaultText" maxchars="256" handleinput="false" textalign="left" virtual="true">
+            <Size>
+                <AbsPoint x="120" y="24" />
+            </Size>
+            <Color r="255" g="255" b="255" a="255" />
+        </Label>
+
+        <!-- Parameter TextBox Template -->
+        <TextBox name="UO_Default_TextBox" font="UO_DefaultText" maxchars="256" textalign="left" virtual="true">
+            <Size>
+                <AbsPoint x="280" y="24" />
+            </Size>
+            <TextColor>
+                <Color r="255" g="255" b="255" a="255" />
+            </TextColor>
+            <HighlightColor>
+                <Color r="255" g="255" b="255" a="255" />
+            </HighlightColor>
+            <TextInsets>
+                <AbsPoint x="5" y="2" />
+            </TextInsets>
+        </TextBox>
+
+        <!-- Block Configuration Window Template -->
+        <Window name="BlockConfigWindow" inherits="UO_DefaultWindow" movable="true" layer="popup">
+            <Size>
+                <AbsPoint x="450" y="350" />
+            </Size>
+            <Anchors>
+                <Anchor point="center" relativePoint="center" />
+            </Anchors>
+            <Windows>
+                <!-- Title Bar -->
+                <Window name="$parentTitleBar" layer="default">
+                    <Size>
+                        <AbsPoint x="450" y="32" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                        <Anchor point="topright" relativePoint="topright" />
+                    </Anchors>
+                    <Windows>
+                        <!-- Title Text -->
+                        <Label name="$parentTitle" font="UO_DefaultText" maxchars="256" textalign="center" handleinput="false">
+                            <Size>
+                                <AbsPoint x="400" y="24" />
+                            </Size>
+                            <Anchors>
+                                <Anchor point="center" relativePoint="center" />
+                            </Anchors>
+                            <Color r="255" g="234" b="188" a="255" />
+                        </Label>
+                    </Windows>
+                </Window>
+
+                <!-- Content Area -->
+                <Window name="$parentContent" layer="default">
+                    <Size>
+                        <AbsPoint x="442" y="280" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="4" y="40" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-4" y="-50" />
+                        </Anchor>
+                    </Anchors>
+                    <Windows>
+                        <!-- Scroll Window -->
+                        <ScrollWindow name="$parentScrollWindow" childscrollwindow="$parentScrollChild" scrollbar="$parentVerticalScrollbar" lineheight="60" draganddrop="true" autoHideScrollBar="true">
+                            <Size>
+                                <AbsPoint x="434" y="270" />
+                            </Size>
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft">
+                                    <AbsPoint x="4" y="4" />
+                                </Anchor>
+                                <Anchor point="bottomright" relativePoint="bottomright">
+                                    <AbsPoint x="-4" y="-4" />
+                                </Anchor>
+                            </Anchors>
+                            <Windows>
+                                <Window name="$parentScrollChild" layer="default">
+                                    <Size>
+                                        <AbsPoint x="414" y="0"/>
+                                    </Size>
+                                    <Anchors>
+                                        <Anchor point="topleft" relativePoint="topleft"/>
+                                    </Anchors>
+                                </Window>
+                                <VerticalScrollbar name="$parentVerticalScrollbar" inherits="StandardVertScroll" layer="popup">
+                                    <Anchors>
+                                        <Anchor point="topright" relativePoint="topright"/>
+                                        <Anchor point="bottom" relativePoint="bottom"/>
+                                    </Anchors>
+                                </VerticalScrollbar>
+                            </Windows>
+                        </ScrollWindow>
+                    </Windows>
+                </Window>
+
+                <!-- OK Button -->
+                <Button name="$parentOKButton" inherits="UO_Default_Small_Select_Button">
+                    <Size>
+                        <AbsPoint x="57" y="18" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="bottom" relativePoint="bottom">
+                            <AbsPoint x="0" y="-10" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.ConfigOKButton" />
+                    </EventHandlers>
+                    <Text>Accept</Text>
+                </Button>
+            </Windows>
+        </Window>
+    </Windows>
+</Interface>
