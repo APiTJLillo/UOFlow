@@ -44,8 +44,7 @@
                         <Anchor point="bottomright" relativePoint="bottomright" />
                     </Anchors>
                 </Window>
-
-                <ScrollWindow name="$parentScrollWindow" childscrollwindow="$parentScrollChild" scrollbar="$parentVerticalScrollbar" lineheight="60" draganddrop="true" autoHideScrollBar="true" layer="default">
+                <ScrollWindow name="$parentScrollWindow" childscrollwindow="$parentScrollChild" scrollbar="$parentVerticalScrollbar" lineheight="60" draganddrop="true" autoHideScrollBar="false" layer="default">
                     <Size>
                         <AbsPoint x="380" y="650" />
                     </Size>
@@ -55,13 +54,13 @@
                         </Anchor>
                     </Anchors>
                     <Windows>
-                        <Window name="$parentScrollChild" layer="default">
+                        <Window name="$parentScrollChild" layer="default" handleinput="true">
                             <Size>
-                                <AbsPoint x="300" y="0"/>
+                                <AbsPoint x="300" y="1200"/>
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
-                                    <AbsPoint x="0" y="40" />
+                                    <AbsPoint x="0" y="10" />
                                 </Anchor>
                             </Anchors>
                         </Window>
@@ -80,7 +79,7 @@
                     </Windows>
                 </ScrollWindow>
 
-                <ScrollWindow name="$parentScrollWindowRight" childscrollwindow="$parentScrollChildRight" scrollbar="$parentVerticalScrollbarRight" lineheight="60" draganddrop="true" autoHideScrollBar="true" layer="default">
+                <ScrollWindow name="$parentScrollWindowRight" childscrollwindow="$parentScrollChildRight" scrollbar="$parentVerticalScrollbarRight" lineheight="60" draganddrop="true" autoHideScrollBar="false" layer="default">
                     <Size>
                         <AbsPoint x="250" y="650" />
                     </Size>
@@ -90,13 +89,13 @@
                         </Anchor>
                     </Anchors>
                     <Windows>
-                        <Window name="$parentScrollChildRight" layer="default">
+                        <Window name="$parentScrollChildRight" layer="default" handleinput="true">
                             <Size>
-                                <AbsPoint x="300" y="0"/>
+                                <AbsPoint x="300" y="1200"/>
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
-                                    <AbsPoint x="0" y="40" />
+                                    <AbsPoint x="0" y="0" />
                                 </Anchor>
                             </Anchors>
                         </Window>
@@ -134,7 +133,7 @@
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
-                                    <AbsPoint x="0" y="0" />
+                                    <AbsPoint x="0" y="10" />
                                 </Anchor>
                             </Anchors>
                         </Window>
@@ -178,8 +177,13 @@
         <!-- Action Item Template -->
         <Button name="ActionItemTemplate" virtual="true" layer="default" handleinput="true" textalign="left" font="UO_DefaultText">
             <Size>
-                <AbsPoint x="250" y="25" />
+                <AbsPoint x="230" y="25" />
             </Size>
+            <Anchors>
+                <Anchor point="topleft" relativePoint="topleft">
+                    <AbsPoint x="20" y="0" />
+                </Anchor>
+            </Anchors>
             <TextColors>
                 <Normal r="255" g="255" b="255" a="255" />
                 <NormalHighlit r="255" g="255" b="100" a="255" />
@@ -224,14 +228,15 @@
         </Window>
 
         <!-- Block Template -->
-        <Window name="BlockTemplate" virtual="true" movable="false" layer="default">
+        <Window name="BlockTemplate" virtual="true" movable="false" layer="default" handleinput="true">
             <Size>
                 <AbsPoint x="300" y="50" />
             </Size>
             <EventHandlers>
                 <EventHandler event="OnRButtonUp" function="VisualProgrammingInterface.OnBlockRButtonUp" />
                 <EventHandler event="OnMouseDrag" function="VisualProgrammingInterface.OnBlockDrag" />
-                <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.OnBlockDragEnd" />
+                <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.OnBlockClick" />
+                <EventHandler event="OnLButtonDown" function="VisualProgrammingInterface.OnBlockDragStart" />
             </EventHandlers>
             <Windows>
                 <Button name="$parentIcon" inherits="UO_Default_Small_Select_Button" draganddrop="true" id="0" layer="popup">
@@ -243,13 +248,8 @@
                             <AbsPoint x="10" y="0" />
                         </Anchor>
                     </Anchors>
-                    <EventHandlers>
-                <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.OnBlockClick" />
-                <EventHandler event="OnMouseOver" function="ActionEditWindow.EquipMouseOver" />
-                <EventHandler event="OnLButtonDown" function="VisualProgrammingInterface.OnBlockDragStart" />
-                    </EventHandlers>
                 </Button>
-                <Label name="$parentName" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="false" wordwrap="true" layer="default">
+                <Label name="$parentName" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="true" wordwrap="true" layer="default">
                     <Size>
                         <AbsPoint x="220" y="25" />
                     </Size>
@@ -261,7 +261,7 @@
                     <Color r="255" g="255" b="255" a="255" />
                 </Label>
 
-                <Label name="$parentDescription" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="false" wordwrap="true" layer="default">
+                <Label name="$parentDescription" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="true" wordwrap="true" layer="default">
                     <Size>
                         <AbsPoint x="220" y="25" />
                     </Size>
@@ -276,23 +276,16 @@
         </Window>
 
         <!-- Text Input Template -->
-        <Window name="UO_DefaultTextInput" virtual="true" layer="default">
+        <EditBox name="UO_DefaultTextInput" virtual="true" inherits="TextEntrySingleLineEditBox" font="UO_DefaultText" maxchars="256">
             <Size>
-                <AbsPoint x="260" y="25" />
+                <AbsPoint x="200" y="35" />
             </Size>
-            <Windows>
-                <TextEditBox name="$parent" font="UO_DefaultText" maxchars="256" textalign="left" textcolor="255 255 255" highlightcolor="255 255 100" disabledcolor="128 128 128">
-                    <Size>
-                        <AbsPoint x="260" y="25" />
-                    </Size>
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft" />
-                    </Anchors>
-                    <BackgroundColor r="0" g="0" b="0" a="255" />
-                    <Border color="128 128 128" />
-                </TextEditBox>
-            </Windows>
-        </Window>
+            <EventHandlers>
+                <EventHandler event="OnKeyEnter" function="VisualProgrammingInterface.OnPropertyChanged" />
+                <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.OnPropertyChanged" />
+                <EventHandler event="OnTextChanged" function="VisualProgrammingInterface.OnPropertyChanged" />
+            </EventHandlers>
+        </EditBox>
 
         <!-- Scroll Child Template -->
         <Window name="ScrollChild" virtual="true" layer="default">

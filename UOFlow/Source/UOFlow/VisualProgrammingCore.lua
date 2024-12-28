@@ -40,11 +40,21 @@ function VisualProgrammingInterface.Initialize()
         return
     end
     
-    -- Set up scroll window with UO pattern
+    -- Set up scroll windows with UO pattern
     WindowSetDimensions(scrollChild, 840, 0)
     WindowSetLayer(scrollChild, Window.Layers.DEFAULT)
     WindowSetShowing(scrollChild, true)
     ScrollWindowUpdateScrollRect(scrollWindow)
+    
+    -- Set up right scroll window
+    local rightScrollWindow = windowName .. "ScrollWindowRight"
+    local rightScrollChild = rightScrollWindow .. "ScrollChildRight"
+    if DoesWindowNameExist(rightScrollWindow) and DoesWindowNameExist(rightScrollChild) then
+        WindowSetDimensions(rightScrollChild, 300, 0)
+        WindowSetLayer(rightScrollChild, Window.Layers.DEFAULT)
+        WindowSetShowing(rightScrollChild, true)
+        ScrollWindowUpdateScrollRect(rightScrollWindow)
+    end
     
     -- Initialize Actions system
     if VisualProgrammingInterface.Actions.initialize then
@@ -104,6 +114,13 @@ end
 -- Hide the visual programming interface window
 function VisualProgrammingInterface.Hide()
     if DoesWindowNameExist("VisualProgrammingInterfaceWindow") then
+        -- Clean up any existing property editors
+        local rightScrollChild = "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight"
+        if DoesWindowNameExist(rightScrollChild) then
+            DestroyWindow(rightScrollChild)
+            CreateWindowFromTemplate(rightScrollChild, "ScrollChild", "VisualProgrammingInterfaceWindowScrollWindowRight")
+        end
+        
         WindowSetShowing("VisualProgrammingInterfaceWindow", false)
     end
 end

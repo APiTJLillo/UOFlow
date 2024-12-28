@@ -20,6 +20,28 @@ function VisualProgrammingInterface.Manager:createBlock(type, x, y, column)
 end
 
 function VisualProgrammingInterface.Manager:removeBlock(id)
+    -- Clean up any associated windows
+    local block = self.blocks[id]
+    if block then
+        -- Clean up the block window and its children
+        local blockName = "Block" .. id
+        DestroyWindow(blockName)
+        
+        -- Clean up any associated property editors
+        local rightScrollChild = "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight"
+        if DoesWindowNameExist(rightScrollChild) then
+            local action = VisualProgrammingInterface.Actions:get(block.type)
+            if action then
+                for _, param in ipairs(action.params) do
+                    local editBoxName = rightScrollChild .. "EditBox" .. param.name
+                    if DoesWindowNameExist(editBoxName) then
+                        DestroyWindow(editBoxName)
+                    end
+                end
+            end
+        end
+    end
+    
     -- Remove the block from our collection
     self.blocks[id] = nil
     
