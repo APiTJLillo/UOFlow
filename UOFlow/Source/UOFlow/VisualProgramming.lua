@@ -17,6 +17,28 @@ VisualProgrammingInterface.Actions = {
         }
         
         -- Add default actions
+        -- Add Move action with direction dropdown
+        self:registerAction("Move", {
+            category = "Movement",
+            description = "Move in specified direction",
+            params = {
+                {
+                    name = "direction",
+                    type = "select",
+                    options = {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"},
+                    default = "North"
+                },
+                {
+                    name = "distance",
+                    type = "number",
+                    default = 1,
+                    validate = function(value)
+                        return value >= 1 and value <= 20
+                    end
+                }
+            }
+        })
+
         self:registerAction("Wait", {
             category = "Basic",
             description = "Wait for specified time",

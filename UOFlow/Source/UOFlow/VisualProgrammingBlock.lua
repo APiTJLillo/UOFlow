@@ -67,10 +67,36 @@ function VisualProgrammingInterface.Block:getDescription()
     for _, param in ipairs(action.params) do
         local value = self.params[param.name]
         if value ~= nil then
-            table.insert(paramDesc, param.name .. ": " .. tostring(value))
+            -- Convert value to string based on parameter type
+            local displayValue
+            if param.type == "number" then
+                -- Ensure numeric values are properly formatted
+                if type(value) == "number" then
+                    displayValue = tostring(value)
+                else
+                    local num = tonumber(value)
+                    displayValue = num and tostring(num) or "0"
+                end
+            elseif param.type == "boolean" then
+                -- Handle boolean values
+                if type(value) == "boolean" then
+                    displayValue = value and "true" or "false"
+                else
+                    displayValue = value == "true" and "true" or "false"
+                end
+            else
+                -- Handle string values
+                displayValue = tostring(value)
+            end
+            
+            -- Add to parameter descriptions
+            if displayValue then
+                table.insert(paramDesc, param.name .. ": " .. displayValue)
+            end
         end
     end
     
+    -- Build final description
     if #paramDesc > 0 then
         desc = desc .. " (" .. table.concat(paramDesc, ", ") .. ")"
     end

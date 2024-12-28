@@ -414,18 +414,64 @@ function VisualProgrammingInterface.OnBlockClick()
         yOffset = yOffset + 25
         
         -- Create input field
-        local editBoxName = rightScrollChild .. "EditBox" .. param.name
-        CreateWindowFromTemplate(editBoxName, "UO_DefaultTextInput", rightScrollChild)
-        if DoesWindowNameExist(editBoxName) then
-            WindowClearAnchors(editBoxName)
-            WindowAddAnchor(editBoxName, "topleft", rightScrollChild, "topleft", 20, yOffset)
-            
-            -- Set text and store block ID
-            TextEditBoxSetText(editBoxName, StringToWString(tostring(block.params[param.name] or "")))
-            WindowSetId(editBoxName, blockId)
-            
-            -- Enable editing
-            WindowSetHandleInput(editBoxName, true)
+        if param.type == "select" then
+            -- For select parameters, create a combo box
+            local comboName = rightScrollChild .. "Combo" .. param.name
+            CreateWindowFromTemplate(comboName, "UO_ParamComboBox", rightScrollChild)
+            if DoesWindowNameExist(comboName) then
+                WindowClearAnchors(comboName)
+                WindowAddAnchor(comboName, "topleft", rightScrollChild, "topleft", 20, yOffset)
+                
+                -- Store block ID
+                WindowSetId(comboName, blockId)
+                
+                -- Add options to combo box
+                ComboBoxClearMenuItems(comboName)
+                for _, option in ipairs(param.options) do
+                    ComboBoxAddMenuItem(comboName, StringToWString(option))
+                end
+                
+                -- Set current value
+                local currentValue = block.params[param.name] or param.default or param.options[1]
+                for i, option in ipairs(param.options) do
+                    if option == currentValue then
+                        ComboBoxSetSelectedMenuItem(comboName, i)
+                        break
+                    end
+                end
+                
+                -- Store parameter data for the selection handler
+                if not WindowData.ParamData then
+                    WindowData.ParamData = {
+                        Type = 1,
+                        [comboName] = {
+                            paramName = param.name,
+                            paramType = param.type,
+                            options = param.options
+                        }
+                    }
+                else
+                    WindowData.ParamData[comboName] = {
+                        paramName = param.name,
+                        paramType = param.type,
+                        options = param.options
+                    }
+                end
+            end
+        else
+            local editBoxName = rightScrollChild .. "EditBox" .. param.name
+            CreateWindowFromTemplate(editBoxName, "UO_DefaultTextInput", rightScrollChild)
+            if DoesWindowNameExist(editBoxName) then
+                WindowClearAnchors(editBoxName)
+                WindowAddAnchor(editBoxName, "topleft", rightScrollChild, "topleft", 20, yOffset)
+                
+                -- Set text and store block ID
+                TextEditBoxSetText(editBoxName, StringToWString(tostring(block.params[param.name] or "")))
+                WindowSetId(editBoxName, blockId)
+                
+                -- Enable editing
+                WindowSetHandleInput(editBoxName, true)
+            end
         end
         
         yOffset = yOffset + 35
@@ -437,6 +483,23 @@ function VisualProgrammingInterface.OnBlockClick()
 end
 
 function VisualProgrammingInterface.OnPropertyChanged()
+    -- Handle specific events
+    local event = SystemData.ActiveWindow.Event
+    if event ~= "OnKeyEnter" and event ~= "OnKeyEscape" and event ~= "OnLostFocus" then return end
+    
+    -- If escape was pressed, revert to the previous value
+    if event == "OnKeyEscape" then
+        local blockId = WindowGetId(SystemData.ActiveWindow.name)
+        local block = VisualProgrammingInterface.manager:getBlock(blockId)
+        if block then
+            local paramName = SystemData.ActiveWindow.name:match("EditBox([^T]+)$")
+            if paramName then
+                TextEditBoxSetText(SystemData.ActiveWindow.name, StringToWString(tostring(block.params[paramName] or "")))
+            end
+        end
+        return
+    end
+    
     local blockId = WindowGetId(SystemData.ActiveWindow.name)
     local block = VisualProgrammingInterface.manager:getBlock(blockId)
     if not block then return end
@@ -444,9 +507,85 @@ function VisualProgrammingInterface.OnPropertyChanged()
     local paramName = SystemData.ActiveWindow.name:match("EditBox([^T]+)$")
     if not paramName then return end
     
+    -- Get action definition
+    local action = VisualProgrammingInterface.Actions:get(block.type)
+    if not action then return end
+    
+    -- Find parameter definition
+    local paramDef
+    for _, param in ipairs(action.params) do
+        if param.name == paramName then
+            paramDef = param
+            break
+        end
+    end
+    
+    if not paramDef then return end
+    
+    -- Get text from EditBox
     local newValue = WStringToString(TextEditBoxGetText(SystemData.ActiveWindow.name))
-    block.params[paramName] = newValue
-    block:updateVisuals()
+    
+    -- Convert value based on parameter type
+    local convertedValue
+    if paramDef.type == "number" then
+        if newValue ~= "" then
+            convertedValue = tonumber(newValue)
+            if not convertedValue then
+                -- Invalid number - revert to previous value or 0
+                convertedValue = tonumber(block.params[paramName]) or 0
+                TextEditBoxSetText(SystemData.ActiveWindow.name, StringToWString(tostring(convertedValue)))
+                return
+            end
+        else
+            convertedValue = 0
+        end
+    elseif paramDef.type == "boolean" then
+        convertedValue = newValue == "true"
+    else
+        convertedValue = newValue
+    end
+    
+    -- Update the parameter value
+    block.params[paramName] = convertedValue
+    
+    -- Update block visuals with error handling
+    pcall(function() 
+        block:updateVisuals()
+    end)
+end
+
+-- Handler for combo box selection changes
+function VisualProgrammingInterface.OnParamSelectionChanged()
+    local blockId = WindowGetId(SystemData.ActiveWindow.name)
+    local block = VisualProgrammingInterface.manager:getBlock(blockId)
+    if not block then return end
+    
+    local data = WindowData.ParamData and WindowData.ParamData[SystemData.ActiveWindow.name]
+    if not data then return end
+    
+    local selectedIndex = ComboBoxGetSelectedMenuItem(SystemData.ActiveWindow.name)
+    if selectedIndex < 1 or selectedIndex > #data.options then return end
+    
+    -- Get the selected value
+    local selectedValue = data.options[selectedIndex]
+    
+    -- Convert value based on parameter type
+    local newValue
+    if data.paramType == "number" then
+        newValue = tonumber(selectedValue) or 0
+    elseif data.paramType == "boolean" then
+        newValue = selectedValue == "true"
+    else
+        newValue = selectedValue
+    end
+    
+    -- Update the parameter value
+    block.params[data.paramName] = newValue
+    
+    -- Update block visuals with error handling
+    pcall(function() 
+        block:updateVisuals()
+    end)
 end
 
 -- Execution Control Event Handlers

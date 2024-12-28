@@ -258,7 +258,11 @@
                             <AbsPoint x="10" y="10" />
                         </Anchor>
                     </Anchors>
-                    <Color r="255" g="255" b="255" a="255" />
+                    <Color r="255" g="255" b="100" a="255" />
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.OnBlockClick" />
+                        <EventHandler event="OnRButtonUp" function="VisualProgrammingInterface.OnBlockClick" />
+                    </EventHandlers>
                 </Label>
 
                 <Label name="$parentDescription" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="true" wordwrap="true" layer="default">
@@ -270,10 +274,24 @@
                             <AbsPoint x="0" y="3" />
                         </Anchor>
                     </Anchors>
-                    <Color r="243" g="227" b="49" a="255" />
+                    <Color r="255" g="255" b="100" a="255" />
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.OnBlockClick" />
+                        <EventHandler event="OnRButtonUp" function="VisualProgrammingInterface.OnBlockClick" />
+                    </EventHandlers>
                 </Label>
             </Windows>
         </Window>
+
+        <!-- Parameter ComboBox Template -->
+        <ComboBox name="UO_ParamComboBox" virtual="true" inherits="UO_Default_ComboBox">
+            <Size>
+                <AbsPoint x="200" y="27" />
+            </Size>
+            <EventHandlers>
+                <EventHandler event="OnSelChanged" function="VisualProgrammingInterface.OnParamSelectionChanged" />
+            </EventHandlers>
+        </ComboBox>
 
         <!-- Text Input Template -->
         <EditBox name="UO_DefaultTextInput" virtual="true" inherits="TextEntrySingleLineEditBox" font="UO_DefaultText" maxchars="256">
@@ -282,8 +300,8 @@
             </Size>
             <EventHandlers>
                 <EventHandler event="OnKeyEnter" function="VisualProgrammingInterface.OnPropertyChanged" />
-                <EventHandler event="OnLButtonUp" function="VisualProgrammingInterface.OnPropertyChanged" />
-                <EventHandler event="OnTextChanged" function="VisualProgrammingInterface.OnPropertyChanged" />
+                <EventHandler event="OnKeyEscape" function="VisualProgrammingInterface.OnPropertyChanged" />
+                <EventHandler event="OnLostFocus" function="VisualProgrammingInterface.OnPropertyChanged" />
             </EventHandlers>
         </EditBox>
 

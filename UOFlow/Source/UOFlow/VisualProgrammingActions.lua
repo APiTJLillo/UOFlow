@@ -153,5 +153,26 @@ end
 
 -- Initialize action system
 function VisualProgrammingInterface.Actions:initialize()
+    -- Register Move action
+    self:register({
+        name = "Move",
+        description = "Move in a direction",
+        category = self.categories.MOVEMENT,
+        icon = "Icons/actions/move.dds",
+        params = {
+            CreateParameter("direction", ParameterType.SELECT, "North", 
+                {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"}),
+            CreateParameter("distance", ParameterType.NUMBER, "1")
+        },
+        validate = function(params)
+            local dist = tonumber(params.distance)
+            return dist and dist >= 1 and dist <= 20
+        end,
+        execute = function(params)
+            -- Movement logic will be implemented later
+            return true
+        end
+    })
+    
     Debug.Print("Action system initialized")
 end
