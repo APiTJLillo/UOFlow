@@ -296,12 +296,102 @@ function VisualProgrammingInterface.Execution:testBlock(block)
     self.blockStates = {}
     self.blockStates[block.id] = BlockState.PENDING
     
-    -- Execute the block
-    self:executeBlock(block)
+    -- Execute the block and capture result
+    local success = self:executeBlock(block)
     
     -- Set up reset timer
     self.resetBlockId = block.id
     self.resetTimer = 0
+    
+    return success
+end
+
+-- Test an entire flow
+function VisualProgrammingInterface.Execution:testFlow()
+    if self.isRunning then return false, "Flow is already running" end
+    
+    -- Initialize test results
+    local testResults = {
+        blocks = {},
+        success = true,
+        executionOrder = {}
+    }
+    
+    -- Reset states
+    self.blockStates = {}
+    
+    -- Check if manager exists and is initialized
+    if not VisualProgrammingInterface.manager then
+        return false, "Manager not initialized"
+    end
+    
+    -- Check if blocks exist
+    if not VisualProgrammingInterface.manager.blocks then
+        return false, "No blocks found"
+    end
+    
+    -- Build execution queue (topological sort)
+    local executionQueue = {}
+    local visited = {}
+    local function visit(block)
+        if not block or visited[block.id] then return end
+        visited[block.id] = true
+        
+        table.insert(executionQueue, block)
+        
+        -- Check if connections exist
+        if block.connections then
+            for _, connection in ipairs(block.connections) do
+                if connection and connection.id then
+                    local nextBlock = VisualProgrammingInterface.manager:getBlock(connection.id)
+                    visit(nextBlock)
+                end
+            end
+        end
+    end
+    
+    -- Get blocks sorted by vertical position
+    local sortedBlocks = {}
+    for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
+        table.insert(sortedBlocks, block)
+    end
+    table.sort(sortedBlocks, function(a, b) 
+        return (a and a.y or 0) < (b and b.y or 0)
+    end)
+    
+    -- Build execution queue starting from top blocks
+    for _, block in ipairs(sortedBlocks) do
+        visit(block)
+    end
+    
+    -- Execute each block and collect results
+    for _, block in ipairs(executionQueue) do
+        table.insert(testResults.executionOrder, block.id)
+        
+        local success = self:executeBlock(block)
+        testResults.blocks[block.id] = {
+            type = block.type,
+            params = block.params,
+            success = success,
+            state = self.blockStates[block.id]
+        }
+        
+        if not success then
+            testResults.success = false
+            testResults.error = "Failed at block " .. block.id
+            break
+        end
+    end
+    
+    -- Reset visual states after test
+    for id, _ in pairs(VisualProgrammingInterface.manager.blocks) do
+        local blockWindow = "Block" .. id
+        if DoesWindowNameExist(blockWindow) then
+            WindowSetTintColor(blockWindow, 255, 255, 255) -- Reset to white
+        end
+    end
+    
+    return true, testResults
 end
 
 -- Continue execution after pause or between blocks

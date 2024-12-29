@@ -38,6 +38,18 @@
                 <EventHandler event="OnShown" function="VisualProgrammingInterface.Show" />
             </EventHandlers>
             <Windows>
+                <!-- Test Flow Button -->
+                <Button name="$parentTestButton" inherits="UO_Default_Small_Select_Button" layer="popup">
+                    <Anchors>
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-10" y="-5" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="OnTestFlowClick" />
+                    </EventHandlers>
+                </Button>
+                
                 <!-- Default chrome window for UO styling -->
                 <Window name="$parentChrome" inherits="UO_DefaultWindow">
                     <Anchors>

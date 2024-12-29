@@ -1,66 +1,43 @@
 -- Main entry point for Visual Programming Interface
 VisualProgrammingInterface = {}
 
--- Initialize the Visual Programming Interface
+-- Handle test flow button click
+function OnTestFlowClick()
+    -- Forward to the interface handler
+    if VisualProgrammingInterface and VisualProgrammingInterface.Execution then
+        local success, results = VisualProgrammingInterface.Execution:testFlow()
+        
+        if success then
+            if results.success then
+                Debug.Print("Flow test completed successfully")
+                Debug.Print("Execution order: " .. table.concat(results.executionOrder, ", "))
+                
+                -- Print details for each block
+                for id, block in pairs(results.blocks) do
+                    Debug.Print(string.format("Block %s (%s): %s", 
+                        id,
+                        block.type,
+                        block.state or "unknown state"
+                    ))
+                end
+            else
+                Debug.Print("Flow test failed: " .. (results.error or "Unknown error"))
+            end
+        else
+            Debug.Print("Could not start flow test: " .. (results or "Unknown error"))
+        end
+    else
+        Debug.Print("Error: Execution system not initialized")
+    end
+end
 
--- Global initialization
+-- Store reference in interface table for internal use
+VisualProgrammingInterface.OnTestFlowClick = OnTestFlowClick
+
+-- Global initialization - forwards to core initialization
 function Initialize()
     Debug.Print("Global initialization of Visual Programming Interface")
     VisualProgrammingInterface.Initialize()
-end
-
--- Initialize all subsystems
-function VisualProgrammingInterface.Initialize()
-    Debug.Print("Initializing Visual Programming Interface")
-    
-    -- Check and initialize Actions system
-    if not VisualProgrammingInterface.Actions then
-        Debug.Print("Error: Actions system not found")
-        return false
-    end
-    
-    if type(VisualProgrammingInterface.Actions.initialize) ~= "function" then
-        Debug.Print("Error: Actions system initialize method not found")
-        return false
-    end
-    
-    local success, err = pcall(function()
-        VisualProgrammingInterface.Actions:initialize()
-    end)
-    
-    if not success then
-        Debug.Print("Error initializing Actions system: " .. tostring(err))
-        return false
-    end
-    
-    -- Initialize manager last
-    if VisualProgrammingInterface.manager then
-        if type(VisualProgrammingInterface.manager.initialize) == "function" then
-            success, err = pcall(function()
-                VisualProgrammingInterface.manager:initialize()
-            end)
-            
-            if not success then
-                Debug.Print("Error initializing manager: " .. tostring(err))
-                return false
-            end
-        else
-            Debug.Print("Warning: Manager initialize method not found")
-        end
-    end
-    
-    -- Set window title
-    if DoesWindowNameExist("VisualProgrammingInterfaceWindow_UO_TitleBar_WindowTitle") then
-        LabelSetText("VisualProgrammingInterfaceWindow_UO_TitleBar_WindowTitle", StringToWString("Visual Programming Interface"))
-    end
-    
-    -- Register for updates
-    if WindowGetShowing("VisualProgrammingInterfaceWindow") then
-        RegisterEventHandler("OnUpdate", "VisualProgrammingInterface.Execution.OnUpdate")
-    end
-    
-    Debug.Print("Visual Programming Interface initialized successfully")
-    return true
 end
 
 -- Show interface
@@ -68,7 +45,6 @@ function VisualProgrammingInterface.Show()
     WindowSetShowing("VisualProgrammingInterfaceWindow", true)
     RegisterEventHandler("OnUpdate", "VisualProgrammingInterface.Execution.OnUpdate")
 end
-
 
 -- Hide interface
 function VisualProgrammingInterface.Hide()

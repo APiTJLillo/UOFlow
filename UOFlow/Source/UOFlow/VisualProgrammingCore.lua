@@ -26,6 +26,7 @@ function VisualProgrammingInterface.Initialize()
         Debug.Print("Main window does not exist")
         return
     end
+    ButtonSetText("VisualProgrammingInterfaceWindowTestButton", L"Test")
     
     -- Set window text
     LabelSetText(windowName .. "Chrome_UO_TitleBar_WindowTitle", L"Visual Programming Interface")
