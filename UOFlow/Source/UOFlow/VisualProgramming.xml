@@ -35,6 +35,7 @@
             <EventHandlers>
                 <EventHandler event="OnInitialize" function="VisualProgrammingInterface.Initialize" />
                 <EventHandler event="OnShutdown" function="VisualProgrammingInterface.Hide" />
+                <EventHandler event="OnShown" function="VisualProgrammingInterface.Show" />
             </EventHandlers>
             <Windows>
                 <!-- Default chrome window for UO styling -->

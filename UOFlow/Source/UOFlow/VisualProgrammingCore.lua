@@ -29,7 +29,6 @@ function VisualProgrammingInterface.Initialize()
     
     -- Set window text
     LabelSetText(windowName .. "Chrome_UO_TitleBar_WindowTitle", L"Visual Programming Interface")
-    ButtonSetText(windowName .. "AddBlockButton", L"Add Block")
     
     -- Initialize scroll window and scroll child
     local scrollWindow = windowName .. "ScrollWindow"
@@ -104,15 +103,16 @@ function VisualProgrammingInterface.Initialize()
 end
 
 -- Show the visual programming interface window
-function VisualProgrammingInterface.Show()
+function VisualProgrammingInterface.ShowWindow()
     if not DoesWindowNameExist("VisualProgrammingInterfaceWindow") then
         CreateWindowFromTemplate("VisualProgrammingInterfaceWindow", "UO_DefaultWindow", "Root")
     end
-    WindowSetShowing("VisualProgrammingInterfaceWindow", true)
+    -- Use the execution-aware Show function that handles update registration
+    VisualProgrammingInterface.Show()
 end
 
 -- Hide the visual programming interface window
-function VisualProgrammingInterface.Hide()
+function VisualProgrammingInterface.HideWindow()
     if DoesWindowNameExist("VisualProgrammingInterfaceWindow") then
         -- Clean up any existing property editors
         local rightScrollChild = "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight"
@@ -121,15 +121,16 @@ function VisualProgrammingInterface.Hide()
             CreateWindowFromTemplate(rightScrollChild, "ScrollChild", "VisualProgrammingInterfaceWindowScrollWindowRight")
         end
         
-        WindowSetShowing("VisualProgrammingInterfaceWindow", false)
+        -- Use the execution-aware Hide function that handles update unregistration
+        VisualProgrammingInterface.Hide()
     end
 end
 
 -- Toggle the visual programming interface window
 function VisualProgrammingInterface.Toggle()
     if DoesWindowNameExist("VisualProgrammingInterfaceWindow") and WindowGetShowing("VisualProgrammingInterfaceWindow") then
-        VisualProgrammingInterface.Hide()
+        VisualProgrammingInterface.HideWindow()
     else
-        VisualProgrammingInterface.Show()
+        VisualProgrammingInterface.ShowWindow()
     end
 end

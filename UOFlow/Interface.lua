@@ -1060,6 +1060,12 @@ function Interface.Update( timePassed )
 
 	ok, err = pcall(Interface.BackpackCheck, timePassed)	
 	Interface.ErrorTracker(ok, err)
+	
+	-- Update visual programming execution
+	if VisualProgrammingInterface and VisualProgrammingInterface.Execution then
+		ok, err = pcall(VisualProgrammingInterface.Execution.OnUpdate, timePassed)
+		Interface.ErrorTracker(ok, err)
+	end
 
 
 	if (Interface.DeltaTime >= 1) then

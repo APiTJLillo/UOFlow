@@ -28,19 +28,56 @@ function VisualProgrammingInterface.InitializeBlockTypes()
         category = Categories.MAGIC,
         icon = { texture = "icon000640", x = 5, y = 5 },
         params = {
-            CreateParameter("spellId", "number", 1),
+            CreateParameter("spellId", "select", "Clumsy", (function()
+                -- Initialize SpellsInfo if needed
+                if not SpellsInfo.SpellsData then
+                    SpellsInfo.Initialize()
+                end
+                
+                -- Collect all spell names
+                local spellNames = {}
+                for _, data in pairs(SpellsInfo.SpellsData) do
+                    if type(data) == "table" and data.name then
+                        table.insert(spellNames, data.name)
+                    end
+                end
+                -- Sort alphabetically
+                table.sort(spellNames)
+                return spellNames
+            end)()),
             CreateParameter("target", "select", "self", {"self", "target", "last"})
         },
         validate = function(params)
-            local spellId = tonumber(params.spellId)
-            return spellId and spellId > 0 and spellId < 100
+            -- Initialize SpellsInfo if needed
+            if not SpellsInfo.SpellsData then
+                SpellsInfo.Initialize()
+            end
+            -- Check if spell exists
+            for _, data in pairs(SpellsInfo.SpellsData) do
+                if type(data) == "table" and data.name == params.spellId then
+                    return true
+                end
+            end
+            return false
         end,
         execute = function(params)
-            GameData.UseRequests.UseSpellcast = params.spellId
-            GameData.UseRequests.UseTarget = 0
-            Interface.SpellUseRequest()
-            UserActionCastSpell(params.spellId)
-            return true
+            -- Look up spell ID from name
+            local spellId = nil
+            for word, data in pairs(SpellsInfo.SpellsData) do
+                if data.name == params.spellId then
+                    spellId = data.id
+                    break
+                end
+            end
+            
+            if spellId then
+                GameData.UseRequests.UseSpellcast = spellId
+                GameData.UseRequests.UseTarget = 0
+                Interface.SpellUseRequest()
+                UserActionCastSpell(spellId)
+                return true
+            end
+            return false
         end
     })
 
@@ -67,7 +104,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
         icon = { texture = "icon000645", x = 5, y = 5 },
         params = {},
         execute = function()
-            UserActionTargetSelf()
+            HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
             return true
         end
     })

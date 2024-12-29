@@ -10,6 +10,7 @@ function VisualProgrammingInterface.OnBlockRButtonUp()
     if not block then return end
     
     local contextMenuOptions = {
+        { str = L"Test", flags = 0, returnCode = "test", param = blockId },
         { str = L"Move Up", flags = 0, returnCode = "move_up", param = blockId },
         { str = L"Move Down", flags = 0, returnCode = "move_down", param = blockId },
         { str = L"Delete", flags = 0, returnCode = "delete", param = blockName }
@@ -314,6 +315,12 @@ function VisualProgrammingInterface.ContextMenuCallback(returnCode, param)
             else
                 ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindow")
             end
+        end
+    elseif returnCode == "test" then
+        local blockId = tonumber(param)
+        local block = VisualProgrammingInterface.manager:getBlock(blockId)
+        if block then
+            VisualProgrammingInterface.Execution:testBlock(block)
         end
     elseif returnCode == "move_up" or returnCode == "move_down" then
         local blockId = tonumber(param)
