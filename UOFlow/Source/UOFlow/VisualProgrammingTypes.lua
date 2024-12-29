@@ -1,5 +1,156 @@
 -- Block type definitions and utilities
 
+-- Timer system with function queue
+VisualProgrammingInterface.ActionTimer = {
+    currentTime = 0,
+    targetTime = 0,
+    isWaiting = false,
+    callback = nil,
+    functionQueue = {},
+    currentQueueId = nil,
+    isComplete = false,
+    
+    -- New completion callback system
+    completionCallbacks = {},
+    
+    -- Register a completion callback
+    registerCompletionCallback = function(self, callbackName, callback)
+        self.completionCallbacks[callbackName] = callback
+    end,
+    
+    -- Notify all registered completion callbacks
+    notifyCompletion = function(self)
+        for _, callback in pairs(self.completionCallbacks) do
+            pcall(callback)
+        end
+    end,
+    
+    -- Clean up timer state
+    reset = function(self)
+        self.isWaiting = false
+        self.callback = nil
+        self.functionQueue = {}
+        self.currentQueueId = nil
+        self.isComplete = false
+        self.currentTime = 0
+        self.targetTime = 0
+    end
+}
+
+function VisualProgrammingInterface.ActionTimer.OnUpdate(timePassed)
+    if not VisualProgrammingInterface.ActionTimer.isWaiting then 
+        --Debug.Print("Timer not waiting, skipping update")
+        return 
+    end
+    
+    -- Update timer and check for completion
+    local oldTime = VisualProgrammingInterface.ActionTimer.currentTime
+    local currentTime = oldTime + timePassed
+    VisualProgrammingInterface.ActionTimer.currentTime = currentTime
+    
+    --Debug.Print(string.format("Timer tick: %.3f -> %.3f (target: %.3f)", 
+    --    oldTime, currentTime, VisualProgrammingInterface.ActionTimer.targetTime))
+    
+    if currentTime >= VisualProgrammingInterface.ActionTimer.targetTime then
+        Debug.Print("*** Timer reached target time ***")
+        
+        -- Store state before resetting
+        local currentQueueId = VisualProgrammingInterface.ActionTimer.currentQueueId
+        local hasQueue = #VisualProgrammingInterface.ActionTimer.functionQueue > 0
+        local callback = VisualProgrammingInterface.ActionTimer.callback
+        
+        -- Keep isWaiting true until we process callback
+        VisualProgrammingInterface.ActionTimer.currentTime = 0
+        
+        -- Execute stored callback
+        if callback then
+            Debug.Print("Executing timer callback for queue " .. tostring(currentQueueId))
+            local success, isComplete = pcall(callback)
+            
+            if success then
+                if isComplete then
+                    Debug.Print("Callback indicated completion")
+                    VisualProgrammingInterface.ActionTimer.isComplete = true
+                else
+                    Debug.Print("Callback indicated more steps needed")
+                end
+                
+                -- Process next function in queue if not complete
+                if not VisualProgrammingInterface.ActionTimer.isComplete and hasQueue then
+                    Debug.Print("Executing next function in queue " .. tostring(currentQueueId))
+                    local nextFunc = table.remove(VisualProgrammingInterface.ActionTimer.functionQueue, 1)
+                    nextFunc()
+                else
+                    Debug.Print("Function queue complete for " .. tostring(currentQueueId))
+                    -- Notify completion callbacks after entire sequence
+                    VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                    -- Now reset everything
+                    Debug.Print("Resetting timer state")
+                    VisualProgrammingInterface.ActionTimer.isWaiting = false
+                    VisualProgrammingInterface.ActionTimer.callback = nil
+                    VisualProgrammingInterface.ActionTimer.currentQueueId = nil
+                    VisualProgrammingInterface.ActionTimer.isComplete = false
+                    VisualProgrammingInterface.ActionTimer.functionQueue = {}
+                end
+            else
+                Debug.Print("Error in timer callback: " .. tostring(isComplete))
+                -- Notify completion callbacks even on error
+                VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                -- Reset state on error
+                VisualProgrammingInterface.ActionTimer.isWaiting = false
+                VisualProgrammingInterface.ActionTimer.callback = nil
+                VisualProgrammingInterface.ActionTimer.currentQueueId = nil
+                VisualProgrammingInterface.ActionTimer.isComplete = false
+                VisualProgrammingInterface.ActionTimer.functionQueue = {}
+            end
+        end
+    end
+end
+
+-- Helper function for waiting
+local function WaitTimer(duration, callback, queueId)
+    Debug.Print("WaitTimer called: " .. duration .. "ms, queue: " .. tostring(queueId))
+    
+    -- Always create a new timer function
+    local timerFunc = function()
+        -- Initialize timer state
+        Debug.Print("Setting up new timer for " .. duration .. "ms")
+        VisualProgrammingInterface.ActionTimer.currentTime = 0
+        VisualProgrammingInterface.ActionTimer.targetTime = duration / 1000
+        VisualProgrammingInterface.ActionTimer.isWaiting = true
+        VisualProgrammingInterface.ActionTimer.callback = callback
+        
+        -- Update queue state
+        if queueId then
+            Debug.Print("Setting queue ID: " .. queueId)
+            VisualProgrammingInterface.ActionTimer.currentQueueId = queueId
+            if not VisualProgrammingInterface.ActionTimer.functionQueue then
+                VisualProgrammingInterface.ActionTimer.functionQueue = {}
+            end
+        else
+            Debug.Print("No queue ID provided")
+            VisualProgrammingInterface.ActionTimer.functionQueue = {}
+            VisualProgrammingInterface.ActionTimer.currentQueueId = nil
+        end
+        
+        Debug.Print("Timer initialized - target: " .. VisualProgrammingInterface.ActionTimer.targetTime .. "s")
+    end
+    
+    -- Handle timer execution
+    if VisualProgrammingInterface.ActionTimer.isWaiting then
+        Debug.Print("Timer already running, queueing function")
+        if not VisualProgrammingInterface.ActionTimer.functionQueue then
+            VisualProgrammingInterface.ActionTimer.functionQueue = {}
+        end
+        table.insert(VisualProgrammingInterface.ActionTimer.functionQueue, timerFunc)
+    else
+        Debug.Print("Starting timer immediately")
+        timerFunc()
+    end
+    
+    return true
+end
+
 -- Initialize block types
 function VisualProgrammingInterface.InitializeBlockTypes()
     Debug.Print("Initializing block types")
@@ -61,6 +212,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             return false
         end,
         execute = function(params)
+            Debug.Print("Executing Cast Spell action")
             -- Look up spell ID from name
             local spellId = nil
             for word, data in pairs(SpellsInfo.SpellsData) do
@@ -71,40 +223,182 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             end
             
             if spellId then
+                Debug.Print("Found spell ID: " .. spellId)
+                
+                -- Add casting delay based on spell speed
+                local castTime = SpellsInfo.GetSpellSpeed(spellId) * 1000
+                local recoveryTime = SpellsInfo.GetRecoverySpeed() * 1000
+                
+                Debug.Print("Cast time: " .. castTime .. "ms, Recovery time: " .. recoveryTime .. "ms")
+                        
+                -- Create a unique ID for this spell cast sequence
+                local queueId = "spell_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
+                
+                -- Start casting the spell FIRST
+                Debug.Print("Starting spell cast")
                 GameData.UseRequests.UseSpellcast = spellId
                 GameData.UseRequests.UseTarget = 0
                 Interface.SpellUseRequest()
                 UserActionCastSpell(spellId)
+        
+                -- Step 1: Wait for cast time
+                WaitTimer(castTime, function()
+                    Debug.Print("Cast time complete, handling targeting")
+                    
+                    -- Handle targeting immediately after cast time
+                    if params.target == "self" then
+                        HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
+                        Debug.Print("Self-targeting complete")
+                    end
+                    
+                    -- Step 2: Wait for full recovery time before marking complete
+                    WaitTimer(recoveryTime, function()
+                        Debug.Print("Recovery time complete - full sequence done")
+                        return true -- Only return true after FULL recovery
+                    end, queueId)
+                    
+                    -- Continue to recovery timer
+                    return false 
+                end, queueId)
+                
                 return true
             end
+            Debug.Print("Spell ID not found")
             return false
         end
-    })
+})
 
-    -- Item Actions
+    -- Magic Actions
     VisualProgrammingInterface.Actions:register({
-        name = "Use Item",
-        description = L"Use a selected item",
-        category = Categories.ITEMS,
-        icon = { texture = "icon000646", x = 5, y = 5 },
-        params = {
-            CreateParameter("itemId", "number", 1)
-        },
-        execute = function(params)
-            UserActionUseItem()
+        name = "Heal Self",
+        description = L"Cast healing on yourself",
+        category = Categories.MAGIC,
+        icon = { texture = "icon856001", x = 5, y = 5 },
+        params = {},
+        execute = function()
+            local spellId = 29 -- Heal spell ID
+            
+            -- Start casting the spell
+            GameData.UseRequests.UseSpellcast = spellId
+            GameData.UseRequests.UseTarget = 0
+            Interface.SpellUseRequest()
+            UserActionCastSpell(spellId)
+            
+            -- Add casting delay based on spell speed
+            local castTime = SpellsInfo.GetSpellSpeed(spellId) * 1000
+            local recoveryTime = SpellsInfo.GetRecoverySpeed() * 1000
+            
+            -- Create a unique ID for this heal sequence
+            local queueId = "spell_" .. tostring(Interface.TimeSinceLogin)
+            
+            -- Step 1: Wait for cast time
+            WaitTimer(castTime, function()
+                Debug.Print("Cast time complete, targeting self")
+                HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
+                Debug.Print("Self-targeting complete")
+                
+                -- Start recovery timer immediately after targeting
+                WaitTimer(recoveryTime, function()
+                    Debug.Print("Recovery time complete")
+                    return true
+                end, queueId)
+                
+                -- Continue to recovery timer
+                return false
+            end, queueId)
+            
             return true
         end
     })
 
-    -- Targeting Actions
+    -- Combat Actions
     VisualProgrammingInterface.Actions:register({
-        name = "Target Self",
-        description = L"Target yourself",
-        category = Categories.TARGETING,
-        icon = { texture = "icon000645", x = 5, y = 5 },
-        params = {},
-        execute = function()
-            HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
+        name = "Bandage Self",
+        description = L"Use bandages on yourself",
+        category = Categories.COMBAT,
+        icon = { texture = "icon000646", x = 5, y = 5 },
+        params = {
+            CreateParameter("wait", "boolean", true)
+        },
+        execute = function(params)
+            UserActionUseItem() -- Assumes bandages are selected
+            
+            if params.wait then
+                local queueId = "bandage_" .. tostring(Interface.TimeSinceLogin)
+                WaitTimer(10000, function()
+                    Debug.Print("Bandage timer complete")
+                    return true
+                end, queueId)
+            end
+            
+            return true
+        end
+    })
+
+    -- Skills Actions
+    VisualProgrammingInterface.Actions:register({
+        name = "Hide",
+        description = L"Attempt to hide",
+        category = Categories.SKILLS,
+        icon = { texture = "icon000667", x = 5, y = 5 },
+        params = {
+            CreateParameter("retry", "boolean", false),
+            CreateParameter("retryDelay", "number", 1000)
+        },
+        execute = function(params)
+            UserActionHide()
+            
+            local queueId = "hide_" .. tostring(Interface.TimeSinceLogin)
+            
+            -- Step 1: Base skill delay
+            WaitTimer(1000, function()
+                Debug.Print("Hide base delay complete")
+                if params.retry then
+                    return false
+                else
+                    return true
+                end
+            end, queueId)
+            
+            -- Step 2: Optional retry delay
+            if params.retry then
+                WaitTimer(params.retryDelay, function()
+                    Debug.Print("Hide retry delay complete")
+                    return true
+                end, queueId)
+            end
+            
+            return true
+        end
+    })
+
+    -- Skills Actions
+    VisualProgrammingInterface.Actions:register({
+        name = "Meditate",
+        description = L"Meditate to recover mana",
+        category = Categories.SKILLS,
+        icon = { texture = "icon000640", x = 5, y = 5 },
+        params = {
+            CreateParameter("duration", "number", 5000),
+            CreateParameter("targetMana", "number", 100)
+        },
+        execute = function(params)
+            UserActionMeditate()
+            
+            local queueId = "meditate_" .. tostring(Interface.TimeSinceLogin)
+            
+            -- Step 1: Base skill delay
+            WaitTimer(1000, function()
+                Debug.Print("Meditate base delay complete")
+                return false
+            end, queueId)
+            
+            -- Step 2: Meditation duration
+            WaitTimer(params.duration, function()
+                Debug.Print("Meditation duration complete")
+                return true
+            end, queueId)
+            
             return true
         end
     })
@@ -123,180 +417,15 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             return time and time >= 0 and time <= 10000
         end,
         execute = function(params)
-            Interface.WaitTimer(params.time)
+            local queueId = "wait_" .. tostring(Interface.TimeSinceLogin)
+            WaitTimer(params.time, function()
+                Debug.Print("Wait timer complete")
+                return true
+            end, queueId)
             return true
         end
     })
 
-    -- Movement Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Move",
-        description = L"Move in a direction",
-        category = Categories.MOVEMENT,
-        icon = { texture = "icon000667", x = 5, y = 5 },
-        params = {
-            CreateParameter("direction", "select", "north", {"north", "south", "east", "west"})
-        },
-        execute = function(params)
-            -- TODO: Implement movement logic
-            return true
-        end
-    })
-
-    -- Combat Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Attack",
-        description = L"Attack nearest target",
-        category = Categories.COMBAT,
-        icon = { texture = "icon000773", x = 5, y = 5 },
-        params = {},
-        execute = function()
-            -- TODO: Implement attack logic
-            return true
-        end
-    })
-
-    -- Magic Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Heal Self",
-        description = L"Cast healing on yourself",
-        category = Categories.MAGIC,
-        icon = { texture = "icon856001", x = 5, y = 5 },
-        params = {},
-        execute = function()
-            GameData.UseRequests.UseSpellcast = 29
-            GameData.UseRequests.UseTarget = 0
-            Interface.SpellUseRequest()
-            UserActionCastSpell(29)
-            return true
-        end
-    })
-
-    -- Combat Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Bandage Self",
-        description = L"Use bandages on yourself",
-        category = Categories.COMBAT,
-        icon = { texture = "icon000646", x = 5, y = 5 },
-        params = {
-            CreateParameter("wait", "boolean", true)
-        },
-        execute = function(params)
-            UserActionUseItem() -- Assumes bandages are selected
-            if params.wait then
-                Interface.WaitTimer(10000) -- Wait for bandage to complete
-            end
-            return true
-        end
-    })
-
-    -- Skills Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Hide",
-        description = L"Attempt to hide",
-        category = Categories.SKILLS,
-        icon = { texture = "icon000667", x = 5, y = 5 },
-        params = {
-            CreateParameter("retry", "boolean", false),
-            CreateParameter("retryDelay", "number", 1000)
-        },
-        execute = function(params)
-            UserActionHide()
-            if params.retry then
-                Interface.WaitTimer(params.retryDelay)
-            end
-            return true
-        end
-    })
-
-    -- Skills Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Meditate",
-        description = L"Meditate to recover mana",
-        category = Categories.SKILLS,
-        icon = { texture = "icon000640", x = 5, y = 5 },
-        params = {
-            CreateParameter("duration", "number", 5000),
-            CreateParameter("targetMana", "number", 100)
-        },
-        execute = function(params)
-            UserActionMeditate()
-            Interface.WaitTimer(params.duration)
-            return true
-        end
-    })
-
-    -- Targeting Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Target Nearest",
-        description = L"Target the nearest mobile",
-        category = Categories.TARGETING,
-        icon = { texture = "icon000773", x = 5, y = 5 },
-        params = {
-            CreateParameter("type", "select", "enemy", {"enemy", "friend", "any"}),
-            CreateParameter("range", "number", 10)
-        },
-        execute = function(params)
-            -- TODO: Implement target nearest logic
-            return true
-        end
-    })
-
-    -- Items Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Equip Item",
-        description = L"Equip an item from backpack",
-        category = Categories.ITEMS,
-        icon = { texture = "icon000646", x = 5, y = 5 },
-        params = {
-            CreateParameter("slot", "select", "weapon", {
-                "weapon", "shield", "helm", "neck", "chest", "arms",
-                "gloves", "ring", "legs", "boots"
-            })
-        },
-        execute = function(params)
-            UserActionEquipItem()
-            return true
-        end
-    })
-
-    -- Combat Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Special Move",
-        description = L"Execute a special combat move",
-        category = Categories.COMBAT,
-        icon = { texture = "icon000773", x = 5, y = 5 },
-        params = {
-            CreateParameter("move", "select", "primary", {"primary", "secondary"}),
-            CreateParameter("wait", "boolean", true)
-        },
-        execute = function(params)
-            -- TODO: Implement special move logic
-            if params.wait then
-                Interface.WaitTimer(1000)
-            end
-            return true
-        end
-    })
-
-    -- Items Actions
-    VisualProgrammingInterface.Actions:register({
-        name = "Move Items",
-        description = L"Move items between containers",
-        category = Categories.ITEMS,
-        icon = { texture = "icon000646", x = 5, y = 5 },
-        params = {
-            CreateParameter("type", "string", "all"),
-            CreateParameter("quantity", "number", 0),
-            CreateParameter("source", "select", "ground", {"ground", "backpack", "bank"}),
-            CreateParameter("destination", "select", "backpack", {"backpack", "bank"})
-        },
-        execute = function(params)
-            -- TODO: Implement move items logic
-            return true
-        end
-    })
-    
     Debug.Print("Block types initialized")
 end
 
@@ -373,7 +502,7 @@ function VisualProgrammingInterface.CreateBlock(type, index)
         end
 
         -- Set dimensions and position
-        WindowSetDimensions(blockName, 840, 50)
+        WindowSetDimensions(blockName, 380, 50)
         WindowClearAnchors(blockName)
         WindowAddAnchor(blockName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowScrollChild", "topleft", 0, index * 80)
         

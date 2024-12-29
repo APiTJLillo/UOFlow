@@ -1,6 +1,57 @@
 -- Main entry point for Visual Programming Interface
 VisualProgrammingInterface = {}
 
+-- Initialize Actions system
+VisualProgrammingInterface.Actions = {
+    categories = {
+        GENERAL = "General",
+        MAGIC = "Magic",
+        ITEMS = "Items",
+        TARGETING = "Targeting",
+        MOVEMENT = "Movement",
+        COMBAT = "Combat",
+        SKILLS = "Skills"
+    },
+    actions = {}
+}
+
+function VisualProgrammingInterface.Actions:register(action)
+    Debug.Print("Registering action: " .. action.name)
+    self.actions[action.name] = action
+end
+
+function VisualProgrammingInterface.Actions:get(name)
+    Debug.Print("Getting action: " .. name)
+    return self.actions[name]
+end
+
+function VisualProgrammingInterface.Actions:validateParams(type, params)
+    Debug.Print("Validating params for: " .. type)
+    local action = self:get(type)
+    if not action then
+        Debug.Print("Action not found: " .. type)
+        return false
+    end
+    if action.validate then
+        local success = action.validate(params)
+        Debug.Print("Validation " .. (success and "passed" or "failed"))
+        return success
+    end
+    return true
+end
+
+function VisualProgrammingInterface.Actions:execute(type, params)
+    Debug.Print("Executing action: " .. type)
+    local action = self:get(type)
+    if not action then
+        Debug.Print("Action not found: " .. type)
+        return false
+    end
+    local success = action.execute(params)
+    Debug.Print("Action execution " .. (success and "succeeded" or "failed"))
+    return success
+end
+
 -- Handle test flow button click
 function OnTestFlowClick()
     -- Forward to the interface handler
@@ -37,17 +88,45 @@ VisualProgrammingInterface.OnTestFlowClick = OnTestFlowClick
 -- Global initialization - forwards to core initialization
 function Initialize()
     Debug.Print("Global initialization of Visual Programming Interface")
-    VisualProgrammingInterface.Initialize()
+    
+    -- Initialize block types
+    if type(VisualProgrammingInterface.InitializeBlockTypes) == "function" then
+        Debug.Print("Initializing block types")
+        VisualProgrammingInterface.InitializeBlockTypes()
+    else
+        Debug.Print("Warning: InitializeBlockTypes not available")
+    end
+    
+    -- Initialize core systems
+    if type(VisualProgrammingInterface.Initialize) == "function" then
+        Debug.Print("Initializing core systems")
+        VisualProgrammingInterface.Initialize()
+    else
+        Debug.Print("Warning: Core initialization not available")
+    end
 end
 
--- Show interface
 function VisualProgrammingInterface.Show()
     WindowSetShowing("VisualProgrammingInterfaceWindow", true)
-    RegisterEventHandler("OnUpdate", "VisualProgrammingInterface.Execution.OnUpdate")
+    -- Register update handlers
+    RegisterEventHandler(SystemData.Events.UPDATE_PROCESSED, "VisualProgrammingInterface.Execution.OnUpdate")
+    RegisterEventHandler(SystemData.Events.UPDATE_PROCESSED, "VisualProgrammingInterface.ActionTimer.OnUpdate")
 end
 
 -- Hide interface
 function VisualProgrammingInterface.Hide()
     WindowSetShowing("VisualProgrammingInterfaceWindow", false)
-    UnregisterEventHandler("OnUpdate", "VisualProgrammingInterface.Execution.OnUpdate")
+    -- Unregister update handlers
+    UnregisterEventHandler(SystemData.Events.UPDATE_PROCESSED, "VisualProgrammingInterface.Execution.OnUpdate")
+    UnregisterEventHandler(SystemData.Events.UPDATE_PROCESSED, "VisualProgrammingInterface.ActionTimer.OnUpdate")
+    
+    -- Clean up timer state
+    if VisualProgrammingInterface.ActionTimer then
+        VisualProgrammingInterface.ActionTimer:reset()
+    end
+    
+    -- Clean up execution state
+    if VisualProgrammingInterface.Execution then
+        VisualProgrammingInterface.Execution:stop()
+    end
 end

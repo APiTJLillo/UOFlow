@@ -69,7 +69,7 @@
                     <Windows>
                         <Window name="$parentScrollChild" layer="default" handleinput="true">
                             <Size>
-                                <AbsPoint x="300" y="1200"/>
+                                <AbsPoint x="360" y="0"/>
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
@@ -104,7 +104,7 @@
                     <Windows>
                         <Window name="$parentScrollChildRight" layer="default" handleinput="true">
                             <Size>
-                                <AbsPoint x="300" y="1200"/>
+                                <AbsPoint x="230" y="0"/>
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
@@ -243,7 +243,7 @@
         <!-- Block Template -->
         <Window name="BlockTemplate" virtual="true" movable="false" layer="default" handleinput="true">
             <Size>
-                <AbsPoint x="300" y="50" />
+                <AbsPoint x="360" y="50" />
             </Size>
             <EventHandlers>
                 <EventHandler event="OnRButtonUp" function="VisualProgrammingInterface.OnBlockRButtonUp" />
@@ -252,6 +252,14 @@
                 <EventHandler event="OnLButtonDown" function="VisualProgrammingInterface.OnBlockDragStart" />
             </EventHandlers>
             <Windows>
+                <!-- Background for tinting -->
+                <FullResizeImage name="$parentBackground" inherits="UO_Default_Inner_Window_Frame" layer="background">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" />
+                        <Anchor point="bottomright" relativePoint="bottomright" />
+                    </Anchors>
+                    <Color r="255" g="255" b="255" a="255" />
+                </FullResizeImage>
                 <Button name="$parentIcon" inherits="UO_Default_Small_Select_Button" draganddrop="true" id="0" layer="popup">
                     <Size>
                         <AbsPoint x="50" y="50" />
@@ -264,7 +272,7 @@
                 </Button>
                 <Label name="$parentName" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="true" wordwrap="true" layer="default">
                     <Size>
-                        <AbsPoint x="220" y="25" />
+                        <AbsPoint x="280" y="25" />
                     </Size>
                     <Anchors>
                         <Anchor point="right" relativePoint="left" relativeTo="$parentIcon">
@@ -280,7 +288,7 @@
 
                 <Label name="$parentDescription" font="UO_DefaultText" linespacing="14" maxchars="64" textalign="left" autoresize="false" handleinput="true" wordwrap="true" layer="default">
                     <Size>
-                        <AbsPoint x="220" y="25" />
+                        <AbsPoint x="280" y="25" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="bottomleft" relativeTo="$parentName">
@@ -321,7 +329,7 @@
         <!-- Scroll Child Template -->
         <Window name="ScrollChild" virtual="true" layer="default">
             <Size>
-                <AbsPoint x="300" y="0"/>
+                <AbsPoint x="360" y="0"/>
             </Size>
             <Anchors>
                 <Anchor point="topleft" relativePoint="topleft">

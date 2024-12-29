@@ -1062,9 +1062,18 @@ function Interface.Update( timePassed )
 	Interface.ErrorTracker(ok, err)
 	
 	-- Update visual programming execution
-	if VisualProgrammingInterface and VisualProgrammingInterface.Execution then
-		ok, err = pcall(VisualProgrammingInterface.Execution.OnUpdate, timePassed)
-		Interface.ErrorTracker(ok, err)
+	if VisualProgrammingInterface then
+		-- Update execution system
+		if VisualProgrammingInterface.Execution then
+			ok, err = pcall(VisualProgrammingInterface.Execution.OnUpdate, timePassed)
+			Interface.ErrorTracker(ok, err)
+		end
+		
+		-- Update action timer system
+		if VisualProgrammingInterface.ActionTimer then
+			ok, err = pcall(VisualProgrammingInterface.ActionTimer.OnUpdate, timePassed)
+			Interface.ErrorTracker(ok, err)
+		end
 	end
 
 

@@ -69,10 +69,8 @@ function VisualProgrammingInterface.Initialize()
     -- Initialize with starter blocks
     Debug.Print("Creating starter blocks")
     local blocks = {
-        { type = "Target Self", index = 0 },
+        { type = "Cast Spell", index = 0 },
         { type = "Cast Spell", index = 1 },
-        { type = "Wait", index = 2 },
-        { type = "Heal Self", index = 3 }
     }
     
     -- Create blocks
