@@ -11,7 +11,8 @@ function VisualProgrammingInterface.Block:new(id, type, x, y, column)
         column = column or "middle", -- middle or right
         isDragging = false,
         params = {},
-        state = "pending" -- pending, running, completed, error
+        state = "pending", -- pending, running, completed, error
+        connections = {} -- Array to store connections to other blocks
     }
     setmetatable(block, VisualProgrammingInterface.Block)
     

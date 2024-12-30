@@ -1065,13 +1065,21 @@ function Interface.Update( timePassed )
 	if VisualProgrammingInterface then
 		-- Update execution system
 		if VisualProgrammingInterface.Execution then
-			ok, err = pcall(VisualProgrammingInterface.Execution.OnUpdate, timePassed)
+			local executionReference = VisualProgrammingInterface.Execution
+			local function executionOnUpdateWrapper(timePassed)
+				executionReference.OnUpdate(executionReference, timePassed)
+			end
+			ok, err = pcall(executionOnUpdateWrapper, timePassed)
 			Interface.ErrorTracker(ok, err)
 		end
 		
 		-- Update action timer system
 		if VisualProgrammingInterface.ActionTimer then
-			ok, err = pcall(VisualProgrammingInterface.ActionTimer.OnUpdate, timePassed)
+			local actionTimerReference = VisualProgrammingInterface.ActionTimer
+			local function actionTimerOnUpdateWrapper(timePassed)
+				actionTimerReference.OnUpdate(actionTimerReference, timePassed)
+			end
+			ok, err = pcall(actionTimerOnUpdateWrapper, timePassed)
 			Interface.ErrorTracker(ok, err)
 		end
 	end

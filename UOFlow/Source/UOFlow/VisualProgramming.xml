@@ -8,6 +8,7 @@
         
         <!-- Base interface -->
         <Script file="Source/UOFlow/VisualProgramming.lua" />
+        <Script file="Source/UOFlow/VisualProgrammingTimer.lua" />
         
         <!-- Core systems -->
         <Script file="Source/UOFlow/VisualProgrammingCore.lua" />
@@ -18,7 +19,11 @@
         <Script file="Source/UOFlow/VisualProgrammingBlock.lua" />
         <Script file="Source/UOFlow/VisualProgrammingManager.lua" />
         
-        <!-- Features -->
+        <!-- Execution System -->
+        <Script file="Source/UOFlow/VisualProgrammingExecutionCore.lua" />
+        <Script file="Source/UOFlow/VisualProgrammingExecutionBlocks.lua" />
+        <Script file="Source/UOFlow/VisualProgrammingExecutionTimer.lua" />
+        <Script file="Source/UOFlow/VisualProgrammingExecutionFlow.lua" />
         <Script file="Source/UOFlow/VisualProgrammingExecution.lua" />
         
         <!-- Event handlers -->

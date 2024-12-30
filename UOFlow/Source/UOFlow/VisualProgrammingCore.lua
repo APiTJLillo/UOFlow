@@ -73,8 +73,9 @@ function VisualProgrammingInterface.Initialize()
         { type = "Cast Spell", index = 1 },
     }
     
-    -- Create blocks
+    -- Create blocks and establish connections
     local createdBlocks = {}
+    local previousBlock = nil
     for _, blockInfo in ipairs(blocks) do
         local block = VisualProgrammingInterface.CreateBlock(blockInfo.type, blockInfo.index)
         if block then
@@ -84,7 +85,18 @@ function VisualProgrammingInterface.Initialize()
                 WindowSetLayer(blockName, Window.Layers.DEFAULT)
                 WindowSetShowing(blockName, true)
             end
+            
+            -- Connect to previous block if it exists
+            if previousBlock then
+                Debug.Print("Connecting block " .. previousBlock.id .. " to block " .. block.id)
+                if not previousBlock.connections then
+                    previousBlock.connections = {}
+                end
+                table.insert(previousBlock.connections, {id = block.id})
+            end
+            
             table.insert(createdBlocks, block)
+            previousBlock = block
         else
             Debug.Print("Failed to create block: " .. blockInfo.type)
         end
@@ -99,6 +111,104 @@ function VisualProgrammingInterface.Initialize()
     end
     
     Debug.Print("Visual Programming Interface initialized")
+end
+
+-- Function to create and display a block
+function VisualProgrammingInterface.CreateBlock(type, index)
+    -- Verify action exists
+    local action = VisualProgrammingInterface.Actions:get(type)
+    if not action then
+        Debug.Print("Error: Unknown action type: " .. type)
+        return nil
+    end
+    Debug.Print("Creating block of type: " .. type .. " at index: " .. index)
+    
+    -- Get scroll child window name
+    local scrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
+    if not DoesWindowNameExist(scrollChild) then
+        Debug.Print("Scroll child window does not exist")
+        return nil
+    end
+    
+    -- Create block in manager
+    local block = VisualProgrammingInterface.manager:createBlock(type, 0, index * 80)
+    local blockName = "Block" .. block.id
+    Debug.Print("Block name: " .. blockName)
+    block.windowName = blockName -- Store the window name for later reference
+    
+    -- Create block window
+    if not DoesWindowNameExist(blockName) then
+        Debug.Print("Creating window from template")
+        CreateWindowFromTemplate(blockName, "BlockTemplate", "VisualProgrammingInterfaceWindowScrollWindowScrollChild")
+        
+        -- Ensure window exists before proceeding
+        if not DoesWindowNameExist(blockName) then
+            Debug.Print("Error: Block window not created: " .. blockName)
+            return
+        end
+
+        -- Set dimensions and position
+        WindowSetDimensions(blockName, 380, 50)
+        WindowClearAnchors(blockName)
+        WindowAddAnchor(blockName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowScrollChild", "topleft", 0, index * 80)
+        
+        -- Set block name and description
+        LabelSetText(blockName .. "Name", StringToWString(type))
+        LabelSetText(blockName .. "Description", VisualProgrammingInterface.GetBlockDescription(type))
+        
+        -- Update scroll child height
+        local scrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
+        if DoesWindowNameExist(scrollChild) then
+            local _, height = WindowGetDimensions(scrollChild)
+            local newHeight = math.max(height, (index + 1) * 80)
+            WindowSetDimensions(scrollChild, 840, newHeight)
+            Debug.Print("Updated scroll child height to: " .. tostring(newHeight))
+        else
+            Debug.Print("Warning: Scroll child window not found when updating height")
+        end
+        
+        -- Set window properties
+        WindowSetLayer(blockName, Window.Layers.DEFAULT)
+        WindowSetShowing(blockName, true)
+        WindowSetAlpha(blockName, 1.0)
+        
+        -- Set layers for child windows and ensure proper visibility
+        if DoesWindowNameExist(blockName .. "Name") then
+            WindowSetLayer(blockName .. "Name", Window.Layers.DEFAULT)
+            WindowSetShowing(blockName .. "Name", true)
+        end
+        if DoesWindowNameExist(blockName .. "Description") then
+            WindowSetLayer(blockName .. "Description", Window.Layers.DEFAULT)
+            WindowSetShowing(blockName .. "Description", true)
+        end
+        
+        Debug.Print("Block created successfully")
+    else
+        Debug.Print("Block window already exists: " .. blockName)
+    end
+    
+    -- Set block icon using helper function (do this for both new and existing windows)
+    local iconWindow = blockName .. "Icon"
+    Debug.Print("Setting icon for window: " .. iconWindow)
+    
+    -- Get action definition for icon
+    local action = VisualProgrammingInterface.Actions:get(type)
+    if action and action.icon then
+        Debug.Print("Found icon for action: " .. action.icon.texture)
+        ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_NORMAL, action.icon.texture, action.icon.x, action.icon.y)
+        ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_NORMAL_HIGHLITE, action.icon.texture, action.icon.x, action.icon.y)
+        ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_PRESSED, action.icon.texture, action.icon.x, action.icon.y)
+        ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_PRESSED_HIGHLITE, action.icon.texture, action.icon.x, action.icon.y)
+    else
+        Debug.Print("Using default icon for block")
+        -- Use a default icon if none specified
+        ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_NORMAL, "icon000623", 5, 5)
+        ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_NORMAL_HIGHLITE, "icon000623", 5, 5)
+        ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_PRESSED, "icon000623", 5, 5)
+        ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_PRESSED_HIGHLITE, "icon000623", 5, 5)
+    end
+    
+    return block
 end
 
 -- Show the visual programming interface window

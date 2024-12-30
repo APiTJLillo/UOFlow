@@ -1,153 +1,34 @@
 -- Block type definitions and utilities
 
 -- Timer system with function queue
-VisualProgrammingInterface.ActionTimer = {
-    currentTime = 0,
-    targetTime = 0,
-    isWaiting = false,
-    callback = nil,
-    functionQueue = {},
-    currentQueueId = nil,
-    isComplete = false,
-    
-    -- New completion callback system
-    completionCallbacks = {},
-    
-    -- Register a completion callback
-    registerCompletionCallback = function(self, callbackName, callback)
-        self.completionCallbacks[callbackName] = callback
-    end,
-    
-    -- Notify all registered completion callbacks
-    notifyCompletion = function(self)
-        for _, callback in pairs(self.completionCallbacks) do
-            pcall(callback)
-        end
-    end,
-    
-    -- Clean up timer state
-    reset = function(self)
-        self.isWaiting = false
-        self.callback = nil
-        self.functionQueue = {}
-        self.currentQueueId = nil
-        self.isComplete = false
-        self.currentTime = 0
-        self.targetTime = 0
-    end
-}
+VisualProgrammingInterface.ActionTimer = Timer:new()
 
-function VisualProgrammingInterface.ActionTimer.OnUpdate(timePassed)
-    if not VisualProgrammingInterface.ActionTimer.isWaiting then 
-        --Debug.Print("Timer not waiting, skipping update")
-        return 
+-- Register a completion callback
+function VisualProgrammingInterface.ActionTimer:registerCompletionCallback(callbackName, callback)
+    self.completionCallbacks[callbackName] = callback
+end
+
+-- Notify all registered completion callbacks
+function VisualProgrammingInterface.ActionTimer:notifyCompletion()
+    for _, callback in pairs(self.completionCallbacks) do
+        pcall(callback)
     end
-    
-    -- Update timer and check for completion
-    local oldTime = VisualProgrammingInterface.ActionTimer.currentTime
-    local currentTime = oldTime + timePassed
-    VisualProgrammingInterface.ActionTimer.currentTime = currentTime
-    
-    --Debug.Print(string.format("Timer tick: %.3f -> %.3f (target: %.3f)", 
-    --    oldTime, currentTime, VisualProgrammingInterface.ActionTimer.targetTime))
-    
-    if currentTime >= VisualProgrammingInterface.ActionTimer.targetTime then
-        Debug.Print("*** Timer reached target time ***")
-        
-        -- Store state before resetting
-        local currentQueueId = VisualProgrammingInterface.ActionTimer.currentQueueId
-        local hasQueue = #VisualProgrammingInterface.ActionTimer.functionQueue > 0
-        local callback = VisualProgrammingInterface.ActionTimer.callback
-        
-        -- Keep isWaiting true until we process callback
-        VisualProgrammingInterface.ActionTimer.currentTime = 0
-        
-        -- Execute stored callback
-        if callback then
-            Debug.Print("Executing timer callback for queue " .. tostring(currentQueueId))
-            local success, isComplete = pcall(callback)
-            
-            if success then
-                if isComplete then
-                    Debug.Print("Callback indicated completion")
-                    VisualProgrammingInterface.ActionTimer.isComplete = true
-                else
-                    Debug.Print("Callback indicated more steps needed")
-                end
-                
-                -- Process next function in queue if not complete
-                if not VisualProgrammingInterface.ActionTimer.isComplete and hasQueue then
-                    Debug.Print("Executing next function in queue " .. tostring(currentQueueId))
-                    local nextFunc = table.remove(VisualProgrammingInterface.ActionTimer.functionQueue, 1)
-                    nextFunc()
-                else
-                    Debug.Print("Function queue complete for " .. tostring(currentQueueId))
-                    -- Notify completion callbacks after entire sequence
-                    VisualProgrammingInterface.ActionTimer:notifyCompletion()
-                    -- Now reset everything
-                    Debug.Print("Resetting timer state")
-                    VisualProgrammingInterface.ActionTimer.isWaiting = false
-                    VisualProgrammingInterface.ActionTimer.callback = nil
-                    VisualProgrammingInterface.ActionTimer.currentQueueId = nil
-                    VisualProgrammingInterface.ActionTimer.isComplete = false
-                    VisualProgrammingInterface.ActionTimer.functionQueue = {}
-                end
-            else
-                Debug.Print("Error in timer callback: " .. tostring(isComplete))
-                -- Notify completion callbacks even on error
-                VisualProgrammingInterface.ActionTimer:notifyCompletion()
-                -- Reset state on error
-                VisualProgrammingInterface.ActionTimer.isWaiting = false
-                VisualProgrammingInterface.ActionTimer.callback = nil
-                VisualProgrammingInterface.ActionTimer.currentQueueId = nil
-                VisualProgrammingInterface.ActionTimer.isComplete = false
-                VisualProgrammingInterface.ActionTimer.functionQueue = {}
-            end
-        end
-    end
+end
+
+-- Clean up timer state
+function VisualProgrammingInterface.ActionTimer:reset()
+    Timer.reset(self)
+end
+
+function VisualProgrammingInterface.ActionTimer:OnUpdate(timePassed)
+    -- Ensure this method does not call itself recursively
+    Timer.OnUpdate(self, timePassed)
 end
 
 -- Helper function for waiting
 local function WaitTimer(duration, callback, queueId)
     Debug.Print("WaitTimer called: " .. duration .. "ms, queue: " .. tostring(queueId))
-    
-    -- Always create a new timer function
-    local timerFunc = function()
-        -- Initialize timer state
-        Debug.Print("Setting up new timer for " .. duration .. "ms")
-        VisualProgrammingInterface.ActionTimer.currentTime = 0
-        VisualProgrammingInterface.ActionTimer.targetTime = duration / 1000
-        VisualProgrammingInterface.ActionTimer.isWaiting = true
-        VisualProgrammingInterface.ActionTimer.callback = callback
-        
-        -- Update queue state
-        if queueId then
-            Debug.Print("Setting queue ID: " .. queueId)
-            VisualProgrammingInterface.ActionTimer.currentQueueId = queueId
-            if not VisualProgrammingInterface.ActionTimer.functionQueue then
-                VisualProgrammingInterface.ActionTimer.functionQueue = {}
-            end
-        else
-            Debug.Print("No queue ID provided")
-            VisualProgrammingInterface.ActionTimer.functionQueue = {}
-            VisualProgrammingInterface.ActionTimer.currentQueueId = nil
-        end
-        
-        Debug.Print("Timer initialized - target: " .. VisualProgrammingInterface.ActionTimer.targetTime .. "s")
-    end
-    
-    -- Handle timer execution
-    if VisualProgrammingInterface.ActionTimer.isWaiting then
-        Debug.Print("Timer already running, queueing function")
-        if not VisualProgrammingInterface.ActionTimer.functionQueue then
-            VisualProgrammingInterface.ActionTimer.functionQueue = {}
-        end
-        table.insert(VisualProgrammingInterface.ActionTimer.functionQueue, timerFunc)
-    else
-        Debug.Print("Starting timer immediately")
-        timerFunc()
-    end
-    
+    VisualProgrammingInterface.ActionTimer:start(duration, callback, queueId)
     return true
 end
 
@@ -231,9 +112,6 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 
                 Debug.Print("Cast time: " .. castTime .. "ms, Recovery time: " .. recoveryTime .. "ms")
                         
-                -- Create a unique ID for this spell cast sequence
-                local queueId = "spell_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
-                
                 -- Start casting the spell FIRST
                 Debug.Print("Starting spell cast")
                 GameData.UseRequests.UseSpellcast = spellId
@@ -241,7 +119,12 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 Interface.SpellUseRequest()
                 UserActionCastSpell(spellId)
         
-                -- Step 1: Wait for cast time
+                -- Create unique queue IDs for each timer
+                local castQueueId = "cast_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
+                local recoveryQueueId = "recovery_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
+                
+                -- Queue cast timer
+                Debug.Print("Starting cast sequence: " .. castTime .. "ms")
                 WaitTimer(castTime, function()
                     Debug.Print("Cast time complete, handling targeting")
                     
@@ -251,15 +134,16 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                         Debug.Print("Self-targeting complete")
                     end
                     
-                    -- Step 2: Wait for full recovery time before marking complete
-                    WaitTimer(recoveryTime, function()
-                        Debug.Print("Recovery time complete - full sequence done")
-                        return true -- Only return true after FULL recovery
-                    end, queueId)
-                    
-                    -- Continue to recovery timer
-                    return false 
-                end, queueId)
+                    return true -- Complete cast timer
+                end, castQueueId)
+                
+                -- Queue recovery timer
+                Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
+                WaitTimer(recoveryTime, function()
+                    Debug.Print("Recovery time complete - full sequence done")
+                    VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                    return true -- Complete recovery timer
+                end, recoveryQueueId)
                 
                 return true
             end
@@ -288,24 +172,27 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             local castTime = SpellsInfo.GetSpellSpeed(spellId) * 1000
             local recoveryTime = SpellsInfo.GetRecoverySpeed() * 1000
             
-            -- Create a unique ID for this heal sequence
-            local queueId = "spell_" .. tostring(Interface.TimeSinceLogin)
+            -- Create unique queue IDs for each timer
+            local castQueueId = "cast_heal_" .. tostring(Interface.TimeSinceLogin)
+            local recoveryQueueId = "recovery_heal_" .. tostring(Interface.TimeSinceLogin)
             
-            -- Step 1: Wait for cast time
+            -- Queue cast timer
+            Debug.Print("Starting cast sequence: " .. castTime .. "ms")
             WaitTimer(castTime, function()
                 Debug.Print("Cast time complete, targeting self")
                 HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
                 Debug.Print("Self-targeting complete")
                 
-                -- Start recovery timer immediately after targeting
-                WaitTimer(recoveryTime, function()
-                    Debug.Print("Recovery time complete")
-                    return true
-                end, queueId)
-                
-                -- Continue to recovery timer
-                return false
-            end, queueId)
+                return true -- Complete cast timer
+            end, castQueueId)
+            
+            -- Queue recovery timer
+            Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
+            WaitTimer(recoveryTime, function()
+                Debug.Print("Recovery time complete")
+                VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                return true -- Complete recovery timer
+            end, recoveryQueueId)
             
             return true
         end
@@ -327,6 +214,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 local queueId = "bandage_" .. tostring(Interface.TimeSinceLogin)
                 WaitTimer(10000, function()
                     Debug.Print("Bandage timer complete")
+                    VisualProgrammingInterface.ActionTimer:notifyCompletion()
                     return true
                 end, queueId)
             end
@@ -348,24 +236,30 @@ function VisualProgrammingInterface.InitializeBlockTypes()
         execute = function(params)
             UserActionHide()
             
-            local queueId = "hide_" .. tostring(Interface.TimeSinceLogin)
+            -- Create unique queue IDs for each timer
+            local delayQueueId = "hide_delay_" .. tostring(Interface.TimeSinceLogin)
+            local retryQueueId = "hide_retry_" .. tostring(Interface.TimeSinceLogin)
             
-            -- Step 1: Base skill delay
+            -- Queue base delay timer
+            Debug.Print("Starting base delay: 1000ms")
             WaitTimer(1000, function()
                 Debug.Print("Hide base delay complete")
-                if params.retry then
-                    return false
-                else
-                    return true
+                
+                if not params.retry then
+                    VisualProgrammingInterface.ActionTimer:notifyCompletion()
                 end
-            end, queueId)
+                
+                return true -- Complete delay timer
+            end, delayQueueId)
             
-            -- Step 2: Optional retry delay
+            -- Queue retry timer if enabled
             if params.retry then
+                Debug.Print("Queueing retry delay: " .. params.retryDelay .. "ms")
                 WaitTimer(params.retryDelay, function()
                     Debug.Print("Hide retry delay complete")
-                    return true
-                end, queueId)
+                    VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                    return true -- Complete retry timer
+                end, retryQueueId)
             end
             
             return true
@@ -385,19 +279,24 @@ function VisualProgrammingInterface.InitializeBlockTypes()
         execute = function(params)
             UserActionMeditate()
             
-            local queueId = "meditate_" .. tostring(Interface.TimeSinceLogin)
+            -- Create unique queue IDs for each timer
+            local delayQueueId = "meditate_delay_" .. tostring(Interface.TimeSinceLogin)
+            local durationQueueId = "meditate_duration_" .. tostring(Interface.TimeSinceLogin)
             
-            -- Step 1: Base skill delay
+            -- Queue base delay timer
+            Debug.Print("Starting base delay: 1000ms")
             WaitTimer(1000, function()
                 Debug.Print("Meditate base delay complete")
-                return false
-            end, queueId)
+                return true -- Complete delay timer
+            end, delayQueueId)
             
-            -- Step 2: Meditation duration
+            -- Queue duration timer
+            Debug.Print("Queueing meditation duration: " .. params.duration .. "ms")
             WaitTimer(params.duration, function()
                 Debug.Print("Meditation duration complete")
-                return true
-            end, queueId)
+                VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                return true -- Complete duration timer
+            end, durationQueueId)
             
             return true
         end
@@ -420,6 +319,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             local queueId = "wait_" .. tostring(Interface.TimeSinceLogin)
             WaitTimer(params.time, function()
                 Debug.Print("Wait timer complete")
+                VisualProgrammingInterface.ActionTimer:notifyCompletion()
                 return true
             end, queueId)
             return true
