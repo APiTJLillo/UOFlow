@@ -130,3 +130,54 @@ function VisualProgrammingInterface.Hide()
         VisualProgrammingInterface.Execution:stop()
     end
 end
+
+-- Triggers system
+VisualProgrammingInterface.Triggers = {
+    triggers = {},
+    triggerStates = {}
+}
+
+function VisualProgrammingInterface.Triggers:register(trigger)
+    if not trigger.name then
+        Debug.Print("Trigger definition must have a name")
+        return false
+    end
+    Debug.Print("Registering trigger: " .. trigger.name)
+    self.triggers[trigger.name] = trigger
+    self.triggerStates[trigger.name] = {}
+    return true
+end
+
+function VisualProgrammingInterface.Triggers:check()
+    for name, trigger in pairs(self.triggers) do
+        local status, result = pcall(trigger.check)
+        if not status then
+            Debug.Print("Error checking trigger: " .. name .. " - " .. tostring(result))
+        elseif result then
+            if trigger.config and trigger.config.unique then
+                if self.triggerStates[name][result] then
+                    Debug.Print("Trigger already activated for unique instance: " .. name)
+                    return false, nil
+                end
+                self.triggerStates[name][result] = true
+            end
+            Debug.Print("Trigger activated: " .. name)
+            return true, name, result
+        end
+    end
+    return false, nil
+end
+
+-- Add support for more complex conditional logic and loops
+function VisualProgrammingInterface.AddConditionalLogic()
+    -- Placeholder for adding complex conditional logic
+end
+
+function VisualProgrammingInterface.AddLoops()
+    -- Placeholder for adding loop support
+end
+
+-- Enhance user interface with more intuitive controls and visual feedback
+function VisualProgrammingInterface.EnhanceUI()
+    -- Placeholder for enhancing UI
+end
