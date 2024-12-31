@@ -123,6 +123,20 @@ VisualProgrammingInterface.Config = {
             end
         end
         
+        -- Add trigger configuration options
+        if block.type == "Trigger" then
+            local triggerConfig = block.params.triggerConfig or { always = true, unique = false }
+            block.params.triggerConfig = triggerConfig
+            
+            -- Create "Always" option
+            local alwaysWindow = self:CreateBooleanParam(scrollChild, { name = "Always", type = "boolean" }, triggerConfig.always, yOffset)
+            yOffset = yOffset + 60
+            
+            -- Create "Unique" option
+            local uniqueWindow = self:CreateBooleanParam(scrollChild, { name = "Unique", type = "boolean" }, triggerConfig.unique, yOffset)
+            yOffset = yOffset + 60
+        end
+        
         -- Update scroll window content size
         if yOffset > 0 then
             WindowSetDimensions(scrollChild, 360, yOffset)
