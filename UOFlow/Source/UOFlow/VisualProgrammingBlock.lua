@@ -2,10 +2,10 @@
 VisualProgrammingInterface.Block = {}
 VisualProgrammingInterface.Block.__index = VisualProgrammingInterface.Block
 
-function VisualProgrammingInterface.Block:new(id, type, x, y, column)
+function VisualProgrammingInterface.Block:new(id, blockType, x, y, column)
     local block = {
         id = id,
-        type = type,
+        type = blockType,
         x = x,
         y = y,
         column = column or "middle", -- middle or right
@@ -16,12 +16,28 @@ function VisualProgrammingInterface.Block:new(id, type, x, y, column)
     }
     setmetatable(block, VisualProgrammingInterface.Block)
     
-    -- Get action definition and set default parameters
-    local action = VisualProgrammingInterface.Actions:get(type)
+    -- Get action definition and create a deep copy of default parameters
+    local action = VisualProgrammingInterface.Actions:get(blockType)
     if action then
-        block.params = VisualProgrammingInterface.Actions:getDefaultParams(type)
+        -- Deep copy default parameters to ensure each block has its own unique parameter set
+        block.params = {}
+        local defaultParams = VisualProgrammingInterface.Actions:getDefaultParams(blockType)
+        if defaultParams then
+            for k, v in pairs(defaultParams) do
+                if type(v) == "table" then -- Now type() function works correctly
+                    block.params[k] = {}
+                    for k2, v2 in pairs(v) do
+                        block.params[k][k2] = v2
+                    end
+                else
+                    block.params[k] = v
+                end
+            end
+        end
         block.description = action.description
         block.icon = action.icon
+        -- Add instance identifier to help distinguish between blocks of same type
+        block.instanceName = blockType .. " #" .. block.id
     end
     
     return block
@@ -43,15 +59,18 @@ function VisualProgrammingInterface.Block:setState(state)
             WindowSetTintColor(blockWindow, 206, 217, 242) -- UO Default text color for pending
         end
         
-        -- Update description text
+        -- Update both name and description
+        local text = self:getDescription()
+        
+        -- Update name
+        local name = blockWindow .. "Name"
+        if DoesWindowNameExist(name) then
+            LabelSetText(name, StringToWString(text))
+        end
+        
+        -- Update description
         local description = blockWindow .. "Description"
         if DoesWindowNameExist(description) then
-            local text = self:getDescription()
-            if state == "error" then
-                text = text .. " (Error)"
-            elseif state == "completed" then
-                text = text .. " (Completed)"
-            end
             LabelSetText(description, StringToWString(text))
         end
     end
@@ -61,50 +80,49 @@ function VisualProgrammingInterface.Block:getDescription()
     local action = VisualProgrammingInterface.Actions:get(self.type)
     if not action then return self.type end
     
-    local desc = action.description or self.type
-    local paramDesc = {}
+    -- Start with action name
+    local desc = action.name or self.type
     
-    -- Add parameter values to description
-    for _, param in ipairs(action.params) do
-        local value = self.params[param.name]
-        if value ~= nil then
-            -- Convert value to string based on parameter type
-            local displayValue
-            if param.type == "number" then
-                -- Ensure numeric values are properly formatted
-                if type(value) == "number" then
-                    displayValue = tostring(value)
-                else
-                    local num = tonumber(value)
-                    displayValue = num and tostring(num) or "0"
+    -- Build parameter description in specific order
+    local paramValues = {}
+    
+    -- Handle parameters based on block type
+    if action.name == "Cast Spell" then
+        -- Special formatting for Cast Spell blocks: "SpellName → target"
+        local spellName = self.params.spellId or ""
+        local target = self.params.target or ""
+        -- Remove any "Spell" suffix from spell names for cleaner display
+        spellName = spellName:gsub(" Spell$", "")
+        desc = desc .. " [" .. self.id .. "]: " .. spellName .. "(" .. target .. ")"
+        -- Add state if not pending
+        if self.state ~= "pending" then
+            desc = desc .. " (" .. self.state .. ")"
+        end
+        return desc
+    else
+        -- For other blocks, add parameters in order
+        for _, param in ipairs(action.params) do
+            local value = self.params[param.name]
+            if value ~= nil then
+                if param.type == "boolean" then
+                    value = (type(value) == "boolean" and value) or (value == "true") and "Yes" or "No"
                 end
-            elseif param.type == "boolean" then
-                -- Handle boolean values
-                if type(value) == "boolean" then
-                    displayValue = value and "true" or "false"
-                else
-                    displayValue = value == "true" and "true" or "false"
-                end
-            else
-                -- Handle string values
-                displayValue = tostring(value)
-            end
-            
-            -- Add to parameter descriptions
-            if displayValue then
-                table.insert(paramDesc, param.name .. ": " .. displayValue)
+                table.insert(paramValues, tostring(value))
             end
         end
     end
     
-    -- Build final description
-    if #paramDesc > 0 then
-        desc = desc .. " (" .. table.concat(paramDesc, ", ") .. ")"
+    -- Build final description with instance number first
+    desc = desc .. " [" .. self.id .. "]"
+    
+    -- Add parameters if any
+    if #paramValues > 0 then
+        desc = desc .. ": " .. table.concat(paramValues, ", ")
     end
     
     -- Add state if not pending
     if self.state ~= "pending" then
-        desc = desc .. " [" .. self.state .. "]"
+        desc = desc .. " (" .. self.state .. ")"
     end
     
     return desc
@@ -118,10 +136,10 @@ function VisualProgrammingInterface.Block:updateVisuals()
     local action = VisualProgrammingInterface.Actions:get(self.type)
     if not action then return end
     
-    -- Update name
+    -- Update name with full description
     local name = blockWindow .. "Name"
     if DoesWindowNameExist(name) then
-        LabelSetText(name, StringToWString(action.name or self.type))
+        LabelSetText(name, StringToWString(self:getDescription()))
     end
     
     -- Update description

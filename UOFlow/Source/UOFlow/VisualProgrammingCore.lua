@@ -114,14 +114,14 @@ function VisualProgrammingInterface.Initialize()
 end
 
 -- Function to create and display a block
-function VisualProgrammingInterface.CreateBlock(type, index)
+function VisualProgrammingInterface.CreateBlock(blockType, index)
     -- Verify action exists
-    local action = VisualProgrammingInterface.Actions:get(type)
+    local action = VisualProgrammingInterface.Actions:get(blockType)
     if not action then
-        Debug.Print("Error: Unknown action type: " .. type)
+        Debug.Print("Error: Unknown action type: " .. blockType)
         return nil
     end
-    Debug.Print("Creating block of type: " .. type .. " at index: " .. index)
+    Debug.Print("Creating block of type: " .. blockType .. " at index: " .. index)
     
     -- Get scroll child window name
     local scrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
@@ -131,7 +131,7 @@ function VisualProgrammingInterface.CreateBlock(type, index)
     end
     
     -- Create block in manager
-    local block = VisualProgrammingInterface.manager:createBlock(type, 0, index * 80)
+    local block = VisualProgrammingInterface.manager:createBlock(blockType, 0, index * 80)
     local blockName = "Block" .. block.id
     Debug.Print("Block name: " .. blockName)
     block.windowName = blockName -- Store the window name for later reference
@@ -152,9 +152,9 @@ function VisualProgrammingInterface.CreateBlock(type, index)
         WindowClearAnchors(blockName)
         WindowAddAnchor(blockName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowScrollChild", "topleft", 0, index * 80)
         
-        -- Set block name and description
-        LabelSetText(blockName .. "Name", StringToWString(type))
-        LabelSetText(blockName .. "Description", VisualProgrammingInterface.GetBlockDescription(type))
+        -- Set block name (include instance identifier) and description
+        LabelSetText(blockName .. "Name", StringToWString(block.instanceName or blockType))
+        LabelSetText(blockName .. "Description", block:getDescription())
         
         -- Update scroll child height
         local scrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
@@ -192,7 +192,7 @@ function VisualProgrammingInterface.CreateBlock(type, index)
     Debug.Print("Setting icon for window: " .. iconWindow)
     
     -- Get action definition for icon
-    local action = VisualProgrammingInterface.Actions:get(type)
+    local action = VisualProgrammingInterface.Actions:get(blockType)
     if action and action.icon then
         Debug.Print("Found icon for action: " .. action.icon.texture)
         ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_NORMAL, action.icon.texture, action.icon.x, action.icon.y)

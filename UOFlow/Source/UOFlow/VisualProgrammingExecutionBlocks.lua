@@ -2,7 +2,7 @@
 function VisualProgrammingInterface.Execution:executeBlock(block)
     if not block then return false end
     
-    Debug.Print("Executing block " .. block.id .. " (" .. block.type .. ")")
+    Debug.Print("Executing block " .. block.type .. " [" .. block.id .. "]")
     
     -- Update block state
     self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.RUNNING
@@ -78,16 +78,16 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     
     -- If no timer was started or ActionTimer doesn't exist, clear the waiting flag
     if not VisualProgrammingInterface.ActionTimer.isWaiting then
-        Debug.Print("No timer started for block " .. block.id)
+        Debug.Print("No timer started for " .. block.type .. " [" .. block.id .. "]")
         self.waitingForTimer = false
     else
-        Debug.Print("Timer started for block " .. block.id)
+        Debug.Print("Timer started for " .. block.type .. " [" .. block.id .. "]")
     end
     
     -- Update block state based on execution result
     if success then
         if not self.waitingForTimer then
-            Debug.Print("Block " .. block.id .. " completed immediately")
+            Debug.Print("Block " .. block.type .. " [" .. block.id .. "] completed immediately")
             self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.COMPLETED
             if DoesWindowNameExist(blockWindow) then
                 WindowSetTintColor(blockWindow, 0, 255, 0) -- Green for success
@@ -96,7 +96,7 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
             -- Let the timer system handle its own state
         end
     else
-        Debug.Print("Block " .. block.id .. " failed: " .. tostring(result))
+        Debug.Print("Block " .. block.type .. " [" .. block.id .. "] failed: " .. tostring(result))
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
         if DoesWindowNameExist(blockWindow) then
             WindowSetTintColor(blockWindow, 255, 0, 0) -- Red for error
@@ -127,8 +127,7 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
         }
         Debug.Print("Block execution error: " .. tostring(result))
         Debug.Print("Error details: " .. table.concat({
-            "Block ID: " .. tostring(errorInfo.blockId),
-            "Block Type: " .. tostring(errorInfo.blockType),
+            "Block: " .. tostring(errorInfo.blockType) .. " [" .. tostring(errorInfo.blockId) .. "]",
             "Parameters: " .. table.concat(
                 (function()
                     local params = {}
@@ -151,7 +150,8 @@ function VisualProgrammingInterface.Execution:queueBlocksForReset()
     VisualProgrammingInterface.Execution.resetBlockIds = {}
     -- Queue all blocks for reset
     for id, _ in pairs(VisualProgrammingInterface.manager.blocks) do
-        Debug.Print("- Queueing block " .. id)
+        local block = VisualProgrammingInterface.manager.blocks[id]
+        Debug.Print("- Queueing " .. block.type .. " [" .. id .. "]")
         table.insert(VisualProgrammingInterface.Execution.resetBlockIds, id)
     end
     -- Reset timer for delayed reset

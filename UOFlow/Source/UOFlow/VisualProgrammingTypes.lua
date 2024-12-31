@@ -107,50 +107,65 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 Debug.Print("Found spell ID: " .. spellId)
                 
                 -- Add casting delay based on spell speed
-                local castTime = SpellsInfo.GetSpellSpeed(spellId) * 1000
-                local recoveryTime = SpellsInfo.GetRecoverySpeed() * 1000
+                local castTime = SpellsInfo.GetSpellSpeed(spellId) * 1200
+                local recoveryTime = SpellsInfo.GetRecoverySpeed() * 1200
                 
                 Debug.Print("Cast time: " .. castTime .. "ms, Recovery time: " .. recoveryTime .. "ms")
                         
-                -- Start casting the spell FIRST
+                -- Create unique queue IDs for each timer
+                local castQueueId = "cast_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
+                local recoveryQueueId = "recovery_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
+                
+                -- Start casting the spell
                 Debug.Print("Starting spell cast")
                 GameData.UseRequests.UseSpellcast = spellId
                 GameData.UseRequests.UseTarget = 0
                 Interface.SpellUseRequest()
                 UserActionCastSpell(spellId)
-        
-                -- Create unique queue IDs for each timer
-                local castQueueId = "cast_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
-                local recoveryQueueId = "recovery_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
                 
                 -- Queue cast timer
                 Debug.Print("Starting cast sequence: " .. castTime .. "ms")
                 WaitTimer(castTime, function()
-                    Debug.Print("Cast time complete, handling targeting")
+                    Debug.Print("Cast time complete")
                     
-                    -- Handle targeting immediately after cast time
+                    -- Handle targeting
                     if params.target == "self" then
-                        HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
-                        Debug.Print("Self-targeting complete")
+                        Debug.Print("Targeting self with PlayerId: " .. tostring(WindowData.PlayerStatus.PlayerId))
+                        GameData.UseRequests.UseTarget = WindowData.PlayerStatus.PlayerId
+                        -- Add a small delay between setting target and handling targeting
+                        WaitTimer(500, function()
+                            HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
+                            Debug.Print("Self-targeting complete")
+                            
+                            -- Queue recovery timer after targeting completes
+                            Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
+                            WaitTimer(recoveryTime, function()
+                                Debug.Print("Recovery time complete - full sequence done")
+                                VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                                return true -- Complete recovery timer
+                            end, recoveryQueueId)
+                            
+                            return true
+                        end, castQueueId .. "_target")
+                    else
+                        -- If not self-targeting, queue recovery timer immediately
+                        Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
+                        WaitTimer(recoveryTime, function()
+                            Debug.Print("Recovery time complete - full sequence done")
+                            VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                            return true -- Complete recovery timer
+                        end, recoveryQueueId)
                     end
                     
-                    return true -- Complete cast timer
+                    return true
                 end, castQueueId)
                 
-                -- Queue recovery timer
-                Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
-                WaitTimer(recoveryTime, function()
-                    Debug.Print("Recovery time complete - full sequence done")
-                    VisualProgrammingInterface.ActionTimer:notifyCompletion()
-                    return true -- Complete recovery timer
-                end, recoveryQueueId)
-                
-                return true
+                return false -- Keep execution system waiting
             end
             Debug.Print("Spell ID not found")
             return false
         end
-})
+    })
 
     -- Magic Actions
     VisualProgrammingInterface.Actions:register({
@@ -179,22 +194,30 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             -- Queue cast timer
             Debug.Print("Starting cast sequence: " .. castTime .. "ms")
             WaitTimer(castTime, function()
-                Debug.Print("Cast time complete, targeting self")
-                HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
-                Debug.Print("Self-targeting complete")
+                Debug.Print("Cast time complete")
                 
-                return true -- Complete cast timer
+                -- Set target and handle targeting in sequence
+                GameData.UseRequests.UseTarget = WindowData.PlayerStatus.PlayerId
+                -- Add a small delay between setting target and handling targeting
+                WaitTimer(50, function()
+                    HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
+                    Debug.Print("Self-targeting complete")
+                    
+                    -- Queue recovery timer after targeting completes
+                    Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
+                    WaitTimer(recoveryTime, function()
+                        Debug.Print("Recovery time complete")
+                        VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                        return true -- Complete recovery timer
+                    end, recoveryQueueId)
+                    
+                    return true
+                end, castQueueId .. "_target")
+                
+                return true
             end, castQueueId)
             
-            -- Queue recovery timer
-            Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
-            WaitTimer(recoveryTime, function()
-                Debug.Print("Recovery time complete")
-                VisualProgrammingInterface.ActionTimer:notifyCompletion()
-                return true -- Complete recovery timer
-            end, recoveryQueueId)
-            
-            return true
+            return false -- Keep execution system waiting
         end
     })
 
@@ -217,9 +240,11 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                     VisualProgrammingInterface.ActionTimer:notifyCompletion()
                     return true
                 end, queueId)
+                
+                return false -- Keep execution system waiting
             end
             
-            return true
+            return true -- If not waiting, complete immediately
         end
     })
 
@@ -262,7 +287,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 end, retryQueueId)
             end
             
-            return true
+            return false -- Keep execution system waiting
         end
     })
 
@@ -298,7 +323,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 return true -- Complete duration timer
             end, durationQueueId)
             
-            return true
+            return false -- Keep execution system waiting
         end
     })
 
@@ -322,7 +347,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 VisualProgrammingInterface.ActionTimer:notifyCompletion()
                 return true
             end, queueId)
-            return true
+            return false -- Keep execution system waiting
         end
     })
 
@@ -406,9 +431,16 @@ function VisualProgrammingInterface.CreateBlock(type, index)
         WindowClearAnchors(blockName)
         WindowAddAnchor(blockName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowScrollChild", "topleft", 0, index * 80)
         
-        -- Set block name and description
-        LabelSetText(blockName .. "Name", StringToWString(type))
-        LabelSetText(blockName .. "Description", VisualProgrammingInterface.GetBlockDescription(type))
+        -- Initialize block with default parameters
+        local defaultParams = VisualProgrammingInterface.Actions:getDefaultParams(type)
+        if defaultParams then
+            block.params = defaultParams
+        end
+        
+        -- Set block name and description using Block methods
+        local desc = block:getDescription()
+        LabelSetText(blockName .. "Name", StringToWString(desc))
+        LabelSetText(blockName .. "Description", StringToWString(desc))
         
         -- Update scroll child height
         local scrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
