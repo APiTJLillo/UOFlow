@@ -173,7 +173,33 @@ function VisualProgrammingInterface.Actions:initialize()
             return true
         end
     })
-    
+
+    -- Simple action that prints a message using a chosen destination
+    self:register({
+        name = "Print Message",
+        description = "Output text to console, chat or overhead",
+        category = self.categories.GENERAL,
+        icon = "Icons/actions/command.dds",
+        params = {
+            CreateParameter("text", ParameterType.STRING, "Hello"),
+            CreateParameter("destination", ParameterType.SELECT, "Console",
+                {"Console", "Chat", "Overhead"})
+        },
+        execute = function(params)
+            local dest = params.destination
+            if dest == "Chat" then
+                local channel = ChatSettings.Channels[SystemData.ChatLogFilters.SAY]
+                SendChat(channel, towstring(params.text))
+            elseif dest == "Overhead" then
+                WindowUtils.SendOverheadText(towstring(params.text), 66, true)
+            else
+                Debug.Print(tostring(params.text))
+            end
+            return true
+        end
+    })
+
+
     Debug.Print("Action system initialized")
 end
 
@@ -354,6 +380,31 @@ function VisualProgrammingInterface.Actions:initialize()
             return true
         end
     })
-    
+
+    -- Simple action that prints a message using a chosen destination
+    self:register({
+        name = "Print Message",
+        description = "Output text to console, chat or overhead",
+        category = self.categories.GENERAL,
+        icon = "Icons/actions/command.dds",
+        params = {
+            CreateParameter("text", ParameterType.STRING, "Hello"),
+            CreateParameter("destination", ParameterType.SELECT, "Console",
+                {"Console", "Chat", "Overhead"})
+        },
+        execute = function(params)
+            local dest = params.destination
+            if dest == "Chat" then
+                local channel = ChatSettings.Channels[SystemData.ChatLogFilters.SAY]
+                SendChat(channel, towstring(params.text))
+            elseif dest == "Overhead" then
+                WindowUtils.SendOverheadText(towstring(params.text), 66, true)
+            else
+                Debug.Print(tostring(params.text))
+            end
+            return true
+        end
+    })
+
     Debug.Print("Action system initialized")
 end
