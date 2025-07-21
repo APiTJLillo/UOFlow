@@ -12,6 +12,9 @@ Replace pattern bytes / RVAs as you discover new builds.
 
 UOWalkPatch.exe attaches to a running uosa.exe, injects a stub that registers one or many extra Lua natives (today: walk(dir,run), tomorrow: cast(spellId), useSkill(id), etc.).
 It never touches files on disk; all hooks are found at runtime by signature scan and cached.
+During injection a small debug console is opened so you can see log messages from the helper. The injector logs pattern matches, process attachment and other progress information to this console.
+The file `command_list.json` enumerates spells and skills that can be used with the `processCommand` signature.
+See TODOClientPatch.md for roadmap tasks.
 
 
 ---
@@ -42,8 +45,8 @@ It never touches files on disk; all hooks are found at runtime by signature scan
   "functions": [
     {
       "lua_name":  "walk",
-      "pattern":   "55 8B EC 83 EC ?? 56 8B F1 8B 0D ?? ?? ?? ?? 8B 01 FF 50 ??",
-      "mask":      "xxxx?xxxxx????xxx?",
+      "pattern":   "55 8B EC 83 E4 ?? 83 EC ?? F3 0F 10 45 08 53 56 8B F1 57",
+      "mask":      "xxx xx x? xx x? xxxxxxxxxxx",
       "bridge":    "walk_bridge"          // symbol inside stub
     },
     {
@@ -57,6 +60,12 @@ It never touches files on disk; all hooks are found at runtime by signature scan
       "pattern":   "6A 01 6A 00 6A ?? 6A ?? 8B 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ??",
       "mask":      "xxxxx?x?xx????xx????",
       "bridge":    "skill_bridge"
+    },
+    {
+      "lua_name":  "processCommand",
+      "pattern":   "83 EC 58 53 55 8B 6C 24 64 56 57 8B F0 B9 ?? ?? ?? ?? 66 8B 10 66 3B 11 75 1E 66 85 D2 74 15 66 8B 50 02 66 3B 51 02 75 0F 83 C0 04 83 C1 04 66 85 D2 75 DE 33 C0 EB 05 1B C0 83 D8 FF 85 C0 0F 85 ?? ?? ?? ?? 8B 4C 24 70 8D 44 24 18 50 51 B8 34 00 00 00 E8 ?? ?? ?? ?? 8B 74 24 18 85 F6 8B 7C 24 1C 74 79 8B 16 8B 42 2C 8B CE FF D0 83 F8 34 75 6B 8B D5 8D 44 24 4C E8 ?? ?? ?? ?? 85 FF 89 74 24 18 89 7C 24 1C 74 0C 8D 4F 04 BA 01 00 00 00 F0 0F C1 11",
+      "mask":      "xxxxxxxxxxxx????xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx????xxxxxxxxxxxxxxxxxxxxxxxxxxxx????xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "bridge":    "process_bridge"
     }
   ],
   "globals": {
@@ -127,25 +136,6 @@ The stub loops for(i<numFuncs) lua_register(L, funcs[i].luaName, funcs[i].thunk)
 
 ---
 
-4. TODO checklist (scalable version)
-
-#	Item	Owner/notes
-
-1	Implement JSON-driven signature loader	RapidJSON or nlohmann/json
-2	Modular stub build: emit bridges as symbols, auto-populate funcs[]	Section .bridges in stub
-3	Template bridge generator (Python)	Given fastcallSig, output asm thunk
-4	Spell-casting research<br> • identify CastSpellRequest function<br> • craft pattern + bridge	
-5	Skill use research (UseSkillRequest)	
-6	Console command list inside patch console → prints all registered Lua natives	
-7	CLI flags<br> --force-rescan, --add-func walk.json, --list-cache	
-8	Graceful failure: if any pattern not found, warn & skip that Lua native but continue others.	
-9	CI script (GitHub Actions) builds 32-bit EXE from stub + injector	
-10	Documentation updates for contributors (HOWTO add new native)	
-
-
-
----
-
 5. HOWTO: add a new Lua native
 
 1. Reverse client; locate function you want (CastSpell, UseSkill, etc.).
@@ -185,5 +175,5 @@ useSkill(4)     -- use skill #4 (Hiding, etc.)
 
 ---
 
-Keep this README/TODO in the repo root; extend the signatures.json and bridges.asm as you (or the community) reverse additional client capabilities.
+Keep this README and TODOClientPatch.md in the repo root; extend the signatures.json and bridges.asm as you (or the community) reverse additional client capabilities.
 
