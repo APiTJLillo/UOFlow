@@ -19,10 +19,15 @@ UOFlow is a UI modification for the **Ultima Online Enhanced Client** focused on
 - `UOFlow/Source/` – Main Lua scripts for UI windows, macros and the visual programming system
 - `UOFlow/Source/UOFlow/` – Implementation of the visual programming interface
 - `Anarchy` – Example configuration XML shipped with the mod
+- `UOWalkPatch/` – Helper injector for registering new Lua natives
+- `UOWalkPatch/command_list.json` – Enumerates skills and spells for the `processCommand` function
 
 ## Usage
 
 These files are intended to be placed inside the `UserInterface` folder of your Ultima Online installation. After copying, start the Enhanced Client and select the *UOFlow* UI in the options menu.
+
+## Client Patcher
+UOWalkPatch is a helper injector built in C++. It scans the client for byte signatures defined in `signatures.json` and registers additional Lua natives using a small injected stub. A debug console is spawned during injection so you can see log output about pattern matches and the injection process. Build it with CMake inside the `UOWalkPatch` directory.
 
 Development of this project is Lua based and does not currently include an automated build system. Most files can be edited directly and reloaded by restarting the client.
 
