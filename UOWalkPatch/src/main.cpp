@@ -8,10 +8,10 @@
 #include <string>
 #include <algorithm>
 #include "stub_bin.h"
-#include <nlohmann/json.hpp>
+#include <cstdint>
+#include <cstring>
 #include <sstream>
-
-using json = nlohmann::json;
+#include <regex>
 
 namespace {
     std::ofstream log_file;
@@ -72,13 +72,6 @@ namespace {
     }
 }
 
-struct Signature {
-    std::string lua_name;
-    std::string pattern;
-    std::string bridge;
-    uintptr_t address{0};
-};
-
 struct PatternData {
     std::vector<uint8_t> bytes;
     std::string mask;
@@ -100,6 +93,34 @@ PatternData parsePattern(const std::string& pat) {
         }
     }
     return out;
+}
+
+struct Signature {
+    std::string lua_name;
+    std::string pattern;
+    std::string bridge;
+    uintptr_t address{0};
+};
+
+bool loadSignatures(const std::string& path, std::vector<Signature>& out) {
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        std::cerr << "failed to open signatures.json\n";
+        return false;
+    }
+    std::string data((std::istreambuf_iterator<char>(f)), {});
+    std::regex func_re(R"(\{[^\}]*\"lua_name\"\s*:\s*\"([^\"]+)\"[^\}]*\"pattern\"\s*:\s*\"([^\"]+)\"[^\}]*\"bridge\"\s*:\s*\"([^\"]+)\")");
+    std::smatch m;
+    auto it = data.cbegin();
+    while (std::regex_search(it, data.cend(), m, func_re)) {
+        Signature s;
+        s.lua_name = m[1];
+        s.pattern  = m[2];
+        s.bridge   = m[3];
+        out.push_back(s);
+        it = m.suffix().first;
+    }
+    return !out.empty();
 }
 
 bool isLikelyCodeRegion(const MEMORY_BASIC_INFORMATION& mbi) {
@@ -181,10 +202,11 @@ bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
 
     try {
         const size_t CHUNK_SIZE = 4096;  // Read in 4KB chunks
+        const size_t STEP_SIZE = CHUNK_SIZE - pat.bytes.size() + 1;
         size_t bytesScanned = 0;
         std::vector<uint8_t> buffer(CHUNK_SIZE);
 
-        for (uintptr_t addr = start; addr < end; addr += CHUNK_SIZE) {
+        for (uintptr_t addr = start; addr < end; addr += STEP_SIZE) {
             size_t toRead = std::min<size_t>(CHUNK_SIZE, end - addr);
             
             SIZE_T read;
@@ -239,22 +261,75 @@ bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
     return false;
 }
 
-bool loadSignatures(const std::string& path, std::vector<Signature>& out) {
-    std::ifstream f(path);
-    if (!f.is_open()) {
-        std::cerr << "failed to open signatures.json\n";
+// Scan for a raw byte sequence (used for string searches)
+bool scanForBytes(HANDLE proc, const std::vector<uint8_t>& bytes, uintptr_t& found) {
+    PatternData pd;
+    pd.bytes = bytes;
+    pd.mask.assign(bytes.size(), 'x');
+    return scanProcess(proc, pd, found);
+}
+
+bool scanForString(HANDLE proc, const std::string& str, uintptr_t& found) {
+    std::vector<uint8_t> bytes(str.begin(), str.end());
+    bytes.push_back('\0');
+    return scanForBytes(proc, bytes, found);
+}
+
+bool findPushWithAddress(HANDLE proc, uintptr_t addr, uintptr_t& pushAddr) {
+    std::vector<uint8_t> pat(5);
+    pat[0] = 0x68; // push imm32
+    std::memcpy(&pat[1], &addr, 4);
+    return scanForBytes(proc, pat, pushAddr);
+}
+
+bool findRegisterLuaFunction(HANDLE proc, uintptr_t& out) {
+    uintptr_t strAddr = 0;
+    if (!scanForString(proc, "GetBuildVersion", strAddr)) {
+        debug_log("GetBuildVersion string not found");
         return false;
     }
-    json j; f >> j;
-    for (const auto& item : j["functions"]) {
-        Signature s;
-        s.lua_name = item["lua_name"].get<std::string>();
-        s.pattern = item["pattern"].get<std::string>();
-        s.bridge = item["bridge"].get<std::string>();
-        out.push_back(s);
+    debug_log("GetBuildVersion string at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<strAddr; return oss.str();}());
+
+    uintptr_t pushAddr = 0;
+    if (!findPushWithAddress(proc, strAddr, pushAddr)) {
+        debug_log("push instruction for GetBuildVersion not found");
+        return false;
     }
+    debug_log("push of GetBuildVersion found at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<pushAddr; return oss.str();}());
+
+    uintptr_t callAddr = pushAddr + 11; // push str, push impl, push esi, call
+    uint8_t opcode = 0;
+    SIZE_T read = 0;
+    if (!ReadProcessMemory(proc, (LPCVOID)callAddr, &opcode, 1, &read) || opcode != 0xE8) {
+        debug_log("expected call opcode not found");
+        return false;
+    }
+    int32_t rel = 0;
+    if (!ReadProcessMemory(proc, (LPCVOID)(callAddr + 1), &rel, 4, &read)) {
+        debug_log("failed to read relative offset");
+        return false;
+    }
+    out = callAddr + 5 + rel;
+    debug_log("RegisterLuaFunction at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<out; return oss.str();}());
     return true;
 }
+
+bool findLuaStatePtr(HANDLE proc, uintptr_t& out) {
+    PatternData pat = parsePattern("A1 ?? ?? ?? ?? 85 C0 75 ?? 8B 08");
+    uintptr_t match = 0;
+    if (!scanProcess(proc, pat, match)) {
+        debug_log("LuaState pattern not found");
+        return false;
+    }
+    SIZE_T read = 0;
+    if (!ReadProcessMemory(proc, (LPCVOID)(match + 1), &out, 4, &read)) {
+        debug_log("failed to read LuaState pointer address");
+        return false;
+    }
+    debug_log("LuaState global at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<out; return oss.str();}());
+    return true;
+}
+
 
 DWORD findProcess(const std::wstring& name) {
     DWORD pid = 0;
@@ -360,12 +435,6 @@ int main() {
         debug_log("This may prevent access to protected processes");
     }
     
-    std::vector<Signature> sigs;
-    if (!loadSignatures("signatures.json", sigs)) {
-        close_logging();
-        return 1;
-    }
-    debug_log("loaded signatures" );
 
     // Try different common case variations of the process name
     std::vector<std::wstring> processNames = {
@@ -413,110 +482,96 @@ int main() {
     debug_log("waiting for process to initialize (5 seconds)...");
     Sleep(5000);
 
-    bool anyPatternFound = false;
-    
-    // Wait a bit longer for the process to initialize
-    debug_log("performing module enumeration check...");
-    DWORD needed;
-    HMODULE modules[1024];
-    if (!EnumProcessModules(hProc, modules, sizeof(modules), &needed)) {
-        debug_log("warning: EnumProcessModules failed, process might not be fully initialized");
-        Sleep(2000); // Wait a bit longer
+    // Locate RegisterLuaFunction
+    uintptr_t registerAddr = 0;
+    if (!findRegisterLuaFunction(hProc, registerAddr)) {
+        debug_log("failed to locate RegisterLuaFunction");
+        CloseHandle(hProc);
+        close_logging();
+        return 1;
     }
-    
+
+    uintptr_t luaStateGlobal = 0;
+    if (!findLuaStatePtr(hProc, luaStateGlobal)) {
+        CloseHandle(hProc);
+        close_logging();
+        return 1;
+    }
+
+    uintptr_t luaState = 0;
+    SIZE_T read = 0;
+    for (int i = 0; i < 10 && luaState == 0; ++i) {
+        ReadProcessMemory(hProc, (LPCVOID)luaStateGlobal, &luaState, 4, &read);
+        if (!luaState) Sleep(500);
+    }
+    if (!luaState) {
+        debug_log("lua_State not initialized");
+        CloseHandle(hProc);
+        close_logging();
+        return 1;
+    }
+
+    debug_log("lua_State pointer: 0x" + [&]{std::ostringstream oss; oss<<std::hex<<luaState; return oss.str();}());
+
+    std::vector<Signature> sigs;
+    if (!loadSignatures("signatures.json", sigs)) {
+        debug_log("failed to load signatures.json");
+        CloseHandle(hProc);
+        close_logging();
+        return 1;
+    }
+
     for (auto& s : sigs) {
         PatternData pd = parsePattern(s.pattern);
         uintptr_t addr = 0;
-        
         debug_log("scanning for " + s.lua_name + " pattern");
-        debug_log("pattern size: " + std::to_string(pd.bytes.size()) + " bytes");
-        debug_log("mask: " + pd.mask);
-
-        // Try scanning up to 3 times with delays
-        for (int attempt = 1; attempt <= 3; attempt++) {
-            if (scanProcess(hProc, pd, addr)) {
-                s.address = addr;
-                debug_log("found " + s.lua_name + " at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<addr; return oss.str();}());
-                anyPatternFound = true;
-                break;
-            }
-            
-            if (attempt < 3) {
-                debug_log("attempt " + std::to_string(attempt) + " failed, waiting before retry...");
-                Sleep(1000);
-            } else {
-                debug_log("failed to find pattern for " + s.lua_name + " after " + std::to_string(attempt) + " attempts");
-            }
+        if (scanProcess(hProc, pd, addr)) {
+            s.address = addr;
+            debug_log("found " + s.lua_name + " at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<addr; return oss.str();}());
+        } else {
+            debug_log("pattern for " + s.lua_name + " not found");
+            continue;
         }
-    }
 
-    if (!anyPatternFound) {
-        debug_log("warning: no patterns were found, process memory might not be accessible");
-        // Don't try to inject if we couldn't find any patterns
-        CloseHandle(hProc);
-        close_logging();
-        return 1;
-    }
-
-    // Allocate space for stub + patch info
-    // First try to verify we can read the process memory
-    MEMORY_BASIC_INFORMATION mbi;
-    if (!VirtualQueryEx(hProc, (LPCVOID)0x400000, &mbi, sizeof(mbi))) {
-        debug_log("warning: VirtualQueryEx failed, process might not be fully loaded");
-        Sleep(1000); // Wait a bit and try again
-        if (!VirtualQueryEx(hProc, (LPCVOID)0x400000, &mbi, sizeof(mbi))) {
-            std::cerr << "cannot query process memory (error: " << GetLastError() << ")\n";
-            CloseHandle(hProc);
-            close_logging();
-            return 1;
+        std::string name = s.lua_name;
+        SIZE_T nameLen = name.size() + 1;
+        SIZE_T totalSize = nameLen + bridge_stub_len + stub_template_len;
+        void* remote = VirtualAllocEx(hProc, nullptr, totalSize, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+        if (!remote) {
+            debug_log("memory allocation failed for " + s.lua_name);
+            continue;
         }
-    }
+        uintptr_t remoteBase = (uintptr_t)remote;
+        uintptr_t nameAddr = remoteBase;
+        uintptr_t bridgeAddr = nameAddr + nameLen;
+        uintptr_t stubAddr = bridgeAddr + bridge_stub_len;
 
-    // Allocate memory with more restrictive permissions first
-    SIZE_T totalSize = stub_bin_len;
-    void* remote = VirtualAllocEx(hProc, nullptr, totalSize, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-    if (!remote) {
-        std::cerr << "memory allocation failed (error: " << GetLastError() << ")\n";
-        CloseHandle(hProc);
-        close_logging();
-        return 1;
-    }
-    debug_log("allocated remote memory");
+        SIZE_T written = 0;
+        WriteProcessMemory(hProc, (LPVOID)nameAddr, name.c_str(), nameLen, &written);
+        WriteProcessMemory(hProc, (LPVOID)bridgeAddr, bridge_stub, bridge_stub_len, &written);
 
-    // Write the stub
-    SIZE_T written = 0;
-    if (!WriteProcessMemory(hProc, remote, stub_bin, stub_bin_len, &written) || written != stub_bin_len) {
-        std::cerr << "failed to write memory (error: " << GetLastError() << ")\n";
+        std::vector<uint8_t> stub(stub_template, stub_template + stub_template_len);
+        *(uint32_t*)&stub[STUB_NAME_OFF]   = (uint32_t)nameAddr;
+        *(uint32_t*)&stub[STUB_BRIDGE_OFF] = (uint32_t)bridgeAddr;
+        *(uint32_t*)&stub[STUB_STATE_OFF]  = (uint32_t)luaState;
+        *(uint32_t*)&stub[STUB_REG_OFF]    = (uint32_t)registerAddr;
+
+        WriteProcessMemory(hProc, (LPVOID)stubAddr, stub.data(), stub.size(), &written);
+
+        DWORD oldProtect;
+        VirtualProtectEx(hProc, remote, totalSize, PAGE_EXECUTE_READ, &oldProtect);
+
+        HANDLE thread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)stubAddr, nullptr, 0, nullptr);
+        if (thread) {
+            debug_log("registered " + s.lua_name);
+            WaitForSingleObject(thread, 2000);
+            CloseHandle(thread);
+        } else {
+            debug_log("CreateRemoteThread failed for " + s.lua_name);
+        }
+
         VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
-        CloseHandle(hProc);
-        return 1;
     }
-    debug_log("wrote stub to remote process");
-
-    // Change permissions to allow execution
-    DWORD oldProtect;
-    if (!VirtualProtectEx(hProc, remote, totalSize, PAGE_EXECUTE_READ, &oldProtect)) {
-        std::cerr << "failed to set memory permissions (error: " << GetLastError() << ")\n";
-        VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
-        CloseHandle(hProc);
-        return 1;
-    }
-
-    // Create the remote thread with proper error handling
-    HANDLE thread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)remote, nullptr, 0, nullptr);
-    if (thread) {
-        debug_log("stub injected, waiting for completion");
-        if (WaitForSingleObject(thread, 5000) == WAIT_TIMEOUT) { // 5 second timeout
-            debug_log("warning: thread execution timed out");
-            TerminateThread(thread, 1);
-        }
-        CloseHandle(thread);
-    } else {
-        std::cerr << "CreateRemoteThread failed (error: " << GetLastError() << ")\n";
-    }
-
-    // Cleanup
-    VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
     CloseHandle(hProc);
     debug_log("done");
     close_logging();
