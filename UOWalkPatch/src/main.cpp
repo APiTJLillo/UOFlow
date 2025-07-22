@@ -315,6 +315,23 @@ bool findRegisterLuaFunction(HANDLE proc, uintptr_t& regOut, uintptr_t& callSite
     return true;
 }
 
+bool findLuaStatePtr(HANDLE proc, uintptr_t& out) {
+    PatternData pat = parsePattern("A1 ?? ?? ?? ?? 85 C0 75 ?? 8B 08");
+    uintptr_t match = 0;
+    if (!scanProcess(proc, pat, match)) {
+        debug_log("LuaState pattern not found");
+        return false;
+    }
+    SIZE_T read = 0;
+    if (!ReadProcessMemory(proc, (LPCVOID)(match + 1), &out, 4, &read)) {
+        debug_log("failed to read LuaState pointer address");
+        return false;
+    }
+    debug_log("LuaState global at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<out; return oss.str();}());
+    return true;
+}
+
+
 DWORD findProcess(const std::wstring& name) {
     DWORD pid = 0;
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
