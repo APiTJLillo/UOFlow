@@ -124,21 +124,39 @@ bool loadSignatures(const std::string& path, std::vector<Signature>& out) {
 }
 
 bool getProcessBitness(HANDLE proc, bool& is64Bit) {
-    BOOL wow64 = FALSE;
-    using IsWow64Process_t = BOOL (WINAPI*)(HANDLE, PBOOL);
-#ifdef _WIN64
-    is64Bit = true; // assume 64-bit unless wow64 says otherwise
-#else
     is64Bit = false;
-#endif
 
-    HMODULE k32 = GetModuleHandleA("kernel32.dll");
-    if (!k32) return false;
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    if (!k32)
+        return false;
+
+    using IsWow64Process2_t = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
+    auto fn2 = reinterpret_cast<IsWow64Process2_t>(GetProcAddress(k32, "IsWow64Process2"));
+    if (fn2) {
+        USHORT procMachine = 0, nativeMachine = 0;
+        if (fn2(proc, &procMachine, &nativeMachine)) {
+            is64Bit = (nativeMachine == IMAGE_FILE_MACHINE_AMD64 ||
+                       nativeMachine == IMAGE_FILE_MACHINE_ARM64);
+            return true;
+        }
+    }
+
+    using IsWow64Process_t = BOOL(WINAPI*)(HANDLE, PBOOL);
     auto fn = reinterpret_cast<IsWow64Process_t>(GetProcAddress(k32, "IsWow64Process"));
-    if (!fn) return true; // function not available, assume same as our bitness
-    if (!fn(proc, &wow64)) return false;
+    if (fn) {
+        BOOL wow64 = FALSE;
+        if (fn(proc, &wow64)) {
 #ifdef _WIN64
-    is64Bit = !wow64;
+            is64Bit = !wow64;
+#else
+            is64Bit = false;
+#endif
+            return true;
+        }
+    }
+
+#ifdef _WIN64
+    is64Bit = true;
 #else
     is64Bit = false;
 #endif
@@ -156,11 +174,13 @@ bool isLikelyCodeRegion(const MEMORY_BASIC_INFORMATION& mbi) {
 }
 
 bool enumProcessModulesSafe(HANDLE proc, std::vector<HMODULE>& mods) {
-    HMODULE tmp[1024];
     DWORD needed = 0;
-    if (EnumProcessModulesEx(proc, tmp, sizeof(tmp), &needed, LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
-        mods.assign(tmp, tmp + (needed / sizeof(HMODULE)));
-        return true;
+    if (EnumProcessModulesEx(proc, nullptr, 0, &needed, LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
+        mods.resize(needed / sizeof(HMODULE));
+        if (EnumProcessModulesEx(proc, mods.data(), needed, &needed, LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
+            mods.resize(needed / sizeof(HMODULE));
+            return true;
+        }
     }
 
     debug_log("EnumProcessModulesEx failed: " + std::to_string(GetLastError()) + ", falling back to ToolHelp");
@@ -178,7 +198,7 @@ bool enumProcessModulesSafe(HANDLE proc, std::vector<HMODULE>& mods) {
         return false;
     }
     do {
-        mods.push_back((HMODULE)me.modBaseAddr);
+        mods.push_back(reinterpret_cast<HMODULE>(me.modBaseAddr));
     } while (Module32Next(snap, &me));
     CloseHandle(snap);
     return !mods.empty();
