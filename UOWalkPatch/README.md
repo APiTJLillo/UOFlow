@@ -12,9 +12,9 @@ make
 ```
 
 Run `UOWalkPatch.exe` after the client is already running. The tool attaches to
-`uosa.exe`, locates the hidden `RegisterLuaFunction` routine and the global
-`lua_State` pointer, then registers any functions described in
-`signatures.json`.  A small monitoring thread stays alive and watches for the
-UI being reloaded (when the `lua_State` pointer changes) so the natives are
-re-registered automatically.  A debug console pops up showing pattern matches
-and other status messages. Press **Enter** to stop the helper.
+`uosa.exe`, locates the hidden `RegisterLuaFunction` call used when the client
+registers its own Lua functions and patches it. The installed hook captures the
+internal `lua_State*` and registers any natives described in `signatures.json`.
+Reloading the UI will trigger the hook again so the functions remain available.
+A debug console pops up showing pattern matches and other status messages.
+Press **Enter** to exit the helper.

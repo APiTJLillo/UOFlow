@@ -422,64 +422,67 @@ struct RemoteFuncInfo {
     uint32_t bridgeAddr;
 };
 
-struct MonitorContext {
-    HANDLE process;
-    uintptr_t luaStatePtrAddr;
-    uintptr_t registerFunc;
-    std::vector<RemoteFuncInfo> funcs;
-    volatile bool running{true};
-};
+struct RemoteAlloc { LPVOID addr; SIZE_T size; };
 
-bool registerFunction(HANDLE proc, const RemoteFuncInfo& info,
-                      uintptr_t luaState, uintptr_t regFunc) {
-    std::vector<uint8_t> stub(stub_template, stub_template + stub_template_len);
-    *(uint32_t*)&stub[STUB_NAME_OFF]   = info.nameAddr;
-    *(uint32_t*)&stub[STUB_BRIDGE_OFF] = info.bridgeAddr;
-    *(uint32_t*)&stub[STUB_STATE_OFF]  = (uint32_t)luaState;
-    *(uint32_t*)&stub[STUB_REG_OFF]    = (uint32_t)regFunc;
-
-    void* remote = VirtualAllocEx(proc, nullptr, stub.size(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if (!remote) return false;
+bool installHook(HANDLE proc, uintptr_t regFunc, uintptr_t callSite,
+                 const std::vector<RemoteFuncInfo>& funcs,
+                 std::vector<RemoteAlloc>& allocs) {
     SIZE_T written = 0;
-    WriteProcessMemory(proc, remote, stub.data(), stub.size(), &written);
-    HANDLE th = CreateRemoteThread(proc, nullptr, 0, (LPTHREAD_START_ROUTINE)remote, nullptr, 0, nullptr);
-    if (!th) {
-        VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
+
+    void* arrayMem = VirtualAllocEx(proc, nullptr,
+                                    funcs.size() * sizeof(RemoteFuncInfo),
+                                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!arrayMem) return false;
+    WriteProcessMemory(proc, arrayMem, funcs.data(),
+                       funcs.size() * sizeof(RemoteFuncInfo), &written);
+    allocs.push_back({ arrayMem, funcs.size() * sizeof(RemoteFuncInfo) });
+
+    uint32_t zero = 0;
+    void* flagMem = VirtualAllocEx(proc, nullptr, sizeof(uint32_t),
+                                   MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!flagMem) return false;
+    WriteProcessMemory(proc, flagMem, &zero, sizeof(uint32_t), &written);
+    allocs.push_back({ flagMem, sizeof(uint32_t) });
+
+    std::vector<uint8_t> stub(hook_stub_template,
+                              hook_stub_template + hook_stub_template_len);
+    *(uint32_t*)&stub[HOOK_REG_OFF1]  = (uint32_t)regFunc;
+    *(uint32_t*)&stub[HOOK_REG_OFF2]  = (uint32_t)regFunc;
+    *(uint32_t*)&stub[HOOK_FLAG_OFF]  = (uint32_t)(uintptr_t)flagMem;
+    *(uint32_t*)&stub[HOOK_NUM_OFF]   = (uint32_t)funcs.size();
+    *(uint32_t*)&stub[HOOK_FUNCS_OFF] = (uint32_t)(uintptr_t)arrayMem;
+    *(uint32_t*)&stub[HOOK_RET_OFF]   = (uint32_t)(callSite + 5);
+
+    void* stubMem = VirtualAllocEx(proc, nullptr, stub.size(),
+                                   MEM_COMMIT | MEM_RESERVE,
+                                   PAGE_EXECUTE_READWRITE);
+    if (!stubMem) return false;
+    WriteProcessMemory(proc, stubMem, stub.data(), stub.size(), &written);
+    allocs.push_back({ stubMem, stub.size() });
+
+    uint8_t jmp[5];
+    jmp[0] = 0xE9;
+    uint32_t rel = (uint32_t)((uintptr_t)stubMem - (callSite + 5));
+    std::memcpy(&jmp[1], &rel, 4);
+
+    DWORD oldProt;
+    if (!VirtualProtectEx(proc, (LPVOID)callSite, 5, PAGE_EXECUTE_READWRITE,
+                          &oldProt))
         return false;
-    }
-    WaitForSingleObject(th, INFINITE);
-    CloseHandle(th);
-    VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
+    WriteProcessMemory(proc, (LPVOID)callSite, jmp, 5, &written);
+    VirtualProtectEx(proc, (LPVOID)callSite, 5, oldProt, &oldProt);
+
     return true;
 }
 
-DWORD WINAPI monitorThread(LPVOID param) {
-    MonitorContext* ctx = reinterpret_cast<MonitorContext*>(param);
-    uintptr_t lastState = 0;
-    while (ctx->running) {
-        uintptr_t state = 0;
-        SIZE_T read = 0;
-        ReadProcessMemory(ctx->process, (LPCVOID)ctx->luaStatePtrAddr, &state, sizeof(state), &read);
-        if (state && state != lastState) {
-            debug_log("lua_State changed; registering natives");
-            for (const auto& f : ctx->funcs) {
-                registerFunction(ctx->process, f, state, ctx->registerFunc);
-            }
-            lastState = state;
-        }
-        if (WaitForSingleObject(ctx->process, 0) != WAIT_TIMEOUT) {
-            break; // process exited
-        }
-        Sleep(1000);
-    }
-    return 0;
-}
+
 
 int main() {
     init_logging();
 
     if (!enableDebugPrivilege()) {
         debug_log("WARNING: could not enable debug privilege");
+    }
 
     // Try different common case variations of the process name
     std::vector<std::wstring> processNames = {
@@ -515,13 +518,6 @@ int main() {
         close_logging();
         return 1;
     }
-    uintptr_t luaStatePtrAddr = 0;
-    if (!findLuaStatePtr(hProc, luaStatePtrAddr)) {
-        debug_log("failed to locate LuaState global");
-        CloseHandle(hProc);
-        close_logging();
-        return 1;
-    }
 
     std::vector<Signature> sigs;
     if (!loadSignatures("signatures.json", sigs)) {
@@ -531,7 +527,6 @@ int main() {
         return 1;
     }
 
-    struct RemoteAlloc { LPVOID addr; SIZE_T size; };
     std::vector<RemoteAlloc> allocs;
     std::vector<RemoteFuncInfo> funcs;
 
@@ -563,23 +558,18 @@ int main() {
         allocs.push_back({ name, s.lua_name.size() + 1 });
     }
 
-    MonitorContext ctx{ hProc, luaStatePtrAddr, regFunc, funcs };
-    HANDLE monThread = CreateThread(nullptr, 0, monitorThread, &ctx, 0, nullptr);
-    if (!monThread) {
-        debug_log("failed to create monitor thread");
+    // install hook stub at the registration call site
+    if (!installHook(hProc, regFunc, callSite, funcs, allocs)) {
+        debug_log("failed to install hook");
         for (auto& a : allocs) VirtualFreeEx(hProc, a.addr, 0, MEM_RELEASE);
         CloseHandle(hProc);
         close_logging();
         return 1;
     }
 
-    debug_log("monitoring started - press Enter to quit");
+    debug_log("hook installed - reload the UI to register natives. Press Enter to exit");
     std::cin.get();
-    ctx.running = false;
-    WaitForSingleObject(monThread, INFINITE);
-    CloseHandle(monThread);
 
-    for (auto& a : allocs) VirtualFreeEx(hProc, a.addr, 0, MEM_RELEASE);
     CloseHandle(hProc);
     close_logging();
     return 0;
