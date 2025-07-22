@@ -480,7 +480,6 @@ int main() {
 
     if (!enableDebugPrivilege()) {
         debug_log("WARNING: could not enable debug privilege");
-    }
 
     // Try different common case variations of the process name
     std::vector<std::wstring> processNames = {
@@ -516,7 +515,6 @@ int main() {
         close_logging();
         return 1;
     }
-
     uintptr_t luaStatePtrAddr = 0;
     if (!findLuaStatePtr(hProc, luaStatePtrAddr)) {
         debug_log("failed to locate LuaState global");
