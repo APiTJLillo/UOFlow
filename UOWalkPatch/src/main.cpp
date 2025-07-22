@@ -123,6 +123,28 @@ bool loadSignatures(const std::string& path, std::vector<Signature>& out) {
     return !out.empty();
 }
 
+bool getProcessBitness(HANDLE proc, bool& is64Bit) {
+    BOOL wow64 = FALSE;
+    using IsWow64Process_t = BOOL (WINAPI*)(HANDLE, PBOOL);
+#ifdef _WIN64
+    is64Bit = true; // assume 64-bit unless wow64 says otherwise
+#else
+    is64Bit = false;
+#endif
+
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    if (!k32) return false;
+    auto fn = reinterpret_cast<IsWow64Process_t>(GetProcAddress(k32, "IsWow64Process"));
+    if (!fn) return true; // function not available, assume same as our bitness
+    if (!fn(proc, &wow64)) return false;
+#ifdef _WIN64
+    is64Bit = !wow64;
+#else
+    is64Bit = false;
+#endif
+    return true;
+}
+
 bool isLikelyCodeRegion(const MEMORY_BASIC_INFORMATION& mbi) {
     // Code regions are typically:
     // 1. Committed memory
@@ -133,22 +155,49 @@ bool isLikelyCodeRegion(const MEMORY_BASIC_INFORMATION& mbi) {
            (mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED);
 }
 
+bool enumProcessModulesSafe(HANDLE proc, std::vector<HMODULE>& mods) {
+    HMODULE tmp[1024];
+    DWORD needed = 0;
+    if (EnumProcessModulesEx(proc, tmp, sizeof(tmp), &needed, LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
+        mods.assign(tmp, tmp + (needed / sizeof(HMODULE)));
+        return true;
+    }
+
+    debug_log("EnumProcessModulesEx failed: " + std::to_string(GetLastError()) + ", falling back to ToolHelp");
+    DWORD pid = GetProcessId(proc);
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (snap == INVALID_HANDLE_VALUE) {
+        debug_log("CreateToolhelp32Snapshot failed: " + std::to_string(GetLastError()));
+        return false;
+    }
+
+    MODULEENTRY32 me{ sizeof(me) };
+    if (!Module32First(snap, &me)) {
+        debug_log("Module32First failed: " + std::to_string(GetLastError()));
+        CloseHandle(snap);
+        return false;
+    }
+    do {
+        mods.push_back((HMODULE)me.modBaseAddr);
+    } while (Module32Next(snap, &me));
+    CloseHandle(snap);
+    return !mods.empty();
+}
+
 HMODULE getUOSAModule(HANDLE proc) {
-    HMODULE modules[1024];
-    DWORD needed;
-    if (!EnumProcessModules(proc, modules, sizeof(modules), &needed)) {
-        debug_log("Failed to enumerate process modules");
+    std::vector<HMODULE> modules;
+    if (!enumProcessModulesSafe(proc, modules)) {
         return NULL;
     }
 
-    for (DWORD i = 0; i < (needed / sizeof(HMODULE)); i++) {
+    for (HMODULE mod : modules) {
         char modName[MAX_PATH];
-        if (GetModuleFileNameExA(proc, modules[i], modName, sizeof(modName))) {
+        if (GetModuleFileNameExA(proc, mod, modName, sizeof(modName))) {
             std::string name = modName;
             std::transform(name.begin(), name.end(), name.begin(), ::tolower);
             if (name.find("uosa.exe") != std::string::npos) {
-                debug_log("Found UOSA.exe module at " + std::to_string((uintptr_t)modules[i]));
-                return modules[i];
+                debug_log("Found UOSA.exe module at " + std::to_string((uintptr_t)mod));
+                return mod;
             }
         }
     }
@@ -156,9 +205,8 @@ HMODULE getUOSAModule(HANDLE proc) {
 }
 
 bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
-    HMODULE modules[1024];
-    DWORD cbNeeded;
-    if (!EnumProcessModules(proc, modules, sizeof(modules), &cbNeeded)) {
+    std::vector<HMODULE> modules;
+    if (!enumProcessModulesSafe(proc, modules)) {
         debug_log("Failed to enumerate process modules");
         return false;
     }
@@ -166,12 +214,12 @@ bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
     // Find UOSA.exe module
     HMODULE uosaModule = NULL;
     char szModName[MAX_PATH];
-    for (DWORD i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
-        if (GetModuleFileNameExA(proc, modules[i], szModName, sizeof(szModName))) {
+    for (HMODULE mod : modules) {
+        if (GetModuleFileNameExA(proc, mod, szModName, sizeof(szModName))) {
             std::string modName = szModName;
             std::transform(modName.begin(), modName.end(), modName.begin(), ::tolower);
             if (modName.find("uosa.exe") != std::string::npos) {
-                uosaModule = modules[i];
+                uosaModule = mod;
                 debug_log("Found UOSA.exe at: " + modName);
                 break;
             }
@@ -484,6 +532,10 @@ int main() {
         debug_log("WARNING: could not enable debug privilege");
     }
 
+    if (!isProcessElevated()) {
+        debug_log("WARNING: injector is not running elevated - access may be limited");
+    }
+
     // Try different common case variations of the process name
     std::vector<std::wstring> processNames = {
         L"uosa.exe", L"UOSA.exe", L"Uosa.exe", L"wine-uosa.exe", L"wine-UOSA.exe"};
@@ -507,6 +559,21 @@ int main() {
         std::cerr << "failed to open process (error code: " << GetLastError() << ")\n";
         close_logging();
         return 1;
+    }
+
+    bool target64 = true;
+    if (getProcessBitness(hProc, target64)) {
+#ifdef _WIN64
+        const bool self64 = true;
+#else
+        const bool self64 = false;
+#endif
+        debug_log(std::string("Injector is ") + (self64 ? "64" : "32") + "-bit, target is " + (target64 ? "64" : "32") + "-bit");
+        if (self64 != target64) {
+            debug_log("WARNING: bitness mismatch detected - module enumeration may fail");
+        }
+    } else {
+        debug_log("Failed to determine target process bitness");
     }
 
     createRemoteConsole(hProc, pid);
