@@ -60,3 +60,16 @@ endif()
 # Copy required JSON files to build directory
 configure_file(${CMAKE_SOURCE_DIR}/signatures.json ${CMAKE_BINARY_DIR}/signatures.json COPYONLY)
 configure_file(${CMAKE_SOURCE_DIR}/command_list.json ${CMAKE_BINARY_DIR}/command_list.json COPYONLY)
+
+# Assemble bridges.asm to object file
+if(MSVC)
+    set(BRIDGES_OBJ ${CMAKE_CURRENT_BINARY_DIR}/bridges.obj)
+    add_custom_command(
+        OUTPUT ${BRIDGES_OBJ}
+        COMMAND ml.exe /c /Fo${BRIDGES_OBJ} ${CMAKE_SOURCE_DIR}/src/bridges.asm
+        DEPENDS ${CMAKE_SOURCE_DIR}/src/bridges.asm
+        COMMENT "Assembling bridges.asm"
+    )
+    set_source_files_properties(${BRIDGES_OBJ} PROPERTIES EXTERNAL_OBJECT TRUE)
+    list(APPEND SOURCES ${BRIDGES_OBJ})
+endif()

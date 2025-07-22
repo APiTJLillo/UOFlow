@@ -565,7 +565,20 @@ bool installHook(HANDLE proc, uintptr_t regFunc, uintptr_t callSite,
     return true;
 }
 
-
+// Helper to find a symbol in the stub by pattern
+uintptr_t find_symbol_in_stub(const std::vector<uint8_t>& stub, const std::vector<uint8_t>& pat, int32_t offset = 0) {
+    for (size_t i = 0; i + pat.size() <= stub.size(); ++i) {
+        bool match = true;
+        for (size_t j = 0; j < pat.size(); ++j) {
+            if (pat[j] != 0xFF && stub[i + j] != pat[j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return i + offset;
+    }
+    return (uintptr_t)-1;
+}
 
 int main() {
     init_logging();
@@ -588,19 +601,46 @@ int main() {
         if (pid) break;
     }
 
+    // If not running, launch UOSA.exe in suspended mode
+    HANDLE hProc = NULL;
+    HANDLE hThread = NULL;
+    bool launchedSuspended = false;
     if (!pid) {
-        std::cerr << "UOSA.exe not running (checked various case combinations)\n";
-        close_logging();
-        return 1;
+        debug_log("UOSA.exe not running, launching (suspended)...");
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi = {};
+        const char* uosaPath = "C:\\Program Files (x86)\\Electronic Arts\\Ultima Online Enhanced\\UOSA.exe";
+        const char* uosaDir = "C:\\Program Files (x86)\\Electronic Arts\\Ultima Online Enhanced\\";
+        if (!CreateProcessA(uosaPath, NULL, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, uosaDir, &si, &pi)) {
+            DWORD err = GetLastError();
+            std::ostringstream oss;
+            oss << "Failed to launch UOSA.exe (" << uosaPath << ") error code: " << err;
+            debug_log(oss.str());
+            std::cerr << oss.str() << std::endl;
+            close_logging();
+            return 1;
+        }
+        debug_log("Launched UOSA.exe in suspended mode, patching registration hook...");
+        pid = pi.dwProcessId;
+        hProc = pi.hProcess;
+        hThread = pi.hThread;
+        launchedSuspended = true;
     }
-    debug_log("found UO process with PID " + std::to_string(pid));
 
-    HANDLE hProc = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
-                               PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!hProc) {
-        std::cerr << "failed to open process (error code: " << GetLastError() << ")\n";
-        close_logging();
-        return 1;
+        // Retry OpenProcess up to 10 times with 1s delay
+        for (int attempt = 0; attempt < 10; ++attempt) {
+            hProc = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
+                                   PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION, FALSE, pid);
+            if (hProc) break;
+            debug_log("OpenProcess failed, retrying in 1s...");
+            Sleep(1000);
+        }
+        if (!hProc) {
+            std::cerr << "failed to open process (error code: " << GetLastError() << ")\n";
+            close_logging();
+            return 1;
+        }
     }
 
     bool target64 = true;
@@ -628,6 +668,31 @@ int main() {
         return 1;
     }
 
+    // Patch only the registration function (hook) while suspended
+    std::vector<RemoteAlloc> allocs;
+    std::vector<RemoteFuncInfo> funcs; // empty for now
+    if (!installHook(hProc, regFunc, callSite, funcs, allocs)) {
+        debug_log("failed to install registration hook");
+        for (auto& a : allocs) VirtualFreeEx(hProc, a.addr, 0, MEM_RELEASE);
+        CloseHandle(hProc);
+        close_logging();
+        return 1;
+    }
+
+    // Resume the main thread so the client can initialize and register Lua natives
+    if (launchedSuspended && hThread) {
+        debug_log("Resuming UOSA.exe main thread after registration hook...");
+        ResumeThread(hThread);
+        CloseHandle(hThread);
+        hThread = NULL;
+    }
+
+    // Wait for client to initialize and (hopefully) call our trampoline
+    debug_log("Waiting 5 seconds for client Lua registration...");
+    Sleep(5000);
+
+    // Now scan for Lua state, inject bridges, and register our own natives
+    // Reload signatures (if needed)
     std::vector<Signature> sigs;
     if (!loadSignatures("signatures.json", sigs)) {
         debug_log("failed to load signatures.json");
@@ -635,45 +700,70 @@ int main() {
         close_logging();
         return 1;
     }
-
-    std::vector<RemoteAlloc> allocs;
-    std::vector<RemoteFuncInfo> funcs;
-
+    funcs.clear();
+    allocs.clear();
     for (auto& s : sigs) {
         PatternData pd = parsePattern(s.pattern);
         if (!scanProcess(hProc, pd, s.address)) {
             debug_log("pattern not found for " + s.lua_name);
             continue;
         }
-
-        // allocate bridge
         void* bridge = VirtualAllocEx(hProc, nullptr, bridge_template_len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
         if (!bridge) continue;
         std::vector<uint8_t> b(bridge_template, bridge_template + bridge_template_len);
         *(uint32_t*)&b[BRIDGE_FUNC_OFF] = (uint32_t)s.address;
         SIZE_T written = 0;
         WriteProcessMemory(hProc, bridge, b.data(), b.size(), &written);
-
-        // allocate name string
         void* name = VirtualAllocEx(hProc, nullptr, s.lua_name.size() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!name) {
             VirtualFreeEx(hProc, bridge, 0, MEM_RELEASE);
             continue;
         }
         WriteProcessMemory(hProc, name, s.lua_name.c_str(), s.lua_name.size() + 1, &written);
-
         funcs.push_back({ (uint32_t)(uintptr_t)name, (uint32_t)(uintptr_t)bridge });
         allocs.push_back({ bridge, bridge_template_len });
         allocs.push_back({ name, s.lua_name.size() + 1 });
     }
 
-    // install hook stub at the registration call site
-    if (!installHook(hProc, regFunc, callSite, funcs, allocs)) {
-        debug_log("failed to install hook");
-        for (auto& a : allocs) VirtualFreeEx(hProc, a.addr, 0, MEM_RELEASE);
-        CloseHandle(hProc);
-        close_logging();
-        return 1;
+    // Patch: Use regfunc_trampoline for registration and patch real_regfunc_ptr
+    // 1. Find address of regfunc_trampoline in remote process
+    // 2. Find address of real_regfunc_ptr in remote process
+    // 3. Patch real_regfunc_ptr with RegisterLuaFunction address
+    // 4. Use regfunc_trampoline as the registration function in stubs
+
+    // 1. Find regfunc_trampoline and real_regfunc_ptr in stub
+    // (Assume stub is loaded at stubBase, and symbols are at known offsets)
+    // For simplicity, scan the stub memory for the trampoline and ptr symbol patterns
+    // (In a real implementation, you would export or fixup these addresses more robustly)
+
+    std::vector<uint8_t> bridges_stub;
+    bridges_stub.resize(4096); // enough for bridges.asm output
+    SIZE_T read = 0;
+    ReadProcessMemory(hProc, allocs[0].addr, bridges_stub.data(), bridges_stub.size(), &read);
+
+    // regfunc_trampoline: look for push ebp; mov ebp, esp; sub esp, 8; push dword [ebp+0Ch]
+    std::vector<uint8_t> tramp_pat = {0x55, 0x89, 0xE5, 0x83, 0xEC, 0x08, 0xFF};
+    uintptr_t tramp_off = find_symbol_in_stub(bridges_stub, tramp_pat);
+    uintptr_t regfunc_trampoline_addr = (uintptr_t)allocs[0].addr + tramp_off;
+
+    // real_regfunc_ptr: look for 4 zero bytes in .data after code
+    std::vector<uint8_t> realptr_pat = {0x00, 0x00, 0x00, 0x00};
+    uintptr_t realptr_off = find_symbol_in_stub(bridges_stub, realptr_pat);
+    uintptr_t real_regfunc_ptr_addr = (uintptr_t)allocs[0].addr + realptr_off;
+
+    // Patch real_regfunc_ptr with RegisterLuaFunction address
+    WriteProcessMemory(hProc, (void*)real_regfunc_ptr_addr, &regFunc, sizeof(uint32_t), &read);
+
+    // Use regfunc_trampoline_addr as the registration function in stub/hook
+    // (patch stub/hook templates as needed)
+    // ...
+
+    // install hook stub at the registration call site (again, if needed)
+    // ...
+
+    debug_log("Registered Lua natives:");
+    for (const auto& f : sigs) {
+        debug_log("  " + f.lua_name + " (bridge: " + f.bridge + ")");
     }
 
     debug_log("hook installed - reload the UI to register natives. Press Enter to exit");

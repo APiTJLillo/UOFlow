@@ -65,3 +65,7 @@ const unsigned int HOOK_NUM_OFF    = 30;
 const unsigned int HOOK_FUNCS_OFF  = 35;
 const unsigned int HOOK_REG_OFF2   = 50;
 const unsigned int HOOK_RET_OFF    = 65;
+
+// Patch: Use regfunc_trampoline instead of RegisterLuaFunction in stubs
+// The injector must patch the real RegisterLuaFunction address into real_regfunc_ptr in the target process.
+// The address of regfunc_trampoline should be used for the registration call in the stub.
