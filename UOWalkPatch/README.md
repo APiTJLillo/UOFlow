@@ -11,4 +11,10 @@ cmake ..
 make
 ```
 
-The resulting `UOWalkPatch.exe` should be run after the client is started. It will search for `uosa.exe`, allocate memory for the stub and spawn a remote thread. A debug console pops up showing pattern matches and other status messages.
+Run `UOWalkPatch.exe` after the client is already running. The tool attaches to
+`uosa.exe`, locates the hidden `RegisterLuaFunction` call used when the client
+registers its own Lua functions and patches it. The installed hook captures the
+internal `lua_State*` and registers any natives described in `signatures.json`.
+Reloading the UI will trigger the hook again so the functions remain available.
+A debug console pops up showing pattern matches and other status messages.
+Press **Enter** to exit the helper.
