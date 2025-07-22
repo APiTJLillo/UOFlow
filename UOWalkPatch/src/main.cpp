@@ -136,7 +136,8 @@ bool isLikelyCodeRegion(const MEMORY_BASIC_INFORMATION& mbi) {
 HMODULE getUOSAModule(HANDLE proc) {
     HMODULE modules[1024];
     DWORD needed;
-    if (!EnumProcessModules(proc, modules, sizeof(modules), &needed)) {
+    if (!EnumProcessModulesEx(proc, modules, sizeof(modules), &needed,
+                              LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
         debug_log("Failed to enumerate process modules");
         return NULL;
     }
@@ -158,7 +159,8 @@ HMODULE getUOSAModule(HANDLE proc) {
 bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
     HMODULE modules[1024];
     DWORD cbNeeded;
-    if (!EnumProcessModules(proc, modules, sizeof(modules), &cbNeeded)) {
+    if (!EnumProcessModulesEx(proc, modules, sizeof(modules), &cbNeeded,
+                              LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
         debug_log("Failed to enumerate process modules");
         return false;
     }
