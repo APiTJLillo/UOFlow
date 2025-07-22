@@ -123,6 +123,28 @@ bool loadSignatures(const std::string& path, std::vector<Signature>& out) {
     return !out.empty();
 }
 
+bool getProcessBitness(HANDLE proc, bool& is64Bit) {
+    BOOL wow64 = FALSE;
+    using IsWow64Process_t = BOOL (WINAPI*)(HANDLE, PBOOL);
+#ifdef _WIN64
+    is64Bit = true; // assume 64-bit unless wow64 says otherwise
+#else
+    is64Bit = false;
+#endif
+
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    if (!k32) return false;
+    auto fn = reinterpret_cast<IsWow64Process_t>(GetProcAddress(k32, "IsWow64Process"));
+    if (!fn) return true; // function not available, assume same as our bitness
+    if (!fn(proc, &wow64)) return false;
+#ifdef _WIN64
+    is64Bit = !wow64;
+#else
+    is64Bit = false;
+#endif
+    return true;
+}
+
 bool isLikelyCodeRegion(const MEMORY_BASIC_INFORMATION& mbi) {
     // Code regions are typically:
     // 1. Committed memory
@@ -510,6 +532,10 @@ int main() {
         debug_log("WARNING: could not enable debug privilege");
     }
 
+    if (!isProcessElevated()) {
+        debug_log("WARNING: injector is not running elevated - access may be limited");
+    }
+
     // Try different common case variations of the process name
     std::vector<std::wstring> processNames = {
         L"uosa.exe", L"UOSA.exe", L"Uosa.exe", L"wine-uosa.exe", L"wine-UOSA.exe"};
@@ -533,6 +559,21 @@ int main() {
         std::cerr << "failed to open process (error code: " << GetLastError() << ")\n";
         close_logging();
         return 1;
+    }
+
+    bool target64 = true;
+    if (getProcessBitness(hProc, target64)) {
+#ifdef _WIN64
+        const bool self64 = true;
+#else
+        const bool self64 = false;
+#endif
+        debug_log(std::string("Injector is ") + (self64 ? "64" : "32") + "-bit, target is " + (target64 ? "64" : "32") + "-bit");
+        if (self64 != target64) {
+            debug_log("WARNING: bitness mismatch detected - module enumeration may fail");
+        }
+    } else {
+        debug_log("Failed to determine target process bitness");
     }
 
     createRemoteConsole(hProc, pid);
