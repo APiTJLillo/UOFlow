@@ -54,8 +54,8 @@ const unsigned char hook_stub_template[] = {
     0x75, 0xE9,                   // jnz  loop
     0x5F,                         // done: pop edi
     0x5B,                         // pop ebx
-    0xB8, 0,0,0,0,                // mov  eax, return address (patched)
-    0xFF, 0xE0                    // jmp  eax
+    0x68, 0,0,0,0,                // push return address (patched)
+    0xC3                          // ret
 };
 
 const size_t hook_stub_template_len = sizeof(hook_stub_template);
