@@ -134,27 +134,34 @@ bool getProcessBitness(HANDLE proc, bool& is64Bit) {
     auto fn2 = reinterpret_cast<IsWow64Process2_t>(GetProcAddress(k32, "IsWow64Process2"));
     if (fn2) {
         USHORT procMachine = 0, nativeMachine = 0;
-        if (fn2(proc, &procMachine, &nativeMachine)) {
-            is64Bit = (nativeMachine == IMAGE_FILE_MACHINE_AMD64 ||
-                       nativeMachine == IMAGE_FILE_MACHINE_ARM64);
-            return true;
-        }
+        if (!fn2(proc, &procMachine, &nativeMachine))
+            return false;
+
+        // For 64-bit processes procMachine is IMAGE_FILE_MACHINE_UNKNOWN.
+        if (procMachine == IMAGE_FILE_MACHINE_UNKNOWN)
+            is64Bit = true;
+        else
+            is64Bit = false;
+        return true;
     }
 
     using IsWow64Process_t = BOOL(WINAPI*)(HANDLE, PBOOL);
     auto fn = reinterpret_cast<IsWow64Process_t>(GetProcAddress(k32, "IsWow64Process"));
     if (fn) {
         BOOL wow64 = FALSE;
-        if (fn(proc, &wow64)) {
+        if (!fn(proc, &wow64))
+            return false;
 #ifdef _WIN64
-            is64Bit = !wow64;
+        is64Bit = !wow64;
 #else
-            is64Bit = false;
+        // 32-bit process calling IsWow64Process - if running under WOW64,
+        // the target must also be 32-bit.
+        is64Bit = false;
 #endif
-            return true;
-        }
+        return true;
     }
 
+    // Fallback: assume same bitness as self
 #ifdef _WIN64
     is64Bit = true;
 #else
@@ -183,11 +190,19 @@ bool enumProcessModulesSafe(HANDLE proc, std::vector<HMODULE>& mods) {
         }
     }
 
-    debug_log("EnumProcessModulesEx failed: " + std::to_string(GetLastError()) + ", falling back to ToolHelp");
+    DWORD err = GetLastError();
+    if (err == ERROR_ACCESS_DENIED)
+        debug_log("EnumProcessModulesEx access denied - try running as administrator");
+    else
+        debug_log("EnumProcessModulesEx failed: " + std::to_string(err) + ", falling back to ToolHelp");
     DWORD pid = GetProcessId(proc);
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
     if (snap == INVALID_HANDLE_VALUE) {
-        debug_log("CreateToolhelp32Snapshot failed: " + std::to_string(GetLastError()));
+        DWORD snapErr = GetLastError();
+        if (snapErr == ERROR_ACCESS_DENIED)
+            debug_log("CreateToolhelp32Snapshot access denied - try running as administrator");
+        else
+            debug_log("CreateToolhelp32Snapshot failed: " + std::to_string(snapErr));
         return false;
     }
 
