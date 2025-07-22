@@ -282,7 +282,7 @@ bool findPushWithAddress(HANDLE proc, uintptr_t addr, uintptr_t& pushAddr) {
     return scanForBytes(proc, pat, pushAddr);
 }
 
-bool findRegisterLuaFunction(HANDLE proc, uintptr_t& out) {
+bool findRegisterLuaFunction(HANDLE proc, uintptr_t& regOut, uintptr_t& callSiteOut) {
     uintptr_t strAddr = 0;
     if (!scanForString(proc, "GetBuildVersion", strAddr)) {
         debug_log("GetBuildVersion string not found");
@@ -309,8 +309,9 @@ bool findRegisterLuaFunction(HANDLE proc, uintptr_t& out) {
         debug_log("failed to read relative offset");
         return false;
     }
-    out = callAddr + 5 + rel;
-    debug_log("RegisterLuaFunction at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<out; return oss.str();}());
+    regOut = callAddr + 5 + rel;
+    callSiteOut = callAddr;
+    debug_log("RegisterLuaFunction at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<regOut; return oss.str();}());
     return true;
 }
 
@@ -416,41 +417,80 @@ bool enableDebugPrivilege() {
     return true;
 }
 
+struct RemoteFuncInfo {
+    uint32_t nameAddr;
+    uint32_t bridgeAddr;
+};
+
+struct MonitorContext {
+    HANDLE process;
+    uintptr_t luaStatePtrAddr;
+    uintptr_t registerFunc;
+    std::vector<RemoteFuncInfo> funcs;
+    volatile bool running{true};
+};
+
+bool registerFunction(HANDLE proc, const RemoteFuncInfo& info,
+                      uintptr_t luaState, uintptr_t regFunc) {
+    std::vector<uint8_t> stub(stub_template, stub_template + stub_template_len);
+    *(uint32_t*)&stub[STUB_NAME_OFF]   = info.nameAddr;
+    *(uint32_t*)&stub[STUB_BRIDGE_OFF] = info.bridgeAddr;
+    *(uint32_t*)&stub[STUB_STATE_OFF]  = (uint32_t)luaState;
+    *(uint32_t*)&stub[STUB_REG_OFF]    = (uint32_t)regFunc;
+
+    void* remote = VirtualAllocEx(proc, nullptr, stub.size(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!remote) return false;
+    SIZE_T written = 0;
+    WriteProcessMemory(proc, remote, stub.data(), stub.size(), &written);
+    HANDLE th = CreateRemoteThread(proc, nullptr, 0, (LPTHREAD_START_ROUTINE)remote, nullptr, 0, nullptr);
+    if (!th) {
+        VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
+        return false;
+    }
+    WaitForSingleObject(th, INFINITE);
+    CloseHandle(th);
+    VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
+    return true;
+}
+
+DWORD WINAPI monitorThread(LPVOID param) {
+    MonitorContext* ctx = reinterpret_cast<MonitorContext*>(param);
+    uintptr_t lastState = 0;
+    while (ctx->running) {
+        uintptr_t state = 0;
+        SIZE_T read = 0;
+        ReadProcessMemory(ctx->process, (LPCVOID)ctx->luaStatePtrAddr, &state, sizeof(state), &read);
+        if (state && state != lastState) {
+            debug_log("lua_State changed; registering natives");
+            for (const auto& f : ctx->funcs) {
+                registerFunction(ctx->process, f, state, ctx->registerFunc);
+            }
+            lastState = state;
+        }
+        if (WaitForSingleObject(ctx->process, 0) != WAIT_TIMEOUT) {
+            break; // process exited
+        }
+        Sleep(1000);
+    }
+    return 0;
+}
+
 int main() {
     init_logging();
-    
-    // Check if we're running with elevated privileges
-    if (!isProcessElevated()) {
-        debug_log("WARNING: Process is not running with elevated privileges");
-        debug_log("This may prevent access to protected processes");
-    } else {
-        debug_log("Process is running with elevated privileges");
-    }
 
-    // Try to enable debug privileges
-    if (enableDebugPrivilege()) {
-        debug_log("Successfully enabled debug privileges");
-    } else {
-        debug_log("WARNING: Failed to enable debug privileges");
-        debug_log("This may prevent access to protected processes");
-    }
-    
+    if (!enableDebugPrivilege()) {
+        debug_log("WARNING: could not enable debug privilege");
 
     // Try different common case variations of the process name
     std::vector<std::wstring> processNames = {
-        L"uosa.exe",
-        L"UOSA.exe",
-        L"Uosa.exe",
-        L"wine-uosa.exe",
-        L"wine-UOSA.exe"
-    };
-    
+        L"uosa.exe", L"UOSA.exe", L"Uosa.exe", L"wine-uosa.exe", L"wine-UOSA.exe"};
+
     DWORD pid = 0;
     for (const auto& name : processNames) {
         pid = findProcess(name);
         if (pid) break;
     }
-    
+
     if (!pid) {
         std::cerr << "UOSA.exe not running (checked various case combinations)\n";
         close_logging();
@@ -458,60 +498,30 @@ int main() {
     }
     debug_log("found UO process with PID " + std::to_string(pid));
 
-    // Try with full debug permissions first
-    HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    HANDLE hProc = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
+                               PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!hProc) {
-        debug_log("failed to open process with full permissions, trying reduced permissions...");
-        hProc = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION, FALSE, pid);
-        if (!hProc) {
-            debug_log("failed to open process with reduced permissions, trying minimal permissions...");
-            hProc = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, FALSE, pid);
-            if (!hProc) {
-                std::cerr << "failed to open process (error code: " << GetLastError() << ")\n";
-                close_logging();
-                return 1;
-            }
-        }
+        std::cerr << "failed to open process (error code: " << GetLastError() << ")\n";
+        close_logging();
+        return 1;
     }
-    debug_log("attached to process");
 
-    // Skip console creation in Wine environment
-    // createRemoteConsole(hProc, pid);
+    createRemoteConsole(hProc, pid);
 
-    // Give more time for the process to fully load
-    debug_log("waiting for process to initialize (5 seconds)...");
-    Sleep(5000);
-
-    // Locate RegisterLuaFunction
-    uintptr_t registerAddr = 0;
-    if (!findRegisterLuaFunction(hProc, registerAddr)) {
+    uintptr_t regFunc = 0, callSite = 0;
+    if (!findRegisterLuaFunction(hProc, regFunc, callSite)) {
         debug_log("failed to locate RegisterLuaFunction");
         CloseHandle(hProc);
         close_logging();
         return 1;
     }
-
-    uintptr_t luaStateGlobal = 0;
-    if (!findLuaStatePtr(hProc, luaStateGlobal)) {
+    uintptr_t luaStatePtrAddr = 0;
+    if (!findLuaStatePtr(hProc, luaStatePtrAddr)) {
+        debug_log("failed to locate LuaState global");
         CloseHandle(hProc);
         close_logging();
         return 1;
     }
-
-    uintptr_t luaState = 0;
-    SIZE_T read = 0;
-    for (int i = 0; i < 10 && luaState == 0; ++i) {
-        ReadProcessMemory(hProc, (LPCVOID)luaStateGlobal, &luaState, 4, &read);
-        if (!luaState) Sleep(500);
-    }
-    if (!luaState) {
-        debug_log("lua_State not initialized");
-        CloseHandle(hProc);
-        close_logging();
-        return 1;
-    }
-
-    debug_log("lua_State pointer: 0x" + [&]{std::ostringstream oss; oss<<std::hex<<luaState; return oss.str();}());
 
     std::vector<Signature> sigs;
     if (!loadSignatures("signatures.json", sigs)) {
@@ -521,59 +531,56 @@ int main() {
         return 1;
     }
 
+    struct RemoteAlloc { LPVOID addr; SIZE_T size; };
+    std::vector<RemoteAlloc> allocs;
+    std::vector<RemoteFuncInfo> funcs;
+
     for (auto& s : sigs) {
         PatternData pd = parsePattern(s.pattern);
-        uintptr_t addr = 0;
-        debug_log("scanning for " + s.lua_name + " pattern");
-        if (scanProcess(hProc, pd, addr)) {
-            s.address = addr;
-            debug_log("found " + s.lua_name + " at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<addr; return oss.str();}());
-        } else {
-            debug_log("pattern for " + s.lua_name + " not found");
+        if (!scanProcess(hProc, pd, s.address)) {
+            debug_log("pattern not found for " + s.lua_name);
             continue;
         }
 
-        std::string name = s.lua_name;
-        SIZE_T nameLen = name.size() + 1;
-        SIZE_T totalSize = nameLen + bridge_stub_len + stub_template_len;
-        void* remote = VirtualAllocEx(hProc, nullptr, totalSize, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-        if (!remote) {
-            debug_log("memory allocation failed for " + s.lua_name);
-            continue;
-        }
-        uintptr_t remoteBase = (uintptr_t)remote;
-        uintptr_t nameAddr = remoteBase;
-        uintptr_t bridgeAddr = nameAddr + nameLen;
-        uintptr_t stubAddr = bridgeAddr + bridge_stub_len;
-
+        // allocate bridge
+        void* bridge = VirtualAllocEx(hProc, nullptr, bridge_template_len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (!bridge) continue;
+        std::vector<uint8_t> b(bridge_template, bridge_template + bridge_template_len);
+        *(uint32_t*)&b[BRIDGE_FUNC_OFF] = (uint32_t)s.address;
         SIZE_T written = 0;
-        WriteProcessMemory(hProc, (LPVOID)nameAddr, name.c_str(), nameLen, &written);
-        WriteProcessMemory(hProc, (LPVOID)bridgeAddr, bridge_stub, bridge_stub_len, &written);
+        WriteProcessMemory(hProc, bridge, b.data(), b.size(), &written);
 
-        std::vector<uint8_t> stub(stub_template, stub_template + stub_template_len);
-        *(uint32_t*)&stub[STUB_NAME_OFF]   = (uint32_t)nameAddr;
-        *(uint32_t*)&stub[STUB_BRIDGE_OFF] = (uint32_t)bridgeAddr;
-        *(uint32_t*)&stub[STUB_STATE_OFF]  = (uint32_t)luaState;
-        *(uint32_t*)&stub[STUB_REG_OFF]    = (uint32_t)registerAddr;
-
-        WriteProcessMemory(hProc, (LPVOID)stubAddr, stub.data(), stub.size(), &written);
-
-        DWORD oldProtect;
-        VirtualProtectEx(hProc, remote, totalSize, PAGE_EXECUTE_READ, &oldProtect);
-
-        HANDLE thread = CreateRemoteThread(hProc, nullptr, 0, (LPTHREAD_START_ROUTINE)stubAddr, nullptr, 0, nullptr);
-        if (thread) {
-            debug_log("registered " + s.lua_name);
-            WaitForSingleObject(thread, 2000);
-            CloseHandle(thread);
-        } else {
-            debug_log("CreateRemoteThread failed for " + s.lua_name);
+        // allocate name string
+        void* name = VirtualAllocEx(hProc, nullptr, s.lua_name.size() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!name) {
+            VirtualFreeEx(hProc, bridge, 0, MEM_RELEASE);
+            continue;
         }
+        WriteProcessMemory(hProc, name, s.lua_name.c_str(), s.lua_name.size() + 1, &written);
 
-        VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
+        funcs.push_back({ (uint32_t)(uintptr_t)name, (uint32_t)(uintptr_t)bridge });
+        allocs.push_back({ bridge, bridge_template_len });
+        allocs.push_back({ name, s.lua_name.size() + 1 });
     }
+
+    MonitorContext ctx{ hProc, luaStatePtrAddr, regFunc, funcs };
+    HANDLE monThread = CreateThread(nullptr, 0, monitorThread, &ctx, 0, nullptr);
+    if (!monThread) {
+        debug_log("failed to create monitor thread");
+        for (auto& a : allocs) VirtualFreeEx(hProc, a.addr, 0, MEM_RELEASE);
+        CloseHandle(hProc);
+        close_logging();
+        return 1;
+    }
+
+    debug_log("monitoring started - press Enter to quit");
+    std::cin.get();
+    ctx.running = false;
+    WaitForSingleObject(monThread, INFINITE);
+    CloseHandle(monThread);
+
+    for (auto& a : allocs) VirtualFreeEx(hProc, a.addr, 0, MEM_RELEASE);
     CloseHandle(hProc);
-    debug_log("done");
     close_logging();
     return 0;
 }
