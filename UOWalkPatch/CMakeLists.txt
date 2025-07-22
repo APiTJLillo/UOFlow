@@ -32,12 +32,11 @@ if(MSVC)
     )
 endif()
 
-# Set source files
+# Set source files - add stub_bin_impl.cpp
 set(SOURCES
     src/main.cpp
-    src/main_impl.cpp
-    src/uowalkpatch.cpp
     src/stub_bin_templates.cpp
+    src/stub_bin_impl.cpp
 )
 
 # Create executable
@@ -49,27 +48,19 @@ target_include_directories(UOWalkPatch PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 
-# Link libraries
-target_link_libraries(UOWalkPatch PRIVATE psapi)
+# Link Windows libraries needed by our code
+target_link_libraries(UOWalkPatch PRIVATE 
+    psapi      # For process enumeration functions
+    kernel32   # For debug privileges
+    advapi32   # For process token functions
+)
 
-# Force 32-bit linker
+# Force 32-bit build
 if(MSVC)
     set_target_properties(UOWalkPatch PROPERTIES LINK_FLAGS "/MACHINE:X86")
 endif()
 
-# Copy required JSON files to build directory
-configure_file(${CMAKE_SOURCE_DIR}/signatures.json ${CMAKE_BINARY_DIR}/signatures.json COPYONLY)
-configure_file(${CMAKE_SOURCE_DIR}/command_list.json ${CMAKE_BINARY_DIR}/command_list.json COPYONLY)
-
-# Assemble bridges.asm to object file
+# Ensure output is always 32-bit
 if(MSVC)
-    set(BRIDGES_OBJ ${CMAKE_CURRENT_BINARY_DIR}/bridges.obj)
-    add_custom_command(
-        OUTPUT ${BRIDGES_OBJ}
-        COMMAND ml.exe /c /Fo${BRIDGES_OBJ} ${CMAKE_SOURCE_DIR}/src/bridges.asm
-        DEPENDS ${CMAKE_SOURCE_DIR}/src/bridges.asm
-        COMMENT "Assembling bridges.asm"
-    )
-    set_source_files_properties(${BRIDGES_OBJ} PROPERTIES EXTERNAL_OBJECT TRUE)
-    list(APPEND SOURCES ${BRIDGES_OBJ})
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /MACHINE:X86")
 endif()

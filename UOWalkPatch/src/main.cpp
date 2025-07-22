@@ -15,6 +15,16 @@
 
 #undef min
 
+struct RemoteFuncInfo {
+    uint32_t nameAddr;
+    uint32_t bridgeAddr;
+};
+
+struct RemoteAlloc {
+    void* addr;
+    SIZE_T size;
+};
+
 namespace {
     std::ofstream log_file;
     
@@ -405,124 +415,44 @@ bool findRegisterLuaFunction(HANDLE proc, uintptr_t& regOut, uintptr_t& callSite
     return true;
 }
 
-bool findLuaStatePtr(HANDLE proc, uintptr_t& out) {
-    PatternData pat = parsePattern("A1 ?? ?? ?? ?? 85 C0 75 ?? 8B 08");
-    uintptr_t match = 0;
-    if (!scanProcess(proc, pat, match)) {
-        debug_log("LuaState pattern not found");
-        return false;
-    }
-    SIZE_T read = 0;
-    if (!ReadProcessMemory(proc, (LPCVOID)(match + 1), &out, 4, &read)) {
-        debug_log("failed to read LuaState pointer address");
-        return false;
-    }
-    debug_log("LuaState global at 0x" + [&]{std::ostringstream oss; oss<<std::hex<<out; return oss.str();}());
-    return true;
-}
-
-
-DWORD findProcess(const std::wstring& name) {
-    DWORD pid = 0;
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
-    PROCESSENTRY32W pe{}; pe.dwSize = sizeof(pe);
-    if (Process32FirstW(snap, &pe)) {
-        do {
-            std::wstring procName = pe.szExeFile;
-            std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
-            // Look for both the exact name and the wine-prefixed version
-            if (procName == name || procName == L"wine-" + name) {
-                pid = pe.th32ProcessID;
-                break;
-            }
-        } while (Process32NextW(snap, &pe));
-    }
-    CloseHandle(snap);
-    return pid;
-}
-
-bool createRemoteConsole(HANDLE hProc, DWORD pid) {
-    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
-    if (!k32) return false;
-    auto alloc = (LPTHREAD_START_ROUTINE)GetProcAddress(k32, "AllocConsole");
-    if (!alloc) return false;
-    HANDLE th = CreateRemoteThread(hProc, nullptr, 0, alloc, nullptr, 0, nullptr);
-    if (!th) return false;
-    WaitForSingleObject(th, INFINITE);
-    CloseHandle(th);
-    FreeConsole();
-    AttachConsole(pid);
-    (void)freopen("CONOUT$", "w", stdout);
-    (void)freopen("CONOUT$", "w", stderr);
-    std::cout << "[UOWalkPatch] console attached\n";
-    return true;
-}
-
-bool isProcessElevated() {
-    HANDLE hToken;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
-        debug_log("Failed to open process token");
-        return false;
-    }
-    
-    TOKEN_ELEVATION elevation;
-    DWORD size = sizeof(TOKEN_ELEVATION);
-    if (!GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &size)) {
-        debug_log("Failed to get token information");
-        CloseHandle(hToken);
-        return false;
-    }
-    
-    CloseHandle(hToken);
-    return elevation.TokenIsElevated != 0;
-}
-
-bool enableDebugPrivilege() {
-    HANDLE hToken;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
-        debug_log("Failed to open process token for privilege adjustment");
-        return false;
-    }
-
-    LUID luid;
-    if (!LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &luid)) {
-        debug_log("Failed to lookup debug privilege value");
-        CloseHandle(hToken);
-        return false;
-    }
-
-    TOKEN_PRIVILEGES tp;
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Luid = luid;
-    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
-    if (!AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL)) {
-        debug_log("Failed to adjust token privileges");
-        CloseHandle(hToken);
-        return false;
-    }
-
-    CloseHandle(hToken);
-    return true;
-}
-
-struct RemoteFuncInfo {
-    uint32_t nameAddr;
-    uint32_t bridgeAddr;
+struct HookData {
+    void* stubMem;
+    void* flagMem;
+    void* luaStateMem;  // Add storage for Lua state pointer memory
+    std::vector<uint8_t> stub;
 };
-
-struct RemoteAlloc { LPVOID addr; SIZE_T size; };
 
 bool installHook(HANDLE proc, uintptr_t regFunc, uintptr_t callSite,
                  const std::vector<RemoteFuncInfo>& funcs,
-                 std::vector<RemoteAlloc>& allocs) {
+                 std::vector<RemoteAlloc>& allocs,
+                 HookData& hookData) {  // Add HookData parameter
     SIZE_T written = 0;
 
-    void* arrayMem = VirtualAllocEx(proc, nullptr,
-                                    funcs.size() * sizeof(RemoteFuncInfo),
+    debug_log("Installing hook at callSite: 0x" + 
+        [&]{std::ostringstream oss; oss<<std::hex<<callSite; return oss.str();}());
+
+    // Validate array size
+    size_t arraySize = funcs.size() * sizeof(RemoteFuncInfo);
+    debug_log("Function array size: " + std::to_string(arraySize) + " bytes for " + 
+              std::to_string(funcs.size()) + " functions");
+    
+    if (arraySize == 0) {
+        arraySize = sizeof(RemoteFuncInfo); // Allocate at least one entry
+        debug_log("Using minimum array size of " + std::to_string(arraySize) + " bytes");
+    }
+
+    void* arrayMem = VirtualAllocEx(proc, nullptr, arraySize,
                                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!arrayMem) return false;
+    if (!arrayMem) {
+        DWORD err = GetLastError();
+        debug_log("Failed to allocate array memory: " + std::to_string(err));
+        debug_log("Process handle: 0x" + [&]{std::ostringstream oss; oss<<std::hex<<(uintptr_t)proc; return oss.str();}());
+        debug_log("Requested size: " + std::to_string(arraySize));
+        return false;
+    }
+    debug_log("Allocated array memory at: 0x" + 
+        [&]{std::ostringstream oss; oss<<std::hex<<(uintptr_t)arrayMem; return oss.str();}());
+
     WriteProcessMemory(proc, arrayMem, funcs.data(),
                        funcs.size() * sizeof(RemoteFuncInfo), &written);
     allocs.push_back({ arrayMem, funcs.size() * sizeof(RemoteFuncInfo) });
@@ -530,38 +460,105 @@ bool installHook(HANDLE proc, uintptr_t regFunc, uintptr_t callSite,
     uint32_t zero = 0;
     void* flagMem = VirtualAllocEx(proc, nullptr, sizeof(uint32_t),
                                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!flagMem) return false;
+    if (!flagMem) {
+        debug_log("Failed to allocate flag memory: " + std::to_string(GetLastError()));
+        return false;
+    }
+    debug_log("Allocated flag memory at: 0x" + 
+        [&]{std::ostringstream oss; oss<<std::hex<<(uintptr_t)flagMem; return oss.str();}());
+
     WriteProcessMemory(proc, flagMem, &zero, sizeof(uint32_t), &written);
     allocs.push_back({ flagMem, sizeof(uint32_t) });
 
+    // Allocate Lua state memory
+    void* luaStateMem = VirtualAllocEx(proc, nullptr, sizeof(uintptr_t),
+                                   MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!luaStateMem) {
+        debug_log("Failed to allocate Lua state memory: " + std::to_string(GetLastError()));
+        return false;
+    }
+    debug_log("Allocated Lua state memory at: 0x" + 
+        [&]{std::ostringstream oss; oss<<std::hex<<(uintptr_t)luaStateMem; return oss.str();}());
+    
+    WriteProcessMemory(proc, luaStateMem, &zero, sizeof(zero), &written);
+    allocs.push_back({ luaStateMem, sizeof(uintptr_t) });
+
+    // Store Lua state memory in HookData
+    hookData.luaStateMem = luaStateMem;
+
     std::vector<uint8_t> stub(hook_stub_template,
                               hook_stub_template + hook_stub_template_len);
-    *(uint32_t*)&stub[HOOK_REG_OFF1]  = (uint32_t)regFunc;
-    *(uint32_t*)&stub[HOOK_REG_OFF2]  = (uint32_t)regFunc;
-    *(uint32_t*)&stub[HOOK_FLAG_OFF]  = (uint32_t)(uintptr_t)flagMem;
+    *(uint32_t*)&stub[HOOK_LUASTATE_OFF] = (uint32_t)(uintptr_t)luaStateMem;
+    *(uint32_t*)&stub[HOOK_FLAG_OFF]   = (uint32_t)(uintptr_t)flagMem;
     *(uint32_t*)&stub[HOOK_NUM_OFF]   = (uint32_t)funcs.size();
     *(uint32_t*)&stub[HOOK_FUNCS_OFF] = (uint32_t)(uintptr_t)arrayMem;
+    *(uint32_t*)&stub[HOOK_REG_OFF1]  = (uint32_t)regFunc;
     *(uint32_t*)&stub[HOOK_RET_OFF]   = (uint32_t)(callSite + 5);
 
     void* stubMem = VirtualAllocEx(proc, nullptr, stub.size(),
                                    MEM_COMMIT | MEM_RESERVE,
                                    PAGE_EXECUTE_READWRITE);
-    if (!stubMem) return false;
-    WriteProcessMemory(proc, stubMem, stub.data(), stub.size(), &written);
+    if (!stubMem) {
+        debug_log("Failed to allocate stub memory: " + std::to_string(GetLastError()));
+        return false;
+    }
+    debug_log("Allocated stub memory at: 0x" + 
+        [&]{std::ostringstream oss; oss<<std::hex<<(uintptr_t)stubMem; return oss.str();}());
+
+    // Store stub memory in HookData
+    hookData.stubMem = stubMem;
+    hookData.flagMem = flagMem;
+    hookData.stub = stub;
+
+    if (!WriteProcessMemory(proc, stubMem, stub.data(), stub.size(), &written)) {
+        debug_log("Failed to write stub: " + std::to_string(GetLastError()));
+        return false;
+    }
     allocs.push_back({ stubMem, stub.size() });
+
+    // Verify memory protection
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQueryEx(proc, stubMem, &mbi, sizeof(mbi))) {
+        debug_log("Stub memory protection: " + format_protection(mbi.Protect));
+    }
 
     uint8_t jmp[5];
     jmp[0] = 0xE9;
     uint32_t rel = (uint32_t)((uintptr_t)stubMem - (callSite + 5));
     std::memcpy(&jmp[1], &rel, 4);
 
+    debug_log("Patching jump instruction. From: 0x" + 
+        [&]{std::ostringstream oss; oss<<std::hex<<callSite; return oss.str();}() +
+        " To: 0x" + [&]{std::ostringstream oss; oss<<std::hex<<(uintptr_t)stubMem; return oss.str();}());
+
     DWORD oldProt;
     if (!VirtualProtectEx(proc, (LPVOID)callSite, 5, PAGE_EXECUTE_READWRITE,
-                          &oldProt))
+                          &oldProt)) {
+        debug_log("Failed to change page protection: " + std::to_string(GetLastError()));
         return false;
-    WriteProcessMemory(proc, (LPVOID)callSite, jmp, 5, &written);
-    VirtualProtectEx(proc, (LPVOID)callSite, 5, oldProt, &oldProt);
+    }
 
+    if (!WriteProcessMemory(proc, (LPVOID)callSite, jmp, 5, &written)) {
+        debug_log("Failed to write jump: " + std::to_string(GetLastError()));
+        VirtualProtectEx(proc, (LPVOID)callSite, 5, oldProt, &oldProt);
+        return false;
+    }
+
+    // Verify patched jump
+    debug_log("Verifying patched jump...");
+    uint8_t verifyJmp[5];
+    SIZE_T read;
+    if (ReadProcessMemory(proc, (LPCVOID)callSite, verifyJmp, 5, &read)) {
+        debug_log("Patched jump bytes:");
+        debug_log(hex_dump(verifyJmp, 5));
+    }
+
+    if (!VirtualProtectEx(proc, (LPVOID)callSite, 5, oldProt, &oldProt)) {
+        debug_log("Failed to restore page protection: " + std::to_string(GetLastError()));
+        return false;
+    }
+
+    debug_log("Hook installed successfully");
     return true;
 }
 
@@ -578,6 +575,161 @@ uintptr_t find_symbol_in_stub(const std::vector<uint8_t>& stub, const std::vecto
         if (match) return i + offset;
     }
     return (uintptr_t)-1;
+}
+
+// Add helper to wait for module load
+bool waitForModule(HANDLE proc, const char* moduleName, HMODULE& outModule, int timeout_ms = 5000) {
+    DWORD start = GetTickCount();
+    while (GetTickCount() - start < (DWORD)timeout_ms) {
+        std::vector<HMODULE> modules;
+        if (!enumProcessModulesSafe(proc, modules)) {
+            Sleep(100);
+            continue;
+        }
+        
+        for (HMODULE mod : modules) {
+            char modPath[MAX_PATH];
+            if (GetModuleFileNameExA(proc, mod, modPath, sizeof(modPath))) {
+                std::string path = modPath;
+                std::transform(path.begin(), path.end(), path.begin(), ::tolower);
+                if (path.find(moduleName) != std::string::npos) {
+                    outModule = mod;
+                    return true;
+                }
+            }
+        }
+        Sleep(100);
+    }
+    return false;
+}
+
+// Add helper to check if process is ready
+bool isProcessReady(HANDLE proc) {
+    DWORD exitCode = 0;
+    if (!GetExitCodeProcess(proc, &exitCode) || exitCode != STILL_ACTIVE) {
+        return false;
+    }
+
+    char modPath[MAX_PATH] = {0};
+    if (GetModuleFileNameExA(proc, NULL, modPath, MAX_PATH)) {
+        return true; // If we can get the main module path, process is ready
+    }
+    return false;
+}
+
+// Add helper function to verify memory permissions
+bool verifyMemoryAccess(HANDLE proc, uintptr_t addr, size_t size, const char* description) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQueryEx(proc, (LPCVOID)addr, &mbi, sizeof(mbi))) {
+        debug_log("Failed to query memory at " + std::string(description) + ": " + std::to_string(GetLastError()));
+        return false;
+    }
+
+    std::ostringstream oss;
+    oss << "Memory at " << description << " (0x" << std::hex << addr << "): ";
+    oss << "Base=" << mbi.BaseAddress << " Size=" << std::dec << mbi.RegionSize;
+    oss << " Protection=" << format_protection(mbi.Protect);
+    debug_log(oss.str());
+
+    return true;
+}
+
+bool enableDebugPrivilege() {
+    HANDLE hToken;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        debug_log("Failed to open process token for privilege adjustment");
+        return false;
+    }
+
+    LUID luid;
+    if (!LookupPrivilegeValueA(nullptr, SE_DEBUG_NAME, &luid)) {
+        debug_log("Failed to lookup debug privilege value");
+        CloseHandle(hToken);
+        return false;
+    }
+
+    TOKEN_PRIVILEGES tp;
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid = luid;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+    if (!AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), nullptr, nullptr)) {
+        debug_log("Failed to adjust token privileges");
+        CloseHandle(hToken);
+        return false;
+    }
+
+    CloseHandle(hToken);
+    return true;
+}
+
+bool isProcessElevated() {
+    HANDLE hToken;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        debug_log("Failed to open process token");
+        return false;
+    }
+
+    TOKEN_ELEVATION elevation;
+    DWORD size = sizeof(TOKEN_ELEVATION);
+    if (!GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &size)) {
+        debug_log("Failed to get token information");
+        CloseHandle(hToken);
+        return false;
+    }
+
+    CloseHandle(hToken);
+    return elevation.TokenIsElevated != 0;
+}
+
+DWORD findProcess(const std::wstring& name) {
+    DWORD pid = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+
+    PROCESSENTRY32W pe{ sizeof(pe) };
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            std::wstring procName = pe.szExeFile;
+            std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+            // Look for both the exact name and the wine-prefixed version
+            if (procName == name || procName == L"wine-" + name) {
+                pid = pe.th32ProcessID;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+
+    CloseHandle(snap);
+    return pid;
+}
+
+bool createRemoteConsole(HANDLE hProc, DWORD pid) {
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    if (!k32) return false;
+
+    auto allocConsole = (LPTHREAD_START_ROUTINE)GetProcAddress(k32, "AllocConsole");
+    if (!allocConsole) return false;
+
+    HANDLE thread = CreateRemoteThread(hProc, nullptr, 0, allocConsole, nullptr, 0, nullptr);
+    if (!thread) return false;
+
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+
+    // Detach from our console and attach to target's
+    FreeConsole();
+    if (!AttachConsole(pid)) return false;
+
+    // Reopen stdout/stderr
+    FILE* dummy;
+    freopen_s(&dummy, "CONOUT$", "w", stdout);
+    freopen_s(&dummy, "CONOUT$", "w", stderr);
+
+    std::cout << "[UOWalkPatch] console attached\n";
+    return true;
 }
 
 int main() {
@@ -605,13 +757,17 @@ int main() {
     HANDLE hProc = NULL;
     HANDLE hThread = NULL;
     bool launchedSuspended = false;
+    
     if (!pid) {
         debug_log("UOSA.exe not running, launching (suspended)...");
         STARTUPINFOA si = { sizeof(si) };
         PROCESS_INFORMATION pi = {};
         const char* uosaPath = "C:\\Program Files (x86)\\Electronic Arts\\Ultima Online Enhanced\\UOSA.exe";
         const char* uosaDir = "C:\\Program Files (x86)\\Electronic Arts\\Ultima Online Enhanced\\";
-        if (!CreateProcessA(uosaPath, NULL, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, uosaDir, &si, &pi)) {
+        
+        if (!CreateProcessA(uosaPath, NULL, NULL, NULL, FALSE, 
+                          CREATE_SUSPENDED, 
+                          NULL, uosaDir, &si, &pi)) {
             DWORD err = GetLastError();
             std::ostringstream oss;
             oss << "Failed to launch UOSA.exe (" << uosaPath << ") error code: " << err;
@@ -620,18 +776,47 @@ int main() {
             close_logging();
             return 1;
         }
-        debug_log("Launched UOSA.exe in suspended mode, patching registration hook...");
+        
         pid = pi.dwProcessId;
         hProc = pi.hProcess;
         hThread = pi.hThread;
         launchedSuspended = true;
+        
+        debug_log("Launched UOSA.exe suspended, waiting for process initialization...");
+        
+        // Wait for process to be ready (up to 10 seconds)
+        DWORD startTime = GetTickCount();
+        while (GetTickCount() - startTime < 10000) {
+            if (isProcessReady(hProc)) {
+                debug_log("Process initialization complete");
+                break;
+            }
+            Sleep(100);
+        }
+
+        // Now proceed with injection
+        if (!isProcessReady(hProc)) {
+            debug_log("Process failed to initialize");
+            TerminateProcess(hProc, 1);
+            CloseHandle(hThread);
+            CloseHandle(hProc);
+            close_logging();
+            return 1;
+        }
     }
 
     if (!hProc) {
         // Retry OpenProcess up to 10 times with 1s delay
         for (int attempt = 0; attempt < 10; ++attempt) {
-            hProc = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION |
-                                   PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION, FALSE, pid);
+            hProc = OpenProcess(
+                PROCESS_CREATE_THREAD | 
+                PROCESS_VM_OPERATION | 
+                PROCESS_VM_READ | 
+                PROCESS_VM_WRITE |
+                PROCESS_QUERY_INFORMATION |
+                PROCESS_QUERY_LIMITED_INFORMATION, 
+                FALSE, 
+                pid);
             if (hProc) break;
             debug_log("OpenProcess failed, retrying in 1s...");
             Sleep(1000);
@@ -669,106 +854,67 @@ int main() {
     }
 
     // Patch only the registration function (hook) while suspended
+    HookData hookData = {};
     std::vector<RemoteAlloc> allocs;
-    std::vector<RemoteFuncInfo> funcs; // empty for now
-    if (!installHook(hProc, regFunc, callSite, funcs, allocs)) {
+    std::vector<RemoteFuncInfo> funcs;
+    funcs.reserve(1); // Reserve space but keep empty for now
+    
+    debug_log("Initial hook installation with empty function array");
+    if (!installHook(hProc, regFunc, callSite, funcs, allocs, hookData)) {
         debug_log("failed to install registration hook");
-        for (auto& a : allocs) VirtualFreeEx(hProc, a.addr, 0, MEM_RELEASE);
+        for (auto& a : allocs) VirtualFreeEx(hProc, a.addr, a.size, MEM_RELEASE);
         CloseHandle(hProc);
         close_logging();
         return 1;
     }
 
-    // Resume the main thread so the client can initialize and register Lua natives
+    // Store hook data for later verification
+    if (!allocs.empty()) {
+        hookData.stubMem = allocs.back().addr;
+        hookData.stub = std::vector<uint8_t>(hook_stub_template,
+                                           hook_stub_template + hook_stub_template_len);
+        if (allocs.size() > 1) {
+            hookData.flagMem = allocs[allocs.size() - 2].addr;
+        }
+    }
+
+    // After hook installation but before resuming:
+    debug_log("Hook installed, waiting for Lua state...");
+    
+    // Now resume thread
     if (launchedSuspended && hThread) {
-        debug_log("Resuming UOSA.exe main thread after registration hook...");
+        debug_log("Resuming UOSA.exe main thread...");
         ResumeThread(hThread);
         CloseHandle(hThread);
         hThread = NULL;
-    }
 
-    // Wait for client to initialize and (hopefully) call our trampoline
-    debug_log("Waiting 5 seconds for client Lua registration...");
-    Sleep(5000);
-
-    // Now scan for Lua state, inject bridges, and register our own natives
-    // Reload signatures (if needed)
-    std::vector<Signature> sigs;
-    if (!loadSignatures("signatures.json", sigs)) {
-        debug_log("failed to load signatures.json");
-        CloseHandle(hProc);
-        close_logging();
-        return 1;
-    }
-    funcs.clear();
-    allocs.clear();
-    for (auto& s : sigs) {
-        PatternData pd = parsePattern(s.pattern);
-        if (!scanProcess(hProc, pd, s.address)) {
-            debug_log("pattern not found for " + s.lua_name);
-            continue;
+        // Monitor hook state and captured Lua state
+        debug_log("Monitoring hook execution...");
+        int retries = 50; // 5 seconds total
+        while (retries-- > 0) {
+            uint32_t flagValue = 0;
+            uintptr_t luaState = 0;
+            SIZE_T read;
+            
+            if (hookData.flagMem && hookData.luaStateMem && 
+                ReadProcessMemory(hProc, hookData.flagMem, &flagValue, sizeof(flagValue), &read) &&
+                ReadProcessMemory(hProc, hookData.luaStateMem, &luaState, sizeof(luaState), &read)) {
+                
+                if (flagValue != 0) {
+                    debug_log("Hook was called! Flag value: " + std::to_string(flagValue));
+                    debug_log("Captured Lua state: 0x" + 
+                        [&]{std::ostringstream oss; oss<<std::hex<<luaState; return oss.str();}());
+                    break;
+                }
+            }
+            Sleep(100);
         }
-        void* bridge = VirtualAllocEx(hProc, nullptr, bridge_template_len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-        if (!bridge) continue;
-        std::vector<uint8_t> b(bridge_template, bridge_template + bridge_template_len);
-        *(uint32_t*)&b[BRIDGE_FUNC_OFF] = (uint32_t)s.address;
-        SIZE_T written = 0;
-        WriteProcessMemory(hProc, bridge, b.data(), b.size(), &written);
-        void* name = VirtualAllocEx(hProc, nullptr, s.lua_name.size() + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (!name) {
-            VirtualFreeEx(hProc, bridge, 0, MEM_RELEASE);
-            continue;
-        }
-        WriteProcessMemory(hProc, name, s.lua_name.c_str(), s.lua_name.size() + 1, &written);
-        funcs.push_back({ (uint32_t)(uintptr_t)name, (uint32_t)(uintptr_t)bridge });
-        allocs.push_back({ bridge, bridge_template_len });
-        allocs.push_back({ name, s.lua_name.size() + 1 });
     }
-
-    // Patch: Use regfunc_trampoline for registration and patch real_regfunc_ptr
-    // 1. Find address of regfunc_trampoline in remote process
-    // 2. Find address of real_regfunc_ptr in remote process
-    // 3. Patch real_regfunc_ptr with RegisterLuaFunction address
-    // 4. Use regfunc_trampoline as the registration function in stubs
-
-    // 1. Find regfunc_trampoline and real_regfunc_ptr in stub
-    // (Assume stub is loaded at stubBase, and symbols are at known offsets)
-    // For simplicity, scan the stub memory for the trampoline and ptr symbol patterns
-    // (In a real implementation, you would export or fixup these addresses more robustly)
-
-    std::vector<uint8_t> bridges_stub;
-    bridges_stub.resize(4096); // enough for bridges.asm output
-    SIZE_T read = 0;
-    ReadProcessMemory(hProc, allocs[0].addr, bridges_stub.data(), bridges_stub.size(), &read);
-
-    // regfunc_trampoline: look for push ebp; mov ebp, esp; sub esp, 8; push dword [ebp+0Ch]
-    std::vector<uint8_t> tramp_pat = {0x55, 0x89, 0xE5, 0x83, 0xEC, 0x08, 0xFF};
-    uintptr_t tramp_off = find_symbol_in_stub(bridges_stub, tramp_pat);
-    uintptr_t regfunc_trampoline_addr = (uintptr_t)allocs[0].addr + tramp_off;
-
-    // real_regfunc_ptr: look for 4 zero bytes in .data after code
-    std::vector<uint8_t> realptr_pat = {0x00, 0x00, 0x00, 0x00};
-    uintptr_t realptr_off = find_symbol_in_stub(bridges_stub, realptr_pat);
-    uintptr_t real_regfunc_ptr_addr = (uintptr_t)allocs[0].addr + realptr_off;
-
-    // Patch real_regfunc_ptr with RegisterLuaFunction address
-    WriteProcessMemory(hProc, (void*)real_regfunc_ptr_addr, &regFunc, sizeof(uint32_t), &read);
-
-    // Use regfunc_trampoline_addr as the registration function in stub/hook
-    // (patch stub/hook templates as needed)
-    // ...
-
-    // install hook stub at the registration call site (again, if needed)
-    // ...
-
-    debug_log("Registered Lua natives:");
-    for (const auto& f : sigs) {
-        debug_log("  " + f.lua_name + " (bridge: " + f.bridge + ")");
+cleanup:
+    debug_log("Cleaning up...");
+    for (auto& a : allocs) {
+        VirtualFreeEx(hProc, a.addr, a.size, MEM_RELEASE);
     }
-
-    debug_log("hook installed - reload the UI to register natives. Press Enter to exit");
-    std::cin.get();
-
     CloseHandle(hProc);
     close_logging();
     return 0;
