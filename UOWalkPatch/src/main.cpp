@@ -8,6 +8,8 @@
 #include <string>
 #include <algorithm>
 #include "stub_bin.h"
+#include <cstdint>
+#include <cstring>
 #include <sstream>
 #include <regex>
 
@@ -200,10 +202,11 @@ bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
 
     try {
         const size_t CHUNK_SIZE = 4096;  // Read in 4KB chunks
+        const size_t STEP_SIZE = CHUNK_SIZE - pat.bytes.size() + 1;
         size_t bytesScanned = 0;
         std::vector<uint8_t> buffer(CHUNK_SIZE);
 
-        for (uintptr_t addr = start; addr < end; addr += CHUNK_SIZE) {
+        for (uintptr_t addr = start; addr < end; addr += STEP_SIZE) {
             size_t toRead = std::min<size_t>(CHUNK_SIZE, end - addr);
             
             SIZE_T read;
