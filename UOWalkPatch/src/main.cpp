@@ -7,11 +7,13 @@
 #include <vector>
 #include <string>
 #include <algorithm>
-#include "stub_bin.h"
 #include <cstdint>
 #include <cstring>
 #include <sstream>
 #include <regex>
+#include "../include/stub_bin.h"
+
+#undef min
 
 namespace {
     std::ofstream log_file;
@@ -70,6 +72,8 @@ namespace {
         debug_log("Pattern template around match:");
         debug_log(hex_dump(data + start, end - start, context_size));
     }
+
+    inline size_t min_size_t(size_t a, size_t b) { return a < b ? a : b; }
 }
 
 struct PatternData {
@@ -290,7 +294,7 @@ bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
         std::vector<uint8_t> buffer(CHUNK_SIZE);
 
         for (uintptr_t addr = start; addr < end; addr += STEP_SIZE) {
-            size_t toRead = std::min<size_t>(CHUNK_SIZE, end - addr);
+            size_t toRead = min_size_t(CHUNK_SIZE, static_cast<size_t>(end - addr));
             
             SIZE_T read;
             if (!ReadProcessMemory(proc, (LPCVOID)addr, buffer.data(), toRead, &read)) {
@@ -324,7 +328,10 @@ bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
                         [&]{std::ostringstream oss; oss<<std::hex<<found; return oss.str();}());
                     debug_log("Context around match:");
                     size_t context_start = i >= 16 ? i - 16 : 0;
-                    size_t context_len = std::min(read - context_start, i + pat.bytes.size() + 16 - context_start);
+                    size_t context_len = min_size_t(
+                        static_cast<size_t>(read - context_start),
+                        static_cast<size_t>(i + pat.bytes.size() + 16 - context_start)
+                    );
                     debug_log(hex_dump(buffer.data() + context_start, context_len, i - context_start));
                     return true;
                 }
@@ -446,8 +453,8 @@ bool createRemoteConsole(HANDLE hProc, DWORD pid) {
     CloseHandle(th);
     FreeConsole();
     AttachConsole(pid);
-    freopen("CONOUT$", "w", stdout);
-    freopen("CONOUT$", "w", stderr);
+    (void)freopen("CONOUT$", "w", stdout);
+    (void)freopen("CONOUT$", "w", stderr);
     std::cout << "[UOWalkPatch] console attached\n";
     return true;
 }
