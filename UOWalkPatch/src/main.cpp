@@ -133,23 +133,49 @@ bool isLikelyCodeRegion(const MEMORY_BASIC_INFORMATION& mbi) {
            (mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED);
 }
 
+bool enumProcessModulesSafe(HANDLE proc, std::vector<HMODULE>& mods) {
+    HMODULE tmp[1024];
+    DWORD needed = 0;
+    if (EnumProcessModulesEx(proc, tmp, sizeof(tmp), &needed, LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
+        mods.assign(tmp, tmp + (needed / sizeof(HMODULE)));
+        return true;
+    }
+
+    debug_log("EnumProcessModulesEx failed: " + std::to_string(GetLastError()) + ", falling back to ToolHelp");
+    DWORD pid = GetProcessId(proc);
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (snap == INVALID_HANDLE_VALUE) {
+        debug_log("CreateToolhelp32Snapshot failed: " + std::to_string(GetLastError()));
+        return false;
+    }
+
+    MODULEENTRY32 me{ sizeof(me) };
+    if (!Module32First(snap, &me)) {
+        debug_log("Module32First failed: " + std::to_string(GetLastError()));
+        CloseHandle(snap);
+        return false;
+    }
+    do {
+        mods.push_back((HMODULE)me.modBaseAddr);
+    } while (Module32Next(snap, &me));
+    CloseHandle(snap);
+    return !mods.empty();
+}
+
 HMODULE getUOSAModule(HANDLE proc) {
-    HMODULE modules[1024];
-    DWORD needed;
-    if (!EnumProcessModulesEx(proc, modules, sizeof(modules), &needed,
-                              LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
-        debug_log("Failed to enumerate process modules");
+    std::vector<HMODULE> modules;
+    if (!enumProcessModulesSafe(proc, modules)) {
         return NULL;
     }
 
-    for (DWORD i = 0; i < (needed / sizeof(HMODULE)); i++) {
+    for (HMODULE mod : modules) {
         char modName[MAX_PATH];
-        if (GetModuleFileNameExA(proc, modules[i], modName, sizeof(modName))) {
+        if (GetModuleFileNameExA(proc, mod, modName, sizeof(modName))) {
             std::string name = modName;
             std::transform(name.begin(), name.end(), name.begin(), ::tolower);
             if (name.find("uosa.exe") != std::string::npos) {
-                debug_log("Found UOSA.exe module at " + std::to_string((uintptr_t)modules[i]));
-                return modules[i];
+                debug_log("Found UOSA.exe module at " + std::to_string((uintptr_t)mod));
+                return mod;
             }
         }
     }
@@ -157,10 +183,8 @@ HMODULE getUOSAModule(HANDLE proc) {
 }
 
 bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
-    HMODULE modules[1024];
-    DWORD cbNeeded;
-    if (!EnumProcessModulesEx(proc, modules, sizeof(modules), &cbNeeded,
-                              LIST_MODULES_32BIT | LIST_MODULES_64BIT)) {
+    std::vector<HMODULE> modules;
+    if (!enumProcessModulesSafe(proc, modules)) {
         debug_log("Failed to enumerate process modules");
         return false;
     }
@@ -168,12 +192,12 @@ bool scanProcess(HANDLE proc, const PatternData& pat, uintptr_t& found) {
     // Find UOSA.exe module
     HMODULE uosaModule = NULL;
     char szModName[MAX_PATH];
-    for (DWORD i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
-        if (GetModuleFileNameExA(proc, modules[i], szModName, sizeof(szModName))) {
+    for (HMODULE mod : modules) {
+        if (GetModuleFileNameExA(proc, mod, szModName, sizeof(szModName))) {
             std::string modName = szModName;
             std::transform(modName.begin(), modName.end(), modName.begin(), ::tolower);
             if (modName.find("uosa.exe") != std::string::npos) {
-                uosaModule = modules[i];
+                uosaModule = mod;
                 debug_log("Found UOSA.exe at: " + modName);
                 break;
             }
