@@ -14,21 +14,10 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 # Static linking flags
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
 
-# Download and include nlohmann/json as a header-only library
-include(FetchContent)
-FetchContent_Declare(
-    json
-    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
-    DOWNLOAD_NO_EXTRACT TRUE
-)
-FetchContent_MakeAvailable(json)
 
-# Create include directory and copy json.hpp there
-file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/include/nlohmann)
-file(COPY ${json_SOURCE_DIR}/json.hpp DESTINATION ${CMAKE_BINARY_DIR}/include/nlohmann)
 
 add_executable(UOWalkPatch src/main.cpp)
-target_include_directories(UOWalkPatch PRIVATE include ${CMAKE_BINARY_DIR}/include)
+target_include_directories(UOWalkPatch PRIVATE include)
 target_link_libraries(UOWalkPatch PRIVATE psapi)
 
 # Copy required JSON files to build directory
