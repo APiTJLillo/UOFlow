@@ -6,8 +6,14 @@
 
 // Global state
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;
-static BOOL g_initialized = FALSE;
+static char   g_logPath[MAX_PATH] = "";
+static BOOL   g_logAnnounced = FALSE;
+static BOOL   g_initialized = FALSE;
 static HMODULE g_hModule = NULL;
+
+typedef void (__cdecl* RegisterLuaFunction_t)(void*, const char*, void*);
+static RegisterLuaFunction_t g_origRegLua = NULL;
+static void* g_firstLuaState = NULL;
 
 // Write to debug output and file without any fancy formatting
 static void WriteRawLog(const char* message) {
@@ -19,13 +25,12 @@ static void WriteRawLog(const char* message) {
 
     // Try to open log in executable directory first
     if (g_logFile == INVALID_HANDLE_VALUE && g_hModule != NULL) {
-        char logPath[MAX_PATH];
-        GetModuleFileNameA(g_hModule, logPath, MAX_PATH);
-        char* lastSlash = strrchr(logPath, '\\');
+        GetModuleFileNameA(g_hModule, g_logPath, MAX_PATH);
+        char* lastSlash = strrchr(g_logPath, '\\');
         if (lastSlash) {
-            strcpy_s(lastSlash + 1, MAX_PATH - (lastSlash - logPath), "uowalkpatch_debug.log");
+            strcpy_s(lastSlash + 1, MAX_PATH - (lastSlash - g_logPath), "uowalkpatch_debug.log");
             g_logFile = CreateFileA(
-                logPath,
+                g_logPath,
                 GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 NULL,
@@ -40,10 +45,9 @@ static void WriteRawLog(const char* message) {
     if (g_logFile == INVALID_HANDLE_VALUE) {
         char winDir[MAX_PATH];
         if (GetWindowsDirectoryA(winDir, MAX_PATH)) {
-            char logPath[MAX_PATH];
-            sprintf_s(logPath, MAX_PATH, "%s\\Temp\\uowalkpatch_debug.log", winDir);
+            sprintf_s(g_logPath, MAX_PATH, "%s\\Temp\\uowalkpatch_debug.log", winDir);
             g_logFile = CreateFileA(
-                logPath,
+                g_logPath,
                 GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 NULL,
@@ -68,6 +72,16 @@ static void WriteRawLog(const char* message) {
             DWORD written;
             WriteFile(g_logFile, buffer, len, &written, NULL);
             FlushFileBuffers(g_logFile);
+
+            if (!g_logAnnounced) {
+                g_logAnnounced = TRUE;
+                char pathMsg[MAX_PATH + 32];
+                sprintf_s(pathMsg, sizeof(pathMsg), "Log file: %s\r\n", g_logPath);
+                OutputDebugStringA(pathMsg);
+                DWORD wrote;
+                WriteFile(g_logFile, pathMsg, (DWORD)strlen(pathMsg), &wrote, NULL);
+                FlushFileBuffers(g_logFile);
+            }
         }
     }
 }
@@ -128,6 +142,98 @@ static void LogLoadedModules() {
     }
 }
 
+static void SetupConsole() {
+    if (!GetConsoleWindow()) {
+        if (AllocConsole()) {
+            FILE* dummy;
+            freopen_s(&dummy, "CONOUT$", "w", stdout);
+            freopen_s(&dummy, "CONOUT$", "w", stderr);
+            SetConsoleTitleA("UOWalkPatch console");
+        }
+    }
+}
+
+// Simple memory search helper
+static BYTE* FindBytes(BYTE* start, SIZE_T size, const BYTE* pattern, SIZE_T patSize) {
+    for (SIZE_T i = 0; i + patSize <= size; ++i) {
+        if (memcmp(start + i, pattern, patSize) == 0)
+            return start + i;
+    }
+    return nullptr;
+}
+
+// Locate RegisterLuaFunction inside UOSA.exe using the GetBuildVersion string heuristic
+static LPVOID FindRegisterLuaFunction() {
+    HMODULE hExe = GetModuleHandleA(nullptr); // UOSA.exe
+    if (!hExe) return nullptr;
+
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), hExe, &mi, sizeof(mi)))
+        return nullptr;
+
+    BYTE* base = (BYTE*)mi.lpBaseOfDll;
+    SIZE_T size = mi.SizeOfImage;
+
+    const char target[] = "GetBuildVersion";
+    BYTE* strLoc = FindBytes(base, size, (const BYTE*)target, sizeof(target));
+    if (!strLoc) return nullptr;
+
+    BYTE pat[5];
+    pat[0] = 0x68; // push imm32
+    *(DWORD*)(pat + 1) = (DWORD)(uintptr_t)strLoc;
+
+    BYTE* pushLoc = FindBytes(base, size, pat, sizeof(pat));
+    if (!pushLoc) return nullptr;
+
+    BYTE* callAddr = pushLoc + 11; // push string; push impl; push esi; call rel32
+    if (*callAddr != 0xE8) return nullptr;
+
+    int32_t rel = *(int32_t*)(callAddr + 1);
+    BYTE* regAddr = callAddr + 5 + rel;
+    return regAddr;
+}
+
+static void __cdecl Hook_Register(void* L, const char* name, void* func) {
+    char buffer[128];
+    sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction: %s", name ? name : "<null>");
+    WriteRawLog(buffer);
+
+    if (!g_firstLuaState && L) {
+        g_firstLuaState = L;
+        sprintf_s(buffer, sizeof(buffer), "Captured Lua state: %p", L);
+        WriteRawLog(buffer);
+    }
+
+    if (g_origRegLua)
+        g_origRegLua(L, name, func);
+}
+
+static bool InstallRegisterHook() {
+    LPVOID target = FindRegisterLuaFunction();
+    if (!target) {
+        WriteRawLog("RegisterLuaFunction not found");
+        return false;
+    }
+
+    char buffer[64];
+    sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction at %p", target);
+    WriteRawLog(buffer);
+
+    if (MH_CreateHook(target, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegLua)) != MH_OK)
+    {
+        WriteRawLog("MH_CreateHook failed");
+        return false;
+    }
+
+    if (MH_EnableHook(target) != MH_OK) {
+        WriteRawLog("MH_EnableHook failed");
+        return false;
+    }
+
+    WriteRawLog("RegisterLuaFunction hook installed");
+    return true;
+}
+
 static BOOL InitializeDLLSafe(HMODULE hModule) {
     WriteRawLog("DLL initialization starting...");
     
@@ -173,7 +279,11 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         GetModuleFileNameA(hModule, sigPath, MAX_PATH);
         char* lastSlash = strrchr(sigPath, '\\');
         if (lastSlash) {
-            strcpy_s(lastSlash + 1, MAX_PATH - (lastSlash - sigPath), "signatures.json");
+            // `strcpy_s` requires the destination buffer size starting from the
+            // provided pointer. The previous calculation overshot by one and
+            // corrupted the stack when the path was at the end of the buffer.
+            size_t remaining = MAX_PATH - static_cast<size_t>(lastSlash - sigPath) - 1;
+            strcpy_s(lastSlash + 1, remaining, "signatures.json");
             
             WriteRawLog("Looking for signatures.json...");
             sprintf_s(buffer, sizeof(buffer), "Checking: %s", sigPath);
@@ -196,6 +306,10 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
                 
                 g_initialized = TRUE;
                 WriteRawLog("DLL initialization successful");
+                SetupConsole();
+                if (!InstallRegisterHook()) {
+                    WriteRawLog("Failed to install RegisterLuaFunction hook");
+                }
                 return TRUE;
             } else {
                 LogLastError("CreateFile for signatures.json");
@@ -217,6 +331,11 @@ static void CleanupDLL() {
     WriteRawLog("Starting cleanup...");
 
     if (g_initialized) {
+        if (g_origRegLua) {
+            MH_DisableHook(MH_ALL_HOOKS);
+            g_origRegLua = NULL;
+        }
+
         MH_STATUS status = MH_Uninitialize();
         if (status != MH_OK) {
             char buffer[64];
