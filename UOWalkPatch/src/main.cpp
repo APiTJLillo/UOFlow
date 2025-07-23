@@ -423,6 +423,8 @@ struct HookData {
     void* flagMem;
     void* luaStateMem;
     void* debugCounterMem;  // Add debug counter memory
+    uintptr_t callSite;               // address of patched call site
+    uint8_t originalBytes[5];         // original bytes at call site
     std::vector<uint8_t> stub;
 };
 
@@ -533,6 +535,14 @@ bool installHook(HANDLE proc, uintptr_t regFunc, uintptr_t callSite,
     hookData.luaStateMem = luaStateMem;
     hookData.debugCounterMem = debugCounterMem;
     hookData.stub = stub;
+    hookData.callSite = callSite;
+
+    SIZE_T read = 0;
+    if (!ReadProcessMemory(proc, (LPCVOID)callSite, hookData.originalBytes,
+                           sizeof(hookData.originalBytes), &read)) {
+        debug_log("Failed to read original bytes at call site");
+        return false;
+    }
 
     // Track allocations
     allocs.push_back({ arrayMem, arraySize });
@@ -563,6 +573,28 @@ bool installHook(HANDLE proc, uintptr_t regFunc, uintptr_t callSite,
     }
 
     VirtualProtectEx(proc, (LPVOID)callSite, 5, oldProtect, nullptr);
+    return true;
+}
+
+bool removeHook(HANDLE proc, const HookData& hookData) {
+    if (!hookData.callSite) return true;
+
+    DWORD oldProtect;
+    if (!VirtualProtectEx(proc, (LPVOID)hookData.callSite, sizeof(hookData.originalBytes),
+                          PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        debug_log("Failed to change page protection to restore bytes");
+        return false;
+    }
+
+    SIZE_T written;
+    if (!WriteProcessMemory(proc, (LPVOID)hookData.callSite, hookData.originalBytes,
+                            sizeof(hookData.originalBytes), &written)) {
+        debug_log("Failed to restore original bytes at call site");
+        VirtualProtectEx(proc, (LPVOID)hookData.callSite, sizeof(hookData.originalBytes), oldProtect, nullptr);
+        return false;
+    }
+
+    VirtualProtectEx(proc, (LPVOID)hookData.callSite, sizeof(hookData.originalBytes), oldProtect, nullptr);
     return true;
 }
 
@@ -928,6 +960,7 @@ int main() {
 
     // Clean up
     debug_log("Cleaning up...");
+    removeHook(hProc, hookData);
     for (auto& a : allocs) {
         VirtualFreeEx(hProc, a.addr, a.size, MEM_RELEASE);
     }
