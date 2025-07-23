@@ -1,25 +1,11 @@
 {
-  "exe_sha1": "", 
+  "exe_sha1": "AUTO-POPULATED",
   "functions": [
     {
       "lua_name": "walk",
       "pattern": "55 8B EC 83 E4 ?? 83 EC ?? F3 0F 10 45 08 53 56 8B F1 57",
+      "mask": "xxx xx x? xx x? xxxxxxxxxxx",
       "bridge": "walk_bridge"
-    },
-    {
-      "lua_name": "cast",
-      "pattern": "8B 0D ?? ?? ?? ?? 8B 01 8B 40 38 FF D0 8B 44 24 0C",
-      "bridge": "cast_bridge"
-    },
-    {
-      "lua_name": "useSkill",
-      "pattern": "6A 01 6A 00 6A ?? 6A ?? 8B 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ??",
-      "bridge": "skill_bridge"
-    },
-    {
-      "lua_name": "processCommand",
-      "pattern": "83 EC 58 53 55 8B 6C 24 64 56 57 8B F0 B9 ?? ?? ?? ?? 66 8B 10 66 3B 11 75 1E 66 85 D2 74 15 66 8B 50 02 66 3B 51 02 75 0F 83 C0 04 83 C1 04 66 85 D2 75 DE 33 C0 EB 05 1B C0 83 D8 FF 85 C0 0F 85 ?? ?? ?? ?? 8B 4C 24 70 8D 44 24 18 50 51 B8 34 00 00 00 E8 ?? ?? ?? ?? 8B 74 24 18 85 F6 8B 7C 24 1C 74 79 8B 16 8B 42 2C 8B CE FF D0 83 F8 34 75 6B 8B D5 8D 44 24 4C E8 ?? ?? ?? ?? 85 FF 89 74 24 18 89 7C 24 1C 74 0C 8D 4F 04 BA 01 00 00 00 F0 0F C1 11",
-      "bridge": "process_bridge"
     }
   ]
 }

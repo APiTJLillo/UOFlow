@@ -1,125 +1,279 @@
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <psapi.h>
-#include <cstdio>
-#include <vector>
-#include <string>
-#include <sstream>
+#include <stdio.h>
 #include "minhook.h"
 
-static void* g_luaState = nullptr;
+// Global state
+static HANDLE g_logFile = INVALID_HANDLE_VALUE;
+static BOOL g_initialized = FALSE;
+static HMODULE g_hModule = NULL;
 
-// Simple pattern parser "AA BB ?? CC"
-struct Pattern {
-    std::vector<unsigned char> bytes;
-    std::string mask;
-};
+// Write to debug output and file without any fancy formatting
+static void WriteRawLog(const char* message) {
+    if (!message) return;
 
-static Pattern parsePattern(const char* str) {
-    Pattern p;
-    std::istringstream iss(str);
-    std::string s;
-    while (iss >> s) {
-        if (s == "??") {
-            p.bytes.push_back(0);
-            p.mask.push_back('?');
+    // Write to debug output
+    OutputDebugStringA(message);
+    OutputDebugStringA("\n");
+
+    // Try to open log in executable directory first
+    if (g_logFile == INVALID_HANDLE_VALUE && g_hModule != NULL) {
+        char logPath[MAX_PATH];
+        GetModuleFileNameA(g_hModule, logPath, MAX_PATH);
+        char* lastSlash = strrchr(logPath, '\\');
+        if (lastSlash) {
+            strcpy_s(lastSlash + 1, MAX_PATH - (lastSlash - logPath), "uowalkpatch_debug.log");
+            g_logFile = CreateFileA(
+                logPath,
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                NULL,
+                CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                NULL
+            );
+        }
+    }
+
+    // Fallback to Windows directory
+    if (g_logFile == INVALID_HANDLE_VALUE) {
+        char winDir[MAX_PATH];
+        if (GetWindowsDirectoryA(winDir, MAX_PATH)) {
+            char logPath[MAX_PATH];
+            sprintf_s(logPath, MAX_PATH, "%s\\Temp\\uowalkpatch_debug.log", winDir);
+            g_logFile = CreateFileA(
+                logPath,
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                NULL,
+                CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                NULL
+            );
+        }
+    }
+
+    if (g_logFile != INVALID_HANDLE_VALUE) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        char buffer[4096];
+        int len = sprintf_s(buffer, sizeof(buffer),
+            "[%02d:%02d:%02d.%03d] [%lu] %s\r\n",
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+            GetCurrentThreadId(),
+            message
+        );
+        if (len > 0) {
+            DWORD written;
+            WriteFile(g_logFile, buffer, len, &written, NULL);
+            FlushFileBuffers(g_logFile);
+        }
+    }
+}
+
+static void LogLastError(const char* prefix) {
+    if (!prefix) return;
+    
+    DWORD error = GetLastError();
+    char buffer[1024];
+    char errorMsg[512] = "";
+    
+    FormatMessageA(
+        FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL,
+        error,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        errorMsg,
+        sizeof(errorMsg),
+        NULL
+    );
+
+    // Clean up error message
+    for (char* p = errorMsg; *p; p++) {
+        if (*p == '\r' || *p == '\n') *p = ' ';
+    }
+
+    sprintf_s(buffer, sizeof(buffer), "%s failed with 0x%08X: %s", prefix, error, errorMsg);
+    WriteRawLog(buffer);
+}
+
+static void LogLoadedModules() {
+    WriteRawLog("Enumerating loaded modules:");
+    
+    HANDLE hProcess = GetCurrentProcess();
+    HMODULE hMods[1024];
+    DWORD needed;
+
+    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &needed)) {
+        for (DWORD i = 0; i < (needed / sizeof(HMODULE)); i++) {
+            char path[MAX_PATH] = "";
+            char buffer[MAX_PATH + 64] = "";
+            
+            if (GetModuleFileNameExA(hProcess, hMods[i], path, MAX_PATH)) {
+                MODULEINFO mi = { 0 };
+                if (GetModuleInformation(hProcess, hMods[i], &mi, sizeof(mi))) {
+                    sprintf_s(buffer, sizeof(buffer), "  %p - %p: %s", 
+                        mi.lpBaseOfDll,
+                        (char*)mi.lpBaseOfDll + mi.SizeOfImage,
+                        path);
+                } else {
+                    sprintf_s(buffer, sizeof(buffer), "  %p: %s", hMods[i], path);
+                }
+                WriteRawLog(buffer);
+            }
+        }
+    } else {
+        LogLastError("EnumProcessModules");
+    }
+}
+
+static BOOL InitializeDLLSafe(HMODULE hModule) {
+    WriteRawLog("DLL initialization starting...");
+    
+    __try {
+        // Store module handle for later use
+        g_hModule = hModule;
+
+        // Log process info
+        char processPath[MAX_PATH] = "";
+        GetModuleFileNameA(NULL, processPath, MAX_PATH);
+        char buffer[MAX_PATH + 64];
+        sprintf_s(buffer, sizeof(buffer), "Process path: %s", processPath);
+        WriteRawLog(buffer);
+        
+        sprintf_s(buffer, sizeof(buffer), "Process ID: %lu, Thread ID: %lu", 
+                 GetCurrentProcessId(), GetCurrentThreadId());
+        WriteRawLog(buffer);
+
+        // Get DLL path
+        char dllPath[MAX_PATH] = "";
+        if (GetModuleFileNameA(hModule, dllPath, MAX_PATH)) {
+            sprintf_s(buffer, sizeof(buffer), "DLL loaded at: %s", dllPath);
+            WriteRawLog(buffer);
         } else {
-            p.bytes.push_back((unsigned char)strtoul(s.c_str(), nullptr, 16));
-            p.mask.push_back('x');
+            LogLastError("GetModuleFileName for DLL");
         }
-    }
-    return p;
-}
 
-static bool scanModule(const Pattern& pat, uintptr_t& out) {
-    HMODULE hMod = GetModuleHandle(NULL);
-    MODULEINFO info{};
-    if (!GetModuleInformation(GetCurrentProcess(), hMod, &info, sizeof(info)))
-        return false;
-    unsigned char* base = (unsigned char*)info.lpBaseOfDll;
-    size_t size = info.SizeOfImage;
-    for (size_t i = 0; i + pat.bytes.size() <= size; ++i) {
-        bool match = true;
-        for (size_t j = 0; j < pat.bytes.size(); ++j) {
-            if (pat.mask[j] == 'x' && base[i+j] != pat.bytes[j]) { match = false; break; }
+        // Log loaded modules to check dependencies
+        LogLoadedModules();
+
+        // Initialize MinHook
+        WriteRawLog("Initializing MinHook...");
+        MH_STATUS status = MH_Initialize();
+        if (status != MH_OK) {
+            sprintf_s(buffer, sizeof(buffer), "MinHook initialization failed: %d", status);
+            WriteRawLog(buffer);
+            return FALSE;
         }
-        if (match) { out = (uintptr_t)(base + i); return true; }
-    }
-    return false;
-}
+        WriteRawLog("MinHook initialized successfully");
 
-static bool findString(const char* str, uintptr_t& out) {
-    Pattern p; p.mask.assign(strlen(str)+1, 'x');
-    p.bytes.assign((unsigned char*)str, (unsigned char*)str + strlen(str) + 1);
-    return scanModule(p, out);
-}
+        // Look for signatures.json
+        char sigPath[MAX_PATH];
+        GetModuleFileNameA(hModule, sigPath, MAX_PATH);
+        char* lastSlash = strrchr(sigPath, '\\');
+        if (lastSlash) {
+            strcpy_s(lastSlash + 1, MAX_PATH - (lastSlash - sigPath), "signatures.json");
+            
+            WriteRawLog("Looking for signatures.json...");
+            sprintf_s(buffer, sizeof(buffer), "Checking: %s", sigPath);
+            WriteRawLog(buffer);
 
-static bool findPushWithAddress(uintptr_t addr, uintptr_t& out) {
-    Pattern p; p.bytes.resize(5); p.mask = "xxxxx";
-    p.bytes[0] = 0x68;
-    *(DWORD*)&p.bytes[1] = (DWORD)addr;
-    return scanModule(p, out);
-}
+            HANDLE hFile = CreateFileA(
+                sigPath,
+                GENERIC_READ,
+                FILE_SHARE_READ,
+                NULL,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                NULL
+            );
 
-static bool findRegisterLuaFunction(uintptr_t& addr) {
-    uintptr_t strAddr;
-    if (!findString("GetBuildVersion", strAddr)) return false;
-    uintptr_t pushAddr;
-    if (!findPushWithAddress(strAddr, pushAddr)) return false;
-    uintptr_t callAddr = pushAddr + 11;
-    if (*(unsigned char*)callAddr != 0xE8) return false;
-    int rel = *(int*)(callAddr + 1);
-    addr = callAddr + 5 + rel;
-    return true;
-}
-
-// placeholder for real walk function pointer
-using WalkFunc = void (__stdcall*)(int,int);
-static WalkFunc g_walk = nullptr;
-
-extern "C" int __stdcall walk_bridge(void* L) {
-    typedef int (__cdecl* lua_tointeger_t)(void*, int);
-    static lua_tointeger_t lua_tointeger = nullptr;
-    if (!lua_tointeger) {
-        HMODULE lua = GetModuleHandleA("lua.dll");
-        if (lua) lua_tointeger = (lua_tointeger_t)GetProcAddress(lua, "lua_tointeger");
-    }
-    if (!lua_tointeger || !g_walk) return 0;
-    int dir = lua_tointeger(L, 1);
-    int run = lua_tointeger(L, 2);
-    g_walk(dir, run);
-    return 0;
-}
-
-using RegFunc = int (__stdcall*)(void*, const char*, void*);
-static RegFunc Real_RegFunc = nullptr;
-
-static int __stdcall Hook_RegFunc(void* L, const char* name, void* func) {
-    if (!g_luaState) {
-        g_luaState = L;
-        if (Real_RegFunc && g_walk) {
-            Real_RegFunc(L, "walk_ex", (void*)walk_bridge);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                sprintf_s(buffer, sizeof(buffer), "Found signatures at: %s", sigPath);
+                WriteRawLog(buffer);
+                CloseHandle(hFile);
+                
+                g_initialized = TRUE;
+                WriteRawLog("DLL initialization successful");
+                return TRUE;
+            } else {
+                LogLastError("CreateFile for signatures.json");
+            }
         }
+
+        WriteRawLog("Failed to initialize - signatures.json not found");
+        return FALSE;
     }
-    printf("[UOWalkPatch] RegisterLuaFunction: %s\n", name);
-    return Real_RegFunc(L, name, func);
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        char buffer[64];
+        sprintf_s(buffer, sizeof(buffer), "Exception in initialization: 0x%08X", GetExceptionCode());
+        WriteRawLog(buffer);
+        return FALSE;
+    }
 }
 
-static DWORD WINAPI InitThread(LPVOID) {
-    if (MH_Initialize() != MH_OK) return 0;
-    uintptr_t regAddr;
-    if (!findRegisterLuaFunction(regAddr)) return 0;
-    uintptr_t walkAddr;
-    Pattern walkPat = parsePattern("55 8B EC 83 E4 ?? 83 EC ?? F3 0F 10 45 08 53 56 8B F1 57");
-    if (scanModule(walkPat, walkAddr)) g_walk = (WalkFunc)walkAddr;
-    MH_CreateHook((LPVOID)regAddr, (LPVOID)Hook_RegFunc, (LPVOID*)&Real_RegFunc);
-    MH_EnableHook((LPVOID)regAddr);
-    return 0;
+static void CleanupDLL() {
+    WriteRawLog("Starting cleanup...");
+
+    if (g_initialized) {
+        MH_STATUS status = MH_Uninitialize();
+        if (status != MH_OK) {
+            char buffer[64];
+            sprintf_s(buffer, sizeof(buffer), "MinHook cleanup failed: %d", status);
+            WriteRawLog(buffer);
+        }
+        g_initialized = FALSE;
+    }
+    
+    if (g_logFile != INVALID_HANDLE_VALUE) {
+        WriteRawLog("Closing log file");
+        CloseHandle(g_logFile);
+        g_logFile = INVALID_HANDLE_VALUE;
+    }
+
+    g_hModule = NULL;
 }
 
-BOOL APIENTRY DllMain(HMODULE h, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) {
-        DisableThreadLibraryCalls(h);
-        CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
+    char buffer[64];
+    sprintf_s(buffer, sizeof(buffer), "DllMain entry - reason: %lu", reason);
+    WriteRawLog(buffer);
+    
+    __try {
+        switch (reason) {
+            case DLL_PROCESS_ATTACH: {
+                // Prevent the DLL from being unloaded by the system
+                HMODULE hSelf;
+                GetModuleHandleExA(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | 
+                    GET_MODULE_HANDLE_EX_FLAG_PIN,
+                    (LPCSTR)hModule,
+                    &hSelf
+                );
+
+                if (!InitializeDLLSafe(hModule)) {
+                    WriteRawLog("Initialization failed - cleaning up");
+                    CleanupDLL();
+                    return FALSE;
+                }
+                return TRUE;
+            }
+            case DLL_PROCESS_DETACH:
+                WriteRawLog("DLL_PROCESS_DETACH");
+                CleanupDLL();
+                break;
+            case DLL_THREAD_ATTACH:
+                WriteRawLog("DLL_THREAD_ATTACH");
+                break;
+            case DLL_THREAD_DETACH:
+                WriteRawLog("DLL_THREAD_DETACH");
+                break;
+        }
+        return TRUE;
     }
-    return TRUE;
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Exception in DllMain");
+        return FALSE;
+    }
 }

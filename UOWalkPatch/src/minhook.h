@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+#define MH_ALL_HOOKS ((LPVOID)-1)
+
 typedef enum {
     MH_OK = 0,
     MH_ERROR_ALREADY_CREATED = -1,
