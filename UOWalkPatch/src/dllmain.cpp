@@ -14,7 +14,8 @@ static HMODULE g_hModule = NULL;
 
 // The client uses __stdcall for RegisterLuaFunction, so our hook and
 // trampoline must match that convention to avoid stack imbalance.
-typedef void (__stdcall* RegisterLuaFunction_t)(void*, const char*, void*);
+// Parameter order in the client is (luaState, functionPtr, name)
+typedef void (__stdcall* RegisterLuaFunction_t)(void* luaState, void* func, const char* name);
 static RegisterLuaFunction_t g_origRegLua = NULL;
 static void* g_firstLuaState = NULL;
 
@@ -196,7 +197,7 @@ static LPVOID FindRegisterLuaFunction() {
     return regAddr;
 }
 
-static void __stdcall Hook_Register(void* L, const char* name, void* func) {
+static void __stdcall Hook_Register(void* L, void* func, const char* name) {
     char buffer[128];
     sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction: %s", name ? name : "<null>");
     WriteRawLog(buffer);
@@ -208,7 +209,7 @@ static void __stdcall Hook_Register(void* L, const char* name, void* func) {
     }
 
     if (g_origRegLua)
-        g_origRegLua(L, name, func);
+        g_origRegLua(L, func, name);
 }
 
 static bool InstallRegisterHook() {
