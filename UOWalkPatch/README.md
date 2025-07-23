@@ -20,3 +20,9 @@ captures the internal `lua_State*` and registers any natives described in
 Reloading the UI will trigger the hook again so the functions remain available.
 A debug console pops up showing pattern matches and other status messages.
 Press **Enter** to exit the helper.
+
+## Troubleshooting
+
+If injection fails with a generic `LoadLibrary` error, ensure `signatures.json`
+is present in the same directory as `UOWalkPatchDLL.dll`. The DLL refuses to
+load when this file is missing.
