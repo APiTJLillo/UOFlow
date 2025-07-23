@@ -420,9 +420,10 @@ bool findRegisterLuaFunction(HANDLE proc, uintptr_t& regOut, uintptr_t& callSite
 
 struct HookData {
     void* stubMem;
-    void* flagMem;
     void* luaStateMem;
     void* debugCounterMem;  // Add debug counter memory
+    uintptr_t callSite;               // address of patched call site
+    uint8_t originalBytes[5];         // original bytes at call site
     std::vector<uint8_t> stub;
 };
 
@@ -449,22 +450,19 @@ bool installHook(HANDLE proc, uintptr_t regFunc, uintptr_t callSite,
     constexpr SIZE_T PAGE_SIZE = 4096;
     SIZE_T alignedSize = (sizeof(uint32_t) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
-    void* flagMem = VirtualAllocEx(proc, nullptr, alignedSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     void* luaStateMem = VirtualAllocEx(proc, nullptr, alignedSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     void* debugCounterMem = VirtualAllocEx(proc, nullptr, alignedSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
-    if (!flagMem || !luaStateMem || !debugCounterMem) {
+    if (!luaStateMem || !debugCounterMem) {
         debug_log("Failed to allocate state tracking memory");
         return false;
     }
 
-    debug_log("  Flag memory: 0x" + [&] {std::ostringstream oss; oss << std::hex << (uintptr_t)flagMem; return oss.str(); }());
     debug_log("  Lua state memory: 0x" + [&] {std::ostringstream oss; oss << std::hex << (uintptr_t)luaStateMem; return oss.str(); }());
     debug_log("  Debug counter: 0x" + [&] {std::ostringstream oss; oss << std::hex << (uintptr_t)debugCounterMem; return oss.str(); }());
 
     // Initialize memory with zeros
     uint32_t zero = 0;
-    WriteProcessMemory(proc, flagMem, &zero, sizeof(zero), nullptr);
     WriteProcessMemory(proc, luaStateMem, &zero, sizeof(uintptr_t), nullptr);
     WriteProcessMemory(proc, debugCounterMem, &zero, sizeof(zero), nullptr);
 
@@ -529,26 +527,32 @@ bool installHook(HANDLE proc, uintptr_t regFunc, uintptr_t callSite,
 
     // Store hook data
     hookData.stubMem = stubMemory;
-    hookData.flagMem = flagMem;
     hookData.luaStateMem = luaStateMem;
     hookData.debugCounterMem = debugCounterMem;
     hookData.stub = stub;
+    hookData.callSite = callSite;
+
+    SIZE_T read = 0;
+    if (!ReadProcessMemory(proc, (LPCVOID)callSite, hookData.originalBytes,
+                           sizeof(hookData.originalBytes), &read)) {
+        debug_log("Failed to read original bytes at call site");
+        return false;
+    }
 
     // Track allocations
     allocs.push_back({ arrayMem, arraySize });
     allocs.push_back({ debugCounterMem, alignedSize });
-    allocs.push_back({ flagMem, alignedSize });
     allocs.push_back({ luaStateMem, alignedSize });
     allocs.push_back({ stubMemory, stub.size() });
 
-    // Install jump to stub
-    uint8_t jmp[5] = { 0xE9 }; // JMP rel32
-    *(uint32_t*)&jmp[1] = (uint32_t)((uintptr_t)stubMemory - (callSite + 5));
+    // Install call to stub
+    uint8_t callPatch[5] = { 0xE8 }; // CALL rel32
+    *(uint32_t*)&callPatch[1] = (uint32_t)((uintptr_t)stubMemory - (callSite + 5));
 
-    debug_log("Installing jump to stub:");
+    debug_log("Installing call to stub:");
     debug_log("  From: 0x" + [&] {std::ostringstream oss; oss << std::hex << callSite; return oss.str(); }());
     debug_log("  To: 0x" + [&] {std::ostringstream oss; oss << std::hex << (uintptr_t)stubMemory; return oss.str(); }());
-    debug_log("  Relative offset: 0x" + [&] {std::ostringstream oss; oss << std::hex << *(uint32_t*)&jmp[1]; return oss.str(); }());
+    debug_log("  Relative offset: 0x" + [&] {std::ostringstream oss; oss << std::hex << *(uint32_t*)&callPatch[1]; return oss.str(); }());
 
     DWORD oldProtect;
     if (!VirtualProtectEx(proc, (LPVOID)callSite, 5, PAGE_EXECUTE_READWRITE, &oldProtect)) {
@@ -556,13 +560,35 @@ bool installHook(HANDLE proc, uintptr_t regFunc, uintptr_t callSite,
         return false;
     }
 
-    if (!WriteProcessMemory(proc, (LPVOID)callSite, jmp, 5, &written)) {
-        debug_log("Failed to write jump");
+    if (!WriteProcessMemory(proc, (LPVOID)callSite, callPatch, 5, &written)) {
+        debug_log("Failed to write call patch");
         VirtualProtectEx(proc, (LPVOID)callSite, 5, oldProtect, nullptr);
         return false;
     }
 
     VirtualProtectEx(proc, (LPVOID)callSite, 5, oldProtect, nullptr);
+    return true;
+}
+
+bool removeHook(HANDLE proc, const HookData& hookData) {
+    if (!hookData.callSite) return true;
+
+    DWORD oldProtect;
+    if (!VirtualProtectEx(proc, (LPVOID)hookData.callSite, sizeof(hookData.originalBytes),
+                          PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        debug_log("Failed to change page protection to restore bytes");
+        return false;
+    }
+
+    SIZE_T written;
+    if (!WriteProcessMemory(proc, (LPVOID)hookData.callSite, hookData.originalBytes,
+                            sizeof(hookData.originalBytes), &written)) {
+        debug_log("Failed to restore original bytes at call site");
+        VirtualProtectEx(proc, (LPVOID)hookData.callSite, sizeof(hookData.originalBytes), oldProtect, nullptr);
+        return false;
+    }
+
+    VirtualProtectEx(proc, (LPVOID)hookData.callSite, sizeof(hookData.originalBytes), oldProtect, nullptr);
     return true;
 }
 
@@ -797,13 +823,10 @@ int main() {
         
         debug_log("Continuing initialization...");
         
-        // Initialize debug counter and hook flag to 0
+        // Initialize debug counter to 0
         uint32_t zero = 0;
         if (debugHookData.debugCounterMem) {
             WriteProcessMemory(hProc, debugHookData.debugCounterMem, &zero, sizeof(zero), nullptr);
-        }
-        if (debugHookData.flagMem) {
-            WriteProcessMemory(hProc, debugHookData.flagMem, &zero, sizeof(zero), nullptr);
         }
         
         // Resume the main thread
@@ -873,14 +896,7 @@ int main() {
     }
 
     // Initialize hook state tracking memory
-    if (!allocs.empty()) {
-        hookData.stubMem = allocs.back().addr;
-        hookData.stub = std::vector<uint8_t>(hook_stub_template,
-                                           hook_stub_template + hook_stub_template_len);
-        if (allocs.size() > 1) {
-            hookData.flagMem = allocs[allocs.size() - 2].addr;
-        }
-    }
+
 
     // Monitor hook execution
     debug_log("Monitoring hook execution...");
@@ -904,13 +920,11 @@ int main() {
             }
         }
         
-        if (hookData.flagMem && hookData.luaStateMem && 
-            ReadProcessMemory(hProc, hookData.flagMem, &flagValue, sizeof(flagValue), &read) &&
+        if (hookData.luaStateMem &&
             ReadProcessMemory(hProc, hookData.luaStateMem, &luaState, sizeof(luaState), &read)) {
-            
-            if (flagValue != 0) {
-                debug_log("Hook was called! Flag value: " + std::to_string(flagValue));
-                debug_log("Captured Lua state: 0x" + 
+            if (debugCounter > 0 && luaState != 0) {
+                debug_log("Hook was called! Debug count: " + std::to_string(debugCounter));
+                debug_log("Captured Lua state: 0x" +
                     [&]{std::ostringstream oss; oss<<std::hex<<luaState; return oss.str();}());
                 hookExecuted = true;
                 capturedLuaState = luaState;
@@ -928,6 +942,7 @@ int main() {
 
     // Clean up
     debug_log("Cleaning up...");
+    removeHook(hProc, hookData);
     for (auto& a : allocs) {
         VirtualFreeEx(hProc, a.addr, a.size, MEM_RELEASE);
     }
