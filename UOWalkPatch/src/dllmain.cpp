@@ -173,7 +173,11 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         GetModuleFileNameA(hModule, sigPath, MAX_PATH);
         char* lastSlash = strrchr(sigPath, '\\');
         if (lastSlash) {
-            strcpy_s(lastSlash + 1, MAX_PATH - (lastSlash - sigPath), "signatures.json");
+            // `strcpy_s` requires the destination buffer size starting from the
+            // provided pointer. The previous calculation overshot by one and
+            // corrupted the stack when the path was at the end of the buffer.
+            size_t remaining = MAX_PATH - static_cast<size_t>(lastSlash - sigPath) - 1;
+            strcpy_s(lastSlash + 1, remaining, "signatures.json");
             
             WriteRawLog("Looking for signatures.json...");
             sprintf_s(buffer, sizeof(buffer), "Checking: %s", sigPath);
