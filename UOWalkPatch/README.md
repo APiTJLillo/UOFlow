@@ -18,8 +18,15 @@ installed before the client registers its Lua functions. The installed hook
 captures the internal `lua_State*` and registers any natives described in
 `signatures.json`.
 Reloading the UI will trigger the hook again so the functions remain available.
+During initialization the DLL scans UOSA.exe for the call to
+`RegisterLuaFunction` by locating the nearby "GetBuildVersion" string.
+Once found, it hooks that routine so the first Lua state pointer can be
+captured and additional natives registered.
 A debug console pops up showing pattern matches and other status messages.
 Press **Enter** to exit the helper.
+
+All debug output is also written to `uowalkpatch_debug.log`. The file is created
+next to the DLL if possible, otherwise in `%WINDIR%\Temp`.
 
 ## Troubleshooting
 

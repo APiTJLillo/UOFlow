@@ -158,7 +158,6 @@ static bool InjectHandle(HANDLE hProc, const std::wstring& dllPath) {
 
     // Give the process a bit more time to initialize
     Sleep(3000);
-    
     if (!ValidateProcess(hProc)) {
         std::wcerr << L"Process validation failed" << std::endl;
         return false;
