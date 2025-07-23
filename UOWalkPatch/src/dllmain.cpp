@@ -12,7 +12,9 @@ static BOOL   g_logAnnounced = FALSE;
 static BOOL   g_initialized = FALSE;
 static HMODULE g_hModule = NULL;
 
-typedef void (__cdecl* RegisterLuaFunction_t)(void*, const char*, void*);
+// The client uses __stdcall for RegisterLuaFunction, so our hook and
+// trampoline must match that convention to avoid stack imbalance.
+typedef void (__stdcall* RegisterLuaFunction_t)(void*, const char*, void*);
 static RegisterLuaFunction_t g_origRegLua = NULL;
 static void* g_firstLuaState = NULL;
 
@@ -194,7 +196,7 @@ static LPVOID FindRegisterLuaFunction() {
     return regAddr;
 }
 
-static void __cdecl Hook_Register(void* L, const char* name, void* func) {
+static void __stdcall Hook_Register(void* L, const char* name, void* func) {
     char buffer[128];
     sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction: %s", name ? name : "<null>");
     WriteRawLog(buffer);
