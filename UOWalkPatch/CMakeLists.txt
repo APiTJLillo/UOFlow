@@ -76,9 +76,6 @@ target_link_options(UOWalkPatchDLL PRIVATE
         /MACHINE:X86
         /DEBUG:FULL
         /INCREMENTAL:NO
-        /DYNAMICBASE:NO
-        /FIXED
-        /BASE:0x10000000
         /OPT:NOREF
         /OPT:NOICF
         /NODEFAULTLIB:msvcrt.lib
@@ -90,9 +87,6 @@ target_link_options(UOWalkPatchDLL PRIVATE
         /MACHINE:X86
         /DEBUG
         /INCREMENTAL:NO
-        /DYNAMICBASE:NO
-        /FIXED
-        /BASE:0x10000000
         /OPT:REF
         /OPT:ICF
         /NODEFAULTLIB:msvcrt.lib

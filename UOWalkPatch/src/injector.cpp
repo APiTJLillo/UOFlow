@@ -155,12 +155,20 @@ static bool ValidateProcess(HANDLE hProcess) {
 
 static bool InjectHandle(HANDLE hProc, const std::wstring& dllPath) {
     std::wcout << L"Validating process..." << std::endl;
-    
+
     // Give the process a bit more time to initialize
     Sleep(3000);
     
     if (!ValidateProcess(hProc)) {
         std::wcerr << L"Process validation failed" << std::endl;
+        return false;
+    }
+
+    // Verify signatures.json exists next to the DLL
+    std::filesystem::path sigPath = std::filesystem::path(dllPath).parent_path() / L"signatures.json";
+    if (!std::filesystem::exists(sigPath)) {
+        std::wcerr << L"signatures.json not found: " << sigPath.wstring() << std::endl;
+        std::wcerr << L"Make sure this file is located next to the DLL" << std::endl;
         return false;
     }
 
