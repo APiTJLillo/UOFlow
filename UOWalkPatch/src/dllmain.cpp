@@ -10,7 +10,7 @@
 // Correct Lua types and calling conventions based on disassembly
 using lua_State = void;
 using lua_CFunction = int (__cdecl *)(lua_State* L);
-using RegisterLuaFunction_t = bool (__stdcall *)(lua_State* L, lua_CFunction fn, const char* name);
+using RegisterLuaFunction_t = bool (__cdecl *)(lua_State* L, lua_CFunction fn, const char* name);
 
 // Global state
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;
@@ -20,6 +20,11 @@ static BOOL   g_initialized = FALSE;
 static HMODULE g_hModule = NULL;
 static RegisterLuaFunction_t g_origRegLua = NULL;
 static lua_State* g_firstLuaState = NULL;
+static RegisterLuaFunction_t g_regLua = NULL;
+static lua_State* g_luaState = NULL;
+static void* g_globalStateInfo = NULL;
+static HANDLE g_pollThread = NULL;
+static volatile LONG g_stopPolling = 0;
 
 // Write to debug output and file without any fancy formatting
 static void WriteRawLog(const char* message) {
@@ -275,7 +280,7 @@ static int __cdecl TestFunction(lua_State* L) {
 }
 
 // Hook with correct calling convention and return type based on disassembly
-static bool __stdcall Hook_Register(lua_State* L, lua_CFunction fn, const char* name) {
+static bool __cdecl Hook_Register(lua_State* L, lua_CFunction fn, const char* name) {
     char buffer[256];
     bool result = false;
     
