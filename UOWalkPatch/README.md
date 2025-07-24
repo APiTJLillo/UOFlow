@@ -12,16 +12,18 @@ make
 ```
 
 Run `UOInjector.exe` to start the Enhanced Client or inject into an existing
-process. If `uosa.exe` is not running the injector launches it in a suspended
-state, injects `UOWalkPatch.dll` and then resumes execution so the hook is
-installed before the client registers its Lua functions. The installed hook
-captures the internal `lua_State*` and registers any natives described in
+process. If `uosa.exe` is not running the injector launches it normally and
+polls the new process until `kernel32.dll` appears before injecting
+`UOWalkPatchDLL.dll`. The polling routine tolerates temporary failures while the
+client is still spinning up so it no longer times out instantly on slower
+systems.
+The helper scans the client for the `RegisterLuaFunction` routine and the
+`globalStateInfo` structure. By reading the pointer at `globalStateInfo + 0xC`
+the DLL obtains the current `lua_State*` and registers any natives described in
 `signatures.json`.
-Reloading the UI will trigger the hook again so the functions remain available.
-During initialization the DLL scans UOSA.exe for the call to
-`RegisterLuaFunction` by locating the nearby "GetBuildVersion" string.
-Once found, it hooks that routine so the first Lua state pointer can be
-captured and additional natives registered.
+Reloading the UI causes the Lua state address to change, so a background polling
+thread monitors `globalStateInfo` and re-registers functions whenever the state
+pointer updates. No code patches or hooks are required.
 A debug console pops up showing pattern matches and other status messages.
 Press **Enter** to exit the helper.
 
