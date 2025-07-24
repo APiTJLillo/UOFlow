@@ -13,7 +13,10 @@ make
 
 Run `UOInjector.exe` to start the Enhanced Client or inject into an existing
 process. If `uosa.exe` is not running the injector launches it normally and
-waits for `kernel32.dll` to load before injecting `UOWalkPatchDLL.dll`.
+polls the new process until `kernel32.dll` appears before injecting
+`UOWalkPatchDLL.dll`. The polling routine tolerates temporary failures while the
+client is still spinning up so it no longer times out instantly on slower
+systems.
 The helper scans the client for the `RegisterLuaFunction` routine, reads the
 `lua_State*` from `globalStateInfo + 0xC` and registers any natives described
 in `signatures.json`.

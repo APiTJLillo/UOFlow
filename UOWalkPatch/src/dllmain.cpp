@@ -298,6 +298,7 @@ static void* GetLuaState() {
     void** statePtr = (void**)(absAddr + 0xC);
     return *statePtr;
 }
+
 static bool RegisterFunction(const char* name, LuaCallback_t cb) {
     if (!g_regLua || !g_luaState) {
         char buf[128];

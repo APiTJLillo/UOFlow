@@ -13,6 +13,7 @@ and then registers extra bridges defined in `signatures.json`.
 - [x] Ensure `signatures.json` resides next to `UOWalkPatchDLL.dll`; fail gracefully if missing
 - [x] Add runtime check in the injector for `signatures.json` and output helpful errors
 - [x] Launch client normally and poll for `kernel32.dll` before injecting
+- [x] Robust module polling that retries when `EnumProcessModules` fails
 - [ ] Document troubleshooting steps in the README when injection fails
 - [x] Note location of `uowalkpatch_debug.log` and console output for debugging
 - [x] WriteRawLog outputs to the console when it is available

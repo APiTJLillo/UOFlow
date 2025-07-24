@@ -163,8 +163,11 @@ static bool WaitForModules(HANDLE hProcess,
     DWORD cbNeeded;
 
     while (elapsed < timeoutMs) {
-        if (!EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded))
-            return false;
+        if (!EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+            Sleep(interval);
+            elapsed += interval;
+            continue;
+        }
 
         bool allFound = true;
         for (const auto& mod : modules) {
