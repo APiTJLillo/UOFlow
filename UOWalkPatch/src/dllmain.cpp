@@ -10,7 +10,7 @@
 // Correct Lua types and calling conventions based on disassembly
 using lua_State = void;
 using lua_CFunction = int (__cdecl *)(lua_State* L);
-using RegisterLuaFunction_t = bool (__stdcall *)(lua_State* L, lua_CFunction fn, const char* name);
+using RegisterLuaFunction_t = bool (__cdecl *)(lua_State* L, lua_CFunction fn, const char* name);
 
 // Global state
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;
@@ -20,6 +20,20 @@ static BOOL   g_initialized = FALSE;
 static HMODULE g_hModule = NULL;
 static RegisterLuaFunction_t g_origRegLua = NULL;
 static lua_State* g_firstLuaState = NULL;
+static RegisterLuaFunction_t g_regLua = NULL;
+static lua_State* g_luaState = NULL;
+static void* g_globalStateInfo = NULL;
+static HANDLE g_pollThread = NULL;
+static volatile LONG g_stopPolling = 0;
+
+using LuaCallback_t = lua_CFunction;
+static void WriteRawLog(const char* message);
+static int __cdecl DummyFunction(lua_State* L);
+
+static int __cdecl DummyFunction(lua_State* L) {
+    WriteRawLog("DummyFunction invoked");
+    return 0;
+}
 
 // Write to debug output and file without any fancy formatting
 static void WriteRawLog(const char* message) {
@@ -275,7 +289,7 @@ static int __cdecl TestFunction(lua_State* L) {
 }
 
 // Hook with correct calling convention and return type based on disassembly
-static bool __stdcall Hook_Register(lua_State* L, lua_CFunction fn, const char* name) {
+static bool __cdecl Hook_Register(lua_State* L, lua_CFunction fn, const char* name) {
     char buffer[256];
     bool result = false;
     
@@ -340,6 +354,33 @@ static bool __stdcall Hook_Register(lua_State* L, lua_CFunction fn, const char* 
             }
         }
     }
+    return result;
+}
+
+// Scan executable memory for the globalStateInfo reference and return its address
+static LPVOID FindGlobalStateInfoPattern() {
+    HMODULE hExe = GetModuleHandleA(nullptr);
+    if (!hExe) return nullptr;
+
+    BYTE* base = nullptr;
+    SIZE_T size = 0;
+    if (!GetTextSection(base, size))
+        return nullptr;
+
+    const BYTE pattern[] = { 0x8B, 0x0D, 0,0,0,0, 0x8B, 0x41, 0x0C };
+    const char mask[] = "xx????xxx";
+
+    for (SIZE_T i = 0; i + sizeof(pattern) <= size; ++i) {
+        bool match = true;
+        for (SIZE_T j = 0; j < sizeof(pattern); ++j) {
+            if (mask[j] != '?' && pattern[j] != base[i + j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return base + i;
+    }
     return nullptr;
 }
 
@@ -354,7 +395,7 @@ static void* LocateGlobalStateInfo() {
 
     g_globalStateInfo = *(void**)(patAddr + 2);
 
-    return result;
+    return g_globalStateInfo;
 }
 
 // Read the lua_State* from globalStateInfo + 0xC
