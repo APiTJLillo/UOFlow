@@ -200,7 +200,6 @@ static bool WaitForModules(HANDLE hProcess,
 static bool InjectHandle(HANDLE hProc, const std::wstring& dllPath) {
     std::wcout << L"Validating process..." << std::endl;
     // Give the process a bit more time to initialize
-    Sleep(3000);
     if (!ValidateProcess(hProc)) {
         std::wcerr << L"Process validation failed" << std::endl;
         return false;
@@ -487,14 +486,22 @@ int wmain(int argc, wchar_t* argv[]) {
 
         std::wcout << L"UOSA.exe launched with PID: " << pid << std::endl;
 
-        // Wait for kernel32 since the game loads other DLLs later
-        std::vector<std::wstring> mods{L"kernel32.dll"};
-        if (!WaitForModules(hProc, mods)) {
-            std::wcerr << L"Timed out waiting for modules" << std::endl;
+        // Resume the process
+        std::wcout << L"Resuming UOSA.exe..." << std::endl;
+        DWORD resumeResult = ResumeThread(hThread);
+        if (resumeResult == (DWORD)-1) {
+            std::wstring error;
+            GetLastErrorString(error);
+            std::wcerr << L"Failed to resume process: " << error << std::endl;
             CloseHandle(hThread);
             CloseHandle(hProc);
             return 1;
         }
+        std::wcout << L"Process resumed successfully. Resume count: " << resumeResult << std::endl;
+
+        // Wait longer for process to stabilize
+        std::wcout << L"Waiting for process startup..." << std::endl;
+        Sleep(2000);
 
         // Verify process is still running and responsive
         DWORD exitCode = 0;
