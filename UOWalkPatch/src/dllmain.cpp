@@ -26,6 +26,15 @@ static void* g_globalStateInfo = NULL;
 static HANDLE g_pollThread = NULL;
 static volatile LONG g_stopPolling = 0;
 
+using LuaCallback_t = lua_CFunction;
+static void WriteRawLog(const char* message);
+static int __cdecl DummyFunction(lua_State* L);
+
+static int __cdecl DummyFunction(lua_State* L) {
+    WriteRawLog("DummyFunction invoked");
+    return 0;
+}
+
 // Write to debug output and file without any fancy formatting
 static void WriteRawLog(const char* message) {
     if (!message) return;
@@ -345,6 +354,33 @@ static bool __cdecl Hook_Register(lua_State* L, lua_CFunction fn, const char* na
             }
         }
     }
+    return result;
+}
+
+// Scan executable memory for the globalStateInfo reference and return its address
+static LPVOID FindGlobalStateInfoPattern() {
+    HMODULE hExe = GetModuleHandleA(nullptr);
+    if (!hExe) return nullptr;
+
+    BYTE* base = nullptr;
+    SIZE_T size = 0;
+    if (!GetTextSection(base, size))
+        return nullptr;
+
+    const BYTE pattern[] = { 0x8B, 0x0D, 0,0,0,0, 0x8B, 0x41, 0x0C };
+    const char mask[] = "xx????xxx";
+
+    for (SIZE_T i = 0; i + sizeof(pattern) <= size; ++i) {
+        bool match = true;
+        for (SIZE_T j = 0; j < sizeof(pattern); ++j) {
+            if (mask[j] != '?' && pattern[j] != base[i + j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return base + i;
+    }
     return nullptr;
 }
 
@@ -359,7 +395,7 @@ static void* LocateGlobalStateInfo() {
 
     g_globalStateInfo = *(void**)(patAddr + 2);
 
-    return result;
+    return g_globalStateInfo;
 }
 
 // Read the lua_State* from globalStateInfo + 0xC
