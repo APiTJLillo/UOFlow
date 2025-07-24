@@ -5,27 +5,32 @@
 #include <stdio.h>
 #include "minhook.h"
 
+// Correct Lua types and calling conventions based on disassembly
+using lua_State = void;
+using lua_CFunction = int (__cdecl *)(lua_State* L);
+using RegisterLuaFunction_t = bool (__stdcall *)(lua_State* L, lua_CFunction fn, const char* name);
+
 // Global state
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;
 static char   g_logPath[MAX_PATH] = "";
 static BOOL   g_logAnnounced = FALSE;
 static BOOL   g_initialized = FALSE;
 static HMODULE g_hModule = NULL;
-
-// The client uses __stdcall for RegisterLuaFunction, so our hook and
-// trampoline must match that convention to avoid stack imbalance.
-// Parameter order in the client is (luaState, functionPtr, name)
-typedef void (__stdcall* RegisterLuaFunction_t)(void* luaState, void* func, const char* name);
 static RegisterLuaFunction_t g_origRegLua = NULL;
-static void* g_firstLuaState = NULL;
+static lua_State* g_firstLuaState = NULL;
 
 // Write to debug output and file without any fancy formatting
 static void WriteRawLog(const char* message) {
     if (!message) return;
 
-    // Write to debug output
+    // Write to debug output and console
     OutputDebugStringA(message);
     OutputDebugStringA("\n");
+    
+    if (GetConsoleWindow()) {
+        printf("%s\n", message);
+        fflush(stdout);  // Ensure console output is flushed
+    }
 
     // Try to open log in executable directory first
     if (g_logFile == INVALID_HANDLE_VALUE && g_hModule != NULL) {
@@ -149,10 +154,20 @@ static void LogLoadedModules() {
 static void SetupConsole() {
     if (!GetConsoleWindow()) {
         if (AllocConsole()) {
-            FILE* dummy;
-            freopen_s(&dummy, "CONOUT$", "w", stdout);
-            freopen_s(&dummy, "CONOUT$", "w", stderr);
-            SetConsoleTitleA("UOWalkPatch console");
+            // Properly redirect stdout
+            FILE* fp;
+            freopen_s(&fp, "CONOUT$", "w", stdout);
+            setvbuf(stdout, NULL, _IONBF, 0);  // Disable buffering
+            
+            // Also redirect stderr
+            freopen_s(&fp, "CONOUT$", "w", stderr);
+            setvbuf(stderr, NULL, _IONBF, 0);
+            
+            SetConsoleTitleA("UOWalkPatch Debug Console");
+            
+            // Write header to console
+            printf("UOWalkPatch Debug Console\n");
+            printf("=======================\n\n");
         }
     }
 }
@@ -197,19 +212,83 @@ static LPVOID FindRegisterLuaFunction() {
     return regAddr;
 }
 
-static void __stdcall Hook_Register(void* L, void* func, const char* name) {
-    char buffer[128];
-    sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction: %s", name ? name : "<null>");
+// Test Lua function - using __cdecl as required by Lua
+static int __cdecl TestFunction(lua_State* L) {
+    WriteRawLog("===================================");
+    WriteRawLog("TestFunction called from Lua!");
+    WriteRawLog("This is our test function working!");
+    WriteRawLog("===================================");
+    return 0; // Number of return values on Lua stack
+}
+
+// Hook with correct calling convention and return type based on disassembly
+static bool __stdcall Hook_Register(lua_State* L, lua_CFunction fn, const char* name) {
+    char buffer[256];
+    bool result = false;
+    
+    // Log function registration with more details
+    sprintf_s(buffer, sizeof(buffer), 
+        "RegisterLuaFunction called:\n"
+        "  Name: %s\n"
+        "  Function Address: %p\n"
+        "  Lua State: %p", 
+        name ? name : "<null>",
+        (void*)fn,
+        L);
     WriteRawLog(buffer);
 
-    if (!g_firstLuaState && L) {
-        g_firstLuaState = L;
-        sprintf_s(buffer, sizeof(buffer), "Captured Lua state: %p", L);
-        WriteRawLog(buffer);
+    // Call original function first and get result
+    if (g_origRegLua) {
+        __try {
+            WriteRawLog("Calling original RegisterLuaFunction...");
+            result = g_origRegLua(L, fn, name);
+            sprintf_s(buffer, "Original function returned: %s", result ? "true" : "false");
+            WriteRawLog(buffer);
+        }
+        __except(EXCEPTION_EXECUTE_HANDLER) {
+            sprintf_s(buffer, sizeof(buffer), 
+                "Exception in original RegisterLuaFunction: 0x%08X",
+                GetExceptionCode());
+            WriteRawLog(buffer);
+            return false;
+        }
     }
 
-    if (g_origRegLua)
-        g_origRegLua(L, func, name);
+    // After successful registration, check if this was SetHousingMode
+    if (result && name && strcmp(name, "SetHousingMode") == 0 && !g_firstLuaState) {
+        WriteRawLog("Detected SetHousingMode registration - capturing state");
+        g_firstLuaState = L;
+
+        // Now register our test function
+        if (g_origRegLua) {
+            __try {
+                WriteRawLog("Attempting to register UOPatchTest function...");
+                bool testResult = g_origRegLua(L, TestFunction, "UOPatchTest");
+                sprintf_s(buffer, sizeof(buffer),
+                    "UOPatchTest registration %s:\n"
+                    "  Result: %s\n"
+                    "  Function Address: %p\n"
+                    "  Lua State: %p",
+                    testResult ? "succeeded" : "failed",
+                    testResult ? "true" : "false",
+                    (void*)&TestFunction,
+                    L);
+                WriteRawLog(buffer);
+
+                if (!testResult) {
+                    WriteRawLog("WARNING: Failed to register UOPatchTest function");
+                }
+            }
+            __except(EXCEPTION_EXECUTE_HANDLER) {
+                sprintf_s(buffer, sizeof(buffer), 
+                    "Exception registering UOPatchTest: 0x%08X",
+                    GetExceptionCode());
+                WriteRawLog(buffer);
+            }
+        }
+    }
+
+    return result;
 }
 
 static bool InstallRegisterHook() {

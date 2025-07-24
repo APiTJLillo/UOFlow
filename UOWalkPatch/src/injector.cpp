@@ -156,7 +156,6 @@ static bool ValidateProcess(HANDLE hProcess) {
 static bool InjectHandle(HANDLE hProc, const std::wstring& dllPath) {
     std::wcout << L"Validating process..." << std::endl;
     // Give the process a bit more time to initialize
-    Sleep(3000);
     if (!ValidateProcess(hProc)) {
         std::wcerr << L"Process validation failed" << std::endl;
         return false;
@@ -443,9 +442,6 @@ int wmain(int argc, wchar_t* argv[]) {
 
         std::wcout << L"UOSA.exe launched with PID: " << pid << std::endl;
 
-        // Wait longer for the process to initialize
-        Sleep(5000);
-
         // Resume the process
         std::wcout << L"Resuming UOSA.exe..." << std::endl;
         DWORD resumeResult = ResumeThread(hThread);
@@ -461,7 +457,7 @@ int wmain(int argc, wchar_t* argv[]) {
 
         // Wait longer for process to stabilize
         std::wcout << L"Waiting for process startup..." << std::endl;
-        Sleep(10000);
+        Sleep(2000);
 
         // Verify process is still running and responsive
         DWORD exitCode = 0;
