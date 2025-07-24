@@ -23,6 +23,8 @@ static volatile LONG g_stopPolling = 0;
 
 typedef int (__cdecl* LuaCallback_t)(void*);
 
+// Simple logging helper used throughout the DLL
+static void WriteRawLog(const char* message);
 static int __cdecl DummyFunction(void* L) {
     WriteRawLog("DummyFunction invoked");
     return 0;
