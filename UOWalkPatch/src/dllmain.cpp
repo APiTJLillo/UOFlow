@@ -420,7 +420,7 @@ static bool RegisterFunction(const char* name, LuaCallback_t cb) {
     }
 
     __try {
-        g_regLua(g_luaState, (void*)cb, name);
+        g_regLua(g_luaState, cb, name);
         char buf[128];
         sprintf_s(buf, sizeof(buf), "Registered %s at %p (L=%p)",
                   name, cb, g_luaState);
