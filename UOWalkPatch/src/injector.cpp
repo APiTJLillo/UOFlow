@@ -4,6 +4,7 @@
 #include <string>
 #include <iostream>
 #include <filesystem>
+#include <vector>
 
 static void GetLastErrorString(std::wstring& error);
 
@@ -151,6 +152,46 @@ static bool ValidateProcess(HANDLE hProcess) {
 
     std::wcout << L"Process validation successful" << std::endl;
     return true;
+}
+
+static bool WaitForModules(HANDLE hProcess,
+                           const std::vector<std::wstring>& modules,
+                           DWORD timeoutMs = 20000) {
+    DWORD elapsed = 0;
+    const DWORD interval = 500;
+    HMODULE hMods[1024];
+    DWORD cbNeeded;
+
+    while (elapsed < timeoutMs) {
+        if (!EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded))
+            return false;
+
+        bool allFound = true;
+        for (const auto& mod : modules) {
+            bool found = false;
+            for (DWORD i = 0; i < cbNeeded / sizeof(HMODULE); ++i) {
+                wchar_t name[MAX_PATH];
+                if (GetModuleFileNameExW(hProcess, hMods[i], name, MAX_PATH)) {
+                    std::wstring base = std::filesystem::path(name).filename().wstring();
+                    if (_wcsicmp(base.c_str(), mod.c_str()) == 0) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                allFound = false;
+                break;
+            }
+        }
+
+        if (allFound)
+            return true;
+
+        Sleep(interval);
+        elapsed += interval;
+    }
+    return false;
 }
 
 static bool InjectHandle(HANDLE hProc, const std::wstring& dllPath) {
@@ -415,8 +456,8 @@ int wmain(int argc, wchar_t* argv[]) {
 
         PROCESS_INFORMATION pi{};
 
-        // Create process with proper flags
-        DWORD flags = CREATE_SUSPENDED | NORMAL_PRIORITY_CLASS;
+        // Launch normally; we'll poll for modules before injecting
+        DWORD flags = NORMAL_PRIORITY_CLASS;
         
         if (!CreateProcessW(
             uosaPath,             // Application path
@@ -443,25 +484,14 @@ int wmain(int argc, wchar_t* argv[]) {
 
         std::wcout << L"UOSA.exe launched with PID: " << pid << std::endl;
 
-        // Wait longer for the process to initialize
-        Sleep(5000);
-
-        // Resume the process
-        std::wcout << L"Resuming UOSA.exe..." << std::endl;
-        DWORD resumeResult = ResumeThread(hThread);
-        if (resumeResult == (DWORD)-1) {
-            std::wstring error;
-            GetLastErrorString(error);
-            std::wcerr << L"Failed to resume process: " << error << std::endl;
+        // Wait for core modules so injection succeeds sooner
+        std::vector<std::wstring> mods{L"kernel32.dll", L"dbghelp.dll"};
+        if (!WaitForModules(hProc, mods)) {
+            std::wcerr << L"Timed out waiting for modules" << std::endl;
             CloseHandle(hThread);
             CloseHandle(hProc);
             return 1;
         }
-        std::wcout << L"Process resumed successfully. Resume count: " << resumeResult << std::endl;
-
-        // Wait longer for process to stabilize
-        std::wcout << L"Waiting for process startup..." << std::endl;
-        Sleep(10000);
 
         // Verify process is still running and responsive
         DWORD exitCode = 0;
@@ -499,16 +529,23 @@ int wmain(int argc, wchar_t* argv[]) {
         hThread = nullptr;
     } else {
         std::wcout << L"Found existing UOSA.exe process with PID: " << pid << std::endl;
-        DWORD desiredAccess = PROCESS_CREATE_THREAD | 
-                             PROCESS_QUERY_INFORMATION | 
-                             PROCESS_VM_OPERATION | 
-                             PROCESS_VM_WRITE | 
+        DWORD desiredAccess = PROCESS_CREATE_THREAD |
+                             PROCESS_QUERY_INFORMATION |
+                             PROCESS_VM_OPERATION |
+                             PROCESS_VM_WRITE |
                              PROCESS_VM_READ;
         hProc = OpenProcess(desiredAccess, FALSE, pid);
         if (!hProc) {
             std::wstring error;
             GetLastErrorString(error);
             std::wcerr << L"Failed to open UOSA.exe: " << error << std::endl;
+            return 1;
+        }
+
+        std::vector<std::wstring> mods{L"kernel32.dll", L"dbghelp.dll"};
+        if (!WaitForModules(hProc, mods)) {
+            std::wcerr << L"Timed out waiting for modules" << std::endl;
+            CloseHandle(hProc);
             return 1;
         }
     }
