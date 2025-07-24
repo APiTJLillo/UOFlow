@@ -298,7 +298,6 @@ static void* GetLuaState() {
     void** statePtr = (void**)(absAddr + 0xC);
     return *statePtr;
 }
-
 static bool RegisterFunction(const char* name, LuaCallback_t cb) {
     if (!g_regLua || !g_luaState) {
         char buf[128];
@@ -344,6 +343,8 @@ static DWORD WINAPI LuaStatePollThread(LPVOID) {
     WriteRawLog("Lua state polling thread exiting");
     return 0;
 }
+
+
 
 static BOOL InitializeDLLSafe(HMODULE hModule) {
     WriteRawLog("DLL initialization starting...");

@@ -12,7 +12,7 @@ and then registers extra bridges defined in `signatures.json`.
 - [ ] Confirm DLL is built without a fixed base address so relocation works when injected
 - [x] Ensure `signatures.json` resides next to `UOWalkPatchDLL.dll`; fail gracefully if missing
 - [x] Add runtime check in the injector for `signatures.json` and output helpful errors
-- [x] Launch client normally and poll for loaded DLLs before injecting
+- [x] Launch client normally and poll for `kernel32.dll` before injecting
 - [ ] Document troubleshooting steps in the README when injection fails
 - [x] Note location of `uowalkpatch_debug.log` and console output for debugging
 - [x] WriteRawLog outputs to the console when it is available

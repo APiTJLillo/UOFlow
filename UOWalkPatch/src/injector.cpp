@@ -484,8 +484,8 @@ int wmain(int argc, wchar_t* argv[]) {
 
         std::wcout << L"UOSA.exe launched with PID: " << pid << std::endl;
 
-        // Wait for core modules so injection succeeds sooner
-        std::vector<std::wstring> mods{L"kernel32.dll", L"dbghelp.dll"};
+        // Wait for kernel32 since the game loads other DLLs later
+        std::vector<std::wstring> mods{L"kernel32.dll"};
         if (!WaitForModules(hProc, mods)) {
             std::wcerr << L"Timed out waiting for modules" << std::endl;
             CloseHandle(hThread);
@@ -542,7 +542,8 @@ int wmain(int argc, wchar_t* argv[]) {
             return 1;
         }
 
-        std::vector<std::wstring> mods{L"kernel32.dll", L"dbghelp.dll"};
+        // Existing process should already have kernel32 loaded
+        std::vector<std::wstring> mods{L"kernel32.dll"};
         if (!WaitForModules(hProc, mods)) {
             std::wcerr << L"Timed out waiting for modules" << std::endl;
             CloseHandle(hProc);
