@@ -345,8 +345,6 @@ static DWORD WINAPI LuaStatePollThread(LPVOID) {
     return 0;
 }
 
-
-
 static BOOL InitializeDLLSafe(HMODULE hModule) {
     WriteRawLog("DLL initialization starting...");
     
