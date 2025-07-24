@@ -3,7 +3,7 @@
 #include <psapi.h>
 #include <stdint.h>
 #include <stdio.h>
-#include "minhook.h"
+#include <stddef.h>
 
 // Global state
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;
@@ -16,8 +16,20 @@ static HMODULE g_hModule = NULL;
 // trampoline must match that convention to avoid stack imbalance.
 // Parameter order in the client is (luaState, functionPtr, name)
 typedef void (__stdcall* RegisterLuaFunction_t)(void* luaState, void* func, const char* name);
-static RegisterLuaFunction_t g_origRegLua = NULL;
-static void* g_firstLuaState = NULL;
+static RegisterLuaFunction_t g_regLua = NULL;
+static void* g_luaState = NULL;
+static HANDLE g_pollThread = NULL;
+static volatile LONG g_stopPolling = 0;
+
+typedef int (__cdecl* LuaCallback_t)(void*);
+
+// Simple logging helper used throughout the DLL
+static void WriteRawLog(const char* message);
+
+static int __cdecl DummyFunction(void* L) {
+    WriteRawLog("DummyFunction invoked");
+    return 0;
+}
 
 // Write to debug output and file without any fancy formatting
 static void WriteRawLog(const char* message) {
@@ -166,17 +178,37 @@ static BYTE* FindBytes(BYTE* start, SIZE_T size, const BYTE* pattern, SIZE_T pat
     return nullptr;
 }
 
+// Retrieve the .text section range for the current executable
+static bool GetTextSection(BYTE*& start, SIZE_T& size) {
+    HMODULE hExe = GetModuleHandleA(nullptr);
+    if (!hExe) return false;
+
+    auto dos = reinterpret_cast<PIMAGE_DOS_HEADER>(hExe);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+
+    auto nt = reinterpret_cast<PIMAGE_NT_HEADERS>((BYTE*)hExe + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
+        if (memcmp(sec->Name, ".text", 5) == 0) {
+            start = (BYTE*)hExe + sec->VirtualAddress;
+            size = sec->Misc.VirtualSize;
+            return true;
+        }
+    }
+    return false;
+}
+
 // Locate RegisterLuaFunction inside UOSA.exe using the GetBuildVersion string heuristic
 static LPVOID FindRegisterLuaFunction() {
     HMODULE hExe = GetModuleHandleA(nullptr); // UOSA.exe
     if (!hExe) return nullptr;
 
-    MODULEINFO mi{};
-    if (!GetModuleInformation(GetCurrentProcess(), hExe, &mi, sizeof(mi)))
+    BYTE* base = nullptr;
+    SIZE_T size = 0;
+    if (!GetTextSection(base, size))
         return nullptr;
-
-    BYTE* base = (BYTE*)mi.lpBaseOfDll;
-    SIZE_T size = mi.SizeOfImage;
 
     const char target[] = "GetBuildVersion";
     BYTE* strLoc = FindBytes(base, size, (const BYTE*)target, sizeof(target));
@@ -197,46 +229,72 @@ static LPVOID FindRegisterLuaFunction() {
     return regAddr;
 }
 
-static void __stdcall Hook_Register(void* L, void* func, const char* name) {
-    char buffer[128];
-    sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction: %s", name ? name : "<null>");
-    WriteRawLog(buffer);
+// Scan executable memory for the globalStateInfo reference and return its address
+static LPVOID FindGlobalStateInfo() {
+    HMODULE hExe = GetModuleHandleA(nullptr);
+    if (!hExe) return nullptr;
 
-    if (!g_firstLuaState && L) {
-        g_firstLuaState = L;
-        sprintf_s(buffer, sizeof(buffer), "Captured Lua state: %p", L);
-        WriteRawLog(buffer);
+    BYTE* base = nullptr;
+    SIZE_T size = 0;
+    if (!GetTextSection(base, size))
+        return nullptr;
+
+    const BYTE pattern[] = { 0x8B, 0x0D, 0,0,0,0, 0x8B, 0x41, 0x0C };
+    const char mask[] = "xx????xxx";
+
+    for (SIZE_T i = 0; i + sizeof(pattern) <= size; ++i) {
+        bool match = true;
+        for (SIZE_T j = 0; j < sizeof(pattern); ++j) {
+            if (mask[j] != '?' && pattern[j] != base[i + j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return base + i;
     }
-
-    if (g_origRegLua)
-        g_origRegLua(L, func, name);
+    return nullptr;
 }
 
-static bool InstallRegisterHook() {
-    LPVOID target = FindRegisterLuaFunction();
-    if (!target) {
-        WriteRawLog("RegisterLuaFunction not found");
-        return false;
-    }
+// Read the lua_State* from globalStateInfo + 0xC
+static void* GetLuaState() {
+    BYTE* addr = (BYTE*)FindGlobalStateInfo();
+    if (!addr) return nullptr;
 
-    char buffer[64];
-    sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction at %p", target);
-    WriteRawLog(buffer);
+    DWORD absAddr = *(DWORD*)(addr + 2);
+    void** statePtr = (void**)(absAddr + 0xC);
+    return *statePtr;
+}
 
-    if (MH_CreateHook(target, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegLua)) != MH_OK)
-    {
-        WriteRawLog("MH_CreateHook failed");
-        return false;
-    }
-
-    if (MH_EnableHook(target) != MH_OK) {
-        WriteRawLog("MH_EnableHook failed");
-        return false;
-    }
-
-    WriteRawLog("RegisterLuaFunction hook installed");
+static bool RegisterFunction(const char* name, LuaCallback_t cb) {
+    if (!g_regLua || !g_luaState) return false;
+    g_regLua(g_luaState, (void*)cb, name);
+    char buf[128];
+    sprintf_s(buf, sizeof(buf), "Registered %s at %p (L=%p)", name, cb, g_luaState);
+    WriteRawLog(buf);
     return true;
 }
+
+static DWORD WINAPI LuaStatePollThread(LPVOID) {
+    WriteRawLog("Lua state polling thread started");
+    void* last = g_luaState;
+    while (!g_stopPolling) {
+        void* cur = GetLuaState();
+        if (cur && cur != last) {
+            char buf[128];
+            sprintf_s(buf, sizeof(buf), "lua_State changed %p -> %p", last, cur);
+            WriteRawLog(buf);
+            g_luaState = cur;
+            RegisterFunction("dummy", DummyFunction);
+            last = cur;
+        }
+        Sleep(2000);
+    }
+    WriteRawLog("Lua state polling thread exiting");
+    return 0;
+}
+
+
 
 static BOOL InitializeDLLSafe(HMODULE hModule) {
     WriteRawLog("DLL initialization starting...");
@@ -268,15 +326,23 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         // Log loaded modules to check dependencies
         LogLoadedModules();
 
-        // Initialize MinHook
-        WriteRawLog("Initializing MinHook...");
-        MH_STATUS status = MH_Initialize();
-        if (status != MH_OK) {
-            sprintf_s(buffer, sizeof(buffer), "MinHook initialization failed: %d", status);
+
+        // Locate RegisterLuaFunction and lua_State
+        g_regLua = (RegisterLuaFunction_t)FindRegisterLuaFunction();
+        if (g_regLua) {
+            sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction at %p", g_regLua);
             WriteRawLog(buffer);
-            return FALSE;
+        } else {
+            WriteRawLog("Failed to locate RegisterLuaFunction");
         }
-        WriteRawLog("MinHook initialized successfully");
+
+        g_luaState = GetLuaState();
+        if (g_luaState) {
+            sprintf_s(buffer, sizeof(buffer), "lua_State at %p", g_luaState);
+            WriteRawLog(buffer);
+        } else {
+            WriteRawLog("lua_State pointer not found");
+        }
 
         // Look for signatures.json
         char sigPath[MAX_PATH];
@@ -311,9 +377,12 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
                 g_initialized = TRUE;
                 WriteRawLog("DLL initialization successful");
                 SetupConsole();
-                if (!InstallRegisterHook()) {
-                    WriteRawLog("Failed to install RegisterLuaFunction hook");
-                }
+                RegisterFunction("dummy", DummyFunction);
+
+                g_stopPolling = 0;
+                g_pollThread = CreateThread(NULL, 0, LuaStatePollThread, NULL, 0, NULL);
+                if (!g_pollThread)
+                    LogLastError("CreateThread poll");
                 return TRUE;
             } else {
                 LogLastError("CreateFile for signatures.json");
@@ -335,18 +404,14 @@ static void CleanupDLL() {
     WriteRawLog("Starting cleanup...");
 
     if (g_initialized) {
-        if (g_origRegLua) {
-            MH_DisableHook(MH_ALL_HOOKS);
-            g_origRegLua = NULL;
-        }
-
-        MH_STATUS status = MH_Uninitialize();
-        if (status != MH_OK) {
-            char buffer[64];
-            sprintf_s(buffer, sizeof(buffer), "MinHook cleanup failed: %d", status);
-            WriteRawLog(buffer);
-        }
         g_initialized = FALSE;
+    }
+
+    InterlockedExchange(&g_stopPolling, 1);
+    if (g_pollThread) {
+        WaitForSingleObject(g_pollThread, 3000);
+        CloseHandle(g_pollThread);
+        g_pollThread = NULL;
     }
     
     if (g_logFile != INVALID_HANDLE_VALUE) {
