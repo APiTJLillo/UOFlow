@@ -28,7 +28,6 @@ typedef int (__cdecl* LuaCallback_t)(void*);
 // Simple logging helper used throughout the DLL
 static void WriteRawLog(const char* message);
 
-
 static int __cdecl DummyFunction(void* L) {
     WriteRawLog("DummyFunction invoked");
     return 0;
@@ -211,19 +210,40 @@ static bool GetTextSection(BYTE*& start, SIZE_T& size) {
     return false;
 }
 
+// Get the base and size of the current executable
+static bool GetModuleRange(BYTE*& base, SIZE_T& size) {
+    HMODULE hExe = GetModuleHandleA(nullptr);
+    if (!hExe) return false;
+
+    auto dos = reinterpret_cast<PIMAGE_DOS_HEADER>(hExe);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+
+    auto nt = reinterpret_cast<PIMAGE_NT_HEADERS>((BYTE*)hExe + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+
+    base = (BYTE*)hExe;
+    size = nt->OptionalHeader.SizeOfImage;
+    return true;
+}
+
 // Locate RegisterLuaFunction inside UOSA.exe using the GetBuildVersion string heuristic
 static LPVOID FindRegisterLuaFunction() {
     HMODULE hExe = GetModuleHandleA(nullptr); // UOSA.exe
     if (!hExe) return nullptr;
 
+    BYTE* moduleBase = nullptr;
+    SIZE_T moduleSize = 0;
+    if (!GetModuleRange(moduleBase, moduleSize))
+        return nullptr;
+
+    const char target[] = "GetBuildVersion";
+    BYTE* strLoc = FindBytes(moduleBase, moduleSize, (const BYTE*)target, sizeof(target));
+    if (!strLoc) return nullptr;
+
     BYTE* base = nullptr;
     SIZE_T size = 0;
     if (!GetTextSection(base, size))
         return nullptr;
-
-    const char target[] = "GetBuildVersion";
-    BYTE* strLoc = FindBytes(base, size, (const BYTE*)target, sizeof(target));
-    if (!strLoc) return nullptr;
 
     BYTE pat[5];
     pat[0] = 0x68; // push imm32
@@ -232,12 +252,14 @@ static LPVOID FindRegisterLuaFunction() {
     BYTE* pushLoc = FindBytes(base, size, pat, sizeof(pat));
     if (!pushLoc) return nullptr;
 
-    BYTE* callAddr = pushLoc + 11; // push string; push impl; push esi; call rel32
-    if (*callAddr != 0xE8) return nullptr;
-
-    int32_t rel = *(int32_t*)(callAddr + 1);
-    BYTE* regAddr = callAddr + 5 + rel;
-    return regAddr;
+    BYTE* search = pushLoc;
+    for (int i = 0; i < 32 && search + i + 5 <= base + size; ++i) {
+        if (search[i] == 0xE8) {
+            int32_t rel = *(int32_t*)(search + i + 1);
+            return search + i + 5 + rel;
+        }
+    }
+    return nullptr;
 }
 
 // Scan executable memory for the globalStateInfo reference and return its address
@@ -322,7 +344,6 @@ static DWORD WINAPI LuaStatePollThread(LPVOID) {
     WriteRawLog("Lua state polling thread exiting");
     return 0;
 }
-
 
 static BOOL InitializeDLLSafe(HMODULE hModule) {
     WriteRawLog("DLL initialization starting...");
