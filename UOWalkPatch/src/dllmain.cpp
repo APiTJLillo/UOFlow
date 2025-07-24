@@ -1,4 +1,6 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <psapi.h>
 #include <stdint.h>
@@ -25,6 +27,8 @@ typedef int (__cdecl* LuaCallback_t)(void*);
 
 // Simple logging helper used throughout the DLL
 static void WriteRawLog(const char* message);
+
+
 static int __cdecl DummyFunction(void* L) {
     WriteRawLog("DummyFunction invoked");
     return 0;
@@ -37,6 +41,14 @@ static void WriteRawLog(const char* message) {
     // Write to debug output
     OutputDebugStringA(message);
     OutputDebugStringA("\n");
+
+    // Also write to the console if one exists
+    HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hStdout && hStdout != INVALID_HANDLE_VALUE) {
+        DWORD wrote;
+        WriteConsoleA(hStdout, message, (DWORD)strlen(message), &wrote, NULL);
+        WriteConsoleA(hStdout, "\r\n", 2, &wrote, NULL);
+    }
 
     // Try to open log in executable directory first
     if (g_logFile == INVALID_HANDLE_VALUE && g_hModule != NULL) {
@@ -266,12 +278,30 @@ static void* GetLuaState() {
 }
 
 static bool RegisterFunction(const char* name, LuaCallback_t cb) {
-    if (!g_regLua || !g_luaState) return false;
-    g_regLua(g_luaState, (void*)cb, name);
-    char buf[128];
-    sprintf_s(buf, sizeof(buf), "Registered %s at %p (L=%p)", name, cb, g_luaState);
-    WriteRawLog(buf);
-    return true;
+    if (!g_regLua || !g_luaState) {
+        char buf[128];
+        sprintf_s(buf, sizeof(buf),
+                  "RegisterFunction failed (%s): reg=%p state=%p",
+                  name ? name : "<null>", g_regLua, g_luaState);
+        WriteRawLog(buf);
+        return false;
+    }
+
+    __try {
+        g_regLua(g_luaState, (void*)cb, name);
+        char buf[128];
+        sprintf_s(buf, sizeof(buf), "Registered %s at %p (L=%p)",
+                  name, cb, g_luaState);
+        WriteRawLog(buf);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        char buf[128];
+        sprintf_s(buf, sizeof(buf),
+                  "Exception registering %s: 0x%08X",
+                  name ? name : "<null>", GetExceptionCode());
+        WriteRawLog(buf);
+        return false;
+    }
 }
 
 static DWORD WINAPI LuaStatePollThread(LPVOID) {
@@ -292,7 +322,6 @@ static DWORD WINAPI LuaStatePollThread(LPVOID) {
     WriteRawLog("Lua state polling thread exiting");
     return 0;
 }
-
 
 
 static BOOL InitializeDLLSafe(HMODULE hModule) {

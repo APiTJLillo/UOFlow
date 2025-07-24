@@ -10,10 +10,11 @@ and then registers extra bridges defined in `signatures.json`.
 - [x] Hook `RegisterLuaFunction` early during client startup to capture all `lua_State` instances
 - [ ] Record captured state pointers (login, shard select, in-game) for later use
 - [ ] Confirm DLL is built without a fixed base address so relocation works when injected
-- [ ] Ensure `signatures.json` resides next to `UOWalkPatchDLL.dll`; fail gracefully if missing
-- [ ] Add runtime check in the injector for `signatures.json` and output helpful errors
+- [x] Ensure `signatures.json` resides next to `UOWalkPatchDLL.dll`; fail gracefully if missing
+- [x] Add runtime check in the injector for `signatures.json` and output helpful errors
 - [ ] Document troubleshooting steps in the README when injection fails
-- [ ] Note location of `uowalkpatch_debug.log` and console output for debugging
+- [x] Note location of `uowalkpatch_debug.log` and console output for debugging
+- [x] WriteRawLog outputs to the console when it is available
 - [ ] Modular stub build: emit bridges as symbols, auto-populate funcs[] (section .bridges in stub)
 - [ ] Template bridge generator (Python)
 - [ ] Spell-casting research - identify CastSpellRequest function and craft pattern + bridge
@@ -96,7 +97,7 @@ register both internal and injected Lua functions.
 
 ### Step 5: Verify and Harden
 - [x] Log successful registration and print `lua_State*` value.
-- [ ] If registration fails, log the name, pointer and return code.
+- [x] If registration fails, log the name, pointer and return code.
 - [ ] Confirm the function appears in the Lua environment and executes.
 
 ### Optional: Clean Up Old Hook System
@@ -110,6 +111,6 @@ register both internal and injected Lua functions.
 - [ ] Dump Lua global environment and confirm function is added.
 
 ### Bonus Features (for later)
-- [ ] Allow dynamic re-registration on Lua state change.
+- [x] Allow dynamic re-registration on Lua state change.
 - [ ] Add JSON-configured function list for runtime injection.
 - [ ] Detect duplicate function names and overwrite safely.
