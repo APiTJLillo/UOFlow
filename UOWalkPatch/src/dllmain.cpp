@@ -20,6 +20,7 @@ static HMODULE g_hModule = NULL;
 typedef void (__stdcall* RegisterLuaFunction_t)(void* luaState, void* func, const char* name);
 static RegisterLuaFunction_t g_regLua = NULL;
 static void* g_luaState = NULL;
+static void* g_globalStateInfo = NULL;
 static HANDLE g_pollThread = NULL;
 static volatile LONG g_stopPolling = 0;
 
@@ -263,7 +264,7 @@ static LPVOID FindRegisterLuaFunction() {
 }
 
 // Scan executable memory for the globalStateInfo reference and return its address
-static LPVOID FindGlobalStateInfo() {
+static LPVOID FindGlobalStateInfoPattern() {
     HMODULE hExe = GetModuleHandleA(nullptr);
     if (!hExe) return nullptr;
 
@@ -289,13 +290,32 @@ static LPVOID FindGlobalStateInfo() {
     return nullptr;
 }
 
+// Locate the globalStateInfo structure and cache the address
+static void* LocateGlobalStateInfo() {
+    if (g_globalStateInfo)
+        return g_globalStateInfo;
+
+    BYTE* patAddr = (BYTE*)FindGlobalStateInfoPattern();
+    if (!patAddr)
+        return nullptr;
+
+    g_globalStateInfo = *(void**)(patAddr + 2);
+
+    char buf[128];
+    sprintf_s(buf, sizeof(buf), "globalStateInfo at %p", g_globalStateInfo);
+    WriteRawLog(buf);
+
+    return g_globalStateInfo;
+}
+
 // Read the lua_State* from globalStateInfo + 0xC
 static void* GetLuaState() {
-    BYTE* addr = (BYTE*)FindGlobalStateInfo();
-    if (!addr) return nullptr;
+    if (!g_globalStateInfo)
+        LocateGlobalStateInfo();
+    if (!g_globalStateInfo)
+        return nullptr;
 
-    DWORD absAddr = *(DWORD*)(addr + 2);
-    void** statePtr = (void**)(absAddr + 0xC);
+    void** statePtr = (void**)((BYTE*)g_globalStateInfo + 0xC);
     return *statePtr;
 }
 
@@ -378,7 +398,7 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         LogLoadedModules();
 
 
-        // Locate RegisterLuaFunction and lua_State
+        // Locate RegisterLuaFunction and globalStateInfo
         g_regLua = (RegisterLuaFunction_t)FindRegisterLuaFunction();
         if (g_regLua) {
             sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction at %p", g_regLua);
@@ -387,7 +407,12 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
             WriteRawLog("Failed to locate RegisterLuaFunction");
         }
 
+        LocateGlobalStateInfo();
         g_luaState = GetLuaState();
+        if (g_globalStateInfo) {
+            sprintf_s(buffer, sizeof(buffer), "globalStateInfo %p", g_globalStateInfo);
+            WriteRawLog(buffer);
+        }
         if (g_luaState) {
             sprintf_s(buffer, sizeof(buffer), "lua_State at %p", g_luaState);
             WriteRawLog(buffer);
