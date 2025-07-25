@@ -10,7 +10,13 @@
 // Correct Lua types and calling conventions based on disassembly
 using lua_State = void;
 using lua_CFunction = int (__cdecl *)(lua_State* L);
-using RegisterLuaFunction_t = bool (__cdecl *)(lua_State* L, lua_CFunction fn, const char* name);
+// The client method reads the GlobalStateInfo pointer from ECX. Using
+// `__thiscall` ensures ECX is loaded with our cached address when invoking the
+// routine directly.
+using RegisterLuaFunction_t = bool (__thiscall *)(void* thisptr,
+                                                lua_State* L,
+                                                lua_CFunction fn,
+                                                const char* name);
 
 // Global state
 static HANDLE g_logFile = INVALID_HANDLE_VALUE;
@@ -308,7 +314,7 @@ static bool __cdecl Hook_Register(lua_State* L, lua_CFunction fn, const char* na
     if (g_origRegLua) {
         __try {
             WriteRawLog("Calling original RegisterLuaFunction...");
-            result = g_origRegLua(L, fn, name);
+            result = g_origRegLua(g_globalStateInfo, L, fn, name);
             sprintf_s(buffer, "Original function returned: %s", result ? "true" : "false");
             WriteRawLog(buffer);
         }
@@ -330,7 +336,7 @@ static bool __cdecl Hook_Register(lua_State* L, lua_CFunction fn, const char* na
         if (g_origRegLua) {
             __try {
                 WriteRawLog("Attempting to register UOPatchTest function...");
-                bool testResult = g_origRegLua(L, TestFunction, "UOPatchTest");
+                bool testResult = g_origRegLua(g_globalStateInfo, L, TestFunction, "UOPatchTest");
                 sprintf_s(buffer, sizeof(buffer),
                     "UOPatchTest registration %s:\n"
                     "  Result: %s\n"
@@ -410,17 +416,17 @@ static void* GetLuaState() {
 }
 
 static bool RegisterFunction(const char* name, LuaCallback_t cb) {
-    if (!g_regLua || !g_luaState) {
+    if (!g_regLua || !g_luaState || !g_globalStateInfo) {
         char buf[128];
         sprintf_s(buf, sizeof(buf),
-                  "RegisterFunction failed (%s): reg=%p state=%p",
-                  name ? name : "<null>", g_regLua, g_luaState);
+                  "RegisterFunction failed (%s): reg=%p state=%p gsi=%p",
+                  name ? name : "<null>", g_regLua, g_luaState, g_globalStateInfo);
         WriteRawLog(buf);
         return false;
     }
 
     __try {
-        g_regLua(g_luaState, cb, name);
+        g_regLua(g_globalStateInfo, g_luaState, cb, name);
         char buf[128];
         sprintf_s(buf, sizeof(buf), "Registered %s at %p (L=%p)",
                   name, cb, g_luaState);
