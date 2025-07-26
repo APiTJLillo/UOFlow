@@ -567,11 +567,6 @@ static bool InstallRegisterHook() {
         return false;
     }
 
-    // If we found the write location, install VEH write watch
-    if (g_globalStateSlot) {
-        InstallWriteWatch();
-    }
-
     // Enable MinHook hooks
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         WriteRawLog("MH_EnableHook failed");
