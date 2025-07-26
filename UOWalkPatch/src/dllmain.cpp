@@ -43,6 +43,11 @@ static bool g_hookFoundLua = false;
 
 // Add at top with other globals
 static volatile LONG g_stopScan = 0;   // 0 = keep running, 1 = quit
+static DWORD* g_globalStateSlot = nullptr;  // Location of static pointer
+
+// VEH globals
+static LONG   g_once = 0;
+static PVOID  g_vehHandle = nullptr;
 
 // Forward declarations
 static void WriteRawLog(const char* message);
@@ -56,9 +61,13 @@ static void* FindGlobalStateInfo();
 static void* FindOwnerOfLuaState(void* lua);
 static DWORD WINAPI WaitForLua(LPVOID param);
 static LPVOID FindRegisterLuaFunction();
+static void InstallWriteWatch();
 
 // Simple memory search helper
 static BYTE* FindBytes(BYTE* start, SIZE_T size, const BYTE* pattern, SIZE_T patSize) {
+    if (!start || !pattern || !patSize || size < patSize)
+        return nullptr;
+        
     for (SIZE_T i = 0; i + patSize <= size; ++i) {
         if (memcmp(start + i, pattern, patSize) == 0)
             return start + i;
@@ -228,7 +237,7 @@ static void* FindGlobalStateInfo() {
     return nullptr;
 }
 
-// More robust function finder
+// More robust function finder with write detection
 static LPVOID FindRegisterLuaFunction() {
     HMODULE hExe = GetModuleHandleA(nullptr);
     MODULEINFO mi{};
@@ -261,21 +270,62 @@ static LPVOID FindRegisterLuaFunction() {
 
         // Walk forward max 32 bytes to find near call (E8 xx xx xx xx) or indirect call (FF 15 xx xx xx xx)
         for (BYTE* q = p; q < p + 32; ++q) {
+            LPVOID target = nullptr;
+                        
             if (*q == 0xE8) {  // near call
                 INT32 rel = *(INT32*)(q + 1);
                 BYTE* callee = q + 5 + rel;
                 sprintf_s(buffer, sizeof(buffer), "Found direct call instruction at %p targeting %p", q, callee);
                 WriteRawLog(buffer);
-                return callee;
+                target = callee;
+                
+                // Look both forward and backward for mov [abs32], reg (A3 xx xx xx xx OR 89 /r)
+                for (BYTE* k = q - 64; k < q + 64; ++k) {
+                    if (k[0] == 0xA3) {  // mov [abs32], eax
+                        g_globalStateSlot = (DWORD*)(*(DWORD*)(k + 1));
+                        sprintf_s(buffer, sizeof(buffer), "Found global state write (A3) at %p targeting slot %p", 
+                            k, g_globalStateSlot);
+                        WriteRawLog(buffer);
+                        break;
+                    }
+                    // 89 /r xx xx xx xx: mov [abs32], r32 (rm == 101b for disp32)
+                    if (k[0] == 0x89 && (k[1] & 0x07) == 0x05) {  // Bottom 3 bits = 101b
+                        g_globalStateSlot = (DWORD*)(*(DWORD*)(k + 2));
+                        sprintf_s(buffer, sizeof(buffer), "Found global state write (89 %02X) at %p targeting slot %p",
+                            k[1], k, g_globalStateSlot);
+                        WriteRawLog(buffer);
+                        break;
+                    }
+                }
             }
-            if (q[0] == 0xFF && q[1] == 0x15) {  // FF 15 [disp32] → call [absolute]
+            else if (q[0] == 0xFF && q[1] == 0x15) {  // FF 15 [disp32] → call [absolute]
                 DWORD disp = *(DWORD*)(q + 2);
                 BYTE** abs = (BYTE**)(q + 6 + disp);  // RIP-relative
                 BYTE* callee = *abs;  // Contents of IAT entry
                 sprintf_s(buffer, sizeof(buffer), "Found indirect call instruction at %p targeting %p", q, callee);
                 WriteRawLog(buffer);
-                return callee;
+                target = callee;
+
+                // Same expanded pattern search for mov [abs32], reg
+                for (BYTE* k = q - 64; k < q + 64; ++k) {
+                    if (k[0] == 0xA3) {
+                        g_globalStateSlot = (DWORD*)(*(DWORD*)(k + 1));
+                        sprintf_s(buffer, sizeof(buffer), "Found global state write (A3) at %p targeting slot %p",
+                            k, g_globalStateSlot);
+                        WriteRawLog(buffer);
+                        break;
+                    }
+                    if (k[0] == 0x89 && (k[1] & 0x07) == 0x05) {  // Bottom 3 bits = 101b
+                        g_globalStateSlot = (DWORD*)(*(DWORD*)(k + 2));
+                        sprintf_s(buffer, sizeof(buffer), "Found global state write (89 %02X) at %p targeting slot %p",
+                            k[1], k, g_globalStateSlot);
+                        WriteRawLog(buffer);
+                        break;
+                    }
+                }
             }
+
+            if (target) return target;
         }
     }
 
@@ -285,62 +335,94 @@ static LPVOID FindRegisterLuaFunction() {
 
 static void* FindOwnerOfLuaState(void* lua) {
     if (!lua) return nullptr;
-
-    char buffer[256];
-    sprintf_s(buffer, sizeof(buffer), "Searching for owner of Lua state %p...", lua);
-    WriteRawLog(buffer);
+    char buf[128];
 
     HMODULE hExe = GetModuleHandleA(nullptr);
     IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)hExe;
     IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((BYTE*)hExe + dos->e_lfanew);
 
+    // First try data sections
     IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
     for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
-        if (!(sec->Characteristics & IMAGE_SCN_CNT_INITIALIZED_DATA) ||
-            !(sec->Characteristics & IMAGE_SCN_MEM_READ))
-            continue;  // Only interested in readable data sections
+        if (!(sec->Characteristics & IMAGE_SCN_MEM_READ) ||
+            !(sec->Characteristics & IMAGE_SCN_CNT_INITIALIZED_DATA))
+            continue;  // .data / .rdata only
 
-        BYTE* begin = (BYTE*)hExe + sec->VirtualAddress;
-        BYTE* end = begin + sec->Misc.VirtualSize;
+        BYTE* beg = (BYTE*)hExe + sec->VirtualAddress;
+        BYTE* end = beg + sec->Misc.VirtualSize;
 
-        for (BYTE* p = begin; p + sizeof(void*) <= end; p += sizeof(void*)) {
-            if (*(void**)p != lua) continue;
+        for (BYTE* p = beg; p + sizeof(void*) <= end; p += sizeof(void*)) {
+            if (*(void**)p != lua) continue;  // not our pointer
 
-            sprintf_s(buffer, sizeof(buffer), "Found Lua state reference at %p", p);
-            WriteRawLog(buffer);
-
-            // Walk backwards max 0x40 bytes for zero padding
-            DWORD* d = (DWORD*)p;
-            for (int back = 0; back < 0x10; ++back, --d) {
-                if (!d[0] && !d[1] && !d[2] && !d[3]) {
-                    GlobalStateInfo* info = *(GlobalStateInfo**)(d + 4);
-                    sprintf_s(buffer, sizeof(buffer), 
-                        "Found zero block at %p, checking candidate at %p", d, info);
-                    WriteRawLog(buffer);
-
-                    __try {
-                        if (info && info->luaState == lua && info->databaseManager) {
-                            sprintf_s(buffer, sizeof(buffer),
-                                "Validated GlobalStateInfo at %p:\n"
-                                "  Lua State: %p\n"
-                                "  DB Manager: %p\n"
-                                "  Resource Mgr: %p",
-                                info, info->luaState,
-                                info->databaseManager,
-                                info->resourceManager);
-                            WriteRawLog(buffer);
-                            return info;
-                        }
+            // ─────────────────────────────────────────────────────────────
+            // 1) assume p *is* the struct base (lua at offset 0)
+            // ─────────────────────────────────────────────────────────────
+            {
+                GlobalStateInfo* g = (GlobalStateInfo*)p;
+                __try {
+                    if (g->luaState == lua && g->databaseManager) {
+                        sprintf_s(buf, sizeof(buf),
+                            "Validated GlobalStateInfo (no padding) @ %p", g);
+                        WriteRawLog(buf);
+                        return g;
                     }
-                    __except(EXCEPTION_EXECUTE_HANDLER) {
-                        WriteRawLog("Access violation checking candidate");
+                } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            }
+
+            // ─────────────────────────────────────────────────────────────
+            // 2) older pattern: four zero DWORDs immediately *before* ptr
+            // ─────────────────────────────────────────────────────────────
+            DWORD* d = (DWORD*)p - 4;
+            __try {
+                if (!d[0] && !d[1] && !d[2] && !d[3]) {
+                    GlobalStateInfo* g = *(GlobalStateInfo**)(d + 4);
+                    if (g && g->luaState == lua && g->databaseManager) {
+                        sprintf_s(buf, sizeof(buf),
+                            "Validated GlobalStateInfo (zero-block) @ %p", g);
+                        WriteRawLog(buf);
+                        return g;
                     }
                 }
-            }
+            } __except(EXCEPTION_EXECUTE_HANDLER) {}
         }
     }
 
-    WriteRawLog("Owner of Lua state not found in data sections");
+    // --------------------------------------------------------------------
+    // 3) final fall-back - search the CRT heap once: walk low address space
+    // --------------------------------------------------------------------
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    BYTE* addr = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    
+    while (addr < (BYTE*)si.lpMaximumApplicationAddress) {
+        if (!VirtualQuery(addr, &mbi, sizeof(mbi))) break;
+        
+        if (mbi.State == MEM_COMMIT &&
+            (mbi.Protect & (PAGE_READWRITE|PAGE_READONLY|PAGE_EXECUTE_READ)) &&
+            !(mbi.Protect & (PAGE_GUARD|PAGE_NOACCESS))) 
+        {
+            BYTE* b = (BYTE*)mbi.BaseAddress;
+            BYTE* e = b + mbi.RegionSize;
+            
+            for (BYTE* p = b; p + sizeof(void*) <= e; p += sizeof(void*)) {
+                if (*(void**)p != lua) continue;
+                
+                GlobalStateInfo* g = (GlobalStateInfo*)p;
+                __try {
+                    if (g->luaState == lua && g->databaseManager) {
+                        sprintf_s(buf, sizeof(buf),
+                            "Validated GlobalStateInfo (heap) @ %p", g);
+                        WriteRawLog(buf);
+                        return g;
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
+        addr += mbi.RegionSize;
+    }
+
+    WriteRawLog("Owner of Lua state not found");
     return nullptr;
 }
 
@@ -348,11 +430,8 @@ static void* FindOwnerOfLuaState(void* lua) {
 static DWORD WINAPI WaitForLua(LPVOID) {
     WriteRawLog("Starting Lua state scan thread...");
     
-    GlobalStateInfo* info = nullptr;
-    int attempts = 0;
-    
-    while (!g_hookFoundLua && !g_stopScan && attempts++ < 50) {
-        info = (GlobalStateInfo*)FindGlobalStateInfo();
+    while (!g_hookFoundLua && !g_stopScan) {
+        GlobalStateInfo* info = (GlobalStateInfo*)FindGlobalStateInfo();
         if (info && info->luaState) {
             g_globalStateInfo = info;
             g_luaState = info->luaState;
@@ -363,21 +442,30 @@ static DWORD WINAPI WaitForLua(LPVOID) {
             
             return 0;
         }
-        Sleep(200);
+        Sleep(200);  // ~5µs CPU per pass
     }
     
-    WriteRawLog(g_hookFoundLua ? "Hook found Lua state first" : "Failed to find Lua state after timeout");
+    WriteRawLog(g_hookFoundLua ? "Hook found Lua state first" : "Scanner stopped");
     return 1;
 }
 
 // Hook function for RegisterLuaFunction
 static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
+    // Short-circuit if we already have everything we need
+    if (g_globalStateInfo) {
+        bool ok = false;
+        if (g_origRegLua) {
+            ok = g_origRegLua(L, func, name);
+        }
+        return ok;
+    }
+
     char buffer[256];
     
     // First capture the Lua state
     if (!g_luaState) {
         g_luaState = L;
-        g_hookFoundLua = true;
+        g_hookFoundLua = true;  // This alone will stop the scanner thread
         sprintf_s(buffer, sizeof(buffer), "Captured first Lua state @ %p", L);
         WriteRawLog(buffer);
 
@@ -386,13 +474,14 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
         if (g_globalStateInfo) {
             DumpMemory("GlobalStateInfo", g_globalStateInfo, 0x40);
             
-            // Signal scanner thread to stop and wait for it to exit cleanly
+            // Scanner thread will exit on its own due to g_hookFoundLua
             if (g_scanThread) {
-                InterlockedExchange(&g_stopScan, 1);  // Tell scanner to stop
                 WaitForSingleObject(g_scanThread, INFINITE);
                 CloseHandle(g_scanThread);
                 g_scanThread = NULL;
             }
+
+            WriteRawLog("DLL is now fully initialized - enjoy!");
         }
     }
 
@@ -417,6 +506,40 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
     return ok;
 }
 
+// Validator function prototype 
+static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
+    if (!candidate) return candidate;
+
+    __try {
+        if (candidate->luaState && candidate->databaseManager) {
+            char buffer[256];
+            sprintf_s(buffer, sizeof(buffer),
+                "Write hook validated GlobalStateInfo @ %p:\n"
+                "  Lua State: %p\n"
+                "  DB Manager: %p\n"
+                "  Resource Mgr: %p",
+                candidate, candidate->luaState,
+                candidate->databaseManager,
+                candidate->resourceManager);
+            WriteRawLog(buffer);
+
+            // Store globally so RegisterLuaFunction hook can use it
+            g_globalStateInfo = candidate;
+            g_luaState = candidate->luaState;
+            
+            // Tell scanner thread we found it
+            g_hookFoundLua = true;
+
+            return candidate;
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Access violation in write hook validation");
+    }
+    return candidate;  // Pass through even if validation fails
+}
+
+// Add to InstallRegisterHook
 static bool InstallRegisterHook() {
     LPVOID target = FindRegisterLuaFunction();
     if (!target) {
@@ -428,18 +551,24 @@ static bool InstallRegisterHook() {
     sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction at %p", target);
     WriteRawLog(buffer);
 
-    if (MH_CreateHook(target, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegLua)) != MH_OK)
-    {
-        WriteRawLog("MH_CreateHook failed");
+    // Install main hook for RegisterLuaFunction
+    if (MH_CreateHook(target, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegLua)) != MH_OK) {
+        WriteRawLog("MH_CreateHook failed for RegisterLuaFunction");
         return false;
     }
 
-    if (MH_EnableHook(target) != MH_OK) {
+    // If we found the write location, install VEH write watch
+    if (g_globalStateSlot) {
+        InstallWriteWatch();
+    }
+
+    // Enable MinHook hooks
+    if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         WriteRawLog("MH_EnableHook failed");
         return false;
     }
 
-    WriteRawLog("RegisterLuaFunction hook installed");
+    WriteRawLog("Hooks installed successfully");
     return true;
 }
 
@@ -494,9 +623,15 @@ static void CleanupDLL() {
     WriteRawLog("Starting cleanup...");
 
     if (g_scanThread) {
+        g_stopScan = 1;  // Signal scanner to stop
         WaitForSingleObject(g_scanThread, 1000);
         CloseHandle(g_scanThread);
         g_scanThread = NULL;
+    }
+
+    if (g_vehHandle) {
+        RemoveVectoredExceptionHandler(g_vehHandle);
+        g_vehHandle = nullptr;
     }
 
     if (g_initialized) {
@@ -524,7 +659,7 @@ static void CleanupDLL() {
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
-    // Initialize globals first
+    // Initialize globals first - this needs to work even if we can't open log file
     if (reason == DLL_PROCESS_ATTACH) {
         g_hModule = NULL;
         g_logFile = INVALID_HANDLE_VALUE;
@@ -536,23 +671,50 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         g_scanThread = NULL;
         g_origRegLua = NULL;
         g_firstLuaState = NULL;
+
+        // Create a log file in the DLL's directory before anything else
+        char dllPath[MAX_PATH];
+        if (GetModuleFileNameA(hModule, dllPath, MAX_PATH)) {
+            char* lastSlash = strrchr(dllPath, '\\');
+            if (lastSlash) {
+                strcpy_s(lastSlash + 1, MAX_PATH - (lastSlash - dllPath), "uowalkpatch_debug.log");
+                g_logFile = CreateFileA(
+                    dllPath,
+                    GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL,
+                    CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL,
+                    NULL
+                );
+            }
+        }
     }
 
-    char buffer[64];
+    char buffer[128];
     sprintf_s(buffer, sizeof(buffer), "DllMain entry - reason: %lu", reason);
     WriteRawLog(buffer);
 
     __try {
         switch (reason) {
         case DLL_PROCESS_ATTACH: {
+            // Log our load address 
+            sprintf_s(buffer, sizeof(buffer), "DLL loaded at address: %p", hModule);
+            WriteRawLog(buffer);
+            
             // Prevent the DLL from being unloaded by the system
             HMODULE hSelf;
-            GetModuleHandleExA(
+            if (!GetModuleHandleExA(
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                 GET_MODULE_HANDLE_EX_FLAG_PIN,
                 (LPCSTR)hModule,
-                &hSelf
-            );
+                &hSelf)) {
+                sprintf_s(buffer, sizeof(buffer), "GetModuleHandleExA failed to pin DLL: %lu", GetLastError());
+                WriteRawLog(buffer);
+            }
+
+            // Log process and module info before we try to initialize
+            LogLoadedModules();
 
             if (!InitializeDLLSafe(hModule)) {
                 WriteRawLog("Initialization failed - cleaning up");
@@ -574,8 +736,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         }
         return TRUE;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("Exception in DllMain");
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        DWORD code = GetExceptionCode();
+        sprintf_s(buffer, sizeof(buffer), "Exception in DllMain: 0x%08X", code);
+        WriteRawLog(buffer);
         return FALSE;
     }
 }
@@ -715,6 +879,54 @@ static void SetupConsole() {
             freopen_s(&dummy, "CONOUT$", "w", stdout);
             freopen_s(&dummy, "CONOUT$", "w", stderr);
             SetConsoleTitleA("UOWalkPatch console");
+        }
+    }
+}
+
+// VEH handler to catch write to global state pointer via guard page
+static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x)
+{
+    if (x->ExceptionRecord->ExceptionCode == STATUS_GUARD_PAGE_VIOLATION &&
+        x->ExceptionRecord->NumberParameters >= 2 &&
+        (void*)x->ExceptionRecord->ExceptionInformation[1] == g_globalStateSlot)
+    {
+        // Remove guard and validate the newly written pointer
+        DWORD oldProtect;
+        VirtualProtect(g_globalStateSlot, sizeof(void*), PAGE_READWRITE, &oldProtect);
+
+        GlobalStateInfo* info = *(GlobalStateInfo**)g_globalStateSlot;
+        ValidateGlobalState(info);
+
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// Install guard page to watch global state pointer write
+static void InstallWriteWatch()
+{
+    if (!g_globalStateSlot) return;
+
+    if (InterlockedExchange(&g_once, 1)==0) {
+        char buffer[128];
+        sprintf_s(buffer, sizeof(buffer), "Installing write watch on slot %p", g_globalStateSlot);
+        WriteRawLog(buffer);
+        
+        // Calculate page address containing the slot
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        BYTE* page = (BYTE*)g_globalStateSlot - ((uintptr_t)g_globalStateSlot & (si.dwPageSize-1));
+
+        // Install guard page
+        DWORD oldProtect;
+        if (VirtualProtect(page, si.dwPageSize, PAGE_READWRITE | PAGE_GUARD, &oldProtect)) {
+            g_vehHandle = AddVectoredExceptionHandler(1, VehHandler);
+            WriteRawLog("Guard-page write watch installed successfully");
+        }
+        else {
+            sprintf_s(buffer, sizeof(buffer), "Failed to set guard page at %p: error %lu", 
+                page, GetLastError());
+            WriteRawLog(buffer);
         }
     }
 }
