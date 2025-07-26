@@ -208,7 +208,17 @@ static void* FindGlobalStateInfo() {
                                 continue;
 
                             GlobalStateInfo* info = *(GlobalStateInfo**)addrOfPtr;
-                            if (!info) continue;
+
+                            // addrOfPtr = &staticGlobalStatePtr
+                            g_globalStateSlot = (DWORD*)addrOfPtr;
+                            if (g_globalStateSlot)
+                                InstallWriteWatch();        // arm guard page immediately
+
+                            if (!info)              // pointer not initialised yet
+                            {
+                                WriteRawLog("GlobalState pointer slot found but still NULL");
+                                return nullptr;      // let caller know we did not get the struct yet
+                            }
 
                             __try {
                                 if (info->luaState && info->databaseManager) {
@@ -555,11 +565,6 @@ static bool InstallRegisterHook() {
     if (MH_CreateHook(target, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegLua)) != MH_OK) {
         WriteRawLog("MH_CreateHook failed for RegisterLuaFunction");
         return false;
-    }
-
-    // If we found the write location, install VEH write watch
-    if (g_globalStateSlot) {
-        InstallWriteWatch();
     }
 
     // Enable MinHook hooks
