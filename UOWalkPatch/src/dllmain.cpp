@@ -24,22 +24,21 @@ struct GlobalStateInfo {
 };
 
 // Global state 
-static HANDLE g_logFile = INVALID_HANDLE_VALUE;
-static char   g_logPath[MAX_PATH] = "";
-static BOOL   g_logAnnounced = FALSE;
-static BOOL   g_initialized = FALSE;
-static HMODULE g_hModule = NULL;
-static GlobalStateInfo* g_globalStateInfo = nullptr;
-static void* g_luaState = NULL;
-static HANDLE g_scanThread = NULL;
+static HANDLE g_logFile;
+static char   g_logPath[MAX_PATH];
+static BOOL   g_logAnnounced;
+static BOOL   g_initialized;
+static HMODULE g_hModule;
+static GlobalStateInfo* g_globalStateInfo;
+static void* g_luaState;
+static HANDLE g_scanThread;
 
 // The client uses __stdcall for RegisterLuaFunction 
 typedef bool(__stdcall* RegisterLuaFunction_t)(void* luaState, void* func, const char* name);
-static RegisterLuaFunction_t g_origRegLua = NULL;
-static void* g_firstLuaState = NULL;
+static RegisterLuaFunction_t g_origRegLua;
 
 // Add global flag for hook success
-static bool g_hookFoundLua = false;
+static bool g_luaStateCaptured = false;
 
 // Add at top with other globals
 static volatile LONG g_stopScan = 0;   // 0 = keep running, 1 = quit
@@ -440,7 +439,7 @@ static void* FindOwnerOfLuaState(void* lua) {
 static DWORD WINAPI WaitForLua(LPVOID) {
     WriteRawLog("Starting Lua state scan thread...");
     
-    while (!g_hookFoundLua && !g_stopScan) {
+    while (!g_luaStateCaptured && !g_stopScan) {
         GlobalStateInfo* info = (GlobalStateInfo*)FindGlobalStateInfo();
         if (info && info->luaState) {
             g_globalStateInfo = info;
@@ -455,19 +454,34 @@ static DWORD WINAPI WaitForLua(LPVOID) {
         Sleep(200);  // ~5µs CPU per pass
     }
     
-    WriteRawLog(g_hookFoundLua ? "Hook found Lua state first" : "Scanner stopped");
+    WriteRawLog(g_luaStateCaptured ? "Hook found Lua state first" : "Scanner stopped");
     return 1;
+}
+
+// Safely invoke the client's RegisterLuaFunction
+static bool CallClientRegister(void* L, void* func, const char* name)
+{
+    if (!g_origRegLua) {
+        WriteRawLog("Original RegisterLuaFunction pointer not set!");
+        return false;
+    }
+    __try {
+        return g_origRegLua(L, func, name);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        DWORD code = GetExceptionCode();
+        char buf[64];
+        sprintf_s(buf, sizeof(buf), "RegisterLuaFunction threw exception 0x%08X", code);
+        WriteRawLog(buf);
+        return false;
+    }
 }
 
 // Hook function for RegisterLuaFunction
 static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
     // Short-circuit if we already have everything we need
     if (g_globalStateInfo) {
-        bool ok = false;
-        if (g_origRegLua) {
-            ok = g_origRegLua(L, func, name);
-        }
-        return ok;
+        return CallClientRegister(L, func, name);
     }
 
     char buffer[256];
@@ -475,7 +489,7 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
     // First capture the Lua state
     if (!g_luaState) {
         g_luaState = L;
-        g_hookFoundLua = true;  // This alone will stop the scanner thread
+        g_luaStateCaptured = true;  // This alone will stop the scanner thread
         sprintf_s(buffer, sizeof(buffer), "Captured first Lua state @ %p", L);
         WriteRawLog(buffer);
 
@@ -484,7 +498,7 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
         if (g_globalStateInfo) {
             DumpMemory("GlobalStateInfo", g_globalStateInfo, 0x40);
             
-            // Scanner thread will exit on its own due to g_hookFoundLua
+            // Scanner thread will exit on its own due to g_luaStateCaptured
             if (g_scanThread) {
                 WaitForSingleObject(g_scanThread, INFINITE);
                 CloseHandle(g_scanThread);
@@ -504,14 +518,11 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
         L, func, name ? name : "<null>", g_globalStateInfo);
     WriteRawLog(buffer);
 
-    bool ok = false;
-    if (g_origRegLua) {
-        WriteRawLog("Calling original RegisterLuaFunction...");
-        ok = g_origRegLua(L, func, name);
-        sprintf_s(buffer, sizeof(buffer), "Original RegisterLuaFunction returned %s", 
-            ok ? "true" : "false");
-        WriteRawLog(buffer);
-    }
+    WriteRawLog("Calling original RegisterLuaFunction...");
+    bool ok = CallClientRegister(L, func, name);
+    sprintf_s(buffer, sizeof(buffer), "Original RegisterLuaFunction returned %s",
+        ok ? "true" : "false");
+    WriteRawLog(buffer);
 
     return ok;
 }
@@ -538,7 +549,7 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
             g_luaState = candidate->luaState;
             
             // Tell scanner thread we found it
-            g_hookFoundLua = true;
+            g_luaStateCaptured = true;
 
             return candidate;
         }
@@ -605,10 +616,15 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
             return FALSE;
         }
 
-        // Note: RegisterLuaFunction hook is now optional since we can get 
-        // lua_State directly. Only needed if you want to monitor registrations.
-        if (!InstallRegisterHook()) {
-            WriteRawLog("Warning: RegisterLuaFunction hook not installed");
+        // RegisterLuaFunction hook is optional
+        char env[2];
+        bool enableHook = GetEnvironmentVariableA("UOWP_HOOK_REGISTER", env, sizeof(env)) > 0;
+        if (enableHook) {
+            if (!InstallRegisterHook()) {
+                WriteRawLog("Warning: RegisterLuaFunction hook not installed");
+            }
+        } else {
+            WriteRawLog("RegisterLuaFunction hook disabled");
         }
 
         g_initialized = TRUE;
@@ -675,7 +691,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         g_luaState = nullptr;  // Important: initialize before creating threads
         g_scanThread = NULL;
         g_origRegLua = NULL;
-        g_firstLuaState = NULL;
 
         // Create a log file in the DLL's directory before anything else
         char dllPath[MAX_PATH];
