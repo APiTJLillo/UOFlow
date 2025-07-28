@@ -502,9 +502,7 @@ static void RegisterMyFunctions()
     if (!g_origRegLua)           { WriteRawLog("RegisterLuaFunction ptr missing"); return; }
 
     // Disable hook around our own call to avoid recursion
-    MH_DisableHook(reinterpret_cast<LPVOID>(g_origRegLua));
     bool ok = CallClientRegister(g_luaState, (void*)Lua_Hello, "Hello");
-    MH_EnableHook(reinterpret_cast<LPVOID>(g_origRegLua));
 
     WriteRawLog(ok ? "Registered Lua_Hello" : "FAILED to register Lua_Hello");
 }
