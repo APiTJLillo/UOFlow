@@ -31,6 +31,7 @@ static BOOL   g_initialized;
 static HMODULE g_hModule;
 static GlobalStateInfo* g_globalStateInfo;
 static void* g_luaState;
+static void* g_luaMgr = nullptr;   // first parameter to RegisterLuaFunction
 static HANDLE g_scanThread;
 static bool   g_registered = false; // whether we've registered our own Lua funcs
 
@@ -511,50 +512,46 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
     
     // Short-circuit if we already have everything we need
     if (g_globalStateInfo) {
-        return CallClientRegister(L, func, name);
+        return CallClientRegister(mgr, func, name);
     }
 
     char buffer[256];
 
     // First capture the Lua state
     if (!g_luaState) {
-        g_luaState = L;
+        g_globalStateInfo = (GlobalStateInfo*)mgr;
+        g_luaState = g_globalStateInfo->luaState;
         g_luaStateCaptured = true;  // This alone will stop the scanner thread
-        sprintf_s(buffer, sizeof(buffer), "Captured first Lua state @ %p", L);
+        sprintf_s(buffer, sizeof(buffer), "Captured manager @ %p with Lua state %p", mgr, g_luaState);
         WriteRawLog(buffer);
 
-        // Now find its owner structure
-        g_globalStateInfo = (GlobalStateInfo*)FindOwnerOfLuaState(L);
-        if (g_globalStateInfo) {
-            DumpMemory("GlobalStateInfo", g_globalStateInfo, 0x40);
-            
-            // Scanner thread will exit on its own due to g_luaStateCaptured
-            if (g_scanThread) {
-                WaitForSingleObject(g_scanThread, INFINITE);
-                CloseHandle(g_scanThread);
-                g_scanThread = NULL;
-            }
+        DumpMemory("GlobalStateInfo", g_globalStateInfo, 0x40);
 
-            WriteRawLog("DLL is now fully initialized - enjoy!");
+        if (g_scanThread) {
+            WaitForSingleObject(g_scanThread, INFINITE);
+            CloseHandle(g_scanThread);
+            g_scanThread = NULL;
+        }
 
-            if (!g_registered) {
-                RegisterMyFunctions();
-                g_registered = true;
-            }
+        WriteRawLog("DLL is now fully initialized - enjoy!");
+
+        if (!g_registered) {
+            RegisterMyFunctions();
+            g_registered = true;
         }
     }
 
     sprintf_s(buffer, sizeof(buffer),
         "RegisterLuaFunction called:\n"
-        "  Lua State: %p\n"
+        "  Manager: %p\n"
         "  Function: %p\n"
         "  Name: %s\n"
         "  Global State Info: %p",
-        L, func, name ? name : "<null>", g_globalStateInfo);
+        mgr, func, name ? name : "<null>", g_globalStateInfo);
     WriteRawLog(buffer);
 
     WriteRawLog("Calling original RegisterLuaFunction...");
-    bool ok = CallClientRegister(L, func, name);
+    bool ok = CallClientRegister(mgr, func, name);
     WriteRawLog(ok ? "Original RegisterLuaFunction returned true"
         : "Original RegisterLuaFunction returned false");
 
