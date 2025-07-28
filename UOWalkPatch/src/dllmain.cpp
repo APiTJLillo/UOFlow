@@ -456,7 +456,7 @@ static DWORD WINAPI WaitForLua(LPVOID) {
             sprintf_s(buffer, sizeof(buffer), "Scanner found Lua State @ %p", g_luaState);
             WriteRawLog(buffer);
 
-            if (!g_registered && g_luaMgr) {
+            if (!g_registered && g_luaState) {
                 RegisterMyFunctions();
                 g_registered = true;
             }
@@ -499,26 +499,25 @@ extern "C" int __cdecl Lua_Hello(void* L /* really lua_State* */)
 // Register our custom functions with the client
 static void RegisterMyFunctions()
 {
-    if (!g_luaMgr)               { WriteRawLog("Register manager not ready"); return; }
-    if (!g_origRegLua)           { WriteRawLog("RegisterLuaFunction ptr missing"); return; }
+    if (!g_luaState)           { WriteRawLog("lua_State not ready"); return; }
+    if (!g_origRegLua)         { WriteRawLog("RegisterLuaFunction ptr missing"); return; }
 
-    bool ok = CallClientRegister(g_luaMgr, (void*)Lua_Hello, "Hello");
+    bool ok = CallClientRegister(g_luaState, (void*)Lua_Hello, "Hello");
 
     WriteRawLog(ok ? "Registered Lua_Hello" : "FAILED to register Lua_Hello");
 }
 
 // Hook function for RegisterLuaFunction
-static bool __stdcall Hook_Register(void* mgr, void* func, const char* name) {
-    if (!g_luaMgr) g_luaMgr = mgr;  // remember once
-
+static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
+    
     // Short-circuit if we already have everything we need
     if (g_globalStateInfo) {
         return CallClientRegister(mgr, func, name);
     }
 
     char buffer[256];
-    
-    // First capture the manager and Lua state
+
+    // First capture the Lua state
     if (!g_luaState) {
         g_globalStateInfo = (GlobalStateInfo*)mgr;
         g_luaState = g_globalStateInfo->luaState;
