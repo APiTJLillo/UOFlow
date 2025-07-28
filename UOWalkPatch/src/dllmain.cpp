@@ -40,6 +40,9 @@ static RegisterLuaFunction_t g_origRegLua;
 // Add global flag for hook success
 static bool g_luaStateCaptured = false;
 
+//Add global flag that determines whether we hook the RegisterLuaFunction
+static bool UOWP_HOOK_REGISTER = true; // Set to false to disable hook
+
 // Add at top with other globals
 static volatile LONG g_stopScan = 0;   // 0 = keep running, 1 = quit
 static DWORD* g_globalStateSlot = nullptr;  // Location of static pointer
@@ -520,9 +523,8 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
 
     WriteRawLog("Calling original RegisterLuaFunction...");
     bool ok = CallClientRegister(L, func, name);
-    sprintf_s(buffer, sizeof(buffer), "Original RegisterLuaFunction returned %s",
-        ok ? "true" : "false");
-    WriteRawLog(buffer);
+    WriteRawLog(ok ? "Original RegisterLuaFunction returned true"
+        : "Original RegisterLuaFunction returned false");
 
     return ok;
 }
@@ -618,7 +620,7 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
 
         // RegisterLuaFunction hook is optional
         char env[2];
-        bool enableHook = GetEnvironmentVariableA("UOWP_HOOK_REGISTER", env, sizeof(env)) > 0;
+        bool enableHook = UOWP_HOOK_REGISTER || false;
         if (enableHook) {
             if (!InstallRegisterHook()) {
                 WriteRawLog("Warning: RegisterLuaFunction hook not installed");
