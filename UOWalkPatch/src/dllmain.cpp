@@ -5,6 +5,9 @@
 #include <psapi.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string>
+#include <vector>
+#include <memory>
 #include "minhook.h"
 
 // Global state structure based on the memory layout observed
@@ -34,8 +37,11 @@ static void* g_luaState;
 static HANDLE g_scanThread;
 static bool   g_registered = false; // whether we've registered our own Lua funcs
 
+// Pool to hold std::string instances for Lua registration names
+static std::vector<std::unique_ptr<std::string>> g_stringPool;
+
 // RegisterLuaFunction is a C++ instance method (__thiscall)
-typedef bool(__thiscall* RegisterLuaFunction_t)(void* thisptr, void* func, const char* name);
+typedef bool(__thiscall* RegisterLuaFunction_t)(void* thisptr, void* func, const void* nameObj);
 static RegisterLuaFunction_t g_origRegLua;
 
 // Add global flag for hook success
@@ -67,6 +73,13 @@ static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
 extern "C" int __cdecl Lua_Hello(void* L);
 static void RegisterMyFunctions();
+
+// Allocate a std::string object from a literal that lives for the DLL's lifetime
+static const std::string* MakeGameString(const char* lit)
+{
+    g_stringPool.emplace_back(std::make_unique<std::string>(lit));
+    return g_stringPool.back().get();
+}
 
 // Simple memory search helper
 static BYTE* FindBytes(BYTE* start, SIZE_T size, const BYTE* pattern, SIZE_T patSize) {
@@ -470,14 +483,14 @@ static DWORD WINAPI WaitForLua(LPVOID) {
 }
 
 // Safely invoke the client's RegisterLuaFunction
-static bool CallClientRegister(void* mgr, void* func, const char* name)
+static bool CallClientRegister(void* mgr, void* func, const void* nameObj)
 {
     if (!g_origRegLua) {
         WriteRawLog("Original RegisterLuaFunction pointer not set!");
         return false;
     }
     __try {
-        return g_origRegLua(mgr, func, name);
+        return g_origRegLua(mgr, func, nameObj);
     }
     __except(EXCEPTION_EXECUTE_HANDLER) {
         DWORD code = GetExceptionCode();
@@ -501,34 +514,42 @@ static void RegisterMyFunctions()
     if (!g_globalStateInfo)    { WriteRawLog("manager not ready"); return; }
     if (!g_origRegLua)         { WriteRawLog("RegisterLuaFunction ptr missing"); return; }
 
-    bool ok = CallClientRegister(g_globalStateInfo, (void*)Lua_Hello, "Hello");
+    const std::string* sHello = MakeGameString("Hello");
+    bool ok = CallClientRegister(g_globalStateInfo, (void*)Lua_Hello, sHello);
 
     WriteRawLog(ok ? "Registered Lua_Hello" : "FAILED to register Lua_Hello");
 }
 
 // Actual handler for RegisterLuaFunction calls
-static bool __cdecl Hook_Register(void* thisptr, void* func, const char* name);
+static bool __cdecl Hook_Register(void* thisptr, void* func, const void* nameObj);
 
-// Trampoline used by MinHook. The original call is __thiscall so ECX already
-// holds the class pointer while the stack contains a duplicate copy followed by
-// the real parameters. We drop the duplicate to obtain a standard cdecl frame
-// before jumping to the handler above.
-__declspec(naked) static bool __stdcall Thunk_Register(void* dupThis, void* func, const char* name)
+// Trampoline used by MinHook. Converts the client's __thiscall invocation to a
+// standard cdecl call understood by Hook_Register.
+__declspec(naked) static bool Thunk_Register()
 {
     __asm {
-        pop  eax        // return address
-        add  esp, 4     // discard duplicate 'this'
-        push eax        // restore return address
-        jmp  Hook_Register
+        // On entry:
+        //  ecx = this
+        //  [esp+4] = name object
+        //  [esp+8] = function pointer
+
+        mov eax, [esp+8]   // func
+        mov edx, [esp+4]   // name object
+        push eax           // push func
+        push edx           // push name object
+        push ecx           // push this
+        call Hook_Register
+        add esp, 12        // pop our pushes
+        ret 8              // pop original parameters (name, func)
     }
 }
 
 // Hook function for RegisterLuaFunction
-static bool __cdecl Hook_Register(void* thisptr, void* func, const char* name) {
+static bool __cdecl Hook_Register(void* thisptr, void* func, const void* nameObj) {
 
     // Short-circuit once we've discovered the global state
     if (g_globalStateInfo) {
-        return CallClientRegister(thisptr, func, name);
+        return CallClientRegister(thisptr, func, nameObj);
     }
 
     char buffer[256];
@@ -567,13 +588,13 @@ static bool __cdecl Hook_Register(void* thisptr, void* func, const char* name) {
         "RegisterLuaFunction called:\n"
         "  Manager: %p\n"
         "  Function: %p\n"
-        "  Name: %s\n"
+        "  NameObj: %p\n"
         "  Global State Info: %p",
-        thisptr, func, name ? name : "<null>", g_globalStateInfo);
+        thisptr, func, nameObj, g_globalStateInfo);
     WriteRawLog(buffer);
 
     WriteRawLog("Calling original RegisterLuaFunction...");
-    bool ok = CallClientRegister(thisptr, func, name);
+    bool ok = CallClientRegister(thisptr, func, nameObj);
     WriteRawLog(ok ? "Original RegisterLuaFunction returned true"
                   : "Original RegisterLuaFunction returned false");
 
