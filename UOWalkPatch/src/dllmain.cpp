@@ -455,7 +455,7 @@ static DWORD WINAPI WaitForLua(LPVOID) {
             sprintf_s(buffer, sizeof(buffer), "Scanner found Lua State @ %p", g_luaState);
             WriteRawLog(buffer);
 
-            if (!g_registered) {
+            if (!g_registered && g_luaState) {
                 RegisterMyFunctions();
                 g_registered = true;
             }
@@ -498,26 +498,24 @@ extern "C" int __cdecl Lua_Hello(void* L /* really lua_State* */)
 // Register our custom functions with the client
 static void RegisterMyFunctions()
 {
-    if (!g_luaState)             { WriteRawLog("lua_State not ready"); return; }
-    if (!g_origRegLua)           { WriteRawLog("RegisterLuaFunction ptr missing"); return; }
+    if (!g_luaState)           { WriteRawLog("lua_State not ready"); return; }
+    if (!g_origRegLua)         { WriteRawLog("RegisterLuaFunction ptr missing"); return; }
 
-    // Disable hook around our own call to avoid recursion
-    MH_DisableHook(reinterpret_cast<LPVOID>(g_origRegLua));
     bool ok = CallClientRegister(g_luaState, (void*)Lua_Hello, "Hello");
-    MH_EnableHook(reinterpret_cast<LPVOID>(g_origRegLua));
 
     WriteRawLog(ok ? "Registered Lua_Hello" : "FAILED to register Lua_Hello");
 }
 
 // Hook function for RegisterLuaFunction
 static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
+    
     // Short-circuit if we already have everything we need
     if (g_globalStateInfo) {
         return CallClientRegister(L, func, name);
     }
 
     char buffer[256];
-    
+
     // First capture the Lua state
     if (!g_luaState) {
         g_luaState = L;
