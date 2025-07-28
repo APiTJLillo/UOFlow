@@ -506,8 +506,25 @@ static void RegisterMyFunctions()
     WriteRawLog(ok ? "Registered Lua_Hello" : "FAILED to register Lua_Hello");
 }
 
+// Actual handler for RegisterLuaFunction calls
+static bool __cdecl Hook_Register(void* thisptr, void* func, const char* name);
+
+// Trampoline used by MinHook. The original call is __thiscall so ECX already
+// holds the class pointer while the stack contains a duplicate copy followed by
+// the real parameters. We drop the duplicate to obtain a standard cdecl frame
+// before jumping to the handler above.
+__declspec(naked) static bool __stdcall Thunk_Register(void* dupThis, void* func, const char* name)
+{
+    __asm {
+        pop  eax        // return address
+        add  esp, 4     // discard duplicate 'this'
+        push eax        // restore return address
+        jmp  Hook_Register
+    }
+}
+
 // Hook function for RegisterLuaFunction
-static bool __fastcall Hook_Register(void* thisptr, void* /*unused*/, void* func, const char* name) {
+static bool __cdecl Hook_Register(void* thisptr, void* func, const char* name) {
 
     // Short-circuit once we've discovered the global state
     if (g_globalStateInfo) {
@@ -608,8 +625,9 @@ static bool InstallRegisterHook() {
     sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction at %p", target);
     WriteRawLog(buffer);
 
-    // Install main hook for RegisterLuaFunction
-    if (MH_CreateHook(target, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegLua)) != MH_OK) {
+    // Install main hook for RegisterLuaFunction using a small trampoline that
+    // adapts the calling convention.
+    if (MH_CreateHook(target, &Thunk_Register, reinterpret_cast<LPVOID*>(&g_origRegLua)) != MH_OK) {
         WriteRawLog("MH_CreateHook failed for RegisterLuaFunction");
         return false;
     }
