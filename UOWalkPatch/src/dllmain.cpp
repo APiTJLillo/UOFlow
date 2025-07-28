@@ -34,8 +34,8 @@ static void* g_luaState;
 static HANDLE g_scanThread;
 static bool   g_registered = false; // whether we've registered our own Lua funcs
 
-// The client uses __stdcall for RegisterLuaFunction 
-typedef bool(__stdcall* RegisterLuaFunction_t)(void* luaState, void* func, const char* name);
+// RegisterLuaFunction is a C++ instance method (__thiscall)
+typedef bool(__thiscall* RegisterLuaFunction_t)(void* thisptr, void* func, const char* name);
 static RegisterLuaFunction_t g_origRegLua;
 
 // Add global flag for hook success
@@ -470,14 +470,14 @@ static DWORD WINAPI WaitForLua(LPVOID) {
 }
 
 // Safely invoke the client's RegisterLuaFunction
-static bool CallClientRegister(void* L, void* func, const char* name)
+static bool CallClientRegister(void* mgr, void* func, const char* name)
 {
     if (!g_origRegLua) {
         WriteRawLog("Original RegisterLuaFunction pointer not set!");
         return false;
     }
     __try {
-        return g_origRegLua(L, func, name);
+        return g_origRegLua(mgr, func, name);
     }
     __except(EXCEPTION_EXECUTE_HANDLER) {
         DWORD code = GetExceptionCode();
@@ -498,34 +498,36 @@ extern "C" int __cdecl Lua_Hello(void* L /* really lua_State* */)
 // Register our custom functions with the client
 static void RegisterMyFunctions()
 {
-    if (!g_luaState)           { WriteRawLog("lua_State not ready"); return; }
+    if (!g_globalStateInfo)    { WriteRawLog("manager not ready"); return; }
     if (!g_origRegLua)         { WriteRawLog("RegisterLuaFunction ptr missing"); return; }
 
-    bool ok = CallClientRegister(g_luaState, (void*)Lua_Hello, "Hello");
+    bool ok = CallClientRegister(g_globalStateInfo, (void*)Lua_Hello, "Hello");
 
     WriteRawLog(ok ? "Registered Lua_Hello" : "FAILED to register Lua_Hello");
 }
 
 // Hook function for RegisterLuaFunction
-static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
+static bool __fastcall Hook_Register(void* thisptr, void* /*unused*/, void* func, const char* name) {
 
     // Short-circuit once we've discovered the global state
     if (g_globalStateInfo) {
-        return CallClientRegister(L, func, name);
+        return CallClientRegister(thisptr, func, name);
     }
 
     char buffer[256];
 
     // First capture the lua_State pointer from the hook
     if (!g_luaState) {
-        g_luaState = L;
+        g_globalStateInfo = (GlobalStateInfo*)thisptr;
+        g_luaState = g_globalStateInfo ? g_globalStateInfo->luaState : nullptr;
         g_luaStateCaptured = true;  // stop the scanner thread
 
         sprintf_s(buffer, sizeof(buffer), "Captured lua_State @ %p", g_luaState);
         WriteRawLog(buffer);
 
-        // Attempt to locate the owning GlobalStateInfo
-        g_globalStateInfo = (GlobalStateInfo*)FindOwnerOfLuaState(L);
+        // Attempt to locate the owning GlobalStateInfo if not obvious
+        if (!g_globalStateInfo)
+            g_globalStateInfo = (GlobalStateInfo*)FindOwnerOfLuaState(g_luaState);
         if (g_globalStateInfo) {
             DumpMemory("GlobalStateInfo", g_globalStateInfo, 0x40);
         }
@@ -546,15 +548,15 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
 
     sprintf_s(buffer, sizeof(buffer),
         "RegisterLuaFunction called:\n"
-        "  State: %p\n"
+        "  Manager: %p\n"
         "  Function: %p\n"
         "  Name: %s\n"
         "  Global State Info: %p",
-        L, func, name ? name : "<null>", g_globalStateInfo);
+        thisptr, func, name ? name : "<null>", g_globalStateInfo);
     WriteRawLog(buffer);
 
     WriteRawLog("Calling original RegisterLuaFunction...");
-    bool ok = CallClientRegister(L, func, name);
+    bool ok = CallClientRegister(thisptr, func, name);
     WriteRawLog(ok ? "Original RegisterLuaFunction returned true"
                   : "Original RegisterLuaFunction returned false");
 
