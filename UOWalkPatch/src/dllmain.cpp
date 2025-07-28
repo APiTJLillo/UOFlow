@@ -32,6 +32,7 @@ static HMODULE g_hModule;
 static GlobalStateInfo* g_globalStateInfo;
 static void* g_luaState;
 static HANDLE g_scanThread;
+static bool   g_registered = false; // whether we've registered our own Lua funcs
 
 // The client uses __stdcall for RegisterLuaFunction 
 typedef bool(__stdcall* RegisterLuaFunction_t)(void* luaState, void* func, const char* name);
@@ -64,6 +65,8 @@ static void* FindOwnerOfLuaState(void* lua);
 static DWORD WINAPI WaitForLua(LPVOID param);
 static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
+extern "C" int __cdecl Lua_Hello(void* L);
+static void RegisterMyFunctions();
 
 // Simple memory search helper
 static BYTE* FindBytes(BYTE* start, SIZE_T size, const BYTE* pattern, SIZE_T patSize) {
@@ -447,11 +450,16 @@ static DWORD WINAPI WaitForLua(LPVOID) {
         if (info && info->luaState) {
             g_globalStateInfo = info;
             g_luaState = info->luaState;
-            
+
             char buffer[128];
             sprintf_s(buffer, sizeof(buffer), "Scanner found Lua State @ %p", g_luaState);
             WriteRawLog(buffer);
-            
+
+            if (!g_registered) {
+                RegisterMyFunctions();
+                g_registered = true;
+            }
+
             return 0;
         }
         Sleep(200);  // ~5µs CPU per pass
@@ -478,6 +486,27 @@ static bool CallClientRegister(void* L, void* func, const char* name)
         WriteRawLog(buf);
         return false;
     }
+}
+
+// Example Lua callback thunk
+extern "C" int __cdecl Lua_Hello(void* L /* really lua_State* */)
+{
+    MessageBoxA(nullptr, "Hi from injected DLL!", "Lua-Hello", MB_OK);
+    return 0; // no values pushed on stack
+}
+
+// Register our custom functions with the client
+static void RegisterMyFunctions()
+{
+    if (!g_luaState)             { WriteRawLog("lua_State not ready"); return; }
+    if (!g_origRegLua)           { WriteRawLog("RegisterLuaFunction ptr missing"); return; }
+
+    // Disable hook around our own call to avoid recursion
+    MH_DisableHook(reinterpret_cast<LPVOID>(g_origRegLua));
+    bool ok = CallClientRegister(g_luaState, (void*)Lua_Hello, "Hello");
+    MH_EnableHook(reinterpret_cast<LPVOID>(g_origRegLua));
+
+    WriteRawLog(ok ? "Registered Lua_Hello" : "FAILED to register Lua_Hello");
 }
 
 // Hook function for RegisterLuaFunction
@@ -509,6 +538,11 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
             }
 
             WriteRawLog("DLL is now fully initialized - enjoy!");
+
+            if (!g_registered) {
+                RegisterMyFunctions();
+                g_registered = true;
+            }
         }
     }
 
