@@ -31,7 +31,6 @@ static BOOL   g_initialized;
 static HMODULE g_hModule;
 static GlobalStateInfo* g_globalStateInfo;
 static void* g_luaState;
-static void* g_luaMgr = nullptr;   // first parameter to RegisterLuaFunction
 static HANDLE g_scanThread;
 static bool   g_registered = false; // whether we've registered our own Lua funcs
 
@@ -509,23 +508,27 @@ static void RegisterMyFunctions()
 
 // Hook function for RegisterLuaFunction
 static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
-    
-    // Short-circuit if we already have everything we need
+
+    // Short-circuit once we've discovered the global state
     if (g_globalStateInfo) {
-        return CallClientRegister(mgr, func, name);
+        return CallClientRegister(L, func, name);
     }
 
     char buffer[256];
 
-    // First capture the Lua state
+    // First capture the lua_State pointer from the hook
     if (!g_luaState) {
-        g_globalStateInfo = (GlobalStateInfo*)mgr;
-        g_luaState = g_globalStateInfo->luaState;
-        g_luaStateCaptured = true;  // This alone will stop the scanner thread
-        sprintf_s(buffer, sizeof(buffer), "Captured manager @ %p with Lua state %p", mgr, g_luaState);
+        g_luaState = L;
+        g_luaStateCaptured = true;  // stop the scanner thread
+
+        sprintf_s(buffer, sizeof(buffer), "Captured lua_State @ %p", g_luaState);
         WriteRawLog(buffer);
 
-        DumpMemory("GlobalStateInfo", g_globalStateInfo, 0x40);
+        // Attempt to locate the owning GlobalStateInfo
+        g_globalStateInfo = (GlobalStateInfo*)FindOwnerOfLuaState(L);
+        if (g_globalStateInfo) {
+            DumpMemory("GlobalStateInfo", g_globalStateInfo, 0x40);
+        }
 
         if (g_scanThread) {
             WaitForSingleObject(g_scanThread, INFINITE);
@@ -543,17 +546,17 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
 
     sprintf_s(buffer, sizeof(buffer),
         "RegisterLuaFunction called:\n"
-        "  Manager: %p\n"
+        "  State: %p\n"
         "  Function: %p\n"
         "  Name: %s\n"
         "  Global State Info: %p",
-        mgr, func, name ? name : "<null>", g_globalStateInfo);
+        L, func, name ? name : "<null>", g_globalStateInfo);
     WriteRawLog(buffer);
 
     WriteRawLog("Calling original RegisterLuaFunction...");
-    bool ok = CallClientRegister(mgr, func, name);
+    bool ok = CallClientRegister(L, func, name);
     WriteRawLog(ok ? "Original RegisterLuaFunction returned true"
-        : "Original RegisterLuaFunction returned false");
+                  : "Original RegisterLuaFunction returned false");
 
     return ok;
 }
