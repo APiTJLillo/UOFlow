@@ -520,32 +520,10 @@ static void RegisterMyFunctions()
     WriteRawLog(ok ? "Registered Lua_Hello" : "FAILED to register Lua_Hello");
 }
 
-// Actual handler for RegisterLuaFunction calls
-static bool __cdecl Hook_Register(void* thisptr, void* func, const void* nameObj);
-
-// Trampoline used by MinHook. Converts the client's __thiscall invocation to a
-// standard cdecl call understood by Hook_Register.
-__declspec(naked) static bool Thunk_Register()
-{
-    __asm {
-        // On entry:
-        //  ecx = this
-        //  [esp+4] = name object
-        //  [esp+8] = function pointer
-
-        mov eax, [esp+8]   // func
-        mov edx, [esp+4]   // name object
-        push eax           // push func
-        push edx           // push name object
-        push ecx           // push this
-        call Hook_Register
-        add esp, 12        // pop our pushes
-        ret 8              // pop original parameters (name, func)
-    }
-}
-
-// Hook function for RegisterLuaFunction
-static bool __cdecl Hook_Register(void* thisptr, void* func, const void* nameObj) {
+// Hook function for RegisterLuaFunction. Declared __fastcall so the original
+// __thiscall parameters are passed correctly by MinHook.
+static bool __fastcall Hook_Register(
+        void* thisptr, void* /*unused*/, void* func, const void* nameObj) {
 
     // Short-circuit once we've discovered the global state
     if (g_globalStateInfo) {
@@ -646,9 +624,9 @@ static bool InstallRegisterHook() {
     sprintf_s(buffer, sizeof(buffer), "RegisterLuaFunction at %p", target);
     WriteRawLog(buffer);
 
-    // Install main hook for RegisterLuaFunction using a small trampoline that
-    // adapts the calling convention.
-    if (MH_CreateHook(target, &Thunk_Register, reinterpret_cast<LPVOID*>(&g_origRegLua)) != MH_OK) {
+    // Install main hook for RegisterLuaFunction. Our detour is __fastcall so
+    // the original __thiscall arguments are forwarded correctly.
+    if (MH_CreateHook(target, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegLua)) != MH_OK) {
         WriteRawLog("MH_CreateHook failed for RegisterLuaFunction");
         return false;
     }
