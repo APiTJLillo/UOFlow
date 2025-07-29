@@ -64,6 +64,14 @@ static void* FindOwnerOfLuaState(void* lua);
 static DWORD WINAPI WaitForLua(LPVOID param);
 static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
+static int  __stdcall Lua_DummyPrint(void* L);           // our Lua C‑function
+static void RegisterOurLuaFunctions();                  // one‑shot registrar
+
+static int __stdcall Lua_DummyPrint(void* /*L*/)
+{
+    WriteRawLog("[Lua] DummyPrint() was invoked!");
+    return 0;              // no values returned to Lua
+}
 
 // Simple memory search helper
 static BYTE* FindBytes(BYTE* start, SIZE_T size, const BYTE* pattern, SIZE_T patSize) {
@@ -483,6 +491,33 @@ static bool CallClientRegister(void* L, void* func, const char* name)
     }
 }
 
+static void RegisterOurLuaFunctions()
+{
+    static bool done = false;
+    if (done || !g_luaState || !g_origRegLua)
+        return;
+
+    // Register under whatever name you’d like Lua to see.
+    const char* luaName = "DummyPrint";
+	WriteRawLog("Registering DummyPrint Lua function...");
+    if (CallClientRegister(g_luaState,
+        reinterpret_cast<void*>(Lua_DummyPrint),
+        luaName))
+    {
+        char buf[128];
+        sprintf_s(buf, sizeof(buf),
+            "Successfully registered Lua function '%s' (%p)",
+            luaName, Lua_DummyPrint);
+        WriteRawLog(buf);
+        done = true;
+    }
+    else
+    {
+        WriteRawLog("!! Failed to register DummyPrint");
+    }
+	WriteRawLog("RegisterOurLuaFunctions completed");
+}
+
 // Hook function for RegisterLuaFunction
 static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
     // Short-circuit if we already have everything we need
@@ -512,6 +547,9 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
             }
 
             WriteRawLog("DLL is now fully initialized - enjoy!");
+			WriteRawLog("Registering our Lua functions...");
+            RegisterOurLuaFunctions();
+			WriteRawLog("Lua functions registered successfully");
         }
     }
 
