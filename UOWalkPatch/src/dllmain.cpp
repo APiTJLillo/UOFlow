@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include "minhook.h"
 
+// Forward declaration so we can use lua_State* without including Lua headers
+struct lua_State;
+
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
     void* luaState;             // 0x00  - Lua state pointer
@@ -76,15 +79,15 @@ static void* FindOwnerOfLuaState(void* lua);
 static DWORD WINAPI WaitForLua(LPVOID param);
 static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
-static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
-static void RegisterOurLuaFunctions();                  // one‑shot registrar
-static int __cdecl walk_bridge(void* L);
-static int __cdecl cast_bridge(void* L);
-static int __cdecl skill_bridge(void* L);
-static int __cdecl process_bridge(void* L);
+static int  __cdecl Lua_DummyPrint(lua_State* L);       // our Lua C-function
+static void RegisterOurLuaFunctions();                  // one-shot registrar
+static int __cdecl walk_bridge(lua_State* L);
+static int __cdecl cast_bridge(lua_State* L);
+static int __cdecl skill_bridge(lua_State* L);
+static int __cdecl process_bridge(lua_State* L);
 static void ResolveGameFunctions();
 
-static int __cdecl Lua_DummyPrint(void* L)
+static int __cdecl Lua_DummyPrint(lua_State* L)
 {
     WriteRawLog("[Lua] DummyPrint() was invoked!");
     return 0;   // no Lua return values
@@ -102,57 +105,57 @@ extern "C" {
     int   __cdecl lua_error(lua_State*);
 }
 
-static int __cdecl walk_bridge(void* L)
+static int __cdecl walk_bridge(lua_State* L)
 {
     if (!g_game.walk || !g_globalStateInfo) {
-        lua_pushstring((lua_State*)L, "walk: not resolved");
-        lua_error((lua_State*)L);
+        lua_pushstring(L, "walk: not resolved");
+        lua_error(L);
         return 0;
     }
-    int dir = lua_tointeger((lua_State*)L, 1);
-    int run = lua_toboolean((lua_State*)L, 2);
+    int dir = lua_tointeger(L, 1);
+    int run = lua_toboolean(L, 2);
     bool ok = g_game.walk(g_globalStateInfo->engineContext, (uint8_t)dir, (uint8_t)run);
-    lua_pushboolean((lua_State*)L, ok);
+    lua_pushboolean(L, ok);
     return 1;
 }
 
-static int __cdecl cast_bridge(void* L)
+static int __cdecl cast_bridge(lua_State* L)
 {
     if (!g_game.cast || !g_globalStateInfo) {
-        lua_pushstring((lua_State*)L, "cast: not resolved");
-        lua_error((lua_State*)L);
+        lua_pushstring(L, "cast: not resolved");
+        lua_error(L);
         return 0;
     }
-    int spell = lua_tointeger((lua_State*)L, 1);
+    int spell = lua_tointeger(L, 1);
     bool ok = g_game.cast(g_globalStateInfo->engineContext, spell);
-    lua_pushboolean((lua_State*)L, ok);
+    lua_pushboolean(L, ok);
     return 1;
 }
 
-static int __cdecl skill_bridge(void* L)
+static int __cdecl skill_bridge(lua_State* L)
 {
     if (!g_game.skill || !g_globalStateInfo) {
-        lua_pushstring((lua_State*)L, "useSkill: not resolved");
-        lua_error((lua_State*)L);
+        lua_pushstring(L, "useSkill: not resolved");
+        lua_error(L);
         return 0;
     }
-    int skill = lua_tointeger((lua_State*)L, 1);
+    int skill = lua_tointeger(L, 1);
     bool ok = g_game.skill(g_globalStateInfo->engineContext, skill);
-    lua_pushboolean((lua_State*)L, ok);
+    lua_pushboolean(L, ok);
     return 1;
 }
 
-static int __cdecl process_bridge(void* L)
+static int __cdecl process_bridge(lua_State* L)
 {
     if (!g_game.process) {
-        lua_pushstring((lua_State*)L, "processCommand: not resolved");
-        lua_error((lua_State*)L);
+        lua_pushstring(L, "processCommand: not resolved");
+        lua_error(L);
         return 0;
     }
-    const char* cmd = lua_tostring((lua_State*)L, 1);
+    const char* cmd = lua_tostring(L, 1);
     if (!cmd) cmd = "";
     bool ok = g_game.process(cmd);
-    lua_pushboolean((lua_State*)L, ok);
+    lua_pushboolean(L, ok);
     return 1;
 }
 
