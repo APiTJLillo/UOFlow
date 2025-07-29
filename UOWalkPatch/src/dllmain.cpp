@@ -66,6 +66,12 @@ static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
 static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
+// New walk function support
+typedef bool(__thiscall* WalkFunc_t)(void* thisPtr, uint8_t dir, uint8_t run);
+static WalkFunc_t g_walkFunc = nullptr;
+static void* g_moveComp = nullptr;
+static int  __cdecl Lua_Walk(void* L);
+static void InitWalkFunction();
 
 static int __cdecl Lua_DummyPrint(void* L)
 {
@@ -130,6 +136,105 @@ static void DumpMemory(const char* desc, void* addr, size_t len) {
             bytes + len - remain, hex, ascii);
         WriteRawLog(buffer);
     }
+}
+
+// Simple masked pattern finder
+// Parse textual signature with "??" wildcards into byte and mask arrays
+struct Pattern {
+    size_t      len;
+    uint8_t     raw[128];
+    uint8_t     mask[128];
+};
+
+static size_t ParsePattern(const char* sig, Pattern& out)
+{
+    size_t i = 0;
+    while (*sig && i < sizeof(out.raw)) {
+        if (*sig == ' ') { ++sig; continue; }
+        if (sig[0] == '?' && sig[1] == '?') {
+            out.mask[i] = 0; out.raw[i++] = 0; sig += 2;
+        } else {
+            unsigned v; sscanf_s(sig, "%02x", &v);
+            out.mask[i] = 1; out.raw[i++] = (uint8_t)v; sig += 2;
+        }
+    }
+    out.len = i;
+    return i;
+}
+
+static BYTE* FindPatternText(const char* sig)
+{
+    Pattern p{}; ParsePattern(sig, p);
+
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi)))
+        return nullptr;
+
+    uint8_t* base = (uint8_t*)mi.lpBaseOfDll;
+    uint8_t* end = base + mi.SizeOfImage;
+
+    for (uint8_t* cur = base; cur + p.len <= end; ++cur) {
+        size_t k = 0;
+        while (k < p.len && (!p.mask[k] || cur[k] == p.raw[k]))
+            ++k;
+        if (k == p.len)
+            return cur;
+    }
+    return nullptr;
+}
+
+// Locate walk function and movement component pointer
+static void InitWalkFunction()
+{
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi)))
+        return;
+
+    BYTE* base = (BYTE*)mi.lpBaseOfDll;
+    SIZE_T size = mi.SizeOfImage;
+
+    // Use a longer signature to avoid false positives. The call target is masked.
+    const char* walk_sig =
+        "55 8B EC 83 E4 F8 83 EC 44 F3 0F 10 45 08 53 56 8B F1 57 "
+        "8D 44 24 38 50 8D 4E 04 89 74 24 14 F3 0F 11 44 24 18 E8 ?? ?? ?? ??";
+
+    BYTE* hit = FindPatternText(walk_sig);
+    if (hit) {
+        g_walkFunc = reinterpret_cast<WalkFunc_t>(hit);
+        char buf[64];
+        sprintf_s(buf, sizeof(buf), "Found walk function at %p", hit);
+        WriteRawLog(buf);
+    } else {
+        WriteRawLog("Walk function not found");
+    }
+
+    const char* move_sig = "A1 ?? ?? ?? ?? 83 ?? ?? 68 ?? ?? ?? ?? 50 E8";
+
+    hit = FindPatternText(move_sig);
+    if (hit) {
+        DWORD addr = *(DWORD*)(hit + 1);
+        g_moveComp = *(void**)addr;
+        char buf[64];
+        sprintf_s(buf, sizeof(buf), "MoveComp pointer %p", g_moveComp);
+        WriteRawLog(buf);
+    } else {
+        WriteRawLog("MoveComp pointer not found");
+    }
+}
+
+static int __cdecl Lua_Walk(void* L)
+{
+    WriteRawLog("[Lua] walk() invoked");
+    if (g_walkFunc && g_moveComp) {
+        __try {
+            g_walkFunc(g_moveComp, 0, 0);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            WriteRawLog("Exception calling walk function");
+        }
+    } else {
+        WriteRawLog("walk function not initialized");
+    }
+    return 0;
 }
 
 static void* FindGlobalStateInfo() {
@@ -497,7 +602,10 @@ static void RegisterOurLuaFunctions()
     if (done || !g_luaState || !g_origRegLua)
         return;
 
-    // Register under whatever name you’d like Lua to see.
+    // Locate client functions we need
+    InitWalkFunction();
+
+    // Register DummyPrint for testing
     const char* luaName = "DummyPrint";
     WriteRawLog("Registering DummyPrint Lua function...");
     if (CallClientRegister(g_luaState,
@@ -515,6 +623,28 @@ static void RegisterOurLuaFunctions()
     {
         WriteRawLog("!! Failed to register DummyPrint");
     }
+
+    // Register walk function if we located it
+    if (g_walkFunc && g_moveComp) {
+        const char* walkName = "walk";
+        WriteRawLog("Registering walk Lua function...");
+        if (CallClientRegister(g_luaState,
+            reinterpret_cast<void*>(Lua_Walk),
+            walkName))
+        {
+            char buf[128];
+            sprintf_s(buf, sizeof(buf),
+                "Successfully registered Lua function '%s' (%p)",
+                walkName, Lua_Walk);
+            WriteRawLog(buf);
+        }
+        else {
+            WriteRawLog("!! Failed to register walk function");
+        }
+    } else {
+        WriteRawLog("walk function not found - skipping registration");
+    }
+
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 

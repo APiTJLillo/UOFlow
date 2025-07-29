@@ -30,6 +30,13 @@ Press **Enter** to exit the helper.
 All debug output is also written to `uowalkpatch_debug.log`. The file is created
 next to the DLL if possible, otherwise in `%WINDIR%\Temp`.
 
+## Lua functions
+
+The patch exposes a couple of helper calls to Lua. `DummyPrint` simply logs a
+message, while the new `walk` command triggers the client's internal movement
+routine. The functions are registered automatically when the helper locates the
+client's Lua state.
+
 ## Troubleshooting
 
 If injection fails with a generic `LoadLibrary` error, ensure `signatures.json`
