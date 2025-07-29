@@ -828,7 +828,18 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
 static void CleanupDLL() {
     WriteRawLog("Starting cleanup...");
 
-    // First disable any hooks to prevent callbacks
+    if (g_scanThread) {
+        g_stopScan = 1;  // Signal scanner to stop
+        WaitForSingleObject(g_scanThread, 1000);
+        CloseHandle(g_scanThread);
+        g_scanThread = NULL;
+    }
+
+    if (g_vehHandle) {
+        RemoveVectoredExceptionHandler(g_vehHandle);
+        g_vehHandle = nullptr;
+    }
+
     if (g_initialized) {
         if (g_origRegLua) {
             MH_DisableHook(MH_ALL_HOOKS);
@@ -844,26 +855,6 @@ static void CleanupDLL() {
         g_initialized = FALSE;
     }
 
-    // Stop scan thread before cleaning up other resources
-    if (g_scanThread) {
-        g_stopScan = 1;  // Signal scanner to stop
-        WriteRawLog("Waiting for scan thread to exit...");
-        WaitForSingleObject(g_scanThread, 1000);
-        CloseHandle(g_scanThread);
-        g_scanThread = NULL;
-    }
-
-    // Remove VEH handler
-    if (g_vehHandle) {
-        RemoveVectoredExceptionHandler(g_vehHandle);
-        g_vehHandle = nullptr;
-    }
-
-    // Clear globals that might be accessed during shutdown
-    g_globalStateInfo = nullptr;
-    g_luaState = nullptr;
-    
-    // Close log last
     if (g_logFile != INVALID_HANDLE_VALUE) {
         WriteRawLog("Closing log file");
         CloseHandle(g_logFile);
