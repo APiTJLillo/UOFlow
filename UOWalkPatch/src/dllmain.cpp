@@ -66,6 +66,7 @@ static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
 static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
+static bool CallClientRegister(void* L, void* func, const char* name);
 // New walk function support
 typedef bool(__thiscall* WalkFunc_t)(void* thisPtr, uint8_t dir, uint8_t run);
 static WalkFunc_t g_walkFunc = nullptr;
