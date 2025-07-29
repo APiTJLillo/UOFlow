@@ -64,13 +64,13 @@ static void* FindOwnerOfLuaState(void* lua);
 static DWORD WINAPI WaitForLua(LPVOID param);
 static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
-static int  __stdcall Lua_DummyPrint(void* L);           // our Lua C‑function
+static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
 
-static int __stdcall Lua_DummyPrint(void* /*L*/)
+static int __cdecl Lua_DummyPrint(void* L)
 {
     WriteRawLog("[Lua] DummyPrint() was invoked!");
-    return 0;              // no values returned to Lua
+    return 0;   // no Lua return values
 }
 
 // Simple memory search helper
