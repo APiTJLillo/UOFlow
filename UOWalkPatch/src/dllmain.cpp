@@ -139,17 +139,46 @@ static void DumpMemory(const char* desc, void* addr, size_t len) {
 }
 
 // Simple masked pattern finder
-static BYTE* FindPatternMasked(BYTE* base, SIZE_T size,
-    const unsigned char* pat, const char* mask, SIZE_T len)
+// Parse textual signature with "??" wildcards into byte and mask arrays
+struct Pattern {
+    size_t      len;
+    uint8_t     raw[128];
+    uint8_t     mask[128];
+};
+
+static size_t ParsePattern(const char* sig, Pattern& out)
 {
-    for (SIZE_T i = 0; i + len <= size; ++i) {
-        bool match = true;
-        for (SIZE_T k = 0; k < len && match; ++k) {
-            if (mask[k] != '?' && pat[k] != base[i + k])
-                match = false;
+    size_t i = 0;
+    while (*sig && i < sizeof(out.raw)) {
+        if (*sig == ' ') { ++sig; continue; }
+        if (sig[0] == '?' && sig[1] == '?') {
+            out.mask[i] = 0; out.raw[i++] = 0; sig += 2;
+        } else {
+            unsigned v; sscanf_s(sig, "%02x", &v);
+            out.mask[i] = 1; out.raw[i++] = (uint8_t)v; sig += 2;
         }
-        if (match)
-            return base + i;
+    }
+    out.len = i;
+    return i;
+}
+
+static BYTE* FindPatternText(const char* sig)
+{
+    Pattern p{}; ParsePattern(sig, p);
+
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi)))
+        return nullptr;
+
+    uint8_t* base = (uint8_t*)mi.lpBaseOfDll;
+    uint8_t* end = base + mi.SizeOfImage;
+
+    for (uint8_t* cur = base; cur + p.len <= end; ++cur) {
+        size_t k = 0;
+        while (k < p.len && (!p.mask[k] || cur[k] == p.raw[k]))
+            ++k;
+        if (k == p.len)
+            return cur;
     }
     return nullptr;
 }
@@ -164,12 +193,12 @@ static void InitWalkFunction()
     BYTE* base = (BYTE*)mi.lpBaseOfDll;
     SIZE_T size = mi.SizeOfImage;
 
-    static const unsigned char walk_bytes[] = {
-        0x55,0x8B,0xEC,0x83,0xE4,0x00,0x83,0xEC,0x00,0xF3,0x0F,0x10,0x45,0x08,0x53,0x56,0x8B,0xF1,0x57
-    };
-    static const char walk_mask[] = "xxxxx?xx?xxxxxxxxxx";
+    // Use a longer signature to avoid false positives. The call target is masked.
+    const char* walk_sig =
+        "55 8B EC 83 E4 F8 83 EC 44 F3 0F 10 45 08 53 56 8B F1 57 "
+        "8D 44 24 38 50 8D 4E 04 89 74 24 14 F3 0F 11 44 24 18 E8 ?? ?? ?? ??";
 
-    BYTE* hit = FindPatternMasked(base, size, walk_bytes, walk_mask, sizeof(walk_bytes));
+    BYTE* hit = FindPatternText(walk_sig);
     if (hit) {
         g_walkFunc = reinterpret_cast<WalkFunc_t>(hit);
         char buf[64];
@@ -179,12 +208,9 @@ static void InitWalkFunction()
         WriteRawLog("Walk function not found");
     }
 
-    static const unsigned char mc_bytes[] = {
-        0xA1,0,0,0,0,0x83,0,0,0x68,0,0,0,0,0x50,0xE8
-    };
-    static const char mc_mask[] = "x????xx?x????xx";
+    const char* move_sig = "A1 ?? ?? ?? ?? 83 ?? ?? 68 ?? ?? ?? ?? 50 E8";
 
-    hit = FindPatternMasked(base, size, mc_bytes, mc_mask, sizeof(mc_bytes));
+    hit = FindPatternText(move_sig);
     if (hit) {
         DWORD addr = *(DWORD*)(hit + 1);
         g_moveComp = *(void**)addr;
