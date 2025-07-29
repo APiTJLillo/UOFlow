@@ -7,9 +7,6 @@
 #include <stdio.h>
 #include "minhook.h"
 
-// Forward declaration so we can use lua_State* without including Lua headers
-struct lua_State;
-
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
     void* luaState;             // 0x00  - Lua state pointer
@@ -35,18 +32,6 @@ static HMODULE g_hModule;
 static GlobalStateInfo* g_globalStateInfo;
 static void* g_luaState;
 static HANDLE g_scanThread;
-
-struct GameFuncs {
-    using walk_t = bool(__thiscall*)(void* thisPtr, uint8_t dir, uint8_t run);
-    using cast_t = bool(__thiscall*)(void* thisPtr, int spellId);
-    using useSkill_t = bool(__thiscall*)(void* thisPtr, int skillId);
-    using processCmd_t = bool(__cdecl*)(const char* cmd);
-
-    walk_t       walk;
-    cast_t       cast;
-    useSkill_t   skill;
-    processCmd_t process;
-} g_game{};
 
 // The client uses __stdcall for RegisterLuaFunction 
 typedef bool(__stdcall* RegisterLuaFunction_t)(void* luaState, void* func, const char* name);
@@ -79,84 +64,13 @@ static void* FindOwnerOfLuaState(void* lua);
 static DWORD WINAPI WaitForLua(LPVOID param);
 static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
-static int  __cdecl Lua_DummyPrint(lua_State* L);       // our Lua C-function
-static void RegisterOurLuaFunctions();                  // one-shot registrar
-static int __cdecl walk_bridge(lua_State* L);
-static int __cdecl cast_bridge(lua_State* L);
-static int __cdecl skill_bridge(lua_State* L);
-static int __cdecl process_bridge(lua_State* L);
-static void ResolveGameFunctions();
+static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
+static void RegisterOurLuaFunctions();                  // one‑shot registrar
 
-static int __cdecl Lua_DummyPrint(lua_State* L)
+static int __cdecl Lua_DummyPrint(void* L)
 {
     WriteRawLog("[Lua] DummyPrint() was invoked!");
     return 0;   // no Lua return values
-}
-
-// Lua bridges for in-game actions
-extern "C" {
-    struct lua_State;
-    typedef int(__cdecl* lua_CFunction)(lua_State* L);
-    int   __cdecl lua_toboolean(lua_State*, int);
-    int   __cdecl lua_tointeger(lua_State*, int);
-    const char* __cdecl lua_tostring(lua_State*, int);
-    void  __cdecl lua_pushboolean(lua_State*, int);
-    void  __cdecl lua_pushstring(lua_State*, const char*);
-    int   __cdecl lua_error(lua_State*);
-}
-
-static int __cdecl walk_bridge(lua_State* L)
-{
-    if (!g_game.walk || !g_globalStateInfo) {
-        lua_pushstring(L, "walk: not resolved");
-        lua_error(L);
-        return 0;
-    }
-    int dir = lua_tointeger(L, 1);
-    int run = lua_toboolean(L, 2);
-    bool ok = g_game.walk(g_globalStateInfo->engineContext, (uint8_t)dir, (uint8_t)run);
-    lua_pushboolean(L, ok);
-    return 1;
-}
-
-static int __cdecl cast_bridge(lua_State* L)
-{
-    if (!g_game.cast || !g_globalStateInfo) {
-        lua_pushstring(L, "cast: not resolved");
-        lua_error(L);
-        return 0;
-    }
-    int spell = lua_tointeger(L, 1);
-    bool ok = g_game.cast(g_globalStateInfo->engineContext, spell);
-    lua_pushboolean(L, ok);
-    return 1;
-}
-
-static int __cdecl skill_bridge(lua_State* L)
-{
-    if (!g_game.skill || !g_globalStateInfo) {
-        lua_pushstring(L, "useSkill: not resolved");
-        lua_error(L);
-        return 0;
-    }
-    int skill = lua_tointeger(L, 1);
-    bool ok = g_game.skill(g_globalStateInfo->engineContext, skill);
-    lua_pushboolean(L, ok);
-    return 1;
-}
-
-static int __cdecl process_bridge(lua_State* L)
-{
-    if (!g_game.process) {
-        lua_pushstring(L, "processCommand: not resolved");
-        lua_error(L);
-        return 0;
-    }
-    const char* cmd = lua_tostring(L, 1);
-    if (!cmd) cmd = "";
-    bool ok = g_game.process(cmd);
-    lua_pushboolean(L, ok);
-    return 1;
 }
 
 // Simple memory search helper
@@ -181,61 +95,6 @@ static BYTE* FindPattern(BYTE* base, SIZE_T size, const BYTE* pat, SIZE_T patLen
             return base + i;
     }
     return nullptr;
-}
-
-struct Pattern {
-    const char* bytes;
-    size_t      len;
-    uint8_t     raw[64];
-    uint8_t     mask[64];
-};
-
-static size_t ParsePattern(const char* sig, Pattern& out)
-{
-    size_t i = 0;
-    while (*sig) {
-        if (*sig == ' ') { ++sig; continue; }
-        if (sig[0] == '?' && sig[1] == '?') {
-            out.mask[i] = 0; out.raw[i++] = 0;
-            sig += 2;
-        }
-        else {
-            unsigned v; sscanf_s(sig, "%02x", &v);
-            out.mask[i] = 1; out.raw[i++] = static_cast<uint8_t>(v);
-            sig += 2;
-        }
-    }
-    out.len = i;
-    return i;
-}
-
-static void* FindPatternText(const char* sig)
-{
-    Pattern p{}; ParsePattern(sig, p);
-    MODULEINFO mi{};
-    GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi));
-    uint8_t* base = (uint8_t*)mi.lpBaseOfDll;
-    uint8_t* end = base + mi.SizeOfImage;
-
-    for (uint8_t* cur = base; cur < end - p.len; ++cur) {
-        size_t k = 0;
-        while (k < p.len && (!p.mask[k] || cur[k] == p.raw[k])) ++k;
-        if (k == p.len) return cur;
-    }
-    return nullptr;
-}
-
-static void ResolveGameFunctions()
-{
-    g_game.walk = (GameFuncs::walk_t)FindPatternText("55 8B EC 83 E4 ?? 83 EC ?? F3 0F 10 45 08 53 56 8B F1 57");
-    g_game.cast = (GameFuncs::cast_t)FindPatternText("8B 0D ?? ?? ?? ?? 8B 01 8B 40 38 FF D0 8B 44 24 0C");
-    g_game.skill = (GameFuncs::useSkill_t)FindPatternText("6A 01 6A 00 6A ?? 6A ?? 8B 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ??");
-    g_game.process = (GameFuncs::processCmd_t)FindPatternText("83 EC 58 53 55 8B 6C 24 64 56 57 8B F0 B9 ?? ?? ?? ?? 66 8B 10 66 3B 11 75 1E 66 85 D2 74 15 66 8B 50 02 66 3B 51 02 75 0F 83 C0 04 83 C1 04 66 85 D2 75 DE 33 C0 EB 05 1B C0 83 D8 FF 85 C0 0F 85 ?? ?? ?? ?? 8B 4C 24 70 8D 44 24 18 50 51 B8 34 00 00 00 E8 ?? ?? ?? ?? 8B 74 24 18 85 F6 8B 7C 24 1C 74 79 8B 16 8B 42 2C 8B CE FF D0 83 F8 34 75 6B 8B D5 8D 44 24 4C E8 ?? ?? ?? ?? 85 FF 89 74 24 18 89 7C 24 1C 74 0C 8D 4F 04 BA 01 00 00 00 F0 0F C1 11");
-
-    char buf[128];
-    sprintf_s(buf, sizeof(buf), "Resolved walk=%p cast=%p skill=%p process=%p",
-        g_game.walk, g_game.cast, g_game.skill, g_game.process);
-    WriteRawLog(buf);
 }
 
 // Helper function to dump memory region as hex
@@ -604,9 +463,6 @@ static DWORD WINAPI WaitForLua(LPVOID) {
             sprintf_s(buffer, sizeof(buffer), "Scanner found Lua State @ %p", g_luaState);
             WriteRawLog(buffer);
 
-            ResolveGameFunctions();
-            RegisterOurLuaFunctions();
-
             return 0;
         }
         Sleep(200);  // ~5µs CPU per pass
@@ -641,30 +497,24 @@ static void RegisterOurLuaFunctions()
     if (done || !g_luaState || !g_origRegLua)
         return;
 
-    struct LuaPair { const char* name; lua_CFunction fn; };
-    const LuaPair pairs[] = {
-        {"DummyPrint",  Lua_DummyPrint},
-        {"walk",        walk_bridge},
-        {"cast",        cast_bridge},
-        {"useSkill",    skill_bridge},
-        {"processCommand", process_bridge},
-    };
-
-    for (const auto& p : pairs) {
+    // Register under whatever name you’d like Lua to see.
+    const char* luaName = "DummyPrint";
+    WriteRawLog("Registering DummyPrint Lua function...");
+    if (CallClientRegister(g_luaState,
+        reinterpret_cast<void*>(Lua_DummyPrint),
+        luaName))
+    {
         char buf[128];
-        sprintf_s(buf, sizeof(buf), "Registering %s Lua function...", p.name);
+        sprintf_s(buf, sizeof(buf),
+            "Successfully registered Lua function '%s' (%p)",
+            luaName, Lua_DummyPrint);
         WriteRawLog(buf);
-
-        if (CallClientRegister(g_luaState, (void*)p.fn, p.name)) {
-            sprintf_s(buf, sizeof(buf), "Registered %s", p.name);
-            WriteRawLog(buf);
-        }
-        else {
-            sprintf_s(buf, sizeof(buf), "!! Failed to register %s", p.name);
-            WriteRawLog(buf);
-        }
+        done = true;
     }
-    done = true;
+    else
+    {
+        WriteRawLog("!! Failed to register DummyPrint");
+    }
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 
@@ -697,7 +547,6 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
             }
 
             WriteRawLog("DLL is now fully initialized - enjoy!");
-            ResolveGameFunctions();
             WriteRawLog("Registering our Lua functions...");
             RegisterOurLuaFunctions();
             WriteRawLog("Lua functions registered successfully");
@@ -744,9 +593,6 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
 
             // Tell scanner thread we found it
             g_luaStateCaptured = true;
-
-            ResolveGameFunctions();
-            RegisterOurLuaFunctions();
 
             return candidate;
         }
