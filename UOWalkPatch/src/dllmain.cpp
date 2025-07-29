@@ -69,9 +69,12 @@ static void RegisterOurLuaFunctions();                  // one‑shot registrar
 // New walk function support
 typedef bool(__thiscall* WalkFunc_t)(void* thisPtr, uint8_t dir, uint8_t run);
 static WalkFunc_t g_walkFunc = nullptr;
+static WalkFunc_t g_origWalk = nullptr;   // original walk function
 static void* g_moveComp = nullptr;
 static int  __cdecl Lua_Walk(void* L);
 static void InitWalkFunction();
+static bool InstallWalkHook();
+static bool __fastcall Hook_Walk(void* thisPtr, void* edx, uint8_t dir, uint8_t run);
 
 static int __cdecl Lua_DummyPrint(void* L)
 {
@@ -184,6 +187,22 @@ static BYTE* FindPatternText(const char* sig)
 }
 
 // Locate walk function and movement component pointer
+static bool InstallWalkHook()
+{
+    if (!g_walkFunc) return false;
+
+    if (MH_CreateHook(g_walkFunc, &Hook_Walk, reinterpret_cast<LPVOID*>(&g_origWalk)) != MH_OK) {
+        WriteRawLog("MH_CreateHook failed for walk function");
+        return false;
+    }
+    if (MH_EnableHook(g_walkFunc) != MH_OK) {
+        WriteRawLog("MH_EnableHook failed for walk function");
+        return false;
+    }
+    WriteRawLog("Walk function hook installed");
+    return true;
+}
+
 static void InitWalkFunction()
 {
     MODULEINFO mi{};
@@ -204,6 +223,7 @@ static void InitWalkFunction()
         char buf[64];
         sprintf_s(buf, sizeof(buf), "Found walk function at %p", hit);
         WriteRawLog(buf);
+        InstallWalkHook();
     } else {
         WriteRawLog("Walk function not found");
     }
@@ -235,6 +255,21 @@ static int __cdecl Lua_Walk(void* L)
         WriteRawLog("walk function not initialized");
     }
     return 0;
+}
+
+// Hook to capture the movement component pointer on first use
+static bool __fastcall Hook_Walk(void* thisPtr, void* edx, uint8_t dir, uint8_t run)
+{
+    if (g_moveComp != thisPtr) {
+        g_moveComp = thisPtr;
+        char buf[64];
+        sprintf_s(buf, sizeof(buf), "Captured MoveComp pointer %p", thisPtr);
+        WriteRawLog(buf);
+    }
+
+    if (g_origWalk)
+        return g_origWalk(thisPtr, dir, run);
+    return false;
 }
 
 static void* FindGlobalStateInfo() {
@@ -625,7 +660,7 @@ static void RegisterOurLuaFunctions()
     }
 
     // Register walk function if we located it
-    if (g_walkFunc && g_moveComp) {
+    if (g_walkFunc) {
         const char* walkName = "walk";
         WriteRawLog("Registering walk Lua function...");
         if (CallClientRegister(g_luaState,
