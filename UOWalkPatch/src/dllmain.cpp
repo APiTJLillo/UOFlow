@@ -192,9 +192,16 @@ static BYTE* FindPatternText(const char* sig)
 // Locate walk function and movement component pointer
 static bool InstallWalkHook()
 {
-    if (!g_walkFunc) return false;
+    if (!g_walkFunc)
+        return false;
 
-    if (MH_CreateHook(g_walkFunc, &Hook_Walk, reinterpret_cast<LPVOID*>(&g_origWalk)) != MH_OK) {
+    char buf[64];
+    sprintf_s(buf, sizeof(buf), "Installing walk hook at %p", g_walkFunc);
+    WriteRawLog(buf);
+
+    if (MH_CreateHook(g_walkFunc, &Hook_Walk,
+        reinterpret_cast<LPVOID*>(&g_origWalk)) != MH_OK)
+    {
         WriteRawLog("MH_CreateHook failed for walk function");
         return false;
     }
@@ -202,7 +209,10 @@ static bool InstallWalkHook()
         WriteRawLog("MH_EnableHook failed for walk function");
         return false;
     }
-    WriteRawLog("Walk function hook installed");
+
+    sprintf_s(buf, sizeof(buf), "Walk function hook installed; original %p",
+        g_origWalk);
+    WriteRawLog(buf);
     return true;
 }
 
@@ -226,7 +236,8 @@ static void InitWalkFunction()
         char buf[64];
         sprintf_s(buf, sizeof(buf), "Found walk function at %p", hit);
         WriteRawLog(buf);
-        InstallWalkHook();
+        if (!InstallWalkHook())
+            WriteRawLog("Failed to install walk hook");
     } else {
         WriteRawLog("Walk function not found");
     }
@@ -247,7 +258,11 @@ static void InitWalkFunction()
 
 static int __cdecl Lua_Walk(void* L)
 {
-    WriteRawLog("[Lua] walk() invoked");
+    char buf[128];
+    sprintf_s(buf, sizeof(buf), "[Lua] walk() invoked (func=%p comp=%p)",
+        g_walkFunc, g_moveComp);
+    WriteRawLog(buf);
+
     if (g_walkFunc && g_moveComp) {
         __try {
             g_walkFunc(g_moveComp, 0, 0);
@@ -263,8 +278,14 @@ static int __cdecl Lua_Walk(void* L)
 // Register the Lua walk helper if prerequisites are met
 static void TryRegisterWalkFunction()
 {
-    if (g_walkRegistered || !g_walkFunc || !g_moveComp || !g_luaState || !g_origRegLua)
+    if (g_walkRegistered) {
+        WriteRawLog("TryRegisterWalkFunction: already registered");
         return;
+    }
+    if (!g_walkFunc || !g_moveComp || !g_luaState || !g_origRegLua) {
+        WriteRawLog("TryRegisterWalkFunction: prerequisites missing");
+        return;
+    }
 
     const char* walkName = "walk";
     WriteRawLog("Registering walk Lua function...");
@@ -283,18 +304,27 @@ static void TryRegisterWalkFunction()
 // Hook to capture the movement component pointer on first use
 static bool __fastcall Hook_Walk(void* thisPtr, void* edx, uint8_t dir, uint8_t run)
 {
+    char buf[128];
+    sprintf_s(buf, sizeof(buf), "Hook_Walk invoked dir=%u run=%u", dir, run);
+    WriteRawLog(buf);
+
     if (g_moveComp != thisPtr) {
         g_moveComp = thisPtr;
-        char buf[64];
         sprintf_s(buf, sizeof(buf), "Captured MoveComp pointer %p", thisPtr);
         WriteRawLog(buf);
-        // Now that we have the pointer, attempt registration
-        TryRegisterWalkFunction();
     }
 
+    bool result = false;
     if (g_origWalk)
-        return g_origWalk(thisPtr, dir, run);
-    return false;
+        result = g_origWalk(thisPtr, dir, run);
+    sprintf_s(buf, sizeof(buf), "Original walk returned %d", result ? 1 : 0);
+    WriteRawLog(buf);
+
+    // Attempt registration after the original function executes to avoid
+    // re-entrancy issues within the client walk routine.
+    TryRegisterWalkFunction();
+
+    return result;
 }
 
 static void* FindGlobalStateInfo() {
