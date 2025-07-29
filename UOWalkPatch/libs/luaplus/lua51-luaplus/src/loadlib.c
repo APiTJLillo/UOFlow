@@ -163,105 +163,205 @@ static lua_CFunction ll_sym (lua_State *L, void *lib, const char *sym) {
 
 #if LUAPLUS_EXTENSIONS
 #include <io.h>
-static void lp_loadlocalconfig(lua_State *L) {
-  char buff[MAX_PATH + 1];
-  char *lb;
-  DWORD nsize = sizeof(buff)/sizeof(char);
-#ifndef NDEBUG
-  const char* luaplusdllName = "lua51_debug.dll";
-#else // _DEBUG
-  const char* luaplusdllName = "lua51.dll";
-#endif // _DEBUG
 
-  DWORD n = GetModuleFileNameA(GetModuleHandle(luaplusdllName), buff, nsize);
-  if (n == 0 || n == nsize || (lb = strrchr(buff, '\\')) == NULL)
+#ifndef MAX_WIDE_PATH
+#define MAX_WIDE_PATH 32768
+#endif
+
+static WCHAR* AnsiToWide(const char* str) {
+  const int len = MultiByteToWideChar(CP_ACP, 0, str, -1, NULL, 0);
+  if (len == 0) return NULL;
+  WCHAR* wstr = (WCHAR*)malloc(len * sizeof(WCHAR));
+  if (!wstr) return NULL;
+  if (MultiByteToWideChar(CP_ACP, 0, str, -1, wstr, len) == 0) {
+    free(wstr);
+    return NULL;
+  }
+  return wstr;
+}
+
+static char* WideToAnsi(const WCHAR* wstr) {
+  const int len = WideCharToMultiByte(CP_ACP, 0, wstr, -1, NULL, 0, NULL, NULL);
+  if (len == 0) return NULL;
+  char* str = (char*)malloc(len);
+  if (!str) return NULL;
+  if (WideCharToMultiByte(CP_ACP, 0, wstr, -1, str, len, NULL, NULL) == 0) {
+    free(str);
+    return NULL;
+  }
+  return str;
+}
+
+static void FreeStr(void* str) {
+  if (str) free(str);
+}
+
+static void lp_loadlocalconfig(lua_State *L) {
+  WCHAR wbuff[MAX_WIDE_PATH];
+  char *ansiPath;
+  const char *lb;
+  DWORD n;
+#ifndef NDEBUG
+  const WCHAR* luaplusdllName = L"lua51_debug.dll";
+#else
+  const WCHAR* luaplusdllName = L"lua51.dll";
+#endif
+
+  n = GetModuleFileNameW(GetModuleHandleW(luaplusdllName), wbuff, MAX_WIDE_PATH);
+  if (n == 0 || n >= MAX_WIDE_PATH) {
     luaL_error(L, "unable to get ModuleFileName");
-  else {
-    *lb = 0;
+    return;
+  }
+
+  ansiPath = WideToAnsi(wbuff);
+  if (!ansiPath) {
+    luaL_error(L, "unable to convert module path");
+    return;
+  }
+
+  lb = strrchr(ansiPath, '\\');
+  if (!lb) {
+    FreeStr(ansiPath);
+    luaL_error(L, "invalid module path");
+    return;
+  }
+
+  {
+    char* pathCopy = _strdup(ansiPath);
+    if (!pathCopy) {
+      FreeStr(ansiPath);
+      luaL_error(L, "out of memory");
+      return;
+    }
+
+    pathCopy[lb - ansiPath] = 0;
     lua_pushstring(L, "__LUA_BINARY_PATH");
-    lua_pushstring(L, buff);
+    lua_pushstring(L, pathCopy);
     lua_rawset(L, LUA_GLOBALSINDEX);
+    free(pathCopy);
 
     lua_pushstring(L, "__LUA_CSUFFIX");
     lua_pushstring(L, LUA_CSUFFIX);
     lua_rawset(L, LUA_GLOBALSINDEX);
 
-    strcpy(lb, "\\lua51.config.lua");
-    if (access(buff, 0) != -1) {
+    strcpy((char*)lb, "\\lua51.config.lua");
+    if (_access(ansiPath, 0) != -1) {
       int top = lua_gettop(L);
-      int ret = luaL_dofile(L, buff);
-      if (ret != 0)
-        luaL_error(L, "unable to load %s", buff);
+      if (luaL_dofile(L, ansiPath) != 0)
+        luaL_error(L, "unable to load %s", ansiPath);
       lua_settop(L, top);
     }
   }
+
+  FreeStr(ansiPath);
 }
 #endif
 
-
 #undef setprogdir
 
-static void setprogdir (lua_State *L) {
-  char buff[MAX_PATH + 1];
-  char *lb;
-  DWORD nsize = sizeof(buff)/sizeof(char);
+static void setprogdir(lua_State *L) {
+  WCHAR wbuff[MAX_WIDE_PATH];
+  char *ansiPath;
+  const char *lb;
+  DWORD n;
+
 #if LUAPLUS_EXTENSIONS
 #ifndef NDEBUG
-  const char* luaplusdllName = "lua51_debug.dll";
-#else // _DEBUG
-  const char* luaplusdllName = "lua51.dll";
-#endif // _DEBUG
+  const WCHAR* luaplusdllName = L"lua51_debug.dll";
+#else
+  const WCHAR* luaplusdllName = L"lua51.dll";
+#endif
 
-  DWORD n = GetModuleFileNameA(GetModuleHandle(luaplusdllName), buff, nsize);
-  if (n == 0 || n == nsize || (lb = strrchr(buff, '\\')) == NULL)
+  n = GetModuleFileNameW(GetModuleHandleW(luaplusdllName), wbuff, MAX_WIDE_PATH);
+#else
+  n = GetModuleFileNameW(NULL, wbuff, MAX_WIDE_PATH);
+#endif
+
+  if (n == 0 || n >= MAX_WIDE_PATH) {
     luaL_error(L, "unable to get ModuleFileName");
-  else {
+    return;
+  }
+
+  ansiPath = WideToAnsi(wbuff);
+  if (!ansiPath) {
+    luaL_error(L, "unable to convert module path");
+    return;
+  }
+
+  lb = strrchr(ansiPath, '\\');
+  if (!lb) {
+    FreeStr(ansiPath);
+    luaL_error(L, "invalid module path");
+    return;
+  }
+
+#if LUAPLUS_EXTENSIONS
+  {
     static int loadedproxies = 0;
     if (!loadedproxies) {
       loadedproxies = 1;
+      WCHAR widePath[MAX_WIDE_PATH];
 
 #ifndef NDEBUG
-      strcpy(lb, "\\lua51.debug.dll");
-      LoadLibrary(buff);
+      wcscpy(widePath, wbuff);
+      WCHAR* lastSlash = wcsrchr(widePath, L'\\');
+      if (lastSlash) {
+        lastSlash[1] = 0;
+        wcscat(widePath, L"lua51.debug.dll");
+        LoadLibraryW(widePath);
 
-      strcpy(lb, "\\lua5.1.debug.dll");
-      LoadLibrary(buff);
-#else // _DEBUG
-      strcpy(lb, "\\lua51.dll");
-      LoadLibrary(buff);
+        wcscpy(lastSlash + 1, L"lua5.1.debug.dll");
+        LoadLibraryW(widePath);
+      }
+#else
+      wcscpy(widePath, wbuff);
+      WCHAR* lastSlash = wcsrchr(widePath, L'\\');
+      if (lastSlash) {
+        lastSlash[1] = 0;
+        wcscat(widePath, L"lua51.dll");
+        LoadLibraryW(widePath);
 
-      strcpy(lb, "\\lua5.1.dll");
-      LoadLibrary(buff);
-#endif // _DEBUG
+        wcscpy(lastSlash + 1, L"lua5.1.dll");
+        LoadLibraryW(widePath);
+      }
+#endif
     }
+
     {
       const char* envOverride = getenv("LUA51_ROOT_PATH");
       if (envOverride) {
-          strcpy(buff, envOverride);
-          if ((lb = strrchr(buff, '\\')) == NULL  &&  (lb = strrchr(buff, '/')) == NULL) {
-            luaL_error(L, "LUA51_ROOT_PATH is missing a closing backslash");
-          }
-          if (lb[1] != 0) {
-            lb = buff + strlen(buff);
-          }
+        free(ansiPath);
+        ansiPath = _strdup(envOverride);
+        if (!ansiPath || ((lb = strrchr(ansiPath, '\\')) == NULL && (lb = strrchr(ansiPath, '/')) == NULL)) {
+          FreeStr(ansiPath);
+          luaL_error(L, "LUA51_ROOT_PATH is missing a closing backslash");
+          return;
+        }
       }
     }
-#else
-  DWORD n = GetModuleFileNameA(NULL, buff, nsize);
-  if (n == 0 || n == nsize || (lb = strrchr(buff, '\\')) == NULL)
-    luaL_error(L, "unable to get ModuleFileName");
-  else {
-#endif /* LUAPLUS_EXTENSIONS */
-    *lb = '\0';
-    luaL_gsub(L, lua_tostring(L, -1), LUA_EXECDIR, buff);
-    lua_remove(L, -2);  /* remove original string */
   }
+#endif
+
+  {
+    char* pathCopy = _strdup(ansiPath);
+    if (!pathCopy) {
+      FreeStr(ansiPath);
+      luaL_error(L, "out of memory");
+      return;
+    }
+
+    pathCopy[lb - ansiPath] = 0;
+    luaL_gsub(L, lua_tostring(L, -1), LUA_EXECDIR, pathCopy);
+    lua_remove(L, -2);  /* remove original string */
+    free(pathCopy);
+  }
+
+  FreeStr(ansiPath);
 }
 
-
-static void pusherror (lua_State *L) {
-  int error = GetLastError();
-  char buffer[128];
+static void pusherror(lua_State *L) {
+  DWORD error = GetLastError();
+  char buffer[256];
   if (FormatMessageA(FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_FROM_SYSTEM,
       NULL, error, 0, buffer, sizeof(buffer), NULL))
     lua_pushstring(L, buffer);
@@ -269,19 +369,18 @@ static void pusherror (lua_State *L) {
     lua_pushfstring(L, "system error %d\n", error);
 }
 
-static void ll_unloadlib (void *lib) {
+static void ll_unloadlib(void *lib) {
   FreeLibrary((HINSTANCE)lib);
 }
 
-
-static void *ll_load (lua_State *L, const char *path) {
+static void *ll_load(lua_State *L, const char *path) {
 #if LUAPLUS_EXTENSIONS
   HINSTANCE lib;
   char buffer[_MAX_PATH];
   char* dotPos;
   strcpy(buffer, path);
   dotPos = strrchr(buffer, '.');
-  if (dotPos  &&  stricmp(dotPos, ".so") == 0) {
+  if (dotPos && _stricmp(dotPos, ".so") == 0) {
     *dotPos = 0;
     dotPos = NULL;
   }
@@ -293,16 +392,29 @@ static void *ll_load (lua_State *L, const char *path) {
 #endif
   }
 
-  lib = LoadLibraryA(buffer);
+  WCHAR* widePath = AnsiToWide(buffer);
+  if (!widePath) {
+    lua_pushstring(L, "failed to convert path to wide string");
+    return NULL;
+  }
+
+  lib = LoadLibraryW(widePath);
+  FreeStr(widePath);
 #else
-  HINSTANCE lib = LoadLibraryA(path);
-#endif /* LUAPLUS_EXTENSIONS */
+  WCHAR* widePath = AnsiToWide(path);
+  if (!widePath) {
+    lua_pushstring(L, "failed to convert path to wide string");
+    return NULL;
+  }
+
+  HINSTANCE lib = LoadLibraryW(widePath);
+  FreeStr(widePath);
+#endif
   if (lib == NULL) pusherror(L);
   return lib;
 }
 
-
-static lua_CFunction ll_sym (lua_State *L, void *lib, const char *sym) {
+static lua_CFunction ll_sym(lua_State *L, void *lib, const char *sym) {
   lua_CFunction f = (lua_CFunction)GetProcAddress((HINSTANCE)lib, sym);
   if (f == NULL) pusherror(L);
   return f;
