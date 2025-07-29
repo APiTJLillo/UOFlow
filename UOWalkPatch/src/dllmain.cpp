@@ -6,10 +6,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "minhook.h"
-extern "C" {
-#include "../libs/luaplus/lua51-luaplus/src/lua.h"
-#include "../libs/luaplus/lua51-luaplus/src/lauxlib.h"
-}
 
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
@@ -38,10 +34,10 @@ static void* g_luaState;
 static HANDLE g_scanThread;
 
 struct GameFuncs {
-    using walk_t       = bool (__thiscall*)(void* thisPtr, uint8_t dir, uint8_t run);
-    using cast_t       = bool (__thiscall*)(void* thisPtr, int spellId);
-    using useSkill_t   = bool (__thiscall*)(void* thisPtr, int skillId);
-    using processCmd_t = bool (__cdecl   *)(const char* cmd);
+    using walk_t = bool(__thiscall*)(void* thisPtr, uint8_t dir, uint8_t run);
+    using cast_t = bool(__thiscall*)(void* thisPtr, int spellId);
+    using useSkill_t = bool(__thiscall*)(void* thisPtr, int skillId);
+    using processCmd_t = bool(__cdecl*)(const char* cmd);
 
     walk_t       walk;
     cast_t       cast;
@@ -80,21 +76,33 @@ static void* FindOwnerOfLuaState(void* lua);
 static DWORD WINAPI WaitForLua(LPVOID param);
 static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
-static int  __cdecl Lua_DummyPrint(lua_State* L);           // our Lua C‑function
+static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
-static int __cdecl walk_bridge(lua_State* L);
-static int __cdecl cast_bridge(lua_State* L);
-static int __cdecl skill_bridge(lua_State* L);
-static int __cdecl process_bridge(lua_State* L);
+static int __cdecl walk_bridge(void* L);
+static int __cdecl cast_bridge(void* L);
+static int __cdecl skill_bridge(void* L);
+static int __cdecl process_bridge(void* L);
 static void ResolveGameFunctions();
 
-static int __cdecl Lua_DummyPrint(lua_State* L)
+static int __cdecl Lua_DummyPrint(void* L)
 {
     WriteRawLog("[Lua] DummyPrint() was invoked!");
     return 0;   // no Lua return values
 }
 
-static int __cdecl walk_bridge(lua_State* L)
+// Lua bridges for in-game actions
+extern "C" {
+    struct lua_State;
+    typedef int(__cdecl* lua_CFunction)(lua_State* L);
+    int   __cdecl lua_toboolean(lua_State*, int);
+    int   __cdecl lua_tointeger(lua_State*, int);
+    const char* __cdecl lua_tostring(lua_State*, int);
+    void  __cdecl lua_pushboolean(lua_State*, int);
+    void  __cdecl lua_pushstring(lua_State*, const char*);
+    int   __cdecl lua_error(lua_State*);
+}
+
+static int __cdecl walk_bridge(void* L)
 {
     if (!g_game.walk || !g_globalStateInfo) {
         lua_pushstring((lua_State*)L, "walk: not resolved");
@@ -108,7 +116,7 @@ static int __cdecl walk_bridge(lua_State* L)
     return 1;
 }
 
-static int __cdecl cast_bridge(lua_State* L)
+static int __cdecl cast_bridge(void* L)
 {
     if (!g_game.cast || !g_globalStateInfo) {
         lua_pushstring((lua_State*)L, "cast: not resolved");
@@ -121,7 +129,7 @@ static int __cdecl cast_bridge(lua_State* L)
     return 1;
 }
 
-static int __cdecl skill_bridge(lua_State* L)
+static int __cdecl skill_bridge(void* L)
 {
     if (!g_game.skill || !g_globalStateInfo) {
         lua_pushstring((lua_State*)L, "useSkill: not resolved");
@@ -134,7 +142,7 @@ static int __cdecl skill_bridge(lua_State* L)
     return 1;
 }
 
-static int __cdecl process_bridge(lua_State* L)
+static int __cdecl process_bridge(void* L)
 {
     if (!g_game.process) {
         lua_pushstring((lua_State*)L, "processCommand: not resolved");
@@ -187,7 +195,8 @@ static size_t ParsePattern(const char* sig, Pattern& out)
         if (sig[0] == '?' && sig[1] == '?') {
             out.mask[i] = 0; out.raw[i++] = 0;
             sig += 2;
-        } else {
+        }
+        else {
             unsigned v; sscanf_s(sig, "%02x", &v);
             out.mask[i] = 1; out.raw[i++] = static_cast<uint8_t>(v);
             sig += 2;
@@ -203,7 +212,7 @@ static void* FindPatternText(const char* sig)
     MODULEINFO mi{};
     GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi));
     uint8_t* base = (uint8_t*)mi.lpBaseOfDll;
-    uint8_t* end  = base + mi.SizeOfImage;
+    uint8_t* end = base + mi.SizeOfImage;
 
     for (uint8_t* cur = base; cur < end - p.len; ++cur) {
         size_t k = 0;
@@ -215,14 +224,14 @@ static void* FindPatternText(const char* sig)
 
 static void ResolveGameFunctions()
 {
-    g_game.walk    = (GameFuncs::walk_t)   FindPatternText("55 8B EC 83 E4 ?? 83 EC ?? F3 0F 10 45 08 53 56 8B F1 57");
-    g_game.cast    = (GameFuncs::cast_t)   FindPatternText("8B 0D ?? ?? ?? ?? 8B 01 8B 40 38 FF D0 8B 44 24 0C");
-    g_game.skill   = (GameFuncs::useSkill_t)FindPatternText("6A 01 6A 00 6A ?? 6A ?? 8B 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ??");
+    g_game.walk = (GameFuncs::walk_t)FindPatternText("55 8B EC 83 E4 ?? 83 EC ?? F3 0F 10 45 08 53 56 8B F1 57");
+    g_game.cast = (GameFuncs::cast_t)FindPatternText("8B 0D ?? ?? ?? ?? 8B 01 8B 40 38 FF D0 8B 44 24 0C");
+    g_game.skill = (GameFuncs::useSkill_t)FindPatternText("6A 01 6A 00 6A ?? 6A ?? 8B 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ??");
     g_game.process = (GameFuncs::processCmd_t)FindPatternText("83 EC 58 53 55 8B 6C 24 64 56 57 8B F0 B9 ?? ?? ?? ?? 66 8B 10 66 3B 11 75 1E 66 85 D2 74 15 66 8B 50 02 66 3B 51 02 75 0F 83 C0 04 83 C1 04 66 85 D2 75 DE 33 C0 EB 05 1B C0 83 D8 FF 85 C0 0F 85 ?? ?? ?? ?? 8B 4C 24 70 8D 44 24 18 50 51 B8 34 00 00 00 E8 ?? ?? ?? ?? 8B 74 24 18 85 F6 8B 7C 24 1C 74 79 8B 16 8B 42 2C 8B CE FF D0 83 F8 34 75 6B 8B D5 8D 44 24 4C E8 ?? ?? ?? ?? 85 FF 89 74 24 18 89 7C 24 1C 74 0C 8D 4F 04 BA 01 00 00 00 F0 0F C1 11");
 
     char buf[128];
     sprintf_s(buf, sizeof(buf), "Resolved walk=%p cast=%p skill=%p process=%p",
-              g_game.walk, g_game.cast, g_game.skill, g_game.process);
+        g_game.walk, g_game.cast, g_game.skill, g_game.process);
     WriteRawLog(buf);
 }
 
@@ -646,7 +655,8 @@ static void RegisterOurLuaFunctions()
         if (CallClientRegister(g_luaState, (void*)p.fn, p.name)) {
             sprintf_s(buf, sizeof(buf), "Registered %s", p.name);
             WriteRawLog(buf);
-        } else {
+        }
+        else {
             sprintf_s(buf, sizeof(buf), "!! Failed to register %s", p.name);
             WriteRawLog(buf);
         }
