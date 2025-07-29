@@ -1,0 +1,56 @@
+[
+  {
+    "code": 0,
+    "dx": 1,
+    "dy": 0,
+    "name": "EAST"
+  },
+  {
+    "code": 1,
+    "dx": 1,
+    "dy": 1,
+    "name": "SOUTH?EAST"
+  },
+  {
+    "code": 2,
+    "dx": 0,
+    "dy": 1,
+    "name": "SOUTH"
+  },
+  {
+    "code": 3,
+    "dx": -1,
+    "dy": 1,
+    "name": "SOUTH?WEST"
+  },
+  {
+    "code": 4,
+    "dx": -1,
+    "dy": 0,
+    "name": "WEST"
+  },
+  {
+    "code": 5,
+    "dx": -1,
+    "dy": -1,
+    "name": "NORTH?WEST"
+  },
+  {
+    "code": 6,
+    "dx": 0,
+    "dy": -1,
+    "name": "NORTH"
+  },
+  {
+    "code": 7,
+    "dx": 1,
+    "dy": -1,
+    "name": "NORTH?EAST"
+  },
+  {
+    "code": 8,
+    "dx": 0,
+    "dy": 0,
+    "name": "IDLE/STOP"
+  }
+]
