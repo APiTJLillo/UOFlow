@@ -285,14 +285,15 @@ static int __cdecl Lua_Walk(void* L)
         g_origUpdate, g_moveComp);
     WriteRawLog(buf);
 
-    if (g_origUpdate && g_moveComp) {
+    // Use the game's walk helper which is safe to call from scripting
+    if (g_walkFunc && g_moveComp) {
         __try {
-            g_origUpdate((uint32_t)g_moveComp, 0, 0);
+            g_walkFunc(g_moveComp, 0, 0);      // direction 0, walk mode
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-            WriteRawLog("Exception calling updateState");
+            WriteRawLog("Exception calling walk function");
         }
     } else {
-        WriteRawLog("updateState not initialized");
+        WriteRawLog("walk function not initialized");
     }
     return 0;
 }
@@ -409,15 +410,15 @@ static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, i
         WriteRawLog("updateState: throttling logs...");
     g_updateLogCount++;
 
-    if (g_moveComp != (void*)dataStruct) {
+    if (!g_moveComp) {
         g_moveComp = (void*)dataStruct;
         Logf("Captured MoveComp @ %p (from updateState)", g_moveComp);
     }
 
     __try {
-        struct Vec3 { int x, y, z; };
-        Vec3* cur = (Vec3*)(dataStruct + 0x44);
-        Logf("CurPos x=%d y=%d z=%d", cur->x, cur->y, cur->z);
+        struct Vec3f { float x, y, z; };
+        Vec3f const* cur = (Vec3f const*)((char*)dataStruct + 0x44);
+        Logf("CurPos x=%f y=%f z=%f", cur->x, cur->y, cur->z);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         WriteRawLog("Exception reading position in Hook_Update");
     }
