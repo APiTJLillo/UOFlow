@@ -80,7 +80,7 @@ typedef uint32_t (__stdcall* UpdateState_t)(
 static UpdateState_t g_updateState = nullptr;
 static UpdateState_t g_origUpdate  = nullptr;
 static void InitUpdateFunction();
-static long g_updateLogCount = 0;
+static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
 static uint32_t __stdcall H_Update(uint32_t moveComp, uint32_t dir, int runFlag);
 
