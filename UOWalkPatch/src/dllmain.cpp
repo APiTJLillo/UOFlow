@@ -54,7 +54,6 @@ static PVOID  g_vehHandle = nullptr;
 
 // Forward declarations
 static void WriteRawLog(const char* message);
-static void WriteRawLogf(const char* fmt, ...);
 static void LogLastError(const char* prefix);
 static void LogLoadedModules();
 static void SetupConsole();
@@ -72,7 +71,6 @@ static bool CallClientRegister(void* L, void* func, const char* name);
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
-static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run);
 
 // New updateDataStructureState hook
 typedef uint32_t (__stdcall* UpdateState_t)(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
@@ -259,18 +257,6 @@ static void FindMoveComponent()
     WriteRawLog("Move component not found via scan");
 }
 
-// Temporary hook to capture the movement component instance
-static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
-{
-    if (!g_moveComp)
-    {
-        g_moveComp = (void*)thisPtr;
-        WriteRawLogf("Captured moveComp = %p", g_moveComp);
-        MH_DisableHook(g_updateState); // disable after first capture
-    }
-    return g_origUpdate(thisPtr, dir, run);
-}
-
 static int __cdecl Lua_Walk(void* L)
 {
     if (g_updateState && g_moveComp) {
@@ -301,14 +287,8 @@ static void InitUpdateFunction()
         char buf[64];
         sprintf_s(buf, sizeof(buf), "Found updateDataStructureState at %p", hit);
         WriteRawLog(buf);
-
-        if (MH_CreateHook(g_updateState, &H_Update, reinterpret_cast<LPVOID*>(&g_origUpdate)) == MH_OK &&
-            MH_EnableHook(g_updateState) == MH_OK) {
-            WriteRawLog("updateDataStructureState hook installed");
-        } else {
-            WriteRawLog("Failed to hook updateDataStructureState - falling back to scan");
-            FindMoveComponent();
-        }
+        // No hook required; we'll scan for the movement component
+        FindMoveComponent();
     } else {
         WriteRawLog("updateDataStructureState not found");
     }
@@ -1078,17 +1058,6 @@ static void WriteRawLog(const char* message) {
             }
         }
     }
-}
-
-// Helper wrapper with printf-style formatting
-static void WriteRawLogf(const char* fmt, ...)
-{
-    char buf[256];
-    va_list args;
-    va_start(args, fmt);
-    vsprintf_s(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    WriteRawLog(buf);
 }
 
 // Helper to log last error with Win32 message
