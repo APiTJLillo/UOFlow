@@ -71,7 +71,9 @@ static bool CallClientRegister(void* L, void* func, const char* name);
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
-static DWORD WINAPI RegisterWorker(LPVOID);
+
+// Deferred Lua registration state
+static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
 
 // New updateDataStructureState hook
 typedef uint32_t (__stdcall* UpdateState_t)(
@@ -289,8 +291,9 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
     if (!g_moveComp && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0)
     {
         g_moveComp = reinterpret_cast<void*>(static_cast<uintptr_t>(thisPtr));
-        Logf("Captured moveComp = %p", g_moveComp);
-        QueueUserWorkItem(RegisterWorker, nullptr, WT_EXECUTEDEFAULT);
+        DWORD tid = GetCurrentThreadId();
+        Logf("Captured moveComp = %p (thread %lu)", g_moveComp, tid);
+        InterlockedExchange(&g_needWalkReg, 1);
     }
 
     if (g_updateDepth++ == 0) {
@@ -303,6 +306,20 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
 
     uint32_t ret = g_origUpdate(thisPtr, dir, run);
     --g_updateDepth;
+
+    // Safe point outside client code; check for deferred registration
+    Logf("H_Update safe-point on TID=%lu needReg=%ld depth=%d",
+         GetCurrentThreadId(), g_needWalkReg, g_updateDepth);
+    if (g_needWalkReg && g_updateDepth == 0) {
+        static thread_local bool reEntry = false;
+        if (!reEntry) {
+            reEntry = true;
+            InterlockedExchange(&g_needWalkReg, 0);
+            RegisterOurLuaFunctions();
+            reEntry = false;
+        }
+    }
+
     return ret;
 }
 
@@ -743,11 +760,6 @@ static void RegisterOurLuaFunctions()
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 
-static DWORD WINAPI RegisterWorker(LPVOID)
-{
-    RegisterOurLuaFunctions();
-    return 0;
-}
 // Hook function for RegisterLuaFunction
 static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
     // Short-circuit if we already have everything we need
