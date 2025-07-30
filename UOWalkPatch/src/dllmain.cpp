@@ -73,12 +73,16 @@ static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
 
 // New updateDataStructureState hook
-typedef uint32_t (__stdcall* UpdateState_t)(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
+typedef uint32_t (__cdecl* UpdateState_t)(
+    void*     moveComp,
+    uint32_t  dir,
+    int       runFlag);
 static UpdateState_t g_updateState = nullptr;
 static UpdateState_t g_origUpdate = nullptr;
 static void InitUpdateFunction();
 static long g_updateLogCount = 0;
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
+static uint32_t __cdecl H_Update(void* moveComp, uint32_t dir, int runFlag);
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -260,8 +264,11 @@ static void FindMoveComponent()
 static int __cdecl Lua_Walk(void* L)
 {
     if (g_updateState && g_moveComp) {
+        const uint32_t dir = 3;   // southeast
+        const int      run = 0;   // 0 = walk
         __try {
-            g_updateState((uint32_t)g_moveComp, 0, 0);
+            for (int i = 0; i < 6; ++i)
+                g_updateState(g_moveComp, dir, run);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             WriteRawLog("Exception calling updateState");
         }
@@ -269,6 +276,27 @@ static int __cdecl Lua_Walk(void* L)
         WriteRawLog("walk function prerequisites missing");
     }
     return 0;
+}
+
+static uint32_t __cdecl H_Update(void* thisPtr, uint32_t dir, int run)
+{
+    if (!g_moveComp) {
+        g_moveComp = thisPtr;
+        Logf("Captured moveComp = %p", g_moveComp);
+        RegisterOurLuaFunctions();
+    }
+
+    if (g_updateDepth++ == 0 && g_updateLogCount < 10) {
+        Logf("updateState(this=%p, dir=%u, run=%d)", thisPtr, dir, run);
+        if (++g_updateLogCount == 10) {
+            MH_DisableHook(g_updateState);
+            Logf("updateDataStructureState hook disabled");
+        }
+    }
+
+    uint32_t ret = g_origUpdate(thisPtr, dir, run);
+    --g_updateDepth;
+    return ret;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,8 +315,15 @@ static void InitUpdateFunction()
         char buf[64];
         sprintf_s(buf, sizeof(buf), "Found updateDataStructureState at %p", hit);
         WriteRawLog(buf);
-        // No hook required; we'll scan for the movement component
-        FindMoveComponent();
+        if (MH_CreateHook(g_updateState, &H_Update, reinterpret_cast<LPVOID*>(&g_origUpdate)) == MH_OK &&
+            MH_EnableHook(g_updateState) == MH_OK)
+        {
+            WriteRawLog("updateDataStructureState hook installed");
+        } else {
+            WriteRawLog("updateDataStructureState hook failed; falling back to scan");
+            g_origUpdate = g_updateState;
+            FindMoveComponent();
+        }
     } else {
         WriteRawLog("updateDataStructureState not found");
     }
@@ -656,49 +691,47 @@ static bool CallClientRegister(void* L, void* func, const char* name)
 
 static void RegisterOurLuaFunctions()
 {
-    static bool done = false;
-    if (done || !g_luaState || !g_origRegLua)
+    static bool dummyReg = false;
+    static bool walkReg  = false;
+    if (!g_luaState || !g_origRegLua)
         return;
 
     // Locate client functions we need
     InitUpdateFunction();
 
-    // Register DummyPrint for testing
-    const char* luaName = "DummyPrint";
-    WriteRawLog("Registering DummyPrint Lua function...");
-    if (CallClientRegister(g_luaState,
-        reinterpret_cast<void*>(Lua_DummyPrint),
-        luaName))
-    {
-        char buf[128];
-        sprintf_s(buf, sizeof(buf),
-            "Successfully registered Lua function '%s' (%p)",
-            luaName, Lua_DummyPrint);
-        WriteRawLog(buf);
-    }
-    else
-    {
-        WriteRawLog("!! Failed to register DummyPrint");
-    }
-
-    if (g_updateState && g_moveComp) {
-        const char* walkName = "walk";
-        WriteRawLog("Registering walk Lua function...");
+    if (!dummyReg) {
+        const char* luaName = "DummyPrint";
+        WriteRawLog("Registering DummyPrint Lua function...");
         if (CallClientRegister(g_luaState,
-            reinterpret_cast<void*>(Lua_Walk), walkName)) {
+            reinterpret_cast<void*>(Lua_DummyPrint),
+            luaName))
+        {
             char buf[128];
             sprintf_s(buf, sizeof(buf),
-                      "Successfully registered Lua function '%s' (%p)",
-                      walkName, Lua_Walk);
+                "Successfully registered Lua function '%s' (%p)",
+                luaName, Lua_DummyPrint);
             WriteRawLog(buf);
-        } else {
-            WriteRawLog("!! Failed to register walk function");
+            dummyReg = true;
         }
-    } else {
-        WriteRawLog("walk function prerequisites missing");
+        else
+        {
+            WriteRawLog("!! Failed to register DummyPrint");
+        }
     }
 
-    done = true;
+    if (g_updateState && g_moveComp && !walkReg) {
+        const char* walkName = "walk";
+        WriteRawLog("Registering walk Lua function...");
+        bool ok = CallClientRegister(g_luaState,
+                                    reinterpret_cast<void*>(Lua_Walk), walkName);
+        WriteRawLog(ok ? "Successfully registered walk()" :
+                         "!! Register walk() failed");
+        if (ok) {
+            walkReg = true;
+        }
+    } else if (!g_moveComp && !walkReg) {
+        WriteRawLog("walk function prerequisites missing");
+    }
 
 
     WriteRawLog("RegisterOurLuaFunctions completed");
