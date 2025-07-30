@@ -74,7 +74,6 @@ static void FindMoveComponent();
 
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
-static DWORD         g_gameThread = 0;   // thread owning the game loop
 
 // New updateDataStructureState hook
 typedef uint32_t (__stdcall* UpdateState_t)(
@@ -291,9 +290,9 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
 {
     if (!g_moveComp && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0)
     {
-        g_moveComp   = reinterpret_cast<void*>(static_cast<uintptr_t>(thisPtr));
-        g_gameThread = GetCurrentThreadId();
-        Logf("Captured moveComp = %p (thread %lu)", g_moveComp, g_gameThread);
+        g_moveComp = reinterpret_cast<void*>(static_cast<uintptr_t>(thisPtr));
+        DWORD tid = GetCurrentThreadId();
+        Logf("Captured moveComp = %p (thread %lu)", g_moveComp, tid);
         InterlockedExchange(&g_needWalkReg, 1);
     }
 
@@ -309,9 +308,16 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
     --g_updateDepth;
 
     // Safe point outside client code; check for deferred registration
-    if (g_needWalkReg && GetCurrentThreadId() == g_gameThread) {
-        InterlockedExchange(&g_needWalkReg, 0);
-        RegisterOurLuaFunctions();
+    Logf("H_Update safe-point on TID=%lu needReg=%ld depth=%d",
+         GetCurrentThreadId(), g_needWalkReg, g_updateDepth);
+    if (g_needWalkReg && g_updateDepth == 0) {
+        static thread_local bool reEntry = false;
+        if (!reEntry) {
+            reEntry = true;
+            InterlockedExchange(&g_needWalkReg, 0);
+            RegisterOurLuaFunctions();
+            reEntry = false;
+        }
     }
 
     return ret;
