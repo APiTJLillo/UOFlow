@@ -271,11 +271,9 @@ static int __cdecl Lua_Walk(void* L)
     return 0;
 }
 
-
 // ---------------------------------------------------------------------------
 // updateDataStructureState hook
 // ---------------------------------------------------------------------------
-}
 
 static void InitUpdateFunction()
 {
