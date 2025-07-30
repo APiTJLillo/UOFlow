@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <lua.h>
+#include <lauxlib.h>
 #include "minhook.h"
 
 // Global state structure based on the memory layout observed
@@ -79,16 +81,6 @@ static void InitWalkFunction();
 static bool InstallWalkHook();
 static bool __fastcall Hook_Walk(void* thisPtr, void* edx, uint8_t dir, uint8_t run);
 static void TryRegisterWalkFunction();
-
-// New updateDataStructureState hook
-typedef uint32_t (__stdcall* UpdateState_t)(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
-static UpdateState_t g_updateState = nullptr;
-static UpdateState_t g_origUpdate = nullptr;
-static bool InstallUpdateHook();
-static void InitUpdateFunction();
-static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
-static long g_updateLogCount = 0;
-static thread_local int g_updateDepth = 0;  // re-entrancy guard
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -280,20 +272,23 @@ static void InitWalkFunction()
 
 static int __cdecl Lua_Walk(void* L)
 {
-    char buf[128];
-    sprintf_s(buf, sizeof(buf), "[Lua] walk() invoked (update=%p comp=%p)",
-        g_origUpdate, g_moveComp);
-    WriteRawLog(buf);
+    // first argument: direction 0..7
+    int dir = (int)luaL_checkinteger((lua_State*)L, 1);
+    int speed = (int)luaL_optinteger((lua_State*)L, 2, 1);
 
-    if (g_origUpdate && g_moveComp) {
+    if (dir < 0 || dir > 7)
+        return luaL_error((lua_State*)L, "direction must be 0..7");
+
+    uint8_t runFlag = (speed >= 2) ? 1 : 0;
+
+    if (g_walkFunc && g_moveComp) {
         __try {
-            g_origUpdate((uint32_t)g_moveComp, 0, 0);
+            g_walkFunc(g_moveComp, (uint8_t)dir, runFlag);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-            WriteRawLog("Exception calling updateState");
+            WriteRawLog("Exception in Lua_Walk");
         }
-    } else {
-        WriteRawLog("updateState not initialized");
     }
+
     return 0;
 }
 
@@ -334,6 +329,7 @@ static bool __fastcall Hook_Walk(void* thisPtr, void* edx, uint8_t dir, uint8_t 
         g_moveComp = thisPtr;
         sprintf_s(buf, sizeof(buf), "Captured MoveComp pointer %p", thisPtr);
         WriteRawLog(buf);
+        TryRegisterWalkFunction();
     }
 
     bool result = false;
@@ -342,94 +338,13 @@ static bool __fastcall Hook_Walk(void* thisPtr, void* edx, uint8_t dir, uint8_t 
     sprintf_s(buf, sizeof(buf), "Original walk returned %d", result ? 1 : 0);
     WriteRawLog(buf);
 
-    // Existing walk hook disabled
+    // Allow original walk logic to run
 
     return result;
 }
 
-// ---------------------------------------------------------------------------
-// updateDataStructureState hook
-// ---------------------------------------------------------------------------
 
-static bool InstallUpdateHook()
-{
-    if (!g_updateState)
-        return false;
 
-    char buf[64];
-    sprintf_s(buf, sizeof(buf), "Installing updateState hook at %p", g_updateState);
-    WriteRawLog(buf);
-
-    if (MH_CreateHook(g_updateState, &Hook_Update,
-        reinterpret_cast<LPVOID*>(&g_origUpdate)) != MH_OK)
-    {
-        WriteRawLog("MH_CreateHook failed for updateState");
-        return false;
-    }
-    if (MH_EnableHook(g_updateState) != MH_OK) {
-        WriteRawLog("MH_EnableHook failed for updateState");
-        return false;
-    }
-
-    sprintf_s(buf, sizeof(buf), "updateState hook installed; original %p", g_origUpdate);
-    WriteRawLog(buf);
-    return true;
-}
-
-static void InitUpdateFunction()
-{
-    const char* kUpdateSig =
-        "83 EC 58 53 55 8B 6C 24 64 80 7D 79 00 56 57 0F 85 ?? ?? ?? 00"
-        "80 7D 7A 00 0F 85 ?? ?? ?? 00";
-
-    BYTE* hit = FindPatternText(kUpdateSig);
-    if (hit) {
-        g_updateState = reinterpret_cast<UpdateState_t>(hit);
-        char buf[64];
-        sprintf_s(buf, sizeof(buf), "Found updateDataStructureState at %p", hit);
-        WriteRawLog(buf);
-        if (!InstallUpdateHook())
-            WriteRawLog("Failed to install updateState hook");
-    } else {
-        WriteRawLog("updateDataStructureState not found");
-    }
-}
-
-static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun)
-{
-    if (++g_updateDepth > 1) {
-        uint32_t r = g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
-        --g_updateDepth;
-        return r;
-    }
-
-    if (g_updateLogCount < 50)
-        Logf("updateState: dir=%u run=%d", targetDir, isRun);
-    else if (g_updateLogCount == 50)
-        WriteRawLog("updateState: throttling logs...");
-    g_updateLogCount++;
-
-    if (g_moveComp != (void*)dataStruct) {
-        g_moveComp = (void*)dataStruct;
-        Logf("Captured MoveComp @ %p (from updateState)", g_moveComp);
-    }
-
-    __try {
-        struct Vec3 { int x, y, z; };
-        Vec3* cur = (Vec3*)(dataStruct + 0x44);
-        Logf("CurPos x=%d y=%d z=%d", cur->x, cur->y, cur->z);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("Exception reading position in Hook_Update");
-    }
-
-    uint32_t ret = g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
-
-    if (g_updateLogCount <= 50)
-        Logf("updateState ret=%u", ret);
-
-    --g_updateDepth;
-    return ret;
-}
 
 static void* FindGlobalStateInfo() {
     HMODULE hExe = GetModuleHandleA(nullptr);
@@ -797,7 +712,8 @@ static void RegisterOurLuaFunctions()
         return;
 
     // Locate client functions we need
-    InitUpdateFunction();
+    InitWalkFunction();
+    TryRegisterWalkFunction();
 
     // Register DummyPrint for testing
     const char* luaName = "DummyPrint";
@@ -818,7 +734,7 @@ static void RegisterOurLuaFunctions()
         WriteRawLog("!! Failed to register DummyPrint");
     }
 
-    // Existing walk hook disabled; updateState hook handles capture now
+    // Walk helper registration complete
 
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
