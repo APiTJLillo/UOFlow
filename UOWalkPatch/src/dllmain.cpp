@@ -81,13 +81,20 @@ static bool __fastcall Hook_Walk(void* thisPtr, void* edx, uint8_t dir, uint8_t 
 static void TryRegisterWalkFunction();
 
 // New updateDataStructureState hook
-typedef uint32_t (__stdcall* UpdateState_t)(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
+// updateDataStructureState uses the MSVC thiscall convention on x86
+typedef uint32_t (__thiscall* UpdateState_t)(void* thisPtr,
+                                             uint32_t dir,
+                                             int32_t  isRun);
 static UpdateState_t g_updateState = nullptr;
 static UpdateState_t g_origUpdate = nullptr;
 static bool InstallUpdateHook();
 static void InitUpdateFunction();
-static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
+static uint32_t __fastcall Hook_Update(void* thisPtr,
+                                       void* /*edx*/,
+                                       uint32_t targetDir,
+                                       int32_t  isRun);
 static long g_updateLogCount = 0;
+static thread_local int g_updateDepth = 0;  // re-entrancy guard
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -286,7 +293,7 @@ static int __cdecl Lua_Walk(void* L)
 
     if (g_origUpdate && g_moveComp) {
         __try {
-            g_origUpdate((uint32_t)g_moveComp, 0, 0);
+            g_origUpdate(g_moveComp, 0, 0);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             WriteRawLog("Exception calling updateState");
         }
@@ -394,34 +401,42 @@ static void InitUpdateFunction()
     }
 }
 
-static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun)
+static uint32_t __fastcall Hook_Update(void* thisPtr,
+                                       void* /*edx*/,
+                                       uint32_t targetDir,
+                                       int32_t  isRun)
 {
+    if (++g_updateDepth > 1) {
+        uint32_t r = g_origUpdate ? g_origUpdate(thisPtr, targetDir, isRun) : 0;
+        --g_updateDepth;
+        return r;
+    }
+
     if (g_updateLogCount < 50)
         Logf("updateState: dir=%u run=%d", targetDir, isRun);
     else if (g_updateLogCount == 50)
         WriteRawLog("updateState: throttling logs...");
     g_updateLogCount++;
 
-    if (g_moveComp != (void*)dataStruct) {
-        g_moveComp = (void*)dataStruct;
+    if (g_moveComp != thisPtr) {
+        g_moveComp = thisPtr;
         Logf("Captured MoveComp @ %p (from updateState)", g_moveComp);
     }
 
     __try {
         struct Vec3 { int x, y, z; };
-        Vec3* cur = (Vec3*)(dataStruct + 0x44);
+        Vec3* cur = (Vec3*)((BYTE*)thisPtr + 0x44);
         Logf("CurPos x=%d y=%d z=%d", cur->x, cur->y, cur->z);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         WriteRawLog("Exception reading position in Hook_Update");
     }
 
-    uint32_t ret = 0;
-    if (g_origUpdate)
-        ret = g_origUpdate(dataStruct, targetDir, isRun);
+    uint32_t ret = g_origUpdate ? g_origUpdate(thisPtr, targetDir, isRun) : 0;
 
     if (g_updateLogCount <= 50)
         Logf("updateState ret=%u", ret);
 
+    --g_updateDepth;
     return ret;
 }
 
