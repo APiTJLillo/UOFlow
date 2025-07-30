@@ -6,7 +6,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <atomic>
 #include "minhook.h"
 
 // Global state structure based on the memory layout observed
@@ -34,8 +33,6 @@ static HMODULE g_hModule;
 static GlobalStateInfo* g_globalStateInfo;
 static void* g_luaState;
 static HANDLE g_scanThread;
-static std::atomic<bool> g_needDisable{false};
-static std::atomic<bool> g_hookDisabled{false};
 
 // The client uses __stdcall for RegisterLuaFunction 
 typedef bool(__stdcall* RegisterLuaFunction_t)(void* luaState, void* func, const char* name);
@@ -90,7 +87,8 @@ static UpdateState_t g_origUpdate = nullptr;
 static bool InstallUpdateHook();
 static void InitUpdateFunction();
 static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
-
+static long g_updateLogCount = 0;
+static thread_local int g_updateDepth = 0;  // re-entrancy guard
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -399,33 +397,38 @@ static void InitUpdateFunction()
 
 static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun)
 {
-    if (g_hookDisabled.load(std::memory_order_relaxed))
-        return g_origUpdate(dataStruct, targetDir, isRun);
+    if (++g_updateDepth > 1) {
+        uint32_t r = g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
+        --g_updateDepth;
+        return r;
+    }
 
-    if (!g_moveComp) {
+    if (g_updateLogCount < 50)
+        Logf("updateState: dir=%u run=%d", targetDir, isRun);
+    else if (g_updateLogCount == 50)
+        WriteRawLog("updateState: throttling logs...");
+    g_updateLogCount++;
+
+    if (g_moveComp != (void*)dataStruct) {
         g_moveComp = (void*)dataStruct;
-        Logf("MoveComp captured = %p", g_moveComp);
-        g_needDisable.store(true, std::memory_order_release);
+        Logf("Captured MoveComp @ %p (from updateState)", g_moveComp);
     }
 
-    return g_origUpdate(dataStruct, targetDir, isRun);
-}
-
-static void OnFrame()
-{
-    if (g_needDisable.exchange(false, std::memory_order_acquire))
-    {
-        MH_DisableHook(g_updateState);
-        MH_RemoveHook(g_updateState);
-        g_hookDisabled.store(true, std::memory_order_release);
-        WriteRawLog("updateState detour removed safely");
+    __try {
+        struct Vec3 { int x, y, z; };
+        Vec3* cur = (Vec3*)(dataStruct + 0x44);
+        Logf("CurPos x=%d y=%d z=%d", cur->x, cur->y, cur->z);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Exception reading position in Hook_Update");
     }
-}
 
-static int __cdecl Lua_Tick(void* /*L*/)
-{
-    OnFrame();
-    return 0;
+    uint32_t ret = g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
+
+    if (g_updateLogCount <= 50)
+        Logf("updateState ret=%u", ret);
+
+    --g_updateDepth;
+    return ret;
 }
 
 static void* FindGlobalStateInfo() {
@@ -813,23 +816,6 @@ static void RegisterOurLuaFunctions()
     else
     {
         WriteRawLog("!! Failed to register DummyPrint");
-    }
-
-    // Register tick function for per-frame cleanup
-    const char* tickName = "UOWalkPatchTick";
-    if (CallClientRegister(g_luaState,
-        reinterpret_cast<void*>(Lua_Tick),
-        tickName))
-    {
-        char buf[128];
-        sprintf_s(buf, sizeof(buf),
-            "Registered Lua function '%s' (%p)",
-            tickName, Lua_Tick);
-        WriteRawLog(buf);
-    }
-    else
-    {
-        WriteRawLog("!! Failed to register tick function");
     }
 
     // Existing walk hook disabled; updateState hook handles capture now

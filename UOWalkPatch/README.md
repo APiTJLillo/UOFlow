@@ -34,9 +34,8 @@ next to the DLL if possible, otherwise in `%WINDIR%\Temp`.
 
 The patch exposes a couple of helper calls to Lua. `DummyPrint` simply logs a
 message, while the new `walk` command triggers the client's internal movement
-routine. `UOWalkPatchTick` should be called each frame from Lua to allow the
-helper to clean up its temporary hook. The functions are registered
-automatically when the helper locates the client's Lua state.
+routine. The functions are registered automatically when the helper locates the
+client's Lua state.
 
 ## Troubleshooting
 
