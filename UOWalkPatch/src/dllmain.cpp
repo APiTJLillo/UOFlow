@@ -89,6 +89,7 @@ static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
 static std::atomic_flag g_regBusy = ATOMIC_FLAG_INIT;
 static HANDLE g_regThread = nullptr;
+static DWORD WINAPI RegisterThread(LPVOID);
 static uint32_t __stdcall H_Update(uint32_t moveComp, uint32_t dir, int runFlag);
 
 // Helper with printf-style formatting
