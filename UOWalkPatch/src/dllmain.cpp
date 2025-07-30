@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include "minhook.h"
-#include <atomic>
 
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
@@ -88,11 +87,8 @@ static UpdateState_t g_origUpdate = nullptr;
 static bool InstallUpdateHook();
 static void InitUpdateFunction();
 static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
+static long g_updateLogCount = 0;
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
-static void OnFrame();
-
-static std::atomic<bool> g_needDisable{false};
-static std::atomic<bool> g_hookDisabled{false};
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -284,7 +280,6 @@ static void InitWalkFunction()
 
 static int __cdecl Lua_Walk(void* L)
 {
-    OnFrame();
     char buf[128];
     sprintf_s(buf, sizeof(buf), "[Lua] walk() invoked (update=%p comp=%p)",
         g_origUpdate, g_moveComp);
@@ -402,22 +397,35 @@ static void InitUpdateFunction()
 
 static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun)
 {
-    if (g_hookDisabled.load(std::memory_order_relaxed))
-        return g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
-
     if (++g_updateDepth > 1) {
         uint32_t r = g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
         --g_updateDepth;
         return r;
     }
 
-    if (!g_moveComp) {
+    if (g_updateLogCount < 50)
+        Logf("updateState: dir=%u run=%d", targetDir, isRun);
+    else if (g_updateLogCount == 50)
+        WriteRawLog("updateState: throttling logs...");
+    g_updateLogCount++;
+
+    if (g_moveComp != (void*)dataStruct) {
         g_moveComp = (void*)dataStruct;
-        Logf("MoveComp captured = %p", g_moveComp);
-        g_needDisable.store(true, std::memory_order_release);
+        Logf("Captured MoveComp @ %p (from updateState)", g_moveComp);
+    }
+
+    __try {
+        struct Vec3 { int x, y, z; };
+        Vec3* cur = (Vec3*)(dataStruct + 0x44);
+        Logf("CurPos x=%d y=%d z=%d", cur->x, cur->y, cur->z);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Exception reading position in Hook_Update");
     }
 
     uint32_t ret = g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
+
+    if (g_updateLogCount <= 50)
+        Logf("updateState ret=%u", ret);
 
     --g_updateDepth;
     return ret;
@@ -898,17 +906,6 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
         WriteRawLog("Access violation in write hook validation");
     }
     return candidate;  // Pass through even if validation fails
-}
-
-static void OnFrame()
-{
-    if (g_needDisable.exchange(false, std::memory_order_acquire))
-    {
-        MH_DisableHook(g_updateState);
-        MH_RemoveHook(g_updateState);
-        g_hookDisabled.store(true, std::memory_order_release);
-        WriteRawLog("updateState detour removed safely");
-    }
 }
 
 // Add to InstallRegisterHook
