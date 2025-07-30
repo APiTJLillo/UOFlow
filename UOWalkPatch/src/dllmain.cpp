@@ -88,7 +88,7 @@ static bool InstallUpdateHook();
 static void InitUpdateFunction();
 static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
 static long g_updateLogCount = 0;
-static thread_local int g_updateDepth = 0;  // re-entrancy guard
+static thread_local int s_depth = 0;  // re-entrancy guard
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -397,10 +397,11 @@ static void InitUpdateFunction()
 
 static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun)
 {
-    if (++g_updateDepth > 1) {
-        uint32_t r = g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
-        --g_updateDepth;
-        return r;
+    ++s_depth;
+
+    if (!g_moveComp) {
+        g_moveComp = reinterpret_cast<void*>(dataStruct);
+        Logf("MoveComp captured = %p", g_moveComp);
     }
 
     if (g_updateLogCount < 50)
@@ -408,11 +409,6 @@ static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, i
     else if (g_updateLogCount == 50)
         WriteRawLog("updateState: throttling logs...");
     g_updateLogCount++;
-
-    if (g_moveComp != (void*)dataStruct) {
-        g_moveComp = (void*)dataStruct;
-        Logf("Captured MoveComp @ %p (from updateState)", g_moveComp);
-    }
 
     __try {
         struct Vec3 { int x, y, z; };
@@ -427,7 +423,7 @@ static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, i
     if (g_updateLogCount <= 50)
         Logf("updateState ret=%u", ret);
 
-    --g_updateDepth;
+    --s_depth;
     return ret;
 }
 
