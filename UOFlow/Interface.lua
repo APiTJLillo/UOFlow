@@ -948,10 +948,15 @@ end
 -------------------------------------------------------------------------------
 
 function Interface.Update( timePassed )
-		
 
-	ok, err = pcall(StatusWindow.EnableInput, timePassed)	
+	if UOWalkPatchOnFrame then
+	ok, err = pcall(UOWalkPatchOnFrame)
 	Interface.ErrorTracker(ok, err)
+	end
+
+
+ok, err = pcall(StatusWindow.EnableInput, timePassed)
+Interface.ErrorTracker(ok, err)
 	
 	ok, err = pcall(Interface.UpdateLatency, timePassed)	
 	Interface.ErrorTracker(ok, err)
