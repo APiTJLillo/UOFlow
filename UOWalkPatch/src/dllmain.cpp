@@ -78,10 +78,14 @@ static void FindMoveComponent();
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
 
 // New updateDataStructureState hook
-typedef uint32_t (__stdcall* UpdateState_t)(
-    uint32_t  moveComp,
-    uint32_t  dir,
-    int       runFlag);
+// This routine actually uses the fastcall/thiscall convention where the first
+// two parameters are passed in ECX and EDX respectively.  Treat the arguments as
+// opaque pointers to the movement component and a destination structure.  The
+// third parameter (run flag) is placed on the stack and the function returns
+// void.
+using UpdateState_t = void(__fastcall*)(void* moveComp,
+                                        void* destStruct,
+                                        int   runFlag);
 static UpdateState_t g_updateState = nullptr;
 static UpdateState_t g_origUpdate  = nullptr;
 static void InstallUpdateHook();
@@ -90,7 +94,7 @@ static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
 static std::atomic_flag g_regBusy = ATOMIC_FLAG_INIT;
 static HANDLE g_regThread = nullptr;
-static uint32_t __stdcall H_Update(uint32_t moveComp, uint32_t dir, int runFlag);
+static void __fastcall H_Update(void* moveComp, void* destStruct, int runFlag);
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -280,17 +284,18 @@ static void FindMoveComponent()
     WriteRawLog("Move component not found via scan");
 }
 
-typedef uint32_t (__stdcall* UpdateState_stdcall)(uint32_t moveComp,
-                                                 uint32_t dir,
-                                                 int runFlag);
+// Helper typedef using the correct calling convention for direct calls
+using UpdateState_fastcall = void(__fastcall*)(void* moveComp,
+                                               void* destStruct,
+                                               int   runFlag);
 
 static int __cdecl Lua_Walk(void* L)
 {
     if (g_moveComp && g_origUpdate)
     {
         __try {
-            auto fn = reinterpret_cast<UpdateState_stdcall>(g_origUpdate);
-            fn(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(g_moveComp)), 0u, 0);
+            auto fn = reinterpret_cast<UpdateState_fastcall>(g_origUpdate);
+            fn(g_moveComp, nullptr, 0);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             WriteRawLog("Exception calling updateState");
         }
@@ -301,7 +306,7 @@ static int __cdecl Lua_Walk(void* L)
     return 0;
 }
 
-static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
+static void __fastcall H_Update(void* thisPtr, void* destStruct, int run)
 {
     if (!g_moveComp && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0)
     {
@@ -313,13 +318,13 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
 
     if (g_updateDepth++ == 0) {
         if (g_updateLogCount < 200) {
-            Logf("updateState(this=%p, dir=%u, run=%d)",
-                 (void*)(uintptr_t)thisPtr, dir, run);
+            Logf("updateState(this=%p, dest=%p, run=%d)",
+                 thisPtr, destStruct, run);
             ++g_updateLogCount;
         }
     }
 
-    uint32_t ret = g_origUpdate(thisPtr, dir, run);
+    g_origUpdate(thisPtr, destStruct, run);
     --g_updateDepth;
 
     // Safe point outside client code; check for deferred registration
@@ -333,7 +338,7 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
         }
     }
 
-    return ret;
+    return;
 }
 
 // ---------------------------------------------------------------------------
