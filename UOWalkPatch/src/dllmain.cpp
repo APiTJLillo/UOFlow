@@ -6,7 +6,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <atomic>
 #include "minhook.h"
 
 // Global state structure based on the memory layout observed
@@ -67,8 +66,6 @@ static DWORD WINAPI WaitForLua(LPVOID param);
 static LPVOID FindRegisterLuaFunction();
 static void InstallWriteWatch();
 static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
-static int  __cdecl Lua_OnFrame(void* L);             // frame callback from Lua
-static void OnFrame();                                // engine thread callback
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
 static bool CallClientRegister(void* L, void* func, const char* name);
 // New walk function support
@@ -90,8 +87,8 @@ static UpdateState_t g_origUpdate = nullptr;
 static bool InstallUpdateHook();
 static void InitUpdateFunction();
 static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun);
-static std::atomic<bool> g_needDisable{false};   // set inside detour
-static std::atomic<bool> g_hookDisabled{false};  // once disabled, skip detour
+static long g_updateLogCount = 0;
+static thread_local int g_updateDepth = 0;  // re-entrancy guard
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -400,33 +397,38 @@ static void InitUpdateFunction()
 
 static uint32_t __stdcall Hook_Update(uint32_t dataStruct, uint32_t targetDir, int32_t isRun)
 {
-    if (g_hookDisabled.load(std::memory_order_relaxed))
-        return g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
-
-    if (!g_moveComp) {
-        g_moveComp = reinterpret_cast<void*>(dataStruct);
-        Logf("MoveComp captured = %p", g_moveComp);
-        g_needDisable.store(true, std::memory_order_release);
+    if (++g_updateDepth > 1) {
+        uint32_t r = g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
+        --g_updateDepth;
+        return r;
     }
 
-    return g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
-}
+    if (g_updateLogCount < 50)
+        Logf("updateState: dir=%u run=%d", targetDir, isRun);
+    else if (g_updateLogCount == 50)
+        WriteRawLog("updateState: throttling logs...");
+    g_updateLogCount++;
 
-static void OnFrame()
-{
-    if (g_needDisable.exchange(false, std::memory_order_acquire))
-    {
-        MH_DisableHook(g_updateState);
-        MH_RemoveHook(g_updateState);      // optional: free trampoline
-        g_hookDisabled.store(true, std::memory_order_release);
-        WriteRawLog("updateState detour removed safely");
+    if (g_moveComp != (void*)dataStruct) {
+        g_moveComp = (void*)dataStruct;
+        Logf("Captured MoveComp @ %p (from updateState)", g_moveComp);
     }
-}
 
-static int __cdecl Lua_OnFrame(void*)
-{
-    OnFrame();
-    return 0;
+    __try {
+        struct Vec3 { int x, y, z; };
+        Vec3* cur = (Vec3*)(dataStruct + 0x44);
+        Logf("CurPos x=%d y=%d z=%d", cur->x, cur->y, cur->z);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Exception reading position in Hook_Update");
+    }
+
+    uint32_t ret = g_origUpdate ? g_origUpdate(dataStruct, targetDir, isRun) : 0;
+
+    if (g_updateLogCount <= 50)
+        Logf("updateState ret=%u", ret);
+
+    --g_updateDepth;
+    return ret;
 }
 
 static void* FindGlobalStateInfo() {
@@ -809,29 +811,11 @@ static void RegisterOurLuaFunctions()
             "Successfully registered Lua function '%s' (%p)",
             luaName, Lua_DummyPrint);
         WriteRawLog(buf);
-    }
-    else
-    {
-        WriteRawLog("!! Failed to register DummyPrint");
-    }
-
-    // Register OnFrame callback used to disable hooks
-    const char* frameName = "UOWP_OnFrame";
-    WriteRawLog("Registering OnFrame Lua function...");
-    if (CallClientRegister(g_luaState,
-        reinterpret_cast<void*>(Lua_OnFrame),
-        frameName))
-    {
-        char buf[128];
-        sprintf_s(buf, sizeof(buf),
-            "Successfully registered Lua function '%s' (%p)",
-            frameName, Lua_OnFrame);
-        WriteRawLog(buf);
         done = true;
     }
     else
     {
-        WriteRawLog("!! Failed to register OnFrame function");
+        WriteRawLog("!! Failed to register DummyPrint");
     }
 
     // Existing walk hook disabled; updateState hook handles capture now
