@@ -69,6 +69,7 @@ static void InstallWriteWatch();
 static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
 static bool CallClientRegister(void* L, void* func, const char* name);
+static DWORD WINAPI RegisterThread(LPVOID);             // worker for deferred registration
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
