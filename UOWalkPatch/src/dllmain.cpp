@@ -69,8 +69,9 @@ static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
 static bool CallClientRegister(void* L, void* func, const char* name);
 static void* g_moveComp = nullptr; // movement component instance
-static int  __stdcall Lua_Walk(void* L);
+static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
+static DWORD WINAPI RegisterWorker(LPVOID);
 
 // New updateDataStructureState hook
 typedef uint32_t (__stdcall* UpdateState_t)(
@@ -79,7 +80,8 @@ typedef uint32_t (__stdcall* UpdateState_t)(
     int       runFlag);
 static UpdateState_t g_updateState = nullptr;
 static UpdateState_t g_origUpdate  = nullptr;
-static void InitUpdateFunction();
+static void InstallUpdateHook();
+static volatile LONG g_haveMoveComp = 0;
 static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
 static uint32_t __stdcall H_Update(uint32_t moveComp, uint32_t dir, int runFlag);
@@ -261,33 +263,34 @@ static void FindMoveComponent()
     WriteRawLog("Move component not found via scan");
 }
 
-static int __stdcall Lua_Walk(void* L)
+typedef uint32_t (__thiscall* UpdateState_thiscall)(void* thisPtr,
+                                                    uint32_t dir,
+                                                    int runFlag);
+
+static int __cdecl Lua_Walk(void* L)
 {
-    if (!g_updateState || !g_moveComp) {
-        WriteRawLog("walk(): prerequisites missing");
-        return 0;
+    if (g_moveComp && g_origUpdate)
+    {
+        __try {
+            reinterpret_cast<UpdateState_thiscall>(g_origUpdate)(
+                    g_moveComp, 0u, 0);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            WriteRawLog("Exception calling updateState");
+        }
     }
-
-    const uint32_t dir   = 3;  // example direction
-    const int      run   = 0;  // 0 = walk, 1 = run
-    const int      steps = 6;  // queue roughly one tile
-
-    __try {
-        for (int i = 0; i < steps; ++i)
-            g_updateState((uint32_t)(uintptr_t)g_moveComp, dir, run);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("Exception calling updateState");
+    else {
+        WriteRawLog("walk() called before prerequisites were ready");
     }
-
     return 0;
 }
 
 static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
 {
-    if (!g_moveComp) {
-        g_moveComp = (void*)(uintptr_t)thisPtr;
+    if (!g_moveComp && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0)
+    {
+        g_moveComp = reinterpret_cast<void*>(static_cast<uintptr_t>(thisPtr));
         Logf("Captured moveComp = %p", g_moveComp);
-        RegisterOurLuaFunctions();
+        QueueUserWorkItem(RegisterWorker, nullptr, WT_EXECUTEDEFAULT);
     }
 
     if (g_updateDepth++ == 0) {
@@ -307,7 +310,7 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
 // updateDataStructureState hook
 // ---------------------------------------------------------------------------
 
-static void InitUpdateFunction()
+static void InstallUpdateHook()
 {
     const char* kUpdateSig =
         "83 EC 58 53 55 8B 6C 24 64 80 7D 79 00 56 57 0F 85 ?? ?? ?? 00"
@@ -700,8 +703,7 @@ static void RegisterOurLuaFunctions()
     if (!g_luaState || !g_origRegLua)
         return;
 
-    // Locate client functions we need
-    InitUpdateFunction();
+    // Client hook should already be installed
 
     if (!dummyReg) {
         const char* luaName = "DummyPrint";
@@ -739,6 +741,12 @@ static void RegisterOurLuaFunctions()
 
 
     WriteRawLog("RegisterOurLuaFunctions completed");
+}
+
+static DWORD WINAPI RegisterWorker(LPVOID)
+{
+    RegisterOurLuaFunctions();
+    return 0;
 }
 // Hook function for RegisterLuaFunction
 static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
@@ -873,6 +881,9 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
             return FALSE;
         }
         WriteRawLog("MinHook initialized successfully");
+
+        // Install update hook once
+        InstallUpdateHook();
 
         // Start background thread to scan for Lua state
         g_scanThread = CreateThread(nullptr, 0, WaitForLua, nullptr, 0, nullptr);
