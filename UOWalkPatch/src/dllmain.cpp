@@ -78,9 +78,8 @@ static void FindMoveComponent();
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
 
 // New updateDataStructureState hook
-// real prototype: this in ECX, remaining args on the stack
-typedef uint32_t (__thiscall* UpdateState_t)(
-    void*     moveComp,
+typedef uint32_t (__stdcall* UpdateState_t)(
+    uint32_t  moveComp,
     uint32_t  dir,
     int       runFlag);
 static UpdateState_t g_updateState = nullptr;
@@ -91,11 +90,7 @@ static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
 static std::atomic_flag g_regBusy = ATOMIC_FLAG_INIT;
 static HANDLE g_regThread = nullptr;
-// use __fastcall so ECX==this, EDX is free scratch
-static uint32_t __fastcall H_Update(void*     moveComp,
-                                    void*     /*edx*/,
-                                    uint32_t  dir,
-                                    int       runFlag);
+static uint32_t __stdcall H_Update(uint32_t moveComp, uint32_t dir, int runFlag);
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -285,13 +280,17 @@ static void FindMoveComponent()
     WriteRawLog("Move component not found via scan");
 }
 
+typedef uint32_t (__stdcall* UpdateState_stdcall)(uint32_t moveComp,
+                                                 uint32_t dir,
+                                                 int runFlag);
+
 static int __cdecl Lua_Walk(void* L)
 {
     if (g_moveComp && g_origUpdate)
     {
         __try {
-            auto fn = reinterpret_cast<UpdateState_t>(g_origUpdate);
-            fn(g_moveComp, 0u, 0);          // ECX=this, stack=(dir,run)
+            auto fn = reinterpret_cast<UpdateState_stdcall>(g_origUpdate);
+            fn(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(g_moveComp)), 0u, 0);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             WriteRawLog("Exception calling updateState");
         }
@@ -302,11 +301,11 @@ static int __cdecl Lua_Walk(void* L)
     return 0;
 }
 
-static uint32_t __fastcall H_Update(void* moveComp, void* /*edx*/, uint32_t dir, int runFlag)
+static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
 {
     if (!g_moveComp && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0)
     {
-        g_moveComp = moveComp;
+        g_moveComp = reinterpret_cast<void*>(static_cast<uintptr_t>(thisPtr));
         DWORD tid = GetCurrentThreadId();
         Logf("Captured moveComp = %p (thread %lu)", g_moveComp, tid);
         InterlockedExchange(&g_needWalkReg, 1);
@@ -315,12 +314,12 @@ static uint32_t __fastcall H_Update(void* moveComp, void* /*edx*/, uint32_t dir,
     if (g_updateDepth++ == 0) {
         if (g_updateLogCount < 200) {
             Logf("updateState(this=%p, dir=%u, run=%d)",
-                 moveComp, dir, runFlag);
+                 (void*)(uintptr_t)thisPtr, dir, run);
             ++g_updateLogCount;
         }
     }
 
-    uint32_t ret = g_origUpdate(moveComp, dir, runFlag);
+    uint32_t ret = g_origUpdate(thisPtr, dir, run);
     --g_updateDepth;
 
     // Safe point outside client code; check for deferred registration
