@@ -790,8 +790,8 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
 
             WriteRawLog("DLL is now fully initialized - enjoy!");
             WriteRawLog("Registering our Lua functions...");
-            RegisterOurLuaFunctions();
-            WriteRawLog("Lua functions registered successfully");
+            // Defer actual Lua‑function registration to the next safe‑point
+            InterlockedExchange(&g_needWalkReg, 1);
         }
     }
 
