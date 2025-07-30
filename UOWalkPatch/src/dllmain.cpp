@@ -105,6 +105,13 @@ static int __cdecl Lua_DummyPrint(void* L)
     return 0;   // no Lua return values
 }
 
+// Check if an address resides within the current thread's stack range
+static bool IsOnCurrentStack(void* p)
+{
+    NT_TIB* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+    return p >= tib->StackLimit && p < tib->StackBase;
+}
+
 // Simple memory search helper
 static BYTE* FindBytes(BYTE* start, SIZE_T size, const BYTE* pattern, SIZE_T patSize) {
     if (!start || !pattern || !patSize || size < patSize)
@@ -601,15 +608,19 @@ static void* FindOwnerOfLuaState(void* lua) {
             // ─────────────────────────────────────────────────────────────
             {
                 GlobalStateInfo* g = (GlobalStateInfo*)p;
-                __try {
-                    if (g->luaState == lua && g->databaseManager) {
-                        sprintf_s(buf, sizeof(buf),
-                            "Validated GlobalStateInfo (no padding) @ %p", g);
-                        WriteRawLog(buf);
-                        return g;
+                if (IsOnCurrentStack(g)) {
+                    WriteRawLog("Rejecting candidate: on current stack");
+                } else {
+                    __try {
+                        if (g->luaState == lua && g->databaseManager) {
+                            sprintf_s(buf, sizeof(buf),
+                                "Validated GlobalStateInfo (no padding) @ %p", g);
+                            WriteRawLog(buf);
+                            return g;
+                        }
                     }
+                    __except (EXCEPTION_EXECUTE_HANDLER) {}
                 }
-                __except (EXCEPTION_EXECUTE_HANDLER) {}
             }
 
             // ─────────────────────────────────────────────────────────────
@@ -619,11 +630,15 @@ static void* FindOwnerOfLuaState(void* lua) {
             __try {
                 if (!d[0] && !d[1] && !d[2] && !d[3]) {
                     GlobalStateInfo* g = *(GlobalStateInfo**)(d + 4);
-                    if (g && g->luaState == lua && g->databaseManager) {
-                        sprintf_s(buf, sizeof(buf),
-                            "Validated GlobalStateInfo (zero-block) @ %p", g);
-                        WriteRawLog(buf);
-                        return g;
+                    if (g) {
+                        if (IsOnCurrentStack(g)) {
+                            WriteRawLog("Rejecting candidate: on current stack");
+                        } else if (g->luaState == lua && g->databaseManager) {
+                            sprintf_s(buf, sizeof(buf),
+                                "Validated GlobalStateInfo (zero-block) @ %p", g);
+                            WriteRawLog(buf);
+                            return g;
+                        }
                     }
                 }
             }
@@ -653,15 +668,19 @@ static void* FindOwnerOfLuaState(void* lua) {
                 if (*(void**)p != lua) continue;
 
                 GlobalStateInfo* g = (GlobalStateInfo*)p;
-                __try {
-                    if (g->luaState == lua && g->databaseManager) {
-                        sprintf_s(buf, sizeof(buf),
-                            "Validated GlobalStateInfo (heap) @ %p", g);
-                        WriteRawLog(buf);
-                        return g;
+                if (IsOnCurrentStack(g)) {
+                    WriteRawLog("Rejecting candidate: on current stack");
+                } else {
+                    __try {
+                        if (g->luaState == lua && g->databaseManager) {
+                            sprintf_s(buf, sizeof(buf),
+                                "Validated GlobalStateInfo (heap) @ %p", g);
+                            WriteRawLog(buf);
+                            return g;
+                        }
                     }
+                    __except (EXCEPTION_EXECUTE_HANDLER) {}
                 }
-                __except (EXCEPTION_EXECUTE_HANDLER) {}
             }
         }
         addr += mbi.RegionSize;
@@ -814,7 +833,13 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
 
 // Validator function prototype 
 static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
-    if (!candidate) return candidate;
+    if (!candidate) return nullptr;
+
+    // Never accept pointers that sit on the caller's stack
+    if (IsOnCurrentStack(candidate)) {
+        WriteRawLog("Rejecting candidate: on current stack");
+        return nullptr;
+    }
 
     __try {
         if (candidate->luaState && candidate->databaseManager) {
