@@ -71,7 +71,10 @@ static bool CallClientRegister(void* L, void* func, const char* name);
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
-static DWORD WINAPI RegisterWorker(LPVOID);
+
+// Deferred Lua registration state
+static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
+static DWORD         g_gameThread = 0;   // thread owning the game loop
 
 // New updateDataStructureState hook
 typedef uint32_t (__stdcall* UpdateState_t)(
@@ -288,9 +291,10 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
 {
     if (!g_moveComp && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0)
     {
-        g_moveComp = reinterpret_cast<void*>(static_cast<uintptr_t>(thisPtr));
-        Logf("Captured moveComp = %p", g_moveComp);
-        QueueUserWorkItem(RegisterWorker, nullptr, WT_EXECUTEDEFAULT);
+        g_moveComp   = reinterpret_cast<void*>(static_cast<uintptr_t>(thisPtr));
+        g_gameThread = GetCurrentThreadId();
+        Logf("Captured moveComp = %p (thread %lu)", g_moveComp, g_gameThread);
+        InterlockedExchange(&g_needWalkReg, 1);
     }
 
     if (g_updateDepth++ == 0) {
@@ -303,6 +307,13 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
 
     uint32_t ret = g_origUpdate(thisPtr, dir, run);
     --g_updateDepth;
+
+    // Safe point outside client code; check for deferred registration
+    if (g_needWalkReg && GetCurrentThreadId() == g_gameThread) {
+        InterlockedExchange(&g_needWalkReg, 0);
+        RegisterOurLuaFunctions();
+    }
+
     return ret;
 }
 
@@ -743,11 +754,6 @@ static void RegisterOurLuaFunctions()
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 
-static DWORD WINAPI RegisterWorker(LPVOID)
-{
-    RegisterOurLuaFunctions();
-    return 0;
-}
 // Hook function for RegisterLuaFunction
 static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
     // Short-circuit if we already have everything we need
