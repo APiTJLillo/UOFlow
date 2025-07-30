@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <atomic>
 #include "minhook.h"
 
 // Global state structure based on the memory layout observed
@@ -86,6 +87,9 @@ static void InstallUpdateHook();
 static volatile LONG g_haveMoveComp = 0;
 static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
+static std::atomic_flag g_regBusy = ATOMIC_FLAG_INIT;
+static HANDLE g_regThread = nullptr;
+static DWORD WINAPI RegisterThread(LPVOID);
 static uint32_t __stdcall H_Update(uint32_t moveComp, uint32_t dir, int runFlag);
 
 // Helper with printf-style formatting
@@ -260,10 +264,14 @@ static void FindMoveComponent()
             BYTE* e = b + mbi.RegionSize;
             for (BYTE* p = b; p + sizeof(void*) <= e; p += sizeof(void*)) {
                 if (*(void**)p == (void*)vtable) {
-                    g_moveComp = p;
-                    sprintf_s(buf, sizeof(buf), "MoveComp candidate %p", p);
-                    WriteRawLog(buf);
-                    return;
+                    MEMORY_BASIC_INFORMATION mbi2;
+                    if (VirtualQuery(p, &mbi2, sizeof(mbi2)) &&
+                        (mbi2.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))) {
+                        g_moveComp = p;
+                        sprintf_s(buf, sizeof(buf), "MoveComp candidate %p", p);
+                        WriteRawLog(buf);
+                        return;
+                    }
                 }
             }
         }
@@ -272,17 +280,17 @@ static void FindMoveComponent()
     WriteRawLog("Move component not found via scan");
 }
 
-typedef uint32_t (__thiscall* UpdateState_thiscall)(void* thisPtr,
-                                                    uint32_t dir,
-                                                    int runFlag);
+typedef uint32_t (__stdcall* UpdateState_stdcall)(uint32_t moveComp,
+                                                 uint32_t dir,
+                                                 int runFlag);
 
 static int __cdecl Lua_Walk(void* L)
 {
     if (g_moveComp && g_origUpdate)
     {
         __try {
-            reinterpret_cast<UpdateState_thiscall>(g_origUpdate)(
-                    g_moveComp, 0u, 0);
+            auto fn = reinterpret_cast<UpdateState_stdcall>(g_origUpdate);
+            fn(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(g_moveComp)), 0u, 0);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             WriteRawLog("Exception calling updateState");
         }
@@ -318,12 +326,10 @@ static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
     Logf("H_Update safe-point on TID=%lu needReg=%ld depth=%d",
          GetCurrentThreadId(), g_needWalkReg, g_updateDepth);
     if (g_needWalkReg && g_updateDepth == 0) {
-        static thread_local bool reEntry = false;
-        if (!reEntry) {
-            reEntry = true;
+        if (!g_regBusy.test_and_set(std::memory_order_acquire)) {
             InterlockedExchange(&g_needWalkReg, 0);
-            RegisterOurLuaFunctions();
-            reEntry = false;
+            g_regThread = CreateThread(nullptr, 0, RegisterThread, nullptr, 0, nullptr);
+            if (g_regThread) CloseHandle(g_regThread);
         }
     }
 
@@ -711,6 +717,13 @@ static DWORD WINAPI WaitForLua(LPVOID) {
 
     WriteRawLog(g_luaStateCaptured ? "Hook found Lua state first" : "Scanner stopped");
     return 1;
+}
+
+// Worker thread to register our Lua functions outside of client update
+static DWORD WINAPI RegisterThread(LPVOID) {
+    RegisterOurLuaFunctions();
+    g_regBusy.clear(std::memory_order_release);
+    return 0;
 }
 
 // Safely invoke the client's RegisterLuaFunction
