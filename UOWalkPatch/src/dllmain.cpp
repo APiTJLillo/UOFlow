@@ -69,20 +69,20 @@ static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
 static bool CallClientRegister(void* L, void* func, const char* name);
 static void* g_moveComp = nullptr; // movement component instance
-static int  __cdecl Lua_Walk(void* L);
+static int  __stdcall Lua_Walk(void* L);
 static void FindMoveComponent();
 
 // New updateDataStructureState hook
-typedef uint32_t (__cdecl* UpdateState_t)(
-    void*     moveComp,
+typedef uint32_t (__stdcall* UpdateState_t)(
+    uint32_t  moveComp,
     uint32_t  dir,
     int       runFlag);
 static UpdateState_t g_updateState = nullptr;
-static UpdateState_t g_origUpdate = nullptr;
+static UpdateState_t g_origUpdate  = nullptr;
 static void InitUpdateFunction();
 static long g_updateLogCount = 0;
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
-static uint32_t __cdecl H_Update(void* moveComp, uint32_t dir, int runFlag);
+static uint32_t __stdcall H_Update(uint32_t moveComp, uint32_t dir, int runFlag);
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -261,36 +261,40 @@ static void FindMoveComponent()
     WriteRawLog("Move component not found via scan");
 }
 
-static int __cdecl Lua_Walk(void* L)
+static int __stdcall Lua_Walk(void* L)
 {
-    if (g_updateState && g_moveComp) {
-        const uint32_t dir = 3;   // southeast
-        const int      run = 0;   // 0 = walk
-        __try {
-            for (int i = 0; i < 6; ++i)
-                g_updateState(g_moveComp, dir, run);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            WriteRawLog("Exception calling updateState");
-        }
-    } else {
-        WriteRawLog("walk function prerequisites missing");
+    if (!g_updateState || !g_moveComp) {
+        WriteRawLog("walk(): prerequisites missing");
+        return 0;
     }
+
+    const uint32_t dir   = 3;  // example direction
+    const int      run   = 0;  // 0 = walk, 1 = run
+    const int      steps = 6;  // queue roughly one tile
+
+    __try {
+        for (int i = 0; i < steps; ++i)
+            g_updateState((uint32_t)(uintptr_t)g_moveComp, dir, run);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Exception calling updateState");
+    }
+
     return 0;
 }
 
-static uint32_t __cdecl H_Update(void* thisPtr, uint32_t dir, int run)
+static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run)
 {
     if (!g_moveComp) {
-        g_moveComp = thisPtr;
+        g_moveComp = (void*)(uintptr_t)thisPtr;
         Logf("Captured moveComp = %p", g_moveComp);
         RegisterOurLuaFunctions();
     }
 
-    if (g_updateDepth++ == 0 && g_updateLogCount < 10) {
-        Logf("updateState(this=%p, dir=%u, run=%d)", thisPtr, dir, run);
-        if (++g_updateLogCount == 10) {
-            MH_DisableHook(g_updateState);
-            Logf("updateDataStructureState hook disabled");
+    if (g_updateDepth++ == 0) {
+        if (g_updateLogCount < 200) {
+            Logf("updateState(this=%p, dir=%u, run=%d)",
+                 (void*)(uintptr_t)thisPtr, dir, run);
+            ++g_updateLogCount;
         }
     }
 
