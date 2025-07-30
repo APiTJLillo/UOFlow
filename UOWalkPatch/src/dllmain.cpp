@@ -343,9 +343,6 @@ static bool __fastcall Hook_Walk(void* thisPtr, void* edx, uint8_t dir, uint8_t 
     return result;
 }
 
-
-
-
 static void* FindGlobalStateInfo() {
     HMODULE hExe = GetModuleHandleA(nullptr);
     if (!hExe) return nullptr;
