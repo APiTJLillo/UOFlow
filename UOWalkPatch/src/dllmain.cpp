@@ -78,23 +78,21 @@ static void FindMoveComponent();
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
 
 // New updateDataStructureState hook
-// This routine actually uses the fastcall/thiscall convention where the first
-// two parameters are passed in ECX and EDX respectively.  Treat the arguments as
-// opaque pointers to the movement component and a destination structure.  The
-// third parameter (run flag) is placed on the stack and the function returns
-// void.
-using UpdateState_t = void(__fastcall*)(void* moveComp,
-                                        void* destStruct,
-                                        int   runFlag);
+typedef uint32_t(__stdcall* UpdateState_t)(
+    uint32_t  moveComp,
+    uint32_t  dir,
+    int       runFlag,
+    void*     dest);
 static UpdateState_t g_updateState = nullptr;
-static UpdateState_t g_origUpdate  = nullptr;
+static UpdateState_t g_origUpdate = nullptr;
 static void InstallUpdateHook();
 static volatile LONG g_haveMoveComp = 0;
 static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
 static std::atomic_flag g_regBusy = ATOMIC_FLAG_INIT;
 static HANDLE g_regThread = nullptr;
-static void __fastcall H_Update(void* moveComp, void* destStruct, int runFlag);
+static uint32_t __stdcall H_Update(uint32_t moveComp, uint32_t dir, int runFlag, void* dest);
+static void* g_dest;
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -194,7 +192,8 @@ static size_t ParsePattern(const char* sig, Pattern& out)
         if (*sig == ' ') { ++sig; continue; }
         if (sig[0] == '?' && sig[1] == '?') {
             out.mask[i] = 0; out.raw[i++] = 0; sig += 2;
-        } else {
+        }
+        else {
             unsigned v; sscanf_s(sig, "%02x", &v);
             out.mask[i] = 1; out.raw[i++] = (uint8_t)v; sig += 2;
         }
@@ -235,7 +234,7 @@ static void FindMoveComponent()
         return;
 
     BYTE* base = (BYTE*)mi.lpBaseOfDll;
-    BYTE* end  = base + mi.SizeOfImage;
+    BYTE* end = base + mi.SizeOfImage;
 
     BYTE* vtable = nullptr;
     for (BYTE* p = base; p + 0x44 <= end; p += 4) {
@@ -284,19 +283,20 @@ static void FindMoveComponent()
     WriteRawLog("Move component not found via scan");
 }
 
-// Helper typedef using the correct calling convention for direct calls
-using UpdateState_fastcall = void(__fastcall*)(void* moveComp,
-                                               void* destStruct,
-                                               int   runFlag);
+typedef uint32_t(__stdcall* UpdateState_stdcall)(uint32_t moveComp,
+    uint32_t dir,
+    int runFlag,
+    void* dest);
 
 static int __cdecl Lua_Walk(void* L)
 {
     if (g_moveComp && g_origUpdate)
     {
         __try {
-            auto fn = reinterpret_cast<UpdateState_fastcall>(g_origUpdate);
-            fn(g_moveComp, nullptr, 0);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            auto fn = reinterpret_cast<UpdateState_stdcall>(g_origUpdate);
+            fn(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(g_moveComp)), 4, 2, g_dest);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
             WriteRawLog("Exception calling updateState");
         }
     }
@@ -306,12 +306,11 @@ static int __cdecl Lua_Walk(void* L)
     return 0;
 }
 
-static void __fastcall H_Update(void* thisPtr, void* destStruct, int run)
+static uint32_t __stdcall H_Update(uint32_t thisPtr, uint32_t dir, int run, void* dest)
 {
     if (!g_moveComp && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0)
     {
-        // save the movement component pointer for later calls
-        g_moveComp = thisPtr;
+        g_moveComp = reinterpret_cast<void*>(static_cast<uintptr_t>(thisPtr));
         DWORD tid = GetCurrentThreadId();
         Logf("Captured moveComp = %p (thread %lu)", g_moveComp, tid);
         InterlockedExchange(&g_needWalkReg, 1);
@@ -319,18 +318,18 @@ static void __fastcall H_Update(void* thisPtr, void* destStruct, int run)
 
     if (g_updateDepth++ == 0) {
         if (g_updateLogCount < 200) {
-            Logf("updateState(this=%p, dest=%p, run=%d)",
-                 thisPtr, destStruct, run);
+            Logf("updateState(this=%p, dir=%u, run=%d, dest=%d)",
+                (void*)(uintptr_t)thisPtr, dir, run, dest);
             ++g_updateLogCount;
         }
     }
-
-    g_origUpdate(thisPtr, destStruct, run);
+	g_dest = dest;  // Store dest for later use
+    uint32_t ret = g_origUpdate(thisPtr, dir, run, dest);
     --g_updateDepth;
 
     // Safe point outside client code; check for deferred registration
     Logf("H_Update safe-point on TID=%lu needReg=%ld depth=%d",
-         GetCurrentThreadId(), g_needWalkReg, g_updateDepth);
+        GetCurrentThreadId(), g_needWalkReg, g_updateDepth);
     if (g_needWalkReg && g_updateDepth == 0) {
         if (!g_regBusy.test_and_set(std::memory_order_acquire)) {
             InterlockedExchange(&g_needWalkReg, 0);
@@ -339,7 +338,7 @@ static void __fastcall H_Update(void* thisPtr, void* destStruct, int run)
         }
     }
 
-    return;
+    return ret;
 }
 
 // ---------------------------------------------------------------------------
@@ -362,12 +361,14 @@ static void InstallUpdateHook()
             MH_EnableHook(g_updateState) == MH_OK)
         {
             WriteRawLog("updateDataStructureState hook installed");
-        } else {
+        }
+        else {
             WriteRawLog("updateDataStructureState hook failed; falling back to scan");
             g_origUpdate = g_updateState;
             FindMoveComponent();
         }
-    } else {
+    }
+    else {
         WriteRawLog("updateDataStructureState not found");
     }
 }
@@ -622,7 +623,8 @@ static void* FindOwnerOfLuaState(void* lua) {
                 GlobalStateInfo* g = (GlobalStateInfo*)p;
                 if (IsOnCurrentStack(g)) {
                     WriteRawLog("Rejecting candidate: on current stack");
-                } else {
+                }
+                else {
                     __try {
                         if (g->luaState == lua && g->databaseManager) {
                             sprintf_s(buf, sizeof(buf),
@@ -645,7 +647,8 @@ static void* FindOwnerOfLuaState(void* lua) {
                     if (g) {
                         if (IsOnCurrentStack(g)) {
                             WriteRawLog("Rejecting candidate: on current stack");
-                        } else if (g->luaState == lua && g->databaseManager) {
+                        }
+                        else if (g->luaState == lua && g->databaseManager) {
                             sprintf_s(buf, sizeof(buf),
                                 "Validated GlobalStateInfo (zero-block) @ %p", g);
                             WriteRawLog(buf);
@@ -682,7 +685,8 @@ static void* FindOwnerOfLuaState(void* lua) {
                 GlobalStateInfo* g = (GlobalStateInfo*)p;
                 if (IsOnCurrentStack(g)) {
                     WriteRawLog("Rejecting candidate: on current stack");
-                } else {
+                }
+                else {
                     __try {
                         if (g->luaState == lua && g->databaseManager) {
                             sprintf_s(buf, sizeof(buf),
@@ -754,7 +758,7 @@ static bool CallClientRegister(void* L, void* func, const char* name)
 static void RegisterOurLuaFunctions()
 {
     static bool dummyReg = false;
-    static bool walkReg  = false;
+    static bool walkReg = false;
     if (!g_luaState || !g_origRegLua)
         return;
 
@@ -784,13 +788,14 @@ static void RegisterOurLuaFunctions()
         const char* walkName = "walk";
         WriteRawLog("Registering walk Lua function...");
         bool ok = CallClientRegister(g_luaState,
-                                    reinterpret_cast<void*>(Lua_Walk), walkName);
+            reinterpret_cast<void*>(Lua_Walk), walkName);
         WriteRawLog(ok ? "Successfully registered walk()" :
-                         "!! Register walk() failed");
+            "!! Register walk() failed");
         if (ok) {
             walkReg = true;
         }
-    } else if (!g_moveComp && !walkReg) {
+    }
+    else if (!g_moveComp && !walkReg) {
         WriteRawLog("walk function prerequisites missing");
     }
 
