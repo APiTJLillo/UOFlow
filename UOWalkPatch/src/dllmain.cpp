@@ -310,7 +310,8 @@ static void __fastcall H_Update(void* thisPtr, void* destStruct, int run)
 {
     if (!g_moveComp && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0)
     {
-        g_moveComp = reinterpret_cast<void*>(static_cast<uintptr_t>(thisPtr));
+        // save the movement component pointer for later calls
+        g_moveComp = thisPtr;
         DWORD tid = GetCurrentThreadId();
         Logf("Captured moveComp = %p (thread %lu)", g_moveComp, tid);
         InterlockedExchange(&g_needWalkReg, 1);
