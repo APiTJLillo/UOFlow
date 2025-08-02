@@ -11,8 +11,6 @@
 #include <minhook.h>
 #include <intrin.h>
 
-extern "C" const char* lua_tolstring(void* L, int idx, size_t* len);
-
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
     void* luaState;             // 0x00  - Lua state pointer
@@ -29,8 +27,8 @@ struct GlobalStateInfo {
     // ... more fields we haven't identified yet
 };
 
-// Global state 
-static HANDLE g_logFile;
+// Global state
+static HANDLE g_logFile = INVALID_HANDLE_VALUE;
 static char   g_logPath[MAX_PATH];
 static BOOL   g_logAnnounced;
 static BOOL   g_initialized;
@@ -77,9 +75,9 @@ static DWORD WINAPI RegisterThread(LPVOID);             // worker for deferred r
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
-static int  __cdecl Lua_SendRaw(void* L);
 static void InstallSendHook();
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags);
+extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
 
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
@@ -332,19 +330,16 @@ static int __cdecl Lua_Walk(void* L)
     return 0;
 }
 
-static int __cdecl Lua_SendRaw(void* L)
+extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len)
 {
-    size_t len = 0;
-    const char* bytes = lua_tolstring(L, 1, &len);
     if (len > 0 && g_sendPacket && g_netMgr)
     {
-        g_sendPacket(g_netMgr, bytes, static_cast<int>(len));
+        g_sendPacket(g_netMgr, bytes, len);
     }
     else
     {
-        WriteRawLog("sendRaw() called before prerequisites were ready");
+        WriteRawLog("SendRaw called before prerequisites were ready");
     }
-    return 0;
 }
 
 
@@ -883,20 +878,6 @@ static void RegisterOurLuaFunctions()
     else if (!g_moveComp && !walkReg) {
         WriteRawLog("walk function prerequisites missing");
     }
-
-    if (g_sendPacket && g_netMgr && !sendReg) {
-        const char* sendName = "sendRaw";
-        WriteRawLog("Registering sendRaw Lua function...");
-        bool ok = CallClientRegister(g_luaState,
-            reinterpret_cast<void*>(Lua_SendRaw), sendName);
-        WriteRawLog(ok ? "Successfully registered sendRaw()" :
-            "!! Register sendRaw() failed");
-        if (ok) {
-            sendReg = true;
-        }
-    }
-
-
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 

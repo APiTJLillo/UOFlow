@@ -33,8 +33,9 @@ next to the DLL if possible, otherwise in `%WINDIR%\Temp`.
 ## Lua functions
 
 The patch exposes a couple of helper calls to Lua. `DummyPrint` simply logs a
-message, `walk` triggers the client's internal movement routine, and `sendRaw`
-forwards a byte string through the client's network layer. The functions are
+message and `walk` triggers the client's internal movement routine. For sending
+arbitrary packets without Lua, the DLL exports a `SendRaw` function that
+forwards a byte buffer through the client's network layer. The Lua functions are
 registered automatically when the helper locates the client's Lua state.
 
 ## Troubleshooting
