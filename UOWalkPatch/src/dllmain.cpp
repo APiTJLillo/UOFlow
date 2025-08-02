@@ -2,12 +2,14 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <winsock2.h>
 #include <psapi.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <atomic>
 #include <minhook.h>
+#include <intrin.h>
 
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
@@ -25,8 +27,8 @@ struct GlobalStateInfo {
     // ... more fields we haven't identified yet
 };
 
-// Global state 
-static HANDLE g_logFile;
+// Global state
+static HANDLE g_logFile = INVALID_HANDLE_VALUE;
 static char   g_logPath[MAX_PATH];
 static BOOL   g_logAnnounced;
 static BOOL   g_initialized;
@@ -73,6 +75,35 @@ static DWORD WINAPI RegisterThread(LPVOID);             // worker for deferred r
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
+static void InstallSendHooks();
+static void TraceOutbound(const void* caller, const char* buf, int len, void* thisPtr);
+static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags);
+static int WSAAPI H_WSASend(
+    SOCKET s,
+    const WSABUF* wsa,
+    DWORD cnt,
+    LPDWORD sent,
+    DWORD flags,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+static int WSAAPI H_WSASendTo(
+    SOCKET s,
+    const WSABUF* wsa,
+    DWORD cnt,
+    LPDWORD sent,
+    DWORD flags,
+    const sockaddr* dst,
+    int dstlen,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+static int WSAAPI H_SendTo(
+    SOCKET s,
+    const char* buf,
+    int len,
+    int flags,
+    const sockaddr* to,
+    int tolen);
+extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
 
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
@@ -98,6 +129,13 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     uint32_t dir,
     int     runFlag);
 static void* g_dest;
+using SendPacket_t = void(__thiscall*)(void* netMgr, const void* pkt, int len);
+static SendPacket_t g_sendPacket = nullptr;
+static void* g_netMgr = nullptr;
+static int (WSAAPI* g_real_send)(SOCKET, const char*, int, int) = nullptr;
+static int (WSAAPI* g_real_WSASend)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
+static int (WSAAPI* g_real_WSASendTo)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, const sockaddr*, int, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
+static int (WSAAPI* g_real_sendto)(SOCKET, const char*, int, int, const sockaddr*, int) = nullptr;
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -121,6 +159,18 @@ static bool IsOnCurrentStack(void* p)
 {
     NT_TIB* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
     return p >= tib->StackLimit && p < tib->StackBase;
+}
+
+// Heuristic scan backwards for a typical function prologue
+static void* FindFuncStart(void* retAddr)
+{
+    BYTE* p = static_cast<BYTE*>(retAddr);
+    for (int i = 1; i < 64; ++i)
+    {
+        if (p[-i] == 0x55 && p[-i + 1] == 0x8B && p[-i + 2] == 0xEC)
+            return p - i;
+    }
+    return nullptr;
 }
 
 // Simple memory search helper
@@ -309,6 +359,18 @@ static int __cdecl Lua_Walk(void* L)
     return 0;
 }
 
+extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len)
+{
+    if (len > 0 && g_sendPacket && g_netMgr)
+    {
+        g_sendPacket(g_netMgr, bytes, len);
+    }
+    else
+    {
+        WriteRawLog("SendRaw called before prerequisites were ready");
+    }
+}
+
 
 static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     void* _unused,  // EDX
@@ -339,6 +401,104 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     return rc;
 }
 
+// ---------------------------------------------------------------------------
+// Winsock send-family hooks
+// ---------------------------------------------------------------------------
+
+static void TraceOutbound(const void* caller, const char* buf, int len, void* thisPtr)
+{
+    MEMORY_BASIC_INFORMATION mbi{};
+    HMODULE exe = GetModuleHandleA(nullptr);
+    if (exe && VirtualQuery(caller, &mbi, sizeof(mbi)) && mbi.AllocationBase == exe)
+    {
+        Logf("send-family from %p  len=%d  id=%02X", caller, len, (unsigned char)buf[0]);
+        if (!g_sendPacket)
+            g_sendPacket = reinterpret_cast<SendPacket_t>(FindFuncStart(const_cast<void*>(caller)));
+        if (!g_netMgr)
+            g_netMgr = thisPtr;
+        if (g_sendPacket && g_netMgr)
+            RegisterOurLuaFunctions();
+    }
+}
+
+static void* GetThisPtr()
+{
+    void* p = nullptr;
+#if defined(_MSC_VER)
+    __asm mov p, ecx
+#else
+    __asm__("mov %0, %%ecx" : "=r"(p));
+#endif
+    return p;
+}
+
+static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
+{
+    TraceOutbound(_ReturnAddress(), buf, len, GetThisPtr());
+    return g_real_send ? g_real_send(s, buf, len, flags) : 0;
+}
+
+static int WSAAPI H_WSASend(
+    SOCKET s,
+    const WSABUF* wsa,
+    DWORD cnt,
+    LPDWORD sent,
+    DWORD flags,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
+{
+    if (cnt)
+        TraceOutbound(_ReturnAddress(), wsa[0].buf, (int)wsa[0].len, GetThisPtr());
+    return g_real_WSASend ? g_real_WSASend(s, wsa, cnt, sent, flags, ov, cr) : 0;
+}
+
+static int WSAAPI H_WSASendTo(
+    SOCKET s,
+    const WSABUF* wsa,
+    DWORD cnt,
+    LPDWORD sent,
+    DWORD flags,
+    const sockaddr* dst,
+    int dstlen,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
+{
+    if (cnt)
+        TraceOutbound(_ReturnAddress(), wsa[0].buf, (int)wsa[0].len, GetThisPtr());
+    return g_real_WSASendTo ? g_real_WSASendTo(s, wsa, cnt, sent, flags, dst, dstlen, ov, cr) : 0;
+}
+
+static int WSAAPI H_SendTo(
+    SOCKET s,
+    const char* buf,
+    int len,
+    int flags,
+    const sockaddr* to,
+    int tolen)
+{
+    TraceOutbound(_ReturnAddress(), buf, len, GetThisPtr());
+    return g_real_sendto ? g_real_sendto(s, buf, len, flags, to, tolen) : 0;
+}
+
+static void InstallSendHooks()
+{
+    HMODULE ws = GetModuleHandleA("ws2_32.dll");
+    if (!ws) ws = LoadLibraryA("ws2_32.dll");
+    if (!ws) return;
+    struct HookDef { const char* name; void* hook; void** tramp; };
+    HookDef tbl[] = {
+        {"send",      (void*)H_Send,      (void**)&g_real_send},
+        {"WSASend",   (void*)H_WSASend,   (void**)&g_real_WSASend},
+        {"WSASendTo", (void*)H_WSASendTo, (void**)&g_real_WSASendTo},
+        {"sendto",    (void*)H_SendTo,    (void**)&g_real_sendto},
+    };
+    for (auto& e : tbl)
+    {
+        void* target = GetProcAddress(ws, e.name);
+        if (target && MH_CreateHook(target, e.hook, e.tramp) == MH_OK && MH_EnableHook(target) == MH_OK)
+            Logf("%s hook installed", e.name);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // updateDataStructureState hook
@@ -798,7 +958,6 @@ static void RegisterOurLuaFunctions()
         WriteRawLog("walk function prerequisites missing");
     }
 
-
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 
@@ -942,8 +1101,9 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         }
         WriteRawLog("MinHook initialized successfully");
 
-        // Install update hook once
+        // Install hooks
         InstallUpdateHook();
+        InstallSendHooks();
 
         // Start background thread to scan for Lua state
         g_scanThread = CreateThread(nullptr, 0, WaitForLua, nullptr, 0, nullptr);
