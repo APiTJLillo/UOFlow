@@ -105,9 +105,8 @@ static int WSAAPI H_SendTo(
     const sockaddr* to,
     int tolen);
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
-
-static void DumpCallstack(const char* tag, void* thisPtr, void* builder);
 static void InstallSendBuilderHooks();
+static void InstallSendInternalHook(void* endpoint);
 
 using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 static SendBuilder_t fpIP_SendBuilder  = nullptr;
@@ -116,6 +115,16 @@ static SendBuilder_t fpUDP_SendBuilder = nullptr;
 static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* unused, void* builder);
 static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* unused, void* builder);
 static void* __fastcall Hook_UDP_SendBuilder(void* thisPtr, void* unused, void* builder);
+static void* g_ipSendBuilderTarget  = nullptr;
+static void* g_tcpSendBuilderTarget = nullptr;
+static void* g_udpSendBuilderTarget = nullptr;
+
+using SendInternal_t = void(__thiscall*)(void* ep, const void* buf, int len);
+static SendInternal_t g_realSendInternal = nullptr;
+static bool g_sendInternalHooked = false;
+static void __fastcall Hook_SendInternal(void* ep, void* /*edx*/, const void* buf, int len);
+static void DumpPacket(const void* buf, int len);
+static void DisableSendBuilderHooks();
 
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
@@ -516,44 +525,86 @@ static void InstallSendHooks()
 // SendBuilder detours
 // ---------------------------------------------------------------------------
 
-static void DumpCallstack(const char* tag, void* thisPtr, void* builder)
+static void DumpPacket(const void* buf, int len)
 {
-    void* frames[16]{};
-    USHORT captured = RtlCaptureStackBackTrace(2, 16, frames, nullptr);
-
-    for (USHORT i = 0; i < captured; ++i)
+    const uint8_t* b = (const uint8_t*)buf;
+    char line[128];
+    int  pos = 0;
+    for (int i = 0; i < len; ++i)
     {
-        DWORD64 addr = (DWORD64)frames[i];
-        DWORD64 disp = 0;
-        char symbolBuffer[sizeof(SYMBOL_INFO) + 64] = {};
-        auto* sym = (SYMBOL_INFO*)symbolBuffer;
-        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-        sym->MaxNameLen = 63;
-
-        if (SymFromAddr(GetCurrentProcess(), addr, &disp, sym))
-            Logf("[%s] %2u: %s+%llx", tag, i, sym->Name, disp);
-        else
-            Logf("[%s] %2u: %p", tag, i, frames[i]);
+        pos += sprintf_s(line + pos, sizeof(line) - pos, "%02X ", b[i]);
+        if (pos > 70 || i == len - 1)
+        {
+            line[pos] = 0;
+            WriteRawLog(line);
+            pos = 0;
+        }
     }
+}
 
-    Logf("[%s] this=%p builder=%p", tag, thisPtr, builder);
+static void __fastcall Hook_SendInternal(void* ep, void* /*edx*/, const void* buf, int len)
+{
+    DumpPacket(buf, len);
+    g_realSendInternal(ep, buf, len);
+}
+
+static void InstallSendInternalHook(void* endpoint)
+{
+    if (g_sendInternalHooked || !endpoint)
+        return;
+    auto vtbl = *(DWORD_PTR**)endpoint;
+    void* target = (void*)vtbl[0x2C / 4];
+    if (MH_CreateHook(target, &Hook_SendInternal, reinterpret_cast<void**>(&g_realSendInternal)) == MH_OK &&
+        MH_EnableHook(target) == MH_OK)
+    {
+        g_sendInternalHooked = true;
+        WriteRawLog("SendInternal hook installed");
+    }
+}
+
+static void DisableSendBuilderHooks()
+{
+    if (g_ipSendBuilderTarget)
+    {
+        MH_DisableHook(g_ipSendBuilderTarget);
+        MH_RemoveHook(g_ipSendBuilderTarget);
+        g_ipSendBuilderTarget = nullptr;
+    }
+    if (g_tcpSendBuilderTarget)
+    {
+        MH_DisableHook(g_tcpSendBuilderTarget);
+        MH_RemoveHook(g_tcpSendBuilderTarget);
+        g_tcpSendBuilderTarget = nullptr;
+    }
+    if (g_udpSendBuilderTarget)
+    {
+        MH_DisableHook(g_udpSendBuilderTarget);
+        MH_RemoveHook(g_udpSendBuilderTarget);
+        g_udpSendBuilderTarget = nullptr;
+    }
 }
 
 static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* _unused, void* builder)
 {
-    DumpCallstack("IPCommonEndpoint::SendBuilder", thisPtr, builder);
+    InstallSendInternalHook(thisPtr);
+    if (g_sendInternalHooked)
+        DisableSendBuilderHooks();
     return fpIP_SendBuilder(thisPtr, builder);
 }
 
 static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* _unused, void* builder)
 {
-    DumpCallstack("TCPEndpoint::SendBuilder", thisPtr, builder);
+    InstallSendInternalHook(thisPtr);
+    if (g_sendInternalHooked)
+        DisableSendBuilderHooks();
     return fpTCP_SendBuilder(thisPtr, builder);
 }
 
 static void* __fastcall Hook_UDP_SendBuilder(void* thisPtr, void* _unused, void* builder)
 {
-    DumpCallstack("UDPEndpoint::SendBuilder", thisPtr, builder);
+    InstallSendInternalHook(thisPtr);
+    if (g_sendInternalHooked)
+        DisableSendBuilderHooks();
     return fpUDP_SendBuilder(thisPtr, builder);
 }
 
@@ -564,11 +615,11 @@ static void InstallSendBuilderHooks()
         exe = GetModuleHandleA(nullptr);
     DWORD_PTR base = reinterpret_cast<DWORD_PTR>(exe);
 
-    struct HookDef { DWORD_PTR rva; void* hook; void** tramp; const char* name; };
+    struct HookDef { DWORD_PTR rva; void* hook; void** tramp; void** targetStore; const char* name; };
     HookDef tbl[] = {
-        { 0x247260, Hook_IP_SendBuilder,  (void**)&fpIP_SendBuilder,  "IP_SendBuilder" },
-        { 0x247220, Hook_TCP_SendBuilder, (void**)&fpTCP_SendBuilder, "TCP_SendBuilder" },
-        { 0x247230, Hook_UDP_SendBuilder, (void**)&fpUDP_SendBuilder, "UDP_SendBuilder" },
+        {0x247260, Hook_IP_SendBuilder,  (void**)&fpIP_SendBuilder,  &g_ipSendBuilderTarget,  "IP_SendBuilder"},
+        {0x247220, Hook_TCP_SendBuilder, (void**)&fpTCP_SendBuilder, &g_tcpSendBuilderTarget, "TCP_SendBuilder"},
+        {0x247230, Hook_UDP_SendBuilder, (void**)&fpUDP_SendBuilder, &g_udpSendBuilderTarget, "UDP_SendBuilder"},
     };
 
     for (auto& e : tbl)
@@ -577,6 +628,7 @@ static void InstallSendBuilderHooks()
         if (MH_CreateHook(target, e.hook, e.tramp) == MH_OK &&
             MH_EnableHook(target) == MH_OK)
         {
+            *e.targetStore = target;
             char buf[64];
             sprintf_s(buf, sizeof(buf), "%s hook installed", e.name);
             WriteRawLog(buf);
