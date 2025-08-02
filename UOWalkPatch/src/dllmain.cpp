@@ -75,8 +75,34 @@ static DWORD WINAPI RegisterThread(LPVOID);             // worker for deferred r
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
-static void InstallSendHook();
+static void InstallSendHooks();
+static void TraceOutbound(const void* caller, const char* buf, int len, void* thisPtr);
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags);
+static int WSAAPI H_WSASend(
+    SOCKET s,
+    const WSABUF* wsa,
+    DWORD cnt,
+    LPDWORD sent,
+    DWORD flags,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+static int WSAAPI H_WSASendTo(
+    SOCKET s,
+    const WSABUF* wsa,
+    DWORD cnt,
+    LPDWORD sent,
+    DWORD flags,
+    const sockaddr* dst,
+    int dstlen,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+static int WSAAPI H_SendTo(
+    SOCKET s,
+    const char* buf,
+    int len,
+    int flags,
+    const sockaddr* to,
+    int tolen);
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
 
 // Deferred Lua registration state
@@ -106,7 +132,10 @@ static void* g_dest;
 using SendPacket_t = void(__thiscall*)(void* netMgr, const void* pkt, int len);
 static SendPacket_t g_sendPacket = nullptr;
 static void* g_netMgr = nullptr;
-static int (WSAAPI* g_real_send)(SOCKET s, const char* buf, int len, int flags) = nullptr;
+static int (WSAAPI* g_real_send)(SOCKET, const char*, int, int) = nullptr;
+static int (WSAAPI* g_real_WSASend)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
+static int (WSAAPI* g_real_WSASendTo)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, const sockaddr*, int, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
+static int (WSAAPI* g_real_sendto)(SOCKET, const char*, int, int, const sockaddr*, int) = nullptr;
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -373,50 +402,101 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
 }
 
 // ---------------------------------------------------------------------------
-// send() hook
+// Winsock send-family hooks
 // ---------------------------------------------------------------------------
 
-static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
+static void TraceOutbound(const void* caller, const char* buf, int len, void* thisPtr)
 {
-    void* caller = _ReturnAddress();
     MEMORY_BASIC_INFORMATION mbi{};
     HMODULE exe = GetModuleHandleA(nullptr);
     if (exe && VirtualQuery(caller, &mbi, sizeof(mbi)) && mbi.AllocationBase == exe)
     {
-        Logf("send called from %p  (len=%d, id=%02X)", caller, len, (unsigned char)buf[0]);
+        Logf("send-family from %p  len=%d  id=%02X", caller, len, (unsigned char)buf[0]);
         if (!g_sendPacket)
-            g_sendPacket = reinterpret_cast<SendPacket_t>(FindFuncStart(caller));
+            g_sendPacket = reinterpret_cast<SendPacket_t>(FindFuncStart(const_cast<void*>(caller)));
         if (!g_netMgr)
-        {
-#if defined(_MSC_VER)
-            __asm mov g_netMgr, ecx
-#else
-            __asm__("mov %0, %%ecx" : "=r"(g_netMgr));
-#endif
-        }
+            g_netMgr = thisPtr;
         if (g_sendPacket && g_netMgr)
             RegisterOurLuaFunctions();
     }
+}
+
+static void* GetThisPtr()
+{
+    void* p = nullptr;
+#if defined(_MSC_VER)
+    __asm mov p, ecx
+#else
+    __asm__("mov %0, %%ecx" : "=r"(p));
+#endif
+    return p;
+}
+
+static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
+{
+    TraceOutbound(_ReturnAddress(), buf, len, GetThisPtr());
     return g_real_send ? g_real_send(s, buf, len, flags) : 0;
 }
 
-static void InstallSendHook()
+static int WSAAPI H_WSASend(
+    SOCKET s,
+    const WSABUF* wsa,
+    DWORD cnt,
+    LPDWORD sent,
+    DWORD flags,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
+{
+    if (cnt)
+        TraceOutbound(_ReturnAddress(), wsa[0].buf, (int)wsa[0].len, GetThisPtr());
+    return g_real_WSASend ? g_real_WSASend(s, wsa, cnt, sent, flags, ov, cr) : 0;
+}
+
+static int WSAAPI H_WSASendTo(
+    SOCKET s,
+    const WSABUF* wsa,
+    DWORD cnt,
+    LPDWORD sent,
+    DWORD flags,
+    const sockaddr* dst,
+    int dstlen,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
+{
+    if (cnt)
+        TraceOutbound(_ReturnAddress(), wsa[0].buf, (int)wsa[0].len, GetThisPtr());
+    return g_real_WSASendTo ? g_real_WSASendTo(s, wsa, cnt, sent, flags, dst, dstlen, ov, cr) : 0;
+}
+
+static int WSAAPI H_SendTo(
+    SOCKET s,
+    const char* buf,
+    int len,
+    int flags,
+    const sockaddr* to,
+    int tolen)
+{
+    TraceOutbound(_ReturnAddress(), buf, len, GetThisPtr());
+    return g_real_sendto ? g_real_sendto(s, buf, len, flags, to, tolen) : 0;
+}
+
+static void InstallSendHooks()
 {
     HMODULE ws = GetModuleHandleA("ws2_32.dll");
-    if (!ws)
-        ws = LoadLibraryA("ws2_32.dll");
-    if (!ws)
-        return;
-    void* target = GetProcAddress(ws, "send");
-    if (target &&
-        MH_CreateHook(target, &H_Send, reinterpret_cast<LPVOID*>(&g_real_send)) == MH_OK &&
-        MH_EnableHook(target) == MH_OK)
+    if (!ws) ws = LoadLibraryA("ws2_32.dll");
+    if (!ws) return;
+    struct HookDef { const char* name; void* hook; void** tramp; };
+    HookDef tbl[] = {
+        {"send",      (void*)H_Send,      (void**)&g_real_send},
+        {"WSASend",   (void*)H_WSASend,   (void**)&g_real_WSASend},
+        {"WSASendTo", (void*)H_WSASendTo, (void**)&g_real_WSASendTo},
+        {"sendto",    (void*)H_SendTo,    (void**)&g_real_sendto},
+    };
+    for (auto& e : tbl)
     {
-        WriteRawLog("send hook installed");
-    }
-    else
-    {
-        WriteRawLog("send hook failed");
+        void* target = GetProcAddress(ws, e.name);
+        if (target && MH_CreateHook(target, e.hook, e.tramp) == MH_OK && MH_EnableHook(target) == MH_OK)
+            Logf("%s hook installed", e.name);
     }
 }
 
@@ -1023,7 +1103,7 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
 
         // Install hooks
         InstallUpdateHook();
-        InstallSendHook();
+        InstallSendHooks();
 
         // Start background thread to scan for Lua state
         g_scanThread = CreateThread(nullptr, 0, WaitForLua, nullptr, 0, nullptr);

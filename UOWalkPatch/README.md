@@ -35,8 +35,11 @@ next to the DLL if possible, otherwise in `%WINDIR%\Temp`.
 The patch exposes a couple of helper calls to Lua. `DummyPrint` simply logs a
 message and `walk` triggers the client's internal movement routine. For sending
 arbitrary packets without Lua, the DLL exports a `SendRaw` function that
-forwards a byte buffer through the client's network layer. The Lua functions are
-registered automatically when the helper locates the client's Lua state.
+forwards a byte buffer through the client's network layer. Internally the DLL
+hooks the Winsock send-family (`send`, `WSASend`, `WSASendTo`, `sendto`) to
+surface the game's packet wrapper and capture the network manager pointer. The
+Lua functions are registered automatically when the helper locates the client's
+Lua state.
 
 ## Troubleshooting
 
