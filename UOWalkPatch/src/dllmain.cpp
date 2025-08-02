@@ -918,6 +918,7 @@ static void RegisterOurLuaFunctions()
 {
     static bool dummyReg = false;
     static bool walkReg = false;
+    static bool sendReg = false;
     if (!g_luaState || !g_origRegLua)
         return;
 
@@ -957,7 +958,6 @@ static void RegisterOurLuaFunctions()
     else if (!g_moveComp && !walkReg) {
         WriteRawLog("walk function prerequisites missing");
     }
-
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 
