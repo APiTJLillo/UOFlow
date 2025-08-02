@@ -2,12 +2,14 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <winsock2.h>
 #include <psapi.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <atomic>
 #include <minhook.h>
+#include <intrin.h>
 
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
@@ -25,8 +27,8 @@ struct GlobalStateInfo {
     // ... more fields we haven't identified yet
 };
 
-// Global state 
-static HANDLE g_logFile;
+// Global state
+static HANDLE g_logFile = INVALID_HANDLE_VALUE;
 static char   g_logPath[MAX_PATH];
 static BOOL   g_logAnnounced;
 static BOOL   g_initialized;
@@ -73,6 +75,9 @@ static DWORD WINAPI RegisterThread(LPVOID);             // worker for deferred r
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
+static void InstallSendHook();
+static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags);
+extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
 
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
@@ -98,6 +103,10 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     uint32_t dir,
     int     runFlag);
 static void* g_dest;
+using SendPacket_t = void(__thiscall*)(void* netMgr, const void* pkt, int len);
+static SendPacket_t g_sendPacket = nullptr;
+static void* g_netMgr = nullptr;
+static int (WSAAPI* g_real_send)(SOCKET s, const char* buf, int len, int flags) = nullptr;
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -121,6 +130,18 @@ static bool IsOnCurrentStack(void* p)
 {
     NT_TIB* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
     return p >= tib->StackLimit && p < tib->StackBase;
+}
+
+// Heuristic scan backwards for a typical function prologue
+static void* FindFuncStart(void* retAddr)
+{
+    BYTE* p = static_cast<BYTE*>(retAddr);
+    for (int i = 1; i < 64; ++i)
+    {
+        if (p[-i] == 0x55 && p[-i + 1] == 0x8B && p[-i + 2] == 0xEC)
+            return p - i;
+    }
+    return nullptr;
 }
 
 // Simple memory search helper
@@ -309,6 +330,18 @@ static int __cdecl Lua_Walk(void* L)
     return 0;
 }
 
+extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len)
+{
+    if (len > 0 && g_sendPacket && g_netMgr)
+    {
+        g_sendPacket(g_netMgr, bytes, len);
+    }
+    else
+    {
+        WriteRawLog("SendRaw called before prerequisites were ready");
+    }
+}
+
 
 static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     void* _unused,  // EDX
@@ -339,6 +372,53 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     return rc;
 }
 
+// ---------------------------------------------------------------------------
+// send() hook
+// ---------------------------------------------------------------------------
+
+static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
+{
+    void* caller = _ReturnAddress();
+    MEMORY_BASIC_INFORMATION mbi{};
+    HMODULE exe = GetModuleHandleA(nullptr);
+    if (exe && VirtualQuery(caller, &mbi, sizeof(mbi)) && mbi.AllocationBase == exe)
+    {
+        Logf("send called from %p  (len=%d, id=%02X)", caller, len, (unsigned char)buf[0]);
+        if (!g_sendPacket)
+            g_sendPacket = reinterpret_cast<SendPacket_t>(FindFuncStart(caller));
+        if (!g_netMgr)
+        {
+#if defined(_MSC_VER)
+            __asm mov g_netMgr, ecx
+#else
+            __asm__("mov %0, %%ecx" : "=r"(g_netMgr));
+#endif
+        }
+        if (g_sendPacket && g_netMgr)
+            RegisterOurLuaFunctions();
+    }
+    return g_real_send ? g_real_send(s, buf, len, flags) : 0;
+}
+
+static void InstallSendHook()
+{
+    HMODULE ws = GetModuleHandleA("ws2_32.dll");
+    if (!ws)
+        ws = LoadLibraryA("ws2_32.dll");
+    if (!ws)
+        return;
+    void* target = GetProcAddress(ws, "send");
+    if (target &&
+        MH_CreateHook(target, &H_Send, reinterpret_cast<LPVOID*>(&g_real_send)) == MH_OK &&
+        MH_EnableHook(target) == MH_OK)
+    {
+        WriteRawLog("send hook installed");
+    }
+    else
+    {
+        WriteRawLog("send hook failed");
+    }
+}
 
 // ---------------------------------------------------------------------------
 // updateDataStructureState hook
@@ -798,7 +878,6 @@ static void RegisterOurLuaFunctions()
         WriteRawLog("walk function prerequisites missing");
     }
 
-
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 
@@ -942,8 +1021,9 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         }
         WriteRawLog("MinHook initialized successfully");
 
-        // Install update hook once
+        // Install hooks
         InstallUpdateHook();
+        InstallSendHook();
 
         // Start background thread to scan for Lua state
         g_scanThread = CreateThread(nullptr, 0, WaitForLua, nullptr, 0, nullptr);
