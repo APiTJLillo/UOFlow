@@ -54,11 +54,12 @@ target_include_directories(UOWalkPatchDLL PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(UOWalkPatchDLL PRIVATE 
+target_link_libraries(UOWalkPatchDLL PRIVATE
     minhook
     psapi
     kernel32
     user32
+    dbghelp
 )
 
 # Set DLL properties
