@@ -107,6 +107,7 @@ static int WSAAPI H_SendTo(
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
 static void InstallSendBuilderHooks();
 static void InstallSendInternalHook(void* endpoint);
+static void DumpCallstack(const char* tag, void* thisPtr, void* builder);
 
 using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 static SendBuilder_t fpIP_SendBuilder  = nullptr;
@@ -527,6 +528,67 @@ static void InstallSendHooks()
 
 static void DumpPacket(const void* buf, int len)
 {
+    void*  frames[16]{};
+    USHORT captured = RtlCaptureStackBackTrace(2, 16, frames, nullptr);
+    const uint8_t* b = (const uint8_t*)buf;
+    char line[128];
+    int  pos = 0;
+    for (int i = 0; i < len; ++i)
+    {
+        pos += sprintf_s(line + pos, sizeof(line) - pos, "%02X ", b[i]);
+        if (pos > 70 || i == len - 1)
+        {
+            line[pos] = 0;
+            WriteRawLog(line);
+            pos = 0;
+        }
+    }
+}
+
+static void __fastcall Hook_SendInternal(void* ep, void* /*edx*/, const void* buf, int len)
+{
+    DumpPacket(buf, len);
+    g_realSendInternal(ep, buf, len);
+}
+
+static void InstallSendInternalHook(void* endpoint)
+{
+    if (g_sendInternalHooked || !endpoint)
+        return;
+    auto vtbl = *(DWORD_PTR**)endpoint;
+    void* target = (void*)vtbl[0x2C / 4];
+    if (MH_CreateHook(target, &Hook_SendInternal, reinterpret_cast<void**>(&g_realSendInternal)) == MH_OK &&
+        MH_EnableHook(target) == MH_OK)
+    {
+        g_sendInternalHooked = true;
+        WriteRawLog("SendInternal hook installed");
+    }
+}
+
+static void DisableSendBuilderHooks()
+{
+    if (g_ipSendBuilderTarget)
+    {
+        MH_DisableHook(g_ipSendBuilderTarget);
+        MH_RemoveHook(g_ipSendBuilderTarget);
+        g_ipSendBuilderTarget = nullptr;
+    }
+    if (g_tcpSendBuilderTarget)
+    {
+        MH_DisableHook(g_tcpSendBuilderTarget);
+        MH_RemoveHook(g_tcpSendBuilderTarget);
+        g_tcpSendBuilderTarget = nullptr;
+    }
+    if (g_udpSendBuilderTarget)
+    {
+        MH_DisableHook(g_udpSendBuilderTarget);
+        MH_RemoveHook(g_udpSendBuilderTarget);
+        g_udpSendBuilderTarget = nullptr;
+    }
+}
+
+static void DumpPacket(const void* buf, int len)
+{
     const uint8_t* b = (const uint8_t*)buf;
     char line[128];
     int  pos = 0;
@@ -586,6 +648,7 @@ static void DisableSendBuilderHooks()
 
 static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* _unused, void* builder)
 {
+    DumpCallstack("IPCommonEndpoint::SendBuilder", thisPtr, builder);
     InstallSendInternalHook(thisPtr);
     if (g_sendInternalHooked)
         DisableSendBuilderHooks();
@@ -594,6 +657,7 @@ static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* _unused, void* 
 
 static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* _unused, void* builder)
 {
+    DumpCallstack("TCPEndpoint::SendBuilder", thisPtr, builder);
     InstallSendInternalHook(thisPtr);
     if (g_sendInternalHooked)
         DisableSendBuilderHooks();
@@ -602,6 +666,7 @@ static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* _unused, void*
 
 static void* __fastcall Hook_UDP_SendBuilder(void* thisPtr, void* _unused, void* builder)
 {
+    DumpCallstack("UDPEndpoint::SendBuilder", thisPtr, builder);
     InstallSendInternalHook(thisPtr);
     if (g_sendInternalHooked)
         DisableSendBuilderHooks();
