@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Force 32-bit build
 set(CMAKE_GENERATOR_PLATFORM Win32)
 set_property(GLOBAL PROPERTY FIND_LIBRARY_USE_LIB32_PATHS TRUE)
-
+add_subdirectory(external/minhook/src)
 if(MSVC)
     # Force static runtime linking
     foreach(flag_var
@@ -48,7 +48,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 # Add the DLL project
 add_library(UOWalkPatchDLL SHARED
     src/dllmain.cpp
-    src/minhook.cpp
 )
 
 target_include_directories(UOWalkPatchDLL PRIVATE 
@@ -56,6 +55,7 @@ target_include_directories(UOWalkPatchDLL PRIVATE
 )
 
 target_link_libraries(UOWalkPatchDLL PRIVATE 
+    minhook
     psapi
     kernel32
     user32

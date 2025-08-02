@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <atomic>
-#include "minhook.h"
+#include <minhook.h>
 
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
@@ -77,21 +77,26 @@ static void FindMoveComponent();
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
 
-// New UpdateMove hook (correct __thiscall prototype)
-typedef bool(__thiscall* tUpdateMove)(
-    void*     self,
-    uint32_t  mode,
-    uint32_t  dir,
-    uint32_t  flag);
-static tUpdateMove g_origUpdate = nullptr;   // trampoline
-static tUpdateMove g_updateMove = nullptr;   // pattern-resolved target
+// New updateDataStructureState hook
+using UpdateState_t =
+uint32_t(__thiscall*)(void* thisPtr,
+    uint32_t dir,
+    int      runFlag,
+    void* dest);
+static UpdateState_t g_updateState = nullptr;
+static UpdateState_t g_origUpdate = nullptr;
 static void InstallUpdateHook();
 static volatile LONG g_haveMoveComp = 0;
 static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
 static std::atomic_flag g_regBusy = ATOMIC_FLAG_INIT;
 static HANDLE g_regThread = nullptr;
-static bool __fastcall H_UpdateMove(void* self, uint32_t mode, uint32_t dir, uint32_t flag);
+static uint32_t __fastcall H_Update(void* thisPtr,   // ECX
+    void* _unused,   // EDX (ignored)
+    uint32_t dir,
+    int      runFlag,
+    void* dest);
+static void* g_dest;
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -222,10 +227,10 @@ static BYTE* FindPatternText(const char* sig)
     return nullptr;
 }
 
-// Scan for the movement component using the UpdateMove vtable entry
+// Scan for the movement component using the updateState vtable entry
 static void FindMoveComponent()
 {
-    if (!g_updateMove)
+    if (!g_updateState)
         return;
 
     MODULEINFO mi{};
@@ -237,7 +242,7 @@ static void FindMoveComponent()
 
     BYTE* vtable = nullptr;
     for (BYTE* p = base; p + 0x44 <= end; p += 4) {
-        if (*(DWORD*)(p + 0x40) == (DWORD)(uintptr_t)g_updateMove) {
+        if (*(DWORD*)(p + 0x40) == (DWORD)(uintptr_t)g_updateState) {
             vtable = p;
             break;
         }
@@ -282,81 +287,97 @@ static void FindMoveComponent()
     WriteRawLog("Move component not found via scan");
 }
 
+typedef uint32_t(__stdcall* UpdateState_stdcall)(uint32_t moveComp,
+    uint32_t dir,
+    int runFlag,
+    void* dest);
+
 static int __cdecl Lua_Walk(void* L)
 {
     if (g_moveComp && g_origUpdate)
     {
         __try {
-            // runFlag = 2 (run), dir = 4 (south)
-            g_origUpdate(g_moveComp, /*mode*/2, /*dir*/4, /*flag*/0);
+            auto fn = reinterpret_cast<UpdateState_stdcall>(g_origUpdate);
+            fn(static_cast<uint32_t>(reinterpret_cast<uintptr_t>(g_moveComp)), 4, 2, g_dest);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
-            WriteRawLog("Exception inside Lua_Walk → UpdateMove");
+            WriteRawLog("Exception calling updateState");
         }
     }
     else {
-        WriteRawLog("Lua_Walk called before moveComp captured");
+        WriteRawLog("walk() called before prerequisites were ready");
     }
     return 0;
 }
 
-static bool __fastcall H_UpdateMove(void* self, uint32_t mode, uint32_t dir, uint32_t flag)
+static uint32_t __fastcall H_Update(void* thisPtr,   // ECX
+    void* _unused,   // EDX (ignored)
+    uint32_t dir,
+    int      runFlag,
+    void* dest)
 {
-    if (!g_moveComp) {
-        g_moveComp = self;
+    if (!g_moveComp && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0)
+    {
+        g_moveComp = reinterpret_cast<void*>(thisPtr);
+        DWORD tid = GetCurrentThreadId();
+        Logf("Captured moveComp = %p (thread %lu)", g_moveComp, tid);
         InterlockedExchange(&g_needWalkReg, 1);
     }
 
-    static std::atomic<long> s_logCnt{ 0 };
-    if (g_updateDepth++ == 0 && s_logCnt.load() < 200) {
-        char buf[128];
-        sprintf_s(buf, "UpdateMove(%p, mode=%u, dir=%u, flag=%u)",
-                  self, mode, dir, flag);
-        WriteRawLog(buf);
-        ++s_logCnt;
-    }
-
-    bool ret = g_origUpdate(self, mode, dir, flag);
-    --g_updateDepth;
-
-    if (g_needWalkReg && g_updateDepth == 0) {
-        if (!g_regBusy.test_and_set()) {
-            InterlockedExchange(&g_needWalkReg, 0);
-            HANDLE h = CreateThread(nullptr, 0, RegisterThread, nullptr, 0, nullptr);
-            if (h) CloseHandle(h);
+    if (g_updateDepth++ == 0) {
+        if (g_updateLogCount < 200) {
+            Logf("updateState(this=%p, dir=%u, run=%d, dest=%d)",
+                (void*)(uintptr_t)thisPtr, dir, runFlag, dest);
+            ++g_updateLogCount;
         }
     }
+    g_dest = dest;  // Store dest for later use
+    uint32_t ret = g_origUpdate(thisPtr, dir, runFlag, dest);
+    --g_updateDepth;
+
+    // Safe point outside client code; check for deferred registration
+    Logf("H_Update safe-point on TID=%lu needReg=%ld depth=%d",
+        GetCurrentThreadId(), g_needWalkReg, g_updateDepth);
+    if (g_needWalkReg && g_updateDepth == 0) {
+        if (!g_regBusy.test_and_set(std::memory_order_acquire)) {
+            InterlockedExchange(&g_needWalkReg, 0);
+            g_regThread = CreateThread(nullptr, 0, RegisterThread, nullptr, 0, nullptr);
+            if (g_regThread) CloseHandle(g_regThread);
+        }
+    }
+
     return ret;
 }
 
 // ---------------------------------------------------------------------------
-// UpdateMove hook installation
+// updateDataStructureState hook
 // ---------------------------------------------------------------------------
 
 static void InstallUpdateHook()
 {
-    const char* kSig =
-        "83 EC 58 53 55 8B 6C 24 64 80 7D 79 00 56 57 0F 85";
+    const char* kUpdateSig =
+        "83 EC 58 53 55 8B 6C 24 64 80 7D 79 00 56 57 0F 85 ?? ?? ?? 00"
+        "80 7D 7A 00 0F 85 ?? ?? ?? 00";
 
-    BYTE* hit = FindPatternText(kSig);
-    if (!hit) {
-        WriteRawLog("UpdateMove pattern not found");
-        return;
-    }
-
-    g_updateMove = reinterpret_cast<tUpdateMove>(hit);
-    char buf[64];
-    sprintf_s(buf, sizeof(buf), "UpdateMove found @ %p", g_updateMove);
-    WriteRawLog(buf);
-
-    if (MH_CreateHook(g_updateMove, &H_UpdateMove,
-                       reinterpret_cast<LPVOID*>(&g_origUpdate)) == MH_OK &&
-        MH_EnableHook(g_updateMove) == MH_OK)
-    {
-        WriteRawLog("UpdateMove hook installed successfully");
+    BYTE* hit = FindPatternText(kUpdateSig);
+    if (hit) {
+        g_updateState = reinterpret_cast<UpdateState_t>(hit);
+        char buf[64];
+        sprintf_s(buf, sizeof(buf), "Found updateDataStructureState at %p", hit);
+        WriteRawLog(buf);
+        if (MH_CreateHook(g_updateState, &H_Update, reinterpret_cast<LPVOID*>(&g_origUpdate)) == MH_OK &&
+            MH_EnableHook(g_updateState) == MH_OK)
+        {
+            WriteRawLog("updateDataStructureState hook installed");
+        }
+        else {
+            WriteRawLog("updateDataStructureState hook failed; falling back to scan");
+            g_origUpdate = g_updateState;
+            FindMoveComponent();
+        }
     }
     else {
-        WriteRawLog("UpdateMove hook failed – falling back");
+        WriteRawLog("updateDataStructureState not found");
     }
 }
 
@@ -771,7 +792,7 @@ static void RegisterOurLuaFunctions()
         }
     }
 
-    if (g_updateMove && g_moveComp && !walkReg) {
+    if (g_updateState && g_moveComp && !walkReg) {
         const char* walkName = "walk";
         WriteRawLog("Registering walk Lua function...");
         bool ok = CallClientRegister(g_luaState,
