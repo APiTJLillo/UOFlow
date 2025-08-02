@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <psapi.h>
+#include <dbghelp.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -104,6 +105,17 @@ static int WSAAPI H_SendTo(
     const sockaddr* to,
     int tolen);
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
+
+static void DumpCallstack(const char* tag, void* thisPtr, void* builder);
+static void InstallSendBuilderHooks();
+
+using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
+static SendBuilder_t fpIP_SendBuilder  = nullptr;
+static SendBuilder_t fpTCP_SendBuilder = nullptr;
+static SendBuilder_t fpUDP_SendBuilder = nullptr;
+static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* unused, void* builder);
+static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* unused, void* builder);
+static void* __fastcall Hook_UDP_SendBuilder(void* thisPtr, void* unused, void* builder);
 
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
@@ -497,6 +509,78 @@ static void InstallSendHooks()
         void* target = GetProcAddress(ws, e.name);
         if (target && MH_CreateHook(target, e.hook, e.tramp) == MH_OK && MH_EnableHook(target) == MH_OK)
             Logf("%s hook installed", e.name);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SendBuilder detours
+// ---------------------------------------------------------------------------
+
+static void DumpCallstack(const char* tag, void* thisPtr, void* builder)
+{
+    void* frames[16]{};
+    USHORT captured = RtlCaptureStackBackTrace(2, 16, frames, nullptr);
+
+    for (USHORT i = 0; i < captured; ++i)
+    {
+        DWORD64 addr = (DWORD64)frames[i];
+        DWORD64 disp = 0;
+        char symbolBuffer[sizeof(SYMBOL_INFO) + 64] = {};
+        auto* sym = (SYMBOL_INFO*)symbolBuffer;
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen = 63;
+
+        if (SymFromAddr(GetCurrentProcess(), addr, &disp, sym))
+            Logf("[%s] %2u: %s+%llx", tag, i, sym->Name, disp);
+        else
+            Logf("[%s] %2u: %p", tag, i, frames[i]);
+    }
+
+    Logf("[%s] this=%p builder=%p", tag, thisPtr, builder);
+}
+
+static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* _unused, void* builder)
+{
+    DumpCallstack("IPCommonEndpoint::SendBuilder", thisPtr, builder);
+    return fpIP_SendBuilder(thisPtr, builder);
+}
+
+static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* _unused, void* builder)
+{
+    DumpCallstack("TCPEndpoint::SendBuilder", thisPtr, builder);
+    return fpTCP_SendBuilder(thisPtr, builder);
+}
+
+static void* __fastcall Hook_UDP_SendBuilder(void* thisPtr, void* _unused, void* builder)
+{
+    DumpCallstack("UDPEndpoint::SendBuilder", thisPtr, builder);
+    return fpUDP_SendBuilder(thisPtr, builder);
+}
+
+static void InstallSendBuilderHooks()
+{
+    HMODULE exe = GetModuleHandleA("UOSA.exe");
+    if (!exe)
+        exe = GetModuleHandleA(nullptr);
+    DWORD_PTR base = reinterpret_cast<DWORD_PTR>(exe);
+
+    struct HookDef { DWORD_PTR rva; void* hook; void** tramp; const char* name; };
+    HookDef tbl[] = {
+        { 0x247260, Hook_IP_SendBuilder,  (void**)&fpIP_SendBuilder,  "IP_SendBuilder" },
+        { 0x247220, Hook_TCP_SendBuilder, (void**)&fpTCP_SendBuilder, "TCP_SendBuilder" },
+        { 0x247230, Hook_UDP_SendBuilder, (void**)&fpUDP_SendBuilder, "UDP_SendBuilder" },
+    };
+
+    for (auto& e : tbl)
+    {
+        void* target = reinterpret_cast<void*>(base + e.rva);
+        if (MH_CreateHook(target, e.hook, e.tramp) == MH_OK &&
+            MH_EnableHook(target) == MH_OK)
+        {
+            char buf[64];
+            sprintf_s(buf, sizeof(buf), "%s hook installed", e.name);
+            WriteRawLog(buf);
+        }
     }
 }
 
@@ -1101,9 +1185,13 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         }
         WriteRawLog("MinHook initialized successfully");
 
+        // Initialize symbol handler for stack traces
+        SymInitialize(GetCurrentProcess(), NULL, TRUE);
+
         // Install hooks
         InstallUpdateHook();
         InstallSendHooks();
+        InstallSendBuilderHooks();
 
         // Start background thread to scan for Lua state
         g_scanThread = CreateThread(nullptr, 0, WaitForLua, nullptr, 0, nullptr);
@@ -1166,6 +1254,8 @@ static void CleanupDLL() {
         }
         g_initialized = FALSE;
     }
+
+    SymCleanup(GetCurrentProcess());
 
     if (g_logFile != INVALID_HANDLE_VALUE) {
         WriteRawLog("Closing log file");
