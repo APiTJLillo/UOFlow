@@ -107,18 +107,16 @@ static int WSAAPI H_SendTo(
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
 
 static void DumpCallstack(const char* tag, void* thisPtr, void* builder);
-static void InstallSendBuilderHooks();
+static void HookSendPacket();
+static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pkt, int len);
 
 using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
-static SendBuilder_t fpIP_SendBuilder = nullptr;
-static SendBuilder_t fpTCP_SendBuilder = nullptr;
-static SendBuilder_t fpUDP_SendBuilder = nullptr;
+static SendBuilder_t fpSendBuilder = nullptr;
+static bool g_sendBuilderHooked = false;
 // Limit how many callstacks we dump to avoid overwhelming the log
 static std::atomic<int> g_sendBuilderDumpCount{0};
 static const int kMaxSendBuilderDumps = 10;
-static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* builder);
-static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* builder);
-static void* __fastcall Hook_UDP_SendBuilder(void* thisPtr, void* builder);
+static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder);
 
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
@@ -145,7 +143,9 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     int     runFlag);
 static void* g_dest;
 using SendPacket_t = void(__thiscall*)(void* netMgr, const void* pkt, int len);
-static SendPacket_t g_sendPacket = nullptr;
+static SendPacket_t g_sendPacket = nullptr; // trampoline after hook
+static void* g_sendPacketTarget = nullptr;  // real SendPacket function
+static bool g_sendPacketHooked = false;
 static void* g_netMgr = nullptr;
 static int (WSAAPI* g_real_send)(SOCKET, const char*, int, int) = nullptr;
 static int (WSAAPI* g_real_WSASend)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
@@ -427,11 +427,13 @@ static void TraceOutbound(const void* caller, const char* buf, int len, void* th
     if (exe && VirtualQuery(caller, &mbi, sizeof(mbi)) && mbi.AllocationBase == exe)
     {
         Logf("send-family from %p  len=%d  id=%02X", caller, len, (unsigned char)buf[0]);
-        if (!g_sendPacket)
-            g_sendPacket = reinterpret_cast<SendPacket_t>(FindFuncStart(const_cast<void*>(caller)));
+        if (!g_sendPacketTarget)
+            g_sendPacketTarget = FindFuncStart(const_cast<void*>(caller));
         if (!g_netMgr)
             g_netMgr = thisPtr;
-        if (g_sendPacket && g_netMgr)
+        if (g_sendPacketTarget && !g_sendPacketHooked)
+            HookSendPacket();
+        if (g_sendPacketHooked && g_netMgr)
             RegisterOurLuaFunctions();
         // Dump a portion of the outgoing packet to aid debugging
         int dumpLen = len > 64 ? 64 : len;
@@ -546,53 +548,40 @@ static void DumpCallstack(const char* tag, void* thisPtr, void* builder)
     Logf("[%s] this=%p builder=%p", tag, thisPtr, builder);
 }
 
-static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* builder)
+static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder)
 {
     int count = g_sendBuilderDumpCount.fetch_add(1, std::memory_order_relaxed);
     if (count < kMaxSendBuilderDumps)
-        DumpCallstack("IPCommonEndpoint::SendBuilder", thisPtr, builder);
-    return fpIP_SendBuilder(thisPtr, builder);
+        DumpCallstack("SendBuilder", thisPtr, builder);
+    return fpSendBuilder(thisPtr, builder);
 }
 
-static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* builder)
+static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pkt, int len)
 {
-    int count = g_sendBuilderDumpCount.fetch_add(1, std::memory_order_relaxed);
-    if (count < kMaxSendBuilderDumps)
-        DumpCallstack("TCPEndpoint::SendBuilder", thisPtr, builder);
-    return fpTCP_SendBuilder(thisPtr, builder);
-}
-
-static void* __fastcall Hook_UDP_SendBuilder(void* thisPtr, void* builder)
-{
-    int count = g_sendBuilderDumpCount.fetch_add(1, std::memory_order_relaxed);
-    if (count < kMaxSendBuilderDumps)
-        DumpCallstack("UDPEndpoint::SendBuilder", thisPtr, builder);
-    return fpUDP_SendBuilder(thisPtr, builder);
-}
-
-static void InstallSendBuilderHooks()
-{
-    HMODULE exe = GetModuleHandleA("UOSA.exe");
-    if (!exe)
-        exe = GetModuleHandleA(nullptr);
-    DWORD_PTR base = reinterpret_cast<DWORD_PTR>(exe);
-
-    struct HookDef { DWORD_PTR rva; void* hook; void** tramp; const char* name; };
-    HookDef tbl[] = {
-        { 0x247260, Hook_IP_SendBuilder,  (void**)&fpIP_SendBuilder,  "IP_SendBuilder" },
-        { 0x247220, Hook_TCP_SendBuilder, (void**)&fpTCP_SendBuilder, "TCP_SendBuilder" },
-        { 0x247230, Hook_UDP_SendBuilder, (void**)&fpUDP_SendBuilder, "UDP_SendBuilder" },
-    };
-
-    for (auto& e : tbl)
+    if (!g_sendBuilderHooked && thisPtr)
     {
-        void* target = reinterpret_cast<void*>(base + e.rva);
-        if (MH_CreateHook(target, e.hook, e.tramp) == MH_OK &&
-            MH_EnableHook(target) == MH_OK)
+        void** vtable = *reinterpret_cast<void***>(thisPtr);
+        void* sendBuilder = vtable[0x2C / 4];
+        if (sendBuilder &&
+            MH_CreateHook(sendBuilder, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
+            MH_EnableHook(sendBuilder) == MH_OK)
         {
-            char buf[64];
-            sprintf_s(buf, sizeof(buf), "%s hook installed", e.name);
-            WriteRawLog(buf);
+            g_sendBuilderHooked = true;
+            WriteRawLog("SendBuilder hook installed");
+        }
+    }
+    g_sendPacket(thisPtr, pkt, len);
+}
+
+static void HookSendPacket()
+{
+    if (!g_sendPacketHooked && g_sendPacketTarget)
+    {
+        if (MH_CreateHook(g_sendPacketTarget, H_SendPacket, reinterpret_cast<LPVOID*>(&g_sendPacket)) == MH_OK &&
+            MH_EnableHook(g_sendPacketTarget) == MH_OK)
+        {
+            g_sendPacketHooked = true;
+            WriteRawLog("SendPacket hook installed");
         }
     }
 }
@@ -1204,7 +1193,6 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         // Install hooks
         InstallUpdateHook();
         InstallSendHooks();
-        InstallSendBuilderHooks();
 
         // Start background thread to scan for Lua state
         g_scanThread = CreateThread(nullptr, 0, WaitForLua, nullptr, 0, nullptr);
