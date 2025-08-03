@@ -113,6 +113,9 @@ using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 static SendBuilder_t fpIP_SendBuilder = nullptr;
 static SendBuilder_t fpTCP_SendBuilder = nullptr;
 static SendBuilder_t fpUDP_SendBuilder = nullptr;
+// Limit how many callstacks we dump to avoid overwhelming the log
+static std::atomic<int> g_sendBuilderDumpCount{0};
+static const int kMaxSendBuilderDumps = 10;
 static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* builder);
 static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* builder);
 static void* __fastcall Hook_UDP_SendBuilder(void* thisPtr, void* builder);
@@ -430,6 +433,10 @@ static void TraceOutbound(const void* caller, const char* buf, int len, void* th
             g_netMgr = thisPtr;
         if (g_sendPacket && g_netMgr)
             RegisterOurLuaFunctions();
+        // Dump a portion of the outgoing packet to aid debugging
+        int dumpLen = len > 64 ? 64 : len;
+        if (dumpLen > 0)
+            DumpMemory("Outbound packet", (void*)buf, dumpLen);
     }
 }
 
@@ -541,19 +548,25 @@ static void DumpCallstack(const char* tag, void* thisPtr, void* builder)
 
 static void* __fastcall Hook_IP_SendBuilder(void* thisPtr, void* builder)
 {
-    DumpCallstack("IPCommonEndpoint::SendBuilder", thisPtr, builder);
+    int count = g_sendBuilderDumpCount.fetch_add(1, std::memory_order_relaxed);
+    if (count < kMaxSendBuilderDumps)
+        DumpCallstack("IPCommonEndpoint::SendBuilder", thisPtr, builder);
     return fpIP_SendBuilder(thisPtr, builder);
 }
 
 static void* __fastcall Hook_TCP_SendBuilder(void* thisPtr, void* builder)
 {
-    DumpCallstack("TCPEndpoint::SendBuilder", thisPtr, builder);
+    int count = g_sendBuilderDumpCount.fetch_add(1, std::memory_order_relaxed);
+    if (count < kMaxSendBuilderDumps)
+        DumpCallstack("TCPEndpoint::SendBuilder", thisPtr, builder);
     return fpTCP_SendBuilder(thisPtr, builder);
 }
 
 static void* __fastcall Hook_UDP_SendBuilder(void* thisPtr, void* builder)
 {
-    DumpCallstack("UDPEndpoint::SendBuilder", thisPtr, builder);
+    int count = g_sendBuilderDumpCount.fetch_add(1, std::memory_order_relaxed);
+    if (count < kMaxSendBuilderDumps)
+        DumpCallstack("UDPEndpoint::SendBuilder", thisPtr, builder);
     return fpUDP_SendBuilder(thisPtr, builder);
 }
 
