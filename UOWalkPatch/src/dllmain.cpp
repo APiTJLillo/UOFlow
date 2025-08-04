@@ -115,10 +115,42 @@ static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pk
 using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 static SendBuilder_t fpSendBuilder = nullptr;
 static bool g_sendBuilderHooked = false;
-// Limit how many callstacks we dump to avoid overwhelming the log
-static std::atomic<int> g_sendBuilderDumpCount{0};
-static const int kMaxSendBuilderDumps = 10;
+static bool g_builderScanned = false;
 static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder);
+
+// Data for probing endpoint vtable entries
+struct BuilderProbeInfo {
+    SendBuilder_t original;
+};
+
+static BuilderProbeInfo g_builderProbes[32] = {};
+
+template<int Index>
+static void* __fastcall Probe_SendBuilder(void* thisPtr, void* builder)
+{
+    uint8_t* plain = *(uint8_t**)builder;
+    int len = *(int*)((uint8_t*)builder + 4);
+    uint8_t first = plain ? plain[0] : 0;
+    Logf("Builder? index=%02X len=%d first=%02X", Index, len, first);
+    auto orig = g_builderProbes[Index].original;
+    return orig ? orig(thisPtr, builder) : nullptr;
+}
+
+using ProbeFn = void* (__fastcall*)(void*, void*);
+#define PROBE_ENTRY(n) Probe_SendBuilder<n>
+static ProbeFn g_probeFns[32] = {
+    PROBE_ENTRY(0),  PROBE_ENTRY(1),  PROBE_ENTRY(2),  PROBE_ENTRY(3),
+    PROBE_ENTRY(4),  PROBE_ENTRY(5),  PROBE_ENTRY(6),  PROBE_ENTRY(7),
+    PROBE_ENTRY(8),  PROBE_ENTRY(9),  PROBE_ENTRY(10), PROBE_ENTRY(11),
+    PROBE_ENTRY(12), PROBE_ENTRY(13), PROBE_ENTRY(14), PROBE_ENTRY(15),
+    PROBE_ENTRY(16), PROBE_ENTRY(17), PROBE_ENTRY(18), PROBE_ENTRY(19),
+    PROBE_ENTRY(20), PROBE_ENTRY(21), PROBE_ENTRY(22), PROBE_ENTRY(23),
+    PROBE_ENTRY(24), PROBE_ENTRY(25), PROBE_ENTRY(26), PROBE_ENTRY(27),
+    PROBE_ENTRY(28), PROBE_ENTRY(29), PROBE_ENTRY(30), PROBE_ENTRY(31)
+};
+#undef PROBE_ENTRY
+
+static void ScanEndpointVTable(void* endpoint);
 
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
@@ -138,6 +170,8 @@ static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
 static std::atomic_flag g_regBusy = ATOMIC_FLAG_INIT;
 static HANDLE g_regThread = nullptr;
+static std::atomic<int> g_pendingDir{-1};
+static std::atomic<int> g_pendingRun{1};
 static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     void* _unused,  // EDX
     void* destPtr,
@@ -348,19 +382,10 @@ typedef uint32_t(__stdcall* UpdateState_stdcall)(uint32_t moveComp,
     int runFlag,
     void* dest);
 
-static int __cdecl Lua_Walk(void* L)
+static int __cdecl Lua_Walk(void* /*L*/)
 {
-    if (g_moveComp && g_origUpdate && g_dest)
-    {
-        auto fn = reinterpret_cast<UpdateState_t>(g_origUpdate);
-
-        /* example: face East (dir = 4) and run (runFlag = 2) */
-        fn(g_moveComp, g_dest, /*dir*/ 4, /*run*/ 2);
-    }
-    else
-    {
-        WriteRawLog("walk() called before prerequisites were ready");
-    }
+    g_pendingRun.store(2, std::memory_order_relaxed); // run
+    g_pendingDir.store(4, std::memory_order_relaxed); // east
     return 0;
 }
 
@@ -374,6 +399,24 @@ extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int l
     {
         WriteRawLog("SendRaw called before prerequisites were ready");
     }
+}
+
+extern "C" __declspec(dllexport) void __stdcall SendWalk(int dir, int run)
+{
+    if (!g_sendPacket || !g_netMgr)
+    {
+        WriteRawLog("SendWalk prerequisites missing");
+        return;
+    }
+    uint8_t pkt[7]{};
+    pkt[0] = 0x02;
+    pkt[1] = uint8_t(dir & 7) | (run ? 0x80 : 0);
+    static uint32_t seq = 0;
+    ++seq;
+    pkt[2] = uint8_t(seq >> 16);
+    pkt[3] = uint8_t(seq >> 8);
+    pkt[4] = uint8_t(seq);
+    g_sendPacket(g_netMgr, pkt, sizeof(pkt));
 }
 
 
@@ -400,9 +443,28 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
 
     g_dest = destPtr;                 // save the real dest for Lua walk()
     uint32_t rc = g_origUpdate(thisPtr, destPtr, dir, runFlag);
-    --g_updateDepth;
 
-    /* …safe-point code unchanged… */
+    int pend = g_pendingDir.exchange(-1, std::memory_order_relaxed);
+    if (pend >= 0 && g_origUpdate)
+    {
+        struct Vec3 { int16_t x, y; int8_t z; };
+        Vec3 tmp = *reinterpret_cast<Vec3*>(destPtr);
+        static const int dx[8] = {0,1,1,1,0,-1,-1,-1};
+        static const int dy[8] = {-1,-1,0,1,1,1,0,-1};
+        tmp.x += dx[pend];
+        tmp.y += dy[pend];
+        int run = g_pendingRun.load(std::memory_order_relaxed);
+        g_origUpdate(thisPtr, &tmp, (uint32_t)pend, run);
+    }
+
+    --g_updateDepth;
+    if (g_updateDepth == 0) {
+        if (InterlockedExchange(&g_needWalkReg, 0) &&
+            !g_regBusy.test_and_set(std::memory_order_acquire))
+        {
+            g_regThread = CreateThread(nullptr, 0, RegisterThread, nullptr, 0, nullptr);
+        }
+    }
     return rc;
 }
 
@@ -534,32 +596,36 @@ static void DumpCallstack(const char* tag, void* thisPtr, void* builder)
 
 static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder)
 {
-    int count = g_sendBuilderDumpCount.fetch_add(1, std::memory_order_relaxed);
-    if (count < kMaxSendBuilderDumps)
-        DumpCallstack("SendBuilder", thisPtr, builder);
+    uint8_t* plain = *(uint8_t**)builder;
+    int len = *(int*)((uint8_t*)builder + 4);
+    DumpMemory("PLAINTEXT SendBuilder", plain, len);
     return fpSendBuilder(thisPtr, builder);
+}
+
+static void ScanEndpointVTable(void* endpoint)
+{
+    void** vtbl = *reinterpret_cast<void***>(endpoint);
+    for (int i = 0; i < 32; ++i)
+    {
+        void* fn = vtbl[i];
+        Logf("endpoint vtbl[%02X] = %p", i, fn);
+        if (fn && MH_CreateHook(fn, g_probeFns[i], reinterpret_cast<LPVOID*>(&g_builderProbes[i].original)) == MH_OK)
+            MH_EnableHook(fn);
+    }
 }
 
 static void TryHookSendBuilder(void* endpoint)
 {
-    if (g_sendBuilderHooked || !endpoint)
+    if (g_builderScanned || !endpoint)
         return;
 
-    void** vtbl = *reinterpret_cast<void***>(endpoint);
-    void* realSendBuilder = vtbl[0x2C / 4];
-
-    if (realSendBuilder &&
-        MH_CreateHook(realSendBuilder, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
-        MH_EnableHook(realSendBuilder) == MH_OK)
-    {
-        g_sendBuilderHooked = true;
-        Logf("SendBuilder hook installed at %p", realSendBuilder);
-    }
+    g_builderScanned = true;
+    ScanEndpointVTable(endpoint);
 }
 
 static void HookSendBuilderFromNetMgr()
 {
-    if (g_sendBuilderHooked || !g_globalStateInfo)
+    if (g_builderScanned || !g_globalStateInfo)
         return;
 
     void** netMgr = reinterpret_cast<void**>(g_globalStateInfo->networkConfig);
@@ -572,22 +638,15 @@ static void HookSendBuilderFromNetMgr()
 
 static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pkt, int len)
 {
+    // Log the plaintext packet before the client encrypts it
+    DumpMemory("PLAIN-SendPacket", const_cast<void*>(pkt), len);
+
     if (!g_netMgr)
         g_netMgr = thisPtr;
-    if (!g_sendBuilderHooked && thisPtr)
-    {
-        void** vtable = *reinterpret_cast<void***>(thisPtr);
-        void* sendBuilder = vtable[0x2C / 4];
-        if (sendBuilder &&
-            MH_CreateHook(sendBuilder, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
-            MH_EnableHook(sendBuilder) == MH_OK)
-        {
-            g_sendBuilderHooked = true;
-            WriteRawLog("SendBuilder hook installed");
-        }
-    }
-    if (g_sendBuilderHooked)
-        RegisterOurLuaFunctions();
+    if (!g_builderScanned)
+        HookSendBuilderFromNetMgr();
+    if (g_sendBuilderHooked || g_builderScanned)
+        InterlockedExchange(&g_needWalkReg, 1);
     g_sendPacket(thisPtr, pkt, len);
 }
 
