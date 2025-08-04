@@ -458,8 +458,13 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     }
 
     --g_updateDepth;
-
-    /* …safe-point code unchanged… */
+    if (g_updateDepth == 0) {
+        if (InterlockedExchange(&g_needWalkReg, 0) &&
+            !g_regBusy.test_and_set(std::memory_order_acquire))
+        {
+            g_regThread = CreateThread(nullptr, 0, RegisterThread, nullptr, 0, nullptr);
+        }
+    }
     return rc;
 }
 
@@ -641,7 +646,7 @@ static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pk
     if (!g_builderScanned)
         HookSendBuilderFromNetMgr();
     if (g_sendBuilderHooked || g_builderScanned)
-        RegisterOurLuaFunctions();
+        InterlockedExchange(&g_needWalkReg, 1);
     g_sendPacket(thisPtr, pkt, len);
 }
 
