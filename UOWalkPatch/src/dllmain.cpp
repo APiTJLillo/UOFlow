@@ -115,7 +115,42 @@ static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pk
 using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 static SendBuilder_t fpSendBuilder = nullptr;
 static bool g_sendBuilderHooked = false;
+static bool g_builderScanned = false;
 static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder);
+
+// Data for probing endpoint vtable entries
+struct BuilderProbeInfo {
+    SendBuilder_t original;
+};
+
+static BuilderProbeInfo g_builderProbes[32] = {};
+
+template<int Index>
+static void* __fastcall Probe_SendBuilder(void* thisPtr, void* builder)
+{
+    uint8_t* plain = *(uint8_t**)builder;
+    int len = *(int*)((uint8_t*)builder + 4);
+    uint8_t first = plain ? plain[0] : 0;
+    Logf("Builder? index=%02X len=%d first=%02X", Index, len, first);
+    auto orig = g_builderProbes[Index].original;
+    return orig ? orig(thisPtr, builder) : nullptr;
+}
+
+using ProbeFn = void* (__fastcall*)(void*, void*);
+#define PROBE_ENTRY(n) Probe_SendBuilder<n>
+static ProbeFn g_probeFns[32] = {
+    PROBE_ENTRY(0),  PROBE_ENTRY(1),  PROBE_ENTRY(2),  PROBE_ENTRY(3),
+    PROBE_ENTRY(4),  PROBE_ENTRY(5),  PROBE_ENTRY(6),  PROBE_ENTRY(7),
+    PROBE_ENTRY(8),  PROBE_ENTRY(9),  PROBE_ENTRY(10), PROBE_ENTRY(11),
+    PROBE_ENTRY(12), PROBE_ENTRY(13), PROBE_ENTRY(14), PROBE_ENTRY(15),
+    PROBE_ENTRY(16), PROBE_ENTRY(17), PROBE_ENTRY(18), PROBE_ENTRY(19),
+    PROBE_ENTRY(20), PROBE_ENTRY(21), PROBE_ENTRY(22), PROBE_ENTRY(23),
+    PROBE_ENTRY(24), PROBE_ENTRY(25), PROBE_ENTRY(26), PROBE_ENTRY(27),
+    PROBE_ENTRY(28), PROBE_ENTRY(29), PROBE_ENTRY(30), PROBE_ENTRY(31)
+};
+#undef PROBE_ENTRY
+
+static void ScanEndpointVTable(void* endpoint);
 
 // Deferred Lua registration state
 static volatile LONG g_needWalkReg = 0;  // 0 = no, 1 = register when safe
@@ -562,26 +597,30 @@ static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder)
     return fpSendBuilder(thisPtr, builder);
 }
 
+static void ScanEndpointVTable(void* endpoint)
+{
+    void** vtbl = *reinterpret_cast<void***>(endpoint);
+    for (int i = 0; i < 32; ++i)
+    {
+        void* fn = vtbl[i];
+        Logf("endpoint vtbl[%02X] = %p", i, fn);
+        if (fn && MH_CreateHook(fn, g_probeFns[i], reinterpret_cast<LPVOID*>(&g_builderProbes[i].original)) == MH_OK)
+            MH_EnableHook(fn);
+    }
+}
+
 static void TryHookSendBuilder(void* endpoint)
 {
-    if (g_sendBuilderHooked || !endpoint)
+    if (g_builderScanned || !endpoint)
         return;
 
-    void** vtbl = *reinterpret_cast<void***>(endpoint);
-    void* realSendBuilder = vtbl[0x2C / 4];
-
-    if (realSendBuilder &&
-        MH_CreateHook(realSendBuilder, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
-        MH_EnableHook(realSendBuilder) == MH_OK)
-    {
-        g_sendBuilderHooked = true;
-        Logf("SendBuilder hook installed at %p", realSendBuilder);
-    }
+    g_builderScanned = true;
+    ScanEndpointVTable(endpoint);
 }
 
 static void HookSendBuilderFromNetMgr()
 {
-    if (g_sendBuilderHooked || !g_globalStateInfo)
+    if (g_builderScanned || !g_globalStateInfo)
         return;
 
     void** netMgr = reinterpret_cast<void**>(g_globalStateInfo->networkConfig);
@@ -599,19 +638,9 @@ static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pk
 
     if (!g_netMgr)
         g_netMgr = thisPtr;
-    if (!g_sendBuilderHooked && thisPtr)
-    {
-        void** vtable = *reinterpret_cast<void***>(thisPtr);
-        void* sendBuilder = vtable[0x2C / 4];
-        if (sendBuilder &&
-            MH_CreateHook(sendBuilder, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
-            MH_EnableHook(sendBuilder) == MH_OK)
-        {
-            g_sendBuilderHooked = true;
-            WriteRawLog("SendBuilder hook installed");
-        }
-    }
-    if (g_sendBuilderHooked)
+    if (!g_builderScanned)
+        HookSendBuilderFromNetMgr();
+    if (g_sendBuilderHooked || g_builderScanned)
         RegisterOurLuaFunctions();
     g_sendPacket(thisPtr, pkt, len);
 }
