@@ -10,7 +10,6 @@
 #include <stdarg.h>
 #include <atomic>
 #include <minhook.h>
-#include <intrin.h>
 
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
@@ -77,7 +76,8 @@ static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
 static void InstallSendHooks();
-static void TraceOutbound(const void* caller, const char* buf, int len, void* thisPtr);
+static void TraceOutbound(const char* buf, int len);
+static void FindSendPacket();
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags);
 static int WSAAPI H_WSASend(
     SOCKET s,
@@ -174,18 +174,6 @@ static bool IsOnCurrentStack(void* p)
 {
     NT_TIB* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
     return p >= tib->StackLimit && p < tib->StackBase;
-}
-
-// Heuristic scan backwards for a typical function prologue
-static void* FindFuncStart(void* retAddr)
-{
-    BYTE* p = static_cast<BYTE*>(retAddr);
-    for (int i = 1; i < 64; ++i)
-    {
-        if (p[-i] == 0x55 && p[-i + 1] == 0x8B && p[-i + 2] == 0xEC)
-            return p - i;
-    }
-    return nullptr;
 }
 
 // Simple memory search helper
@@ -420,42 +408,17 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
 // Winsock send-family hooks
 // ---------------------------------------------------------------------------
 
-static void TraceOutbound(const void* caller, const char* buf, int len, void* thisPtr)
+static void TraceOutbound(const char* buf, int len)
 {
-    MEMORY_BASIC_INFORMATION mbi{};
-    HMODULE exe = GetModuleHandleA(nullptr);
-    if (exe && VirtualQuery(caller, &mbi, sizeof(mbi)) && mbi.AllocationBase == exe)
-    {
-        Logf("send-family from %p  len=%d  id=%02X", caller, len, (unsigned char)buf[0]);
-        if (!g_sendPacketTarget)
-            g_sendPacketTarget = FindFuncStart(const_cast<void*>(caller));
-        if (!g_netMgr)
-            g_netMgr = thisPtr;
-        if (g_sendPacketTarget && !g_sendPacketHooked)
-            HookSendPacket();
-        if (g_sendPacketHooked && g_netMgr)
-            RegisterOurLuaFunctions();
-        // Dump a portion of the outgoing packet to aid debugging
-        int dumpLen = len > 64 ? 64 : len;
-        if (dumpLen > 0)
-            DumpMemory("Outbound packet", (void*)buf, dumpLen);
-    }
-}
-
-static void* GetThisPtr()
-{
-    void* p = nullptr;
-#if defined(_MSC_VER)
-    __asm mov p, ecx
-#else
-    __asm__("mov %0, %%ecx" : "=r"(p));
-#endif
-    return p;
+    Logf("send-family len=%d id=%02X", len, (unsigned char)buf[0]);
+    int dumpLen = len > 64 ? 64 : len;
+    if (dumpLen > 0)
+        DumpMemory("Outbound packet", (void*)buf, dumpLen);
 }
 
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
 {
-    TraceOutbound(_ReturnAddress(), buf, len, GetThisPtr());
+    TraceOutbound(buf, len);
     return g_real_send ? g_real_send(s, buf, len, flags) : 0;
 }
 
@@ -469,7 +432,7 @@ static int WSAAPI H_WSASend(
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
     if (cnt)
-        TraceOutbound(_ReturnAddress(), wsa[0].buf, (int)wsa[0].len, GetThisPtr());
+        TraceOutbound(wsa[0].buf, (int)wsa[0].len);
     return g_real_WSASend ? g_real_WSASend(s, wsa, cnt, sent, flags, ov, cr) : 0;
 }
 
@@ -485,7 +448,7 @@ static int WSAAPI H_WSASendTo(
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
     if (cnt)
-        TraceOutbound(_ReturnAddress(), wsa[0].buf, (int)wsa[0].len, GetThisPtr());
+        TraceOutbound(wsa[0].buf, (int)wsa[0].len);
     return g_real_WSASendTo ? g_real_WSASendTo(s, wsa, cnt, sent, flags, dst, dstlen, ov, cr) : 0;
 }
 
@@ -497,7 +460,7 @@ static int WSAAPI H_SendTo(
     const sockaddr* to,
     int tolen)
 {
-    TraceOutbound(_ReturnAddress(), buf, len, GetThisPtr());
+    TraceOutbound(buf, len);
     return g_real_sendto ? g_real_sendto(s, buf, len, flags, to, tolen) : 0;
 }
 
@@ -518,6 +481,23 @@ static void InstallSendHooks()
         void* target = GetProcAddress(ws, e.name);
         if (target && MH_CreateHook(target, e.hook, e.tramp) == MH_OK && MH_EnableHook(target) == MH_OK)
             Logf("%s hook installed", e.name);
+    }
+}
+
+static void FindSendPacket()
+{
+    const char* kSig = "51 53 55 56 57 8B F1";
+    BYTE* hit = FindPatternText(kSig);
+    if (hit)
+    {
+        g_sendPacketTarget = hit;
+        char buf[64];
+        sprintf_s(buf, sizeof(buf), "Found SendPacket at %p", hit);
+        WriteRawLog(buf);
+    }
+    else
+    {
+        WriteRawLog("SendPacket signature not found");
     }
 }
 
@@ -558,6 +538,8 @@ static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder)
 
 static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pkt, int len)
 {
+    if (!g_netMgr)
+        g_netMgr = thisPtr;
     if (!g_sendBuilderHooked && thisPtr)
     {
         void** vtable = *reinterpret_cast<void***>(thisPtr);
@@ -570,6 +552,8 @@ static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pk
             WriteRawLog("SendBuilder hook installed");
         }
     }
+    if (g_sendBuilderHooked)
+        RegisterOurLuaFunctions();
     g_sendPacket(thisPtr, pkt, len);
 }
 
@@ -1193,6 +1177,8 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         // Install hooks
         InstallUpdateHook();
         InstallSendHooks();
+        FindSendPacket();
+        HookSendPacket();
 
         // Start background thread to scan for Lua state
         g_scanThread = CreateThread(nullptr, 0, WaitForLua, nullptr, 0, nullptr);
