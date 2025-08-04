@@ -115,9 +115,6 @@ static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pk
 using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 static SendBuilder_t fpSendBuilder = nullptr;
 static bool g_sendBuilderHooked = false;
-// Limit how many callstacks we dump to avoid overwhelming the log
-static std::atomic<int> g_sendBuilderDumpCount{0};
-static const int kMaxSendBuilderDumps = 10;
 static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder);
 
 // Deferred Lua registration state
@@ -138,6 +135,8 @@ static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
 static std::atomic_flag g_regBusy = ATOMIC_FLAG_INIT;
 static HANDLE g_regThread = nullptr;
+static std::atomic<int> g_pendingDir{-1};
+static std::atomic<int> g_pendingRun{1};
 static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     void* _unused,  // EDX
     void* destPtr,
@@ -348,19 +347,10 @@ typedef uint32_t(__stdcall* UpdateState_stdcall)(uint32_t moveComp,
     int runFlag,
     void* dest);
 
-static int __cdecl Lua_Walk(void* L)
+static int __cdecl Lua_Walk(void* /*L*/)
 {
-    if (g_moveComp && g_origUpdate && g_dest)
-    {
-        auto fn = reinterpret_cast<UpdateState_t>(g_origUpdate);
-
-        /* example: face East (dir = 4) and run (runFlag = 2) */
-        fn(g_moveComp, g_dest, /*dir*/ 4, /*run*/ 2);
-    }
-    else
-    {
-        WriteRawLog("walk() called before prerequisites were ready");
-    }
+    g_pendingRun.store(2, std::memory_order_relaxed); // run
+    g_pendingDir.store(4, std::memory_order_relaxed); // east
     return 0;
 }
 
@@ -374,6 +364,24 @@ extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int l
     {
         WriteRawLog("SendRaw called before prerequisites were ready");
     }
+}
+
+extern "C" __declspec(dllexport) void __stdcall SendWalk(int dir, int run)
+{
+    if (!g_sendPacket || !g_netMgr)
+    {
+        WriteRawLog("SendWalk prerequisites missing");
+        return;
+    }
+    uint8_t pkt[7]{};
+    pkt[0] = 0x02;
+    pkt[1] = uint8_t(dir & 7) | (run ? 0x80 : 0);
+    static uint32_t seq = 0;
+    ++seq;
+    pkt[2] = uint8_t(seq >> 16);
+    pkt[3] = uint8_t(seq >> 8);
+    pkt[4] = uint8_t(seq);
+    g_sendPacket(g_netMgr, pkt, sizeof(pkt));
 }
 
 
@@ -400,6 +408,20 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
 
     g_dest = destPtr;                 // save the real dest for Lua walk()
     uint32_t rc = g_origUpdate(thisPtr, destPtr, dir, runFlag);
+
+    int pend = g_pendingDir.exchange(-1, std::memory_order_relaxed);
+    if (pend >= 0 && g_origUpdate)
+    {
+        struct Vec3 { int16_t x, y; int8_t z; };
+        Vec3 tmp = *reinterpret_cast<Vec3*>(destPtr);
+        static const int dx[8] = {0,1,1,1,0,-1,-1,-1};
+        static const int dy[8] = {-1,-1,0,1,1,1,0,-1};
+        tmp.x += dx[pend];
+        tmp.y += dy[pend];
+        int run = g_pendingRun.load(std::memory_order_relaxed);
+        g_origUpdate(thisPtr, &tmp, (uint32_t)pend, run);
+    }
+
     --g_updateDepth;
 
     /* …safe-point code unchanged… */
@@ -534,9 +556,9 @@ static void DumpCallstack(const char* tag, void* thisPtr, void* builder)
 
 static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder)
 {
-    int count = g_sendBuilderDumpCount.fetch_add(1, std::memory_order_relaxed);
-    if (count < kMaxSendBuilderDumps)
-        DumpCallstack("SendBuilder", thisPtr, builder);
+    uint8_t* plain = *(uint8_t**)builder;
+    int len = *(int*)((uint8_t*)builder + 4);
+    DumpMemory("PLAINTEXT SendBuilder", plain, len);
     return fpSendBuilder(thisPtr, builder);
 }
 
@@ -572,6 +594,9 @@ static void HookSendBuilderFromNetMgr()
 
 static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pkt, int len)
 {
+    // Log the plaintext packet before the client encrypts it
+    DumpMemory("PLAIN-SendPacket", const_cast<void*>(pkt), len);
+
     if (!g_netMgr)
         g_netMgr = thisPtr;
     if (!g_sendBuilderHooked && thisPtr)
