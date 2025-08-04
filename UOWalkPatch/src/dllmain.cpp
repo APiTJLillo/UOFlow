@@ -107,6 +107,8 @@ static int WSAAPI H_SendTo(
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
 
 static void DumpCallstack(const char* tag, void* thisPtr, void* builder);
+static void TryHookSendBuilder(void* endpoint);
+static void HookSendBuilderFromNetMgr();
 static void HookSendPacket();
 static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pkt, int len);
 
@@ -414,6 +416,8 @@ static void TraceOutbound(const char* buf, int len)
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0)
         DumpMemory("Outbound packet", (void*)buf, dumpLen);
+    if (!g_sendBuilderHooked)
+        HookSendBuilderFromNetMgr();
 }
 
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
@@ -534,6 +538,36 @@ static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder)
     if (count < kMaxSendBuilderDumps)
         DumpCallstack("SendBuilder", thisPtr, builder);
     return fpSendBuilder(thisPtr, builder);
+}
+
+static void TryHookSendBuilder(void* endpoint)
+{
+    if (g_sendBuilderHooked || !endpoint)
+        return;
+
+    void** vtbl = *reinterpret_cast<void***>(endpoint);
+    void* realSendBuilder = vtbl[0x2C / 4];
+
+    if (realSendBuilder &&
+        MH_CreateHook(realSendBuilder, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
+        MH_EnableHook(realSendBuilder) == MH_OK)
+    {
+        g_sendBuilderHooked = true;
+        Logf("SendBuilder hook installed at %p", realSendBuilder);
+    }
+}
+
+static void HookSendBuilderFromNetMgr()
+{
+    if (g_sendBuilderHooked || !g_globalStateInfo)
+        return;
+
+    void** netMgr = reinterpret_cast<void**>(g_globalStateInfo->networkConfig);
+    if (!netMgr)
+        return;
+
+    void* endpoint = netMgr[0];
+    TryHookSendBuilder(endpoint);
 }
 
 static void __fastcall H_SendPacket(void* thisPtr, void* _unused, const void* pkt, int len)
@@ -1063,6 +1097,7 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
             WriteRawLog("Registering our Lua functions...");
             // Defer actual Lua‑function registration to the next safe‑point
             InterlockedExchange(&g_needWalkReg, 1);
+            HookSendBuilderFromNetMgr();
         }
     }
 
