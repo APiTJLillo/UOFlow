@@ -213,8 +213,10 @@ static SendPacket_t g_sendPacket = nullptr; // trampoline after hook
 static void* g_sendPacketTarget = nullptr;  // real SendPacket function
 static bool g_sendPacketHooked = false;
 static void* g_netMgr = nullptr;
-static uint32_t g_fastWalkKeys[32]{};
+static uint32_t g_fastWalkKeys[32]{}; // ring of server-provided keys
 static int      g_fwTop = 0;
+// TODO: ensure this ring is filled from incoming 0xB8 FastWalk_Seed packets
+// before using SendWalk() to dispatch 0x02 movement packets.
 static int (WSAAPI* g_real_send)(SOCKET, const char*, int, int) = nullptr;
 static int (WSAAPI* g_real_WSASend)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_WSASendTo)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, const sockaddr*, int, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
@@ -515,8 +517,10 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
 
     --g_updateDepth;
     if (g_updateDepth == 0) {
-        if (InterlockedExchange(&g_needWalkReg, 0))
+        if (InterlockedExchange(&g_needWalkReg, 0)) {
+            WriteRawLog("H_Update safe point - registering Lua helpers");
             RegisterOurLuaFunctions();   // same thread → no exception
+        }
     }
     return rc;
 }
