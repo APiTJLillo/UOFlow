@@ -13,17 +13,17 @@
 
 // Global state structure based on the memory layout observed
 struct GlobalStateInfo {
-    void* luaState;             // 0x00  - Lua state pointer
-    void* databaseManager;      // 0x04  - Database manager
-    bool initialized;           // 0x08  - Init flag 
-    void* resourceManager;      // 0x0C  - Resource manager 
-    void* resourceHandler1;     // 0x10
-    void* networkConfig;        // 0x14
-    void* engineContext;        // 0x18  - Points to engine context, not self
-    void* globalFacetCache;     // 0x1C
-    bool shutdownInitiated;     // 0x20
-    void* resourceNodePtr;      // 0x24
-    void* coreResourceMgr;      // 0x28
+    void*    luaState;          // 0x00 - Lua state pointer
+    void*    databaseManager;   // 0x04 - Database manager
+    uint8_t  reserved8[8];      // 0x08 - Unknown CSV/version field
+    void*    resourceManager;   // 0x10 - Resource manager
+    uint32_t initFlags;         // 0x14 - Initialization flags
+    void*    networkConfig;     // 0x18 - Network configuration
+    void*    engineContext;     // 0x1C - Points to engine context, not self
+    void*    globalFacetCache;  // 0x20
+    bool     shutdownInitiated; // 0x24
+    void*    resourceNodePtr;   // 0x28
+    void*    coreResourceMgr;   // 0x2C
     // ... more fields we haven't identified yet
 };
 
@@ -798,7 +798,11 @@ static void HookSendBuilderFromNetMgr()
         return;
 
     void** netMgr = reinterpret_cast<void**>(g_globalStateInfo->networkConfig);
-    if (!netMgr)
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!netMgr ||
+        !VirtualQuery(netMgr, &mbi, sizeof(mbi)) ||
+        mbi.State != MEM_COMMIT)
         return;
 
     void* endpoint = netMgr[0];
