@@ -384,8 +384,11 @@ typedef uint32_t(__stdcall* UpdateState_stdcall)(uint32_t moveComp,
 
 static int __cdecl Lua_Walk(void* /*L*/)
 {
-    g_pendingRun.store(2, std::memory_order_relaxed); // run
-    g_pendingDir.store(4, std::memory_order_relaxed); // east
+    // Instead of queuing a direction for the update hook, build and
+    // transmit a movement packet directly. This bypasses the game's
+    // internal movement component and relies on our network hook.
+
+    SendWalk(4, 1); // run east
     return 0;
 }
 
