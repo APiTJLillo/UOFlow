@@ -105,6 +105,7 @@ static int WSAAPI H_SendTo(
     const sockaddr* to,
     int tolen);
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
+extern "C" __declspec(dllexport) void __stdcall SendWalk(int dir, int run);
 
 static void DumpCallstack(const char* tag, void* thisPtr, void* builder);
 static void TryHookSendBuilder(void* endpoint);
@@ -183,6 +184,8 @@ static SendPacket_t g_sendPacket = nullptr; // trampoline after hook
 static void* g_sendPacketTarget = nullptr;  // real SendPacket function
 static bool g_sendPacketHooked = false;
 static void* g_netMgr = nullptr;
+static uint32_t g_fastWalkKeys[32]{};
+static int      g_fwTop = 0;
 static int (WSAAPI* g_real_send)(SOCKET, const char*, int, int) = nullptr;
 static int (WSAAPI* g_real_WSASend)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_WSASendTo)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, const sockaddr*, int, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
@@ -197,6 +200,17 @@ static void Logf(const char* fmt, ...)
     vsprintf_s(buf, sizeof(buf), fmt, args);
     va_end(args);
     WriteRawLog(buf);
+}
+
+static void PushFastWalkKey(uint32_t key)
+{
+    if (g_fwTop < (int)(sizeof(g_fastWalkKeys) / sizeof(g_fastWalkKeys[0])))
+        g_fastWalkKeys[g_fwTop++] = key;
+}
+
+static uint32_t PopFastWalkKey()
+{
+    return g_fwTop > 0 ? g_fastWalkKeys[--g_fwTop] : 0;
 }
 
 static int __cdecl Lua_DummyPrint(void* L)
@@ -412,13 +426,13 @@ extern "C" __declspec(dllexport) void __stdcall SendWalk(int dir, int run)
         return;
     }
     uint8_t pkt[7]{};
-    pkt[0] = 0x02;
-    pkt[1] = uint8_t(dir & 7) | (run ? 0x80 : 0);
-    static uint32_t seq = 0;
-    ++seq;
-    pkt[2] = uint8_t(seq >> 16);
-    pkt[3] = uint8_t(seq >> 8);
-    pkt[4] = uint8_t(seq);
+    pkt[0] = 0x02;                                 // Move request opcode
+    pkt[1] = uint8_t(dir & 7) | (run ? 0x80 : 0);  // Direction + run flag
+    static uint8_t seq = 0;
+    if (++seq == 0)
+        seq = 1;                                   // Sequence wraps to 1
+    pkt[2] = seq;
+    *reinterpret_cast<uint32_t*>(pkt + 3) = PopFastWalkKey();
     g_sendPacket(g_netMgr, pkt, sizeof(pkt));
 }
 
