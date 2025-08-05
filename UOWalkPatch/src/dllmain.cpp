@@ -71,12 +71,13 @@ static void InstallWriteWatch();
 static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
 static bool CallClientRegister(void* L, void* func, const char* name);
-static DWORD WINAPI RegisterThread(LPVOID);             // worker for deferred registration
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
 static void InstallSendHooks();
+static void InstallRecvHooks();
 static void TraceOutbound(const char* buf, int len);
+static void TraceInbound(const char* buf, int len);
 static void FindSendPacket();
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags);
 static int WSAAPI H_WSASend(
@@ -104,7 +105,38 @@ static int WSAAPI H_SendTo(
     int flags,
     const sockaddr* to,
     int tolen);
+static int WSAAPI H_Recv(
+    SOCKET s,
+    char* buf,
+    int len,
+    int flags);
+static int WSAAPI H_WSARecv(
+    SOCKET s,
+    LPWSABUF wsa,
+    DWORD cnt,
+    LPDWORD recvd,
+    LPDWORD flags,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+static int WSAAPI H_WSARecvFrom(
+    SOCKET s,
+    LPWSABUF wsa,
+    DWORD cnt,
+    LPDWORD recvd,
+    LPDWORD flags,
+    sockaddr* from,
+    LPINT fromlen,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);
+static int WSAAPI H_RecvFrom(
+    SOCKET s,
+    char* buf,
+    int len,
+    int flags,
+    sockaddr* from,
+    int* fromlen);
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
+extern "C" __declspec(dllexport) void __stdcall SendWalk(int dir, int run);
 
 static void DumpCallstack(const char* tag, void* thisPtr, void* builder);
 static void TryHookSendBuilder(void* endpoint);
@@ -168,8 +200,6 @@ static void InstallUpdateHook();
 static volatile LONG g_haveMoveComp = 0;
 static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
-static std::atomic_flag g_regBusy = ATOMIC_FLAG_INIT;
-static HANDLE g_regThread = nullptr;
 static std::atomic<int> g_pendingDir{-1};
 static std::atomic<int> g_pendingRun{1};
 static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
@@ -183,10 +213,16 @@ static SendPacket_t g_sendPacket = nullptr; // trampoline after hook
 static void* g_sendPacketTarget = nullptr;  // real SendPacket function
 static bool g_sendPacketHooked = false;
 static void* g_netMgr = nullptr;
+static uint32_t g_fastWalkKeys[32]{};
+static int      g_fwTop = 0;
 static int (WSAAPI* g_real_send)(SOCKET, const char*, int, int) = nullptr;
 static int (WSAAPI* g_real_WSASend)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_WSASendTo)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, const sockaddr*, int, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_sendto)(SOCKET, const char*, int, int, const sockaddr*, int) = nullptr;
+static int (WSAAPI* g_real_recv)(SOCKET, char*, int, int) = nullptr;
+static int (WSAAPI* g_real_WSARecv)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
+static int (WSAAPI* g_real_WSARecvFrom)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, sockaddr*, LPINT, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
+static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) = nullptr;
 
 // Helper with printf-style formatting
 static void Logf(const char* fmt, ...)
@@ -197,6 +233,17 @@ static void Logf(const char* fmt, ...)
     vsprintf_s(buf, sizeof(buf), fmt, args);
     va_end(args);
     WriteRawLog(buf);
+}
+
+static void PushFastWalkKey(uint32_t key)
+{
+    if (g_fwTop < (int)(sizeof(g_fastWalkKeys) / sizeof(g_fastWalkKeys[0])))
+        g_fastWalkKeys[g_fwTop++] = key;
+}
+
+static uint32_t PopFastWalkKey()
+{
+    return g_fwTop > 0 ? g_fastWalkKeys[--g_fwTop] : 0;
 }
 
 static int __cdecl Lua_DummyPrint(void* L)
@@ -384,8 +431,11 @@ typedef uint32_t(__stdcall* UpdateState_stdcall)(uint32_t moveComp,
 
 static int __cdecl Lua_Walk(void* /*L*/)
 {
-    g_pendingRun.store(2, std::memory_order_relaxed); // run
-    g_pendingDir.store(4, std::memory_order_relaxed); // east
+    // Instead of queuing a direction for the update hook, build and
+    // transmit a movement packet directly. This bypasses the game's
+    // internal movement component and relies on our network hook.
+
+    SendWalk(4, 1); // run east
     return 0;
 }
 
@@ -409,13 +459,19 @@ extern "C" __declspec(dllexport) void __stdcall SendWalk(int dir, int run)
         return;
     }
     uint8_t pkt[7]{};
-    pkt[0] = 0x02;
-    pkt[1] = uint8_t(dir & 7) | (run ? 0x80 : 0);
-    static uint32_t seq = 0;
-    ++seq;
-    pkt[2] = uint8_t(seq >> 16);
-    pkt[3] = uint8_t(seq >> 8);
-    pkt[4] = uint8_t(seq);
+    pkt[0] = 0x02;                                 // Move request opcode
+    pkt[1] = uint8_t(dir & 7) | (run ? 0x80 : 0);  // Direction + run flag
+    static uint8_t seq = 0;
+    if (++seq == 0)
+        seq = 1;                                   // Sequence wraps to 1
+    pkt[2] = seq;
+    uint32_t key = PopFastWalkKey();
+    if (!key)
+    {
+        WriteRawLog("SendWalk no fast-walk key");
+        return;
+    }
+    *reinterpret_cast<uint32_t*>(pkt + 3) = htonl(key);
     g_sendPacket(g_netMgr, pkt, sizeof(pkt));
 }
 
@@ -459,11 +515,8 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
 
     --g_updateDepth;
     if (g_updateDepth == 0) {
-        if (InterlockedExchange(&g_needWalkReg, 0) &&
-            !g_regBusy.test_and_set(std::memory_order_acquire))
-        {
-            g_regThread = CreateThread(nullptr, 0, RegisterThread, nullptr, 0, nullptr);
-        }
+        if (InterlockedExchange(&g_needWalkReg, 0))
+            RegisterOurLuaFunctions();   // same thread → no exception
     }
     return rc;
 }
@@ -480,6 +533,40 @@ static void TraceOutbound(const char* buf, int len)
         DumpMemory("Outbound packet", (void*)buf, dumpLen);
     if (!g_sendBuilderHooked)
         HookSendBuilderFromNetMgr();
+}
+
+static void TraceInbound(const char* buf, int len)
+{
+    Logf("recv-family len=%d id=%02X", len, (unsigned char)buf[0]);
+    int dumpLen = len > 64 ? 64 : len;
+    if (dumpLen > 0)
+        DumpMemory("Inbound packet", (void*)buf, dumpLen);
+    if ((unsigned char)buf[0] == 0xB8 && len >= 5)
+    {
+        uint32_t key = ntohl(*(uint32_t*)(buf + 1));
+        PushFastWalkKey(key);
+    }
+    else if (len >= 6 && (unsigned char)buf[0] == 0xBF)
+    {
+        uint16_t sub = ((unsigned char)buf[3] << 8) | (unsigned char)buf[4];
+        const uint8_t* payload = (const uint8_t*)buf + 5;
+        if (sub == 0x01 && len >= 5 + 1)
+        {
+            uint8_t count = payload[0];
+            const uint8_t* p = payload + 1;
+            for (uint8_t i = 0; i < count && (p + 4 <= (const uint8_t*)buf + len); ++i)
+            {
+                uint32_t key = ntohl(*(uint32_t*)p);
+                PushFastWalkKey(key);
+                p += 4;
+            }
+        }
+        else if (sub == 0x02 && len >= 5 + 1 + 4)
+        {
+            uint32_t key = ntohl(*(uint32_t*)(payload + 1));
+            PushFastWalkKey(key);
+        }
+    }
 }
 
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
@@ -530,6 +617,64 @@ static int WSAAPI H_SendTo(
     return g_real_sendto ? g_real_sendto(s, buf, len, flags, to, tolen) : 0;
 }
 
+static int WSAAPI H_Recv(
+    SOCKET s,
+    char* buf,
+    int len,
+    int flags)
+{
+    int rc = g_real_recv ? g_real_recv(s, buf, len, flags) : 0;
+    if (rc > 0)
+        TraceInbound(buf, rc);
+    return rc;
+}
+
+static int WSAAPI H_WSARecv(
+    SOCKET s,
+    LPWSABUF wsa,
+    DWORD cnt,
+    LPDWORD recvd,
+    LPDWORD flags,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
+{
+    int rc = g_real_WSARecv ? g_real_WSARecv(s, wsa, cnt, recvd, flags, ov, cr) : 0;
+    if (rc == 0 && cnt && recvd && *recvd)
+        TraceInbound(wsa[0].buf, (int)*recvd);
+    return rc;
+}
+
+static int WSAAPI H_WSARecvFrom(
+    SOCKET s,
+    LPWSABUF wsa,
+    DWORD cnt,
+    LPDWORD recvd,
+    LPDWORD flags,
+    sockaddr* from,
+    LPINT fromlen,
+    LPWSAOVERLAPPED ov,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
+{
+    int rc = g_real_WSARecvFrom ? g_real_WSARecvFrom(s, wsa, cnt, recvd, flags, from, fromlen, ov, cr) : 0;
+    if (rc == 0 && cnt && recvd && *recvd)
+        TraceInbound(wsa[0].buf, (int)*recvd);
+    return rc;
+}
+
+static int WSAAPI H_RecvFrom(
+    SOCKET s,
+    char* buf,
+    int len,
+    int flags,
+    sockaddr* from,
+    int* fromlen)
+{
+    int rc = g_real_recvfrom ? g_real_recvfrom(s, buf, len, flags, from, fromlen) : 0;
+    if (rc > 0)
+        TraceInbound(buf, rc);
+    return rc;
+}
+
 static void InstallSendHooks()
 {
     HMODULE ws = GetModuleHandleA("ws2_32.dll");
@@ -541,6 +686,26 @@ static void InstallSendHooks()
         {"WSASend",   (void*)H_WSASend,   (void**)&g_real_WSASend},
         {"WSASendTo", (void*)H_WSASendTo, (void**)&g_real_WSASendTo},
         {"sendto",    (void*)H_SendTo,    (void**)&g_real_sendto},
+    };
+    for (auto& e : tbl)
+    {
+        void* target = GetProcAddress(ws, e.name);
+        if (target && MH_CreateHook(target, e.hook, e.tramp) == MH_OK && MH_EnableHook(target) == MH_OK)
+            Logf("%s hook installed", e.name);
+    }
+}
+
+static void InstallRecvHooks()
+{
+    HMODULE ws = GetModuleHandleA("ws2_32.dll");
+    if (!ws) ws = LoadLibraryA("ws2_32.dll");
+    if (!ws) return;
+    struct HookDef { const char* name; void* hook; void** tramp; };
+    HookDef tbl[] = {
+        {"recv",       (void*)H_Recv,       (void**)&g_real_recv},
+        {"WSARecv",    (void*)H_WSARecv,    (void**)&g_real_WSARecv},
+        {"WSARecvFrom",(void*)H_WSARecvFrom,(void**)&g_real_WSARecvFrom},
+        {"recvfrom",   (void*)H_RecvFrom,   (void**)&g_real_recvfrom},
     };
     for (auto& e : tbl)
     {
@@ -1051,13 +1216,6 @@ static DWORD WINAPI WaitForLua(LPVOID) {
     return 1;
 }
 
-// Worker thread to register our Lua functions outside of client update
-static DWORD WINAPI RegisterThread(LPVOID) {
-    RegisterOurLuaFunctions();
-    g_regBusy.clear(std::memory_order_release);
-    return 0;
-}
-
 // Safely invoke the client's RegisterLuaFunction
 static bool CallClientRegister(void* L, void* func, const char* name)
 {
@@ -1156,7 +1314,6 @@ static bool __stdcall Hook_Register(void* L, void* func, const char* name) {
             WriteRawLog("Registering our Lua functions...");
             // Defer actual Lua‑function registration to the next safe‑point
             InterlockedExchange(&g_needWalkReg, 1);
-            HookSendBuilderFromNetMgr();
         }
     }
 
@@ -1271,6 +1428,7 @@ static BOOL InitializeDLLSafe(HMODULE hModule) {
         // Install hooks
         InstallUpdateHook();
         InstallSendHooks();
+        InstallRecvHooks();
         FindSendPacket();
         HookSendPacket();
 
