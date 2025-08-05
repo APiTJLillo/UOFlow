@@ -60,6 +60,7 @@ target_link_libraries(UOWalkPatchDLL PRIVATE
     kernel32
     user32
     dbghelp
+    ws2_32
 )
 
 # Set DLL properties
