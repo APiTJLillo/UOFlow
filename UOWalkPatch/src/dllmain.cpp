@@ -71,6 +71,13 @@ static void InstallWriteWatch();
 static int  __cdecl Lua_DummyPrint(void* L);           // our Lua C‑function
 static void RegisterOurLuaFunctions();                  // one‑shot registrar
 static bool CallClientRegister(void* L, void* func, const char* name);
+
+extern "C" {
+    int __cdecl lua_gettop(void* L);
+    long __cdecl lua_tointeger(void* L, int idx);
+    int __cdecl lua_toboolean(void* L, int idx);
+}
+
 static void* g_moveComp = nullptr; // movement component instance
 static int  __cdecl Lua_Walk(void* L);
 static void FindMoveComponent();
@@ -200,8 +207,6 @@ static void InstallUpdateHook();
 static volatile LONG g_haveMoveComp = 0;
 static long g_updateLogCount = 0;  // Log up to ~200 calls for telemetry
 static thread_local int g_updateDepth = 0;  // re-entrancy guard
-static std::atomic<int> g_pendingDir{-1};
-static std::atomic<int> g_pendingRun{1};
 static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
     void* _unused,  // EDX
     void* destPtr,
@@ -215,8 +220,6 @@ static bool g_sendPacketHooked = false;
 static void* g_netMgr = nullptr;
 static uint32_t g_fastWalkKeys[32]{}; // ring of server-provided keys
 static int      g_fwTop = 0;
-// TODO: ensure this ring is filled from incoming 0xB8 FastWalk_Seed packets
-// before using SendWalk() to dispatch 0x02 movement packets.
 static int (WSAAPI* g_real_send)(SOCKET, const char*, int, int) = nullptr;
 static int (WSAAPI* g_real_WSASend)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_WSASendTo)(SOCKET, const WSABUF*, DWORD, LPDWORD, DWORD, const sockaddr*, int, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
@@ -431,13 +434,19 @@ typedef uint32_t(__stdcall* UpdateState_stdcall)(uint32_t moveComp,
     int runFlag,
     void* dest);
 
-static int __cdecl Lua_Walk(void* /*L*/)
+static int __cdecl Lua_Walk(void* L)
 {
-    // Instead of queuing a direction for the update hook, build and
-    // transmit a movement packet directly. This bypasses the game's
-    // internal movement component and relies on our network hook.
-
-    SendWalk(4, 1); // run east
+    int dir = 0;
+    int run = 0;
+    if (L)
+    {
+        int top = lua_gettop(L);
+        if (top >= 1)
+            dir = (int)(lua_tointeger(L, 1)) & 7;
+        if (top >= 2)
+            run = lua_toboolean(L, 2) ? 1 : 0;
+    }
+    SendWalk(dir, run);
     return 0;
 }
 
@@ -475,6 +484,18 @@ extern "C" __declspec(dllexport) void __stdcall SendWalk(int dir, int run)
     }
     *reinterpret_cast<uint32_t*>(pkt + 3) = htonl(key);
     g_sendPacket(g_netMgr, pkt, sizeof(pkt));
+
+    // update the local client position so the avatar moves immediately
+    if (g_moveComp && g_origUpdate && g_dest)
+    {
+        struct Vec3 { int16_t x, y; int8_t z; };
+        Vec3 tmp = *reinterpret_cast<Vec3*>(g_dest);
+        static const int dx[8] = {0,1,1,1,0,-1,-1,-1};
+        static const int dy[8] = {-1,-1,0,1,1,1,0,-1};
+        tmp.x += dx[dir & 7];
+        tmp.y += dy[dir & 7];
+        g_origUpdate(g_moveComp, &tmp, (uint32_t)(dir & 7), run ? 1 : 0);
+    }
 }
 
 
@@ -501,19 +522,6 @@ static uint32_t __fastcall H_Update(void* thisPtr,  // ECX
 
     g_dest = destPtr;                 // save the real dest for Lua walk()
     uint32_t rc = g_origUpdate(thisPtr, destPtr, dir, runFlag);
-
-    int pend = g_pendingDir.exchange(-1, std::memory_order_relaxed);
-    if (pend >= 0 && g_origUpdate)
-    {
-        struct Vec3 { int16_t x, y; int8_t z; };
-        Vec3 tmp = *reinterpret_cast<Vec3*>(destPtr);
-        static const int dx[8] = {0,1,1,1,0,-1,-1,-1};
-        static const int dy[8] = {-1,-1,0,1,1,1,0,-1};
-        tmp.x += dx[pend];
-        tmp.y += dy[pend];
-        int run = g_pendingRun.load(std::memory_order_relaxed);
-        g_origUpdate(thisPtr, &tmp, (uint32_t)pend, run);
-    }
 
     --g_updateDepth;
     if (g_updateDepth == 0) {
