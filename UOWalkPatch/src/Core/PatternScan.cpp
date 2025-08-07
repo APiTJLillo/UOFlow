@@ -1,5 +1,6 @@
 #include "Core/PatternScan.hpp"
 #include <string.h>
+#include <cstdio
 
 namespace Core {
 namespace PatternScan {
