@@ -48,10 +48,20 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 # Add the DLL project
 add_library(UOWalkPatchDLL SHARED
     src/dllmain.cpp
+    src/Core/Logging.cpp
+    src/Core/PatternScan.cpp
+    src/Core/Utils.cpp
+    src/Core/MinHookHelpers.cpp
+    src/Net/PacketTrace.cpp
+    src/Net/SendBuilder.cpp
+    src/Engine/GlobalState.cpp
+    src/Engine/Movement.cpp
+    src/Engine/LuaBridge.cpp
 )
 
-target_include_directories(UOWalkPatchDLL PRIVATE 
+target_include_directories(UOWalkPatchDLL PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 target_link_libraries(UOWalkPatchDLL PRIVATE
