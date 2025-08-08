@@ -116,6 +116,20 @@ add_custom_command(
         "${CMAKE_BINARY_DIR}/bin"
 )
 
+set(LUAPLUS_DLL "${CMAKE_SOURCE_DIR}/external/luaplus/luaplus_1100.dll")
+
+add_custom_command(
+  TARGET UOWalkPatchDLL
+  POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${LUAPLUS_DLL}"
+          "$<TARGET_FILE_DIR:UOWalkPatchDLL>/luaplus_1100.dll"
+  COMMENT "Copying luaplus_1100.dll next to UOWalkPatchDLL"
+)
+
+target_link_libraries(UOWalkPatchDLL PRIVATE
+    "${CMAKE_SOURCE_DIR}/external/luaplus/luaplus_1100.lib")
+
 # Set DLL-specific flags
 target_link_options(UOWalkPatchDLL PRIVATE
     $<$<CONFIG:Debug>:
