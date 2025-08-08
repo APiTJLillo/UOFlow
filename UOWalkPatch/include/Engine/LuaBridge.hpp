@@ -1,4 +1,5 @@
 #pragma once
+#include "LuaPlus.h"
 
 namespace Engine::Lua {
     bool InitLuaBridge();

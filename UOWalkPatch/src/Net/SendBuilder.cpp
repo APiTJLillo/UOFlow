@@ -8,7 +8,8 @@
 #include "Net/SendBuilder.hpp"
 #include "Engine/GlobalState.hpp"
 
-extern volatile LONG g_needWalkReg;
+// Define the global variable that was previously only declared as extern
+volatile LONG g_needWalkReg = 0;
 
 namespace Net {
 

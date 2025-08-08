@@ -1,0 +1,7 @@
+Microsoft (R) COFF/PE Dumper Version 14.44.35214.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+LINK : warning LNK4044: unrecognized option '/B'; ignored
+
+Dump of file external\luaplus\luaplus_1100.dll
+LINK : fatal error LNK1181: cannot open input file 'external\luaplus\luaplus_1100.dll'

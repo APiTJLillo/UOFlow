@@ -1,0 +1,11 @@
+{
+  "name": "uowalkpatch",
+  "version-string": "1.0.0",
+  "dependencies": [
+    {
+      "name": "lua",
+      "version>=": "5.1.0",
+      "platform": "x86-windows-static"
+    }
+  ]
+}

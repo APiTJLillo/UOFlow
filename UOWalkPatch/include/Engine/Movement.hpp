@@ -1,5 +1,9 @@
 #pragma once
 #include <stdint.h>
+#include <windows.h>
+
+// Declare g_needWalkReg so it's accessible to other translation units
+extern volatile LONG g_needWalkReg;
 
 namespace Engine {
     bool InitMovementHooks();

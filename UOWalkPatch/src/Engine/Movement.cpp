@@ -11,6 +11,9 @@
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
 
+// Move variable definition to global scope
+extern volatile LONG g_needWalkReg;
+
 namespace {
 
 static void* g_moveComp = nullptr; // movement component instance
@@ -21,7 +24,6 @@ static UpdateState_t g_origUpdate = nullptr;
 static volatile LONG g_haveMoveComp = 0;
 static long g_updateLogCount = 0;
 static thread_local int g_updateDepth = 0;
-static volatile LONG g_needWalkReg = 0;
 static uint32_t g_fastWalkKeys[32]{};
 static int g_fwTop = 0;
 

@@ -7,25 +7,19 @@
 #include "Engine/GlobalState.hpp"
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
+#include "LuaPlus.h"
 
 namespace {
-    using RegisterLuaFunction_t = bool(__stdcall*)(void*, void*, const char*);
     static RegisterLuaFunction_t g_origRegLua = nullptr;
     static void* g_registerTarget = nullptr;
     static bool  g_hookInstalled = false;
     static bool  g_hookRegister = true;
 }
 
-extern "C" {
-    int  __cdecl lua_gettop(void* L);
-    long __cdecl lua_tointeger(void* L, int idx);
-    int  __cdecl lua_toboolean(void* L, int idx);
-}
-
-static bool CallClientRegister(void* L, void* func, const char* name);
-static int  __cdecl Lua_DummyPrint(void* L);
-static int  __cdecl Lua_Walk(void* L);
-static bool __stdcall Hook_Register(void* L, void* func, const char* name);
+static bool CallClientRegister(lua_State* L, void* func, const char* name);
+static int  __cdecl Lua_DummyPrint(lua_State* L);
+static int  __cdecl Lua_Walk(lua_State* L);
+static bool __stdcall Hook_Register(lua_State* L, void* func, const char* name);
 static bool InstallRegisterHook();
 
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len)
@@ -34,13 +28,13 @@ extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int l
         WriteRawLog("SendRaw called before prerequisites were ready");
 }
 
-static int __cdecl Lua_DummyPrint(void* L)
+static int __cdecl Lua_DummyPrint(lua_State* L)
 {
     WriteRawLog("[Lua] DummyPrint() was invoked!");
     return 0;
 }
 
-static int __cdecl Lua_Walk(void* L)
+static int __cdecl Lua_Walk(lua_State* L)
 {
     int dir = 0;
     int run = 0;
@@ -56,14 +50,14 @@ static int __cdecl Lua_Walk(void* L)
     return 0;
 }
 
-static bool CallClientRegister(void* L, void* func, const char* name)
+static bool CallClientRegister(lua_State* L, void* func, const char* name)
 {
     if (!g_origRegLua) {
         WriteRawLog("Original RegisterLuaFunction pointer not set!");
         return false;
     }
     __try {
-        return g_origRegLua(L, func, name);
+        return g_origRegLua(static_cast<lua_State*>(L), func, name);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DWORD code = GetExceptionCode();
@@ -80,14 +74,14 @@ void RegisterOurLuaFunctions()
 {
     static bool dummyReg = false;
     static bool walkReg = false;
-    if (!Engine::LuaState() || !g_origRegLua)
+    auto L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L || !g_origRegLua)
         return;
 
     if (!dummyReg) {
         const char* luaName = "DummyPrint";
         WriteRawLog("Registering DummyPrint Lua function...");
-        if (CallClientRegister(Engine::LuaState(),
-            reinterpret_cast<void*>(Lua_DummyPrint), luaName))
+        if (CallClientRegister(L, reinterpret_cast<void*>(Lua_DummyPrint), luaName))
         {
             char buf[128];
             sprintf_s(buf, sizeof(buf),
@@ -105,8 +99,7 @@ void RegisterOurLuaFunctions()
     if (Engine::MovementReady() && !walkReg) {
         const char* walkName = "walk";
         WriteRawLog("Registering walk Lua function...");
-        bool ok = CallClientRegister(Engine::LuaState(),
-            reinterpret_cast<void*>(Lua_Walk), walkName);
+        bool ok = CallClientRegister(L, reinterpret_cast<void*>(Lua_Walk), walkName);
         WriteRawLog(ok ? "Successfully registered walk()" :
             "!! Register walk() failed");
         if (ok) {
@@ -143,13 +136,14 @@ void ShutdownLuaBridge()
 
 } // namespace Engine::Lua
 
-static bool __stdcall Hook_Register(void* L, void* func, const char* name)
+static bool __stdcall Hook_Register(lua_State* L, void* func, const char* name)
 {
     if (Engine::Info()) {
         return CallClientRegister(L, func, name);
     }
 
-    if (!Engine::LuaState()) {
+    auto currentState = static_cast<lua_State*>(Engine::LuaState());
+    if (!currentState) {
         Engine::ReportLuaState(L);
         if (Engine::Info()) {
             WriteRawLog("DLL is now fully initialized - enjoy!");
@@ -203,4 +197,3 @@ static bool InstallRegisterHook()
     g_hookInstalled = true;
     return true;
 }
-

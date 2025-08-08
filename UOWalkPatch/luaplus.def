@@ -1,0 +1,23 @@
+EXPORTS
+    lua_gettop
+    lua_tointeger
+    lua_toboolean
+    lua_pushnumber
+    lua_pushstring
+    lua_pushboolean
+    lua_pushnil
+    lua_type
+    lua_typename
+    lua_pcall
+    lua_getfield
+    lua_setfield
+    lua_settop
+    lua_createtable
+    lua_rawget
+    lua_rawset
+    lua_rawgeti
+    lua_rawseti
+    lua_setmetatable
+    lua_getmetatable
+    lua_newuserdata
+    lua_touserdata

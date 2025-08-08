@@ -1,6 +1,6 @@
 #pragma once
 #include <cstdint>
-#include "Engine/GlobalState.hpp"
+#include "../include/Engine/GlobalState.hpp"
 
 namespace Net {
     bool InitSendBuilder(GlobalStateInfo* state);
