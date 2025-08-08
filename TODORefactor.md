@@ -12,3 +12,4 @@ This file tracks the incremental refactor of the monolithic translation unit int
  - [x] Relocate Lua bridge code into `Engine/LuaBridge.*`.
  - [x] Slim down `DllMain.cpp` to orchestrate subsystem init/shutdown.
 - [x] Address build errors by adding missing standard headers.
+- [x] Wrap MinHook initialization/teardown behind `Core/MinHookHelpers`.

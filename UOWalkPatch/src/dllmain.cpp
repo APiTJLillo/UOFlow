@@ -2,6 +2,7 @@
 #include <minhook.h>
 
 #include "Core/Logging.hpp"
+#include "Core/MinHookHelpers.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
@@ -15,8 +16,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
         Log::Init(hModule);
-        LogLoadedModules();
-        if (MH_Initialize() != MH_OK)
+        Log::LogLoadedModules();
+        if (!Core::MinHookHelpers::Init())
             return FALSE;
         Engine::InitGlobalStateWatch();
         Engine::InitMovementHooks();
@@ -30,7 +31,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Net::ShutdownPacketTrace();
         Engine::ShutdownMovementHooks();
         Engine::ShutdownGlobalStateWatch();
-        MH_Uninitialize();
+        Core::MinHookHelpers::Shutdown();
         Log::Shutdown();
         break;
     }
