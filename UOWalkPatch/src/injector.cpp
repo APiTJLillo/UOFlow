@@ -4,9 +4,56 @@
 #include <string>
 #include <iostream>
 #include <filesystem>
+#include <fstream>
 #include <vector>
 
 static void GetLastErrorString(std::wstring& error);
+
+static bool ensureDependencies(const std::filesystem::path& binDir) {
+    const std::filesystem::path luaplus = binDir / "luaplus_1100.dll";
+    const std::filesystem::path sigs    = binDir / "signatures.json";
+    const std::filesystem::path cmds    = binDir / "command_list.json";
+
+    // Check LuaPlus DLL; if it's missing, copy from the source tree
+    if (!std::filesystem::exists(luaplus)) {
+        std::filesystem::path src = std::filesystem::current_path() / ".." / "external" / "luaplus" / "luaplus_1100.dll";
+        if (!std::filesystem::exists(src)) {
+            std::wcerr << L"Missing luaplus_1100.dll and no copy was found." << std::endl;
+            return false;
+        }
+        std::filesystem::copy_file(src, luaplus);
+        std::wcout << L"Copied luaplus_1100.dll to " << luaplus.wstring() << std::endl;
+    }
+
+    // Check signatures.json; copy from source if needed
+    if (!std::filesystem::exists(sigs)) {
+        std::filesystem::path src = std::filesystem::current_path() / ".." / "UOWalkPatch" / "signatures.json";
+        if (!std::filesystem::exists(src)) {
+            std::wcerr << L"Missing signatures.json and no copy was found." << std::endl;
+            return false;
+        }
+        std::filesystem::copy_file(src, sigs);
+        std::wcout << L"Copied signatures.json to " << sigs.wstring() << std::endl;
+    }
+
+    // Check command_list.json; copy from source if needed
+    if (!std::filesystem::exists(cmds)) {
+        std::filesystem::path src = std::filesystem::current_path() / ".." / "UOWalkPatch" / "command_list.json";
+        if (std::filesystem::exists(src))
+            std::filesystem::copy_file(src, cmds);
+    }
+    return true;
+}
+
+static bool checkRuntimeLibraries() {
+    HMODULE msvcr = LoadLibraryW(L"msvcr100.dll");
+    if (!msvcr) {
+        std::wcerr << L"LuaPlus depends on the VC++ 2010 runtime (msvcr100.dll) which is missing. Please install the Microsoft Visual C++ 2010 Redistributable x86." << std::endl;
+        return false;
+    }
+    FreeLibrary(msvcr);
+    return true;
+}
 
 // Add function to check if we have admin rights
 static bool IsElevated() {
@@ -434,6 +481,16 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     std::wcout << L"Using DLL: " << dllPath.wstring() << std::endl;
+
+    // Ensure required files exist next to the DLL
+    if (!ensureDependencies(dllPath.parent_path())) {
+        return 1;
+    }
+
+    // Verify required runtime libraries are present
+    if (!checkRuntimeLibraries()) {
+        return 1;
+    }
 
     DWORD pid = FindProcess(L"UOSA.exe");
     HANDLE hProc = nullptr;
