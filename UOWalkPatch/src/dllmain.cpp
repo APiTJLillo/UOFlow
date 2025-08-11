@@ -20,47 +20,35 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         DisableThreadLibraryCalls(hModule);
         Log::Init(hModule);
 
-        // Get current DLL directory
+        // Determine directory of this DLL
         WCHAR dllDir[MAX_PATH];
         GetModuleFileNameW(hModule, dllDir, MAX_PATH);
         WCHAR* lastSlash = wcsrchr(dllDir, L'\\');
-        if (lastSlash) {
-            *(lastSlash + 1) = L'\0';
-            WriteRawLog("Setting DLL directory to:");
-            char dirLog[MAX_PATH];
-            WideCharToMultiByte(CP_UTF8, 0, dllDir, -1, dirLog, MAX_PATH, NULL, NULL);
-            WriteRawLog(dirLog);
-            
-            // Add our directory to DLL search path
-            if (!SetDllDirectoryW(dllDir)) {
-                WriteRawLog("SetDllDirectoryW failed, trying AddDllDirectory...");
-                AddDllDirectory(dllDir);
-            }
+        if (!lastSlash) {
+            WriteRawLog("Failed to determine DLL directory");
+            return FALSE;
         }
+        *(lastSlash + 1) = L'\0';
 
-        // Try loading LuaPlus - first from search path
-        HMODULE luaplus = LoadLibraryW(L"luaplus_1100.dll");
-        
-        // If that fails, try absolute path
-        if (!luaplus && lastSlash) {
-            WCHAR fullPath[MAX_PATH];
-            wcscpy_s(fullPath, dllDir);
-            wcscat_s(fullPath, MAX_PATH, L"luaplus_1100.dll");
-            WriteRawLog("Trying absolute path...");
-            luaplus = LoadLibraryW(fullPath);
-        }
+        // Build absolute path to luaplus_1100.dll located next to this DLL
+        WCHAR fullPath[MAX_PATH];
+        wcscpy_s(fullPath, dllDir);
+        wcscat_s(fullPath, MAX_PATH, L"luaplus_1100.dll");
+        WriteRawLog("Loading luaplus_1100.dll from:");
+        char dirLog[MAX_PATH];
+        WideCharToMultiByte(CP_UTF8, 0, fullPath, -1, dirLog, MAX_PATH, NULL, NULL);
+        WriteRawLog(dirLog);
 
+        // Load LuaPlus and use its directory for dependency resolution
+        HMODULE luaplus = LoadLibraryExW(fullPath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!luaplus) {
             char buf[256];
-            FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, GetLastError(), 
+            FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, GetLastError(),
                 MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), buf, sizeof(buf), NULL);
-            WriteRawLog("Failed to load luaplus_1100.dll from both system path and DLL directory");
+            WriteRawLog("Failed to load luaplus_1100.dll");
             WriteRawLog(buf);
             return FALSE;
         }
-
-        // Restore default DLL directory
-        SetDllDirectoryW(NULL);
 
         // Verify essential functions are available
         const char* requiredFuncs[] = {
@@ -78,7 +66,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
             }
         }
 
-        FreeLibrary(luaplus); // Let the normal DLL loading handle it
+        // Keep LuaPlus loaded for subsequent delay-load calls
         Log::LogLoadedModules();
         if (!Core::MinHookHelpers::Init())
             return FALSE;

@@ -96,8 +96,12 @@ target_link_libraries(UOWalkPatchDLL PRIVATE
     dbghelp
     ws2_32
     ${LUAPLUS_LIBRARY}
+    delayimp
 )
 add_dependencies(UOWalkPatchDLL luaplus_import_lib)
+
+# Delay-load LuaPlus so it can be loaded manually from our directory
+target_link_options(UOWalkPatchDLL PRIVATE "/DELAYLOAD:luaplus_1100.dll")
 
 # Set DLL properties
 set_target_properties(UOWalkPatchDLL PROPERTIES
