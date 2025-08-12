@@ -364,12 +364,13 @@ void ShutdownGlobalStateWatch() {
 }
 
 void ReportLuaState(void* L) {
-    if (g_luaState) return;
+    if (!L || g_luaState == L)
+        return;
 
     g_luaState = L;
     g_luaStateCaptured = true;
     char buffer[128];
-    sprintf_s(buffer, sizeof(buffer), "Captured first Lua state @ %p", L);
+    sprintf_s(buffer, sizeof(buffer), "Captured Lua state @ %p", L);
     WriteRawLog(buffer);
 
     g_globalStateInfo = (GlobalStateInfo*)FindOwnerOfLuaState(L);

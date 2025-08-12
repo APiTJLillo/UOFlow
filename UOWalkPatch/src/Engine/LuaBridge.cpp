@@ -45,9 +45,16 @@ void RegisterOurLuaFunctions()
 {
     static bool dummyReg = false;
     static bool walkReg = false;
+    static lua_State* lastState = nullptr;
     auto L = static_cast<lua_State*>(Engine::LuaState());
     if (!L)
         return;
+
+    if (L != lastState) {
+        dummyReg = false;
+        walkReg = false;
+        lastState = L;
+    }
 
     if (!dummyReg) {
         WriteRawLog("Registering DummyPrint Lua function...");
