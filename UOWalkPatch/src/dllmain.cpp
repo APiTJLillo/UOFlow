@@ -70,7 +70,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Log::LogLoadedModules();
         if (!Core::MinHookHelpers::Init())
             return FALSE;
-        Engine::InitGlobalStateWatch();
+
+        if (!Engine::InitGlobalStateWatch())
+            return FALSE;
+
         Engine::InitMovementHooks();
         Net::InitPacketTrace();
         Net::InitSendBuilder(const_cast<GlobalStateInfo*>(Engine::Info()));
