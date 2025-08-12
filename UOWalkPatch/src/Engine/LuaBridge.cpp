@@ -46,32 +46,37 @@ void RegisterOurLuaFunctions()
     static bool dummyReg = false;
     static bool walkReg = false;
     static lua_State* lastState = nullptr;
+    static bool lastMovementReady = false;
     auto L = static_cast<lua_State*>(Engine::LuaState());
     if (!L)
         return;
 
-    if (L != lastState) {
+    bool movementReady = Engine::MovementReady();
+
+    if (L != lastState || movementReady != lastMovementReady) {
         dummyReg = false;
         walkReg = false;
         lastState = L;
+        lastMovementReady = movementReady;
+        WriteRawLog("Lua or movement state changed; reset registration flags");
     }
 
     if (!dummyReg) {
         WriteRawLog("Registering DummyPrint Lua function...");
         lua_pushcfunction(L, Lua_DummyPrint);
         lua_setglobal(L, "DummyPrint");
-        WriteRawLog("Successfully registered Lua function 'DummyPrint'");
+        WriteRawLog("Successfully registered DummyPrint");
         dummyReg = true;
     }
 
-    if (Engine::MovementReady() && !walkReg) {
+    if (movementReady && !walkReg) {
         WriteRawLog("Registering walk Lua function...");
         lua_pushcfunction(L, Lua_Walk);
         lua_setglobal(L, "walk");
-        WriteRawLog("Successfully registered walk()");
+        WriteRawLog("Successfully registered walk");
         walkReg = true;
     }
-    else if (!Engine::MovementReady() && !walkReg) {
+    else if (!movementReady && !walkReg) {
         WriteRawLog("walk function prerequisites missing");
     }
     WriteRawLog("RegisterOurLuaFunctions completed");
