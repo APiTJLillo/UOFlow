@@ -327,7 +327,7 @@ static DWORD WINAPI WaitForLua(LPVOID) {
             sprintf_s(buffer, sizeof(buffer), "Scanner found Lua State @ %p", g_luaState);
             WriteRawLog(buffer);
 
-            // Queue Lua helper registration for the next safe point
+            Lua::RegisterOurLuaFunctions();
             RequestWalkRegistration();
 
             return 0;
@@ -383,7 +383,7 @@ void ReportLuaState(void* L) {
         }
     }
 
-    // The Lua VM was recreated; request re-registration of helpers
+    Lua::RegisterOurLuaFunctions();
     RequestWalkRegistration();
 }
 
