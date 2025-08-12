@@ -16,10 +16,10 @@ namespace {
     static bool  g_hookRegister = true;
 }
 
-static bool CallClientRegister(lua_State* L, void* func, const char* name);
+static int  CallClientRegister(lua_State* L, void* func, const char* name);
 static int  __cdecl Lua_DummyPrint(lua_State* L);
 static int  __cdecl Lua_Walk(lua_State* L);
-static bool __stdcall Hook_Register(lua_State* L, void* func, const char* name);
+static int  __cdecl Hook_Register(lua_State* L, void* func, const char* name);
 static bool InstallRegisterHook();
 
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len)
@@ -50,11 +50,11 @@ static int __cdecl Lua_Walk(lua_State* L)
     return 0;
 }
 
-static bool CallClientRegister(lua_State* L, void* func, const char* name)
+static int CallClientRegister(lua_State* L, void* func, const char* name)
 {
     if (!g_origRegLua) {
         WriteRawLog("Original RegisterLuaFunction pointer not set!");
-        return false;
+        return 0;
     }
     __try {
         return g_origRegLua(static_cast<lua_State*>(L), func, name);
@@ -64,7 +64,7 @@ static bool CallClientRegister(lua_State* L, void* func, const char* name)
         char buf[64];
         sprintf_s(buf, sizeof(buf), "RegisterLuaFunction threw exception 0x%08X", code);
         WriteRawLog(buf);
-        return false;
+        return 0;
     }
 }
 
@@ -81,17 +81,15 @@ void RegisterOurLuaFunctions()
     if (!dummyReg) {
         const char* luaName = "DummyPrint";
         WriteRawLog("Registering DummyPrint Lua function...");
-        if (CallClientRegister(L, reinterpret_cast<void*>(Lua_DummyPrint), luaName))
-        {
+        int ret = CallClientRegister(L, reinterpret_cast<void*>(Lua_DummyPrint), luaName);
+        if (ret) {
             char buf[128];
             sprintf_s(buf, sizeof(buf),
                 "Successfully registered Lua function '%s' (%p)",
                 luaName, Lua_DummyPrint);
             WriteRawLog(buf);
             dummyReg = true;
-        }
-        else
-        {
+        } else {
             WriteRawLog("!! Failed to register DummyPrint");
         }
     }
@@ -99,7 +97,7 @@ void RegisterOurLuaFunctions()
     if (Engine::MovementReady() && !walkReg) {
         const char* walkName = "walk";
         WriteRawLog("Registering walk Lua function...");
-        bool ok = CallClientRegister(L, reinterpret_cast<void*>(Lua_Walk), walkName);
+        int ok = CallClientRegister(L, reinterpret_cast<void*>(Lua_Walk), walkName);
         WriteRawLog(ok ? "Successfully registered walk()" :
             "!! Register walk() failed");
         if (ok) {
@@ -136,7 +134,7 @@ void ShutdownLuaBridge()
 
 } // namespace Engine::Lua
 
-static bool __stdcall Hook_Register(lua_State* L, void* func, const char* name)
+static int __cdecl Hook_Register(lua_State* L, void* func, const char* name)
 {
     if (Engine::Info()) {
         return CallClientRegister(L, func, name);
@@ -163,9 +161,9 @@ static bool __stdcall Hook_Register(lua_State* L, void* func, const char* name)
     WriteRawLog(buffer);
 
     WriteRawLog("Calling original RegisterLuaFunction...");
-    bool ok = CallClientRegister(L, func, name);
-    WriteRawLog(ok ? "Original RegisterLuaFunction returned true" :
-        "Original RegisterLuaFunction returned false");
+    int ok = CallClientRegister(L, func, name);
+    WriteRawLog(ok ? "Original RegisterLuaFunction returned non-zero" :
+        "Original RegisterLuaFunction returned zero");
 
     return ok;
 }
