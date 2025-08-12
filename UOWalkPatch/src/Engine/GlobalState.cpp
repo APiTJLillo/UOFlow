@@ -7,6 +7,8 @@
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
 #include "Engine/GlobalState.hpp"
+#include "Engine/LuaBridge.hpp"
+#include "Engine/Movement.hpp"
 
 namespace Engine {
 
@@ -26,95 +28,6 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate);
 static void InstallWriteWatch();
 static DWORD WINAPI WaitForLua(LPVOID);
 static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x);
-
-void* FindRegisterLuaFunction() {
-    HMODULE hExe = GetModuleHandleA(nullptr);
-    MODULEINFO mi{};
-    if (!GetModuleInformation(GetCurrentProcess(), hExe, &mi, sizeof(mi)))
-        return nullptr;
-
-    BYTE* base = (BYTE*)mi.lpBaseOfDll;
-    SIZE_T size = mi.SizeOfImage;
-
-    static const char anchor[] = "GetBuildVersion";
-    BYTE* str = FindBytes(base, size, (const BYTE*)anchor, sizeof(anchor));
-    if (!str) return nullptr;
-
-    char buffer[128];
-    sprintf_s(buffer, sizeof(buffer), "Found GetBuildVersion string at %p", str);
-    WriteRawLog(buffer);
-
-    for (BYTE* p = base; p < base + size - 5; ++p) {
-        bool hits =
-            (p[0] == 0x68 && *(DWORD*)(p + 1) == (DWORD)(uintptr_t)str) ||
-            (p[0] == 0x8D && (p[1] & 0xC7) == 0x05 &&
-                *(DWORD*)(p + 2) == (DWORD)(uintptr_t)str);
-
-        if (!hits) continue;
-
-        sprintf_s(buffer, sizeof(buffer), "Found string reference at %p", p);
-        WriteRawLog(buffer);
-
-        for (BYTE* q = p; q < p + 32; ++q) {
-            LPVOID target = nullptr;
-
-            if (*q == 0xE8) {
-                INT32 rel = *(INT32*)(q + 1);
-                BYTE* callee = q + 5 + rel;
-                sprintf_s(buffer, sizeof(buffer), "Found direct call instruction at %p targeting %p", q, callee);
-                WriteRawLog(buffer);
-                target = callee;
-
-                for (BYTE* k = q - 64; k < q + 64; ++k) {
-                    if (k[0] == 0xA3) {
-                        g_globalStateSlot = (DWORD*)(*(DWORD*)(k + 1));
-                        sprintf_s(buffer, sizeof(buffer), "Found global state write (A3) at %p targeting slot %p",
-                            k, g_globalStateSlot);
-                        WriteRawLog(buffer);
-                        break;
-                    }
-                    if (k[0] == 0x89 && (k[1] & 0x07) == 0x05) {
-                        g_globalStateSlot = (DWORD*)(*(DWORD*)(k + 2));
-                        sprintf_s(buffer, sizeof(buffer), "Found global state write (89 %02X) at %p targeting slot %p",
-                            k[1], k, g_globalStateSlot);
-                        WriteRawLog(buffer);
-                        break;
-                    }
-                }
-            }
-            else if (q[0] == 0xFF && q[1] == 0x15) {
-                DWORD disp = *(DWORD*)(q + 2);
-                BYTE** abs = (BYTE**)(q + 6 + disp);
-                BYTE* callee = *abs;
-                sprintf_s(buffer, sizeof(buffer), "Found indirect call instruction at %p targeting %p", q, callee);
-                WriteRawLog(buffer);
-                target = callee;
-
-                for (BYTE* k = q - 64; k < q + 64; ++k) {
-                    if (k[0] == 0xA3) {
-                        g_globalStateSlot = (DWORD*)(*(DWORD*)(k + 1));
-                        sprintf_s(buffer, sizeof(buffer), "Found global state write (A3) at %p targeting slot %p",
-                            k, g_globalStateSlot);
-                        WriteRawLog(buffer);
-                        break;
-                    }
-                    if (k[0] == 0x89 && (k[1] & 0x07) == 0x05) {
-                        g_globalStateSlot = (DWORD*)(*(DWORD*)(k + 2));
-                        sprintf_s(buffer, sizeof(buffer), "Found global state write (89 %02X) at %p targeting slot %p",
-                            k[1], k, g_globalStateSlot);
-                        WriteRawLog(buffer);
-                        break;
-                    }
-                }
-            }
-
-            if (target) return target;
-        }
-    }
-
-    WriteRawLog("Could not find RegisterLuaFunction reference");
-    return nullptr;
-}
 
 static void* FindOwnerOfLuaState(void* lua) {
     if (!lua) return nullptr;
@@ -414,6 +327,9 @@ static DWORD WINAPI WaitForLua(LPVOID) {
             sprintf_s(buffer, sizeof(buffer), "Scanner found Lua State @ %p", g_luaState);
             WriteRawLog(buffer);
 
+            Lua::RegisterOurLuaFunctions();
+            RequestWalkRegistration();
+
             return 0;
         }
         Sleep(200);
@@ -465,6 +381,9 @@ void ReportLuaState(void* L) {
             g_scanThread = nullptr;
         }
     }
+
+    Lua::RegisterOurLuaFunctions();
+    RequestWalkRegistration();
 }
 
 void* LuaState() {
