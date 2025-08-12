@@ -22,5 +22,6 @@ namespace Engine {
     void ReportLuaState(void* L);
     void* LuaState();
     const GlobalStateInfo* Info();
+    void* FindRegisterLuaFunction();
 }
 
