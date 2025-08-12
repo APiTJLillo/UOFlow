@@ -28,8 +28,9 @@ extern "C" {
 #define LUA_TUSERDATA       7
 #define LUA_TTHREAD         8
 
-	typedef double lua_Number;
-	typedef int    lua_Integer;
+        typedef double lua_Number;
+        typedef int    lua_Integer;
+        typedef int(__cdecl* lua_CFunction)(lua_State* L);
 
 	/* Prototypes (match C API; use cdecl by default on MSVC) */
 	LUA_API int          lua_gettop(lua_State* L);
@@ -40,7 +41,8 @@ extern "C" {
 	LUA_API void         lua_pushnil(lua_State* L);
 	LUA_API void         lua_pushnumber(lua_State* L, double n);
 	LUA_API void         lua_pushstring(lua_State* L, const char* s);
-	LUA_API void         lua_pushboolean(lua_State* L, int b);
+        LUA_API void         lua_pushboolean(lua_State* L, int b);
+        LUA_API void         lua_pushcclosure(lua_State* L, lua_CFunction f, int n);
 
 	LUA_API int          lua_toboolean(lua_State* L, int idx);
 	LUA_API int          lua_tointeger(lua_State* L, int idx);   /* LuaPlus 5.1 uses int */
@@ -49,7 +51,7 @@ extern "C" {
 
 	LUA_API void         lua_createtable(lua_State* L, int narr, int nrec);
 	LUA_API void         lua_getfield(lua_State* L, int idx, const char* k);
-	LUA_API void         lua_setfield(lua_State* L, int idx, const char* k);
+        LUA_API void         lua_setfield(lua_State* L, int idx, const char* k);
 	LUA_API void         lua_rawget(lua_State* L, int idx);
 	LUA_API void         lua_rawset(lua_State* L, int idx);
 	LUA_API void         lua_rawgeti(lua_State* L, int idx, int n);
@@ -59,7 +61,11 @@ extern "C" {
 
 	LUA_API void* lua_newuserdata(lua_State* L, size_t size);
 
-	LUA_API int          lua_pcall(lua_State* L, int nargs, int nresults, int errfunc);
+        LUA_API int          lua_pcall(lua_State* L, int nargs, int nresults, int errfunc);
+
+#define LUA_GLOBALSINDEX (-10002)
+#define lua_pushcfunction(L,f) lua_pushcclosure(L,f,0)
+#define lua_setglobal(L,s) lua_setfield(L, LUA_GLOBALSINDEX, (s))
 
 	/* Project-specific; keep cdecl */
 	typedef int(__cdecl* RegisterLuaFunction_t)(lua_State* L, void* func, const char* name);
