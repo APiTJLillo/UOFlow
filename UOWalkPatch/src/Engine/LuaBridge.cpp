@@ -54,6 +54,7 @@ void RegisterOurLuaFunctions()
         dummyReg = false;
         walkReg = false;
         lastState = L;
+        WriteRawLog("Lua state changed; reset registration flags");
     }
 
     if (!dummyReg) {
