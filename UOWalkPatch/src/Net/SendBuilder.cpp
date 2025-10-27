@@ -32,6 +32,7 @@ static SendPacket_t g_sendPacket = nullptr;
 static void* g_sendPacketTarget = nullptr;
 static bool g_sendPacketHooked = false;
 static void* g_netMgr = nullptr;
+static void* g_sendCtx = nullptr;
 static SendBuilder_t fpSendBuilder = nullptr;
 static bool g_sendBuilderHooked = false;
 static void* g_sendBuilderTarget = nullptr;
@@ -218,6 +219,26 @@ static void FormatDiscoverySlotInfo(char* dest,
         sprintf_s(dest, destSize, "%p@+0x%02zx", pointerValue, offsetValue);
 }
 
+static void CaptureSendContext(void* candidate, const char* sourceTag)
+{
+    if (!candidate)
+        return;
+    if (!sourceTag)
+        sourceTag = "?";
+
+    if (g_sendCtx == candidate)
+        return;
+
+    char buf[160];
+    if (!g_sendCtx) {
+        sprintf_s(buf, sizeof(buf), "SendCtx captured via %s = %p", sourceTag, candidate);
+    } else {
+        sprintf_s(buf, sizeof(buf), "SendCtx pointer updated via %s %p -> %p", sourceTag, g_sendCtx, candidate);
+    }
+    WriteRawLog(buf);
+    g_sendCtx = candidate;
+}
+
 static bool TryDiscoverEndpointFromManager(void* manager)
 {
     if (!manager || g_builderScanned)
@@ -330,6 +351,7 @@ static bool TryDiscoverEndpointFromManager(void* manager)
                       candidate,
                       vtbl);
             WriteRawLog(buf);
+            CaptureSendContext(candidate, "DiscoverEndpoint");
             WriteRawLog("DiscoverEndpoint: endpoint hook established via manager scan");
             return true;
         }
@@ -1617,6 +1639,7 @@ static void HookSendBuilderFromNetMgr()
                           endpointCandidate, reinterpret_cast<void*>(vtbl));
                 WriteRawLog(endpointBuf);
                 g_lastLoggedEndpoint = endpointCandidate;
+                CaptureSendContext(endpointCandidate, "networkConfig[1]");
                 TryHookSendBuilder(endpointCandidate);
             }
         }
@@ -1634,8 +1657,10 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
         uint8_t id = *(const uint8_t*)pkt;
         char tag[64];
         sprintf_s(tag, sizeof(tag), "H_SendPacket(pktLen=%d id=%02X)", len, id);
+        CaptureSendContext(thisPtr, tag);
         CaptureNetManager(thisPtr, tag);
     } else {
+        CaptureSendContext(thisPtr, "H_SendPacket");
         CaptureNetManager(thisPtr, "H_SendPacket");
     }
     if (!g_builderScanned)
@@ -1683,6 +1708,7 @@ bool InitSendBuilder(GlobalStateInfo* state)
         g_state = state;
         if (state) {
             g_netMgr = nullptr;
+            g_sendCtx = nullptr;
             g_builderScanned = false;
             g_loggedNetScanFailure = false;
             g_haveNetCfgSnapshot = false;
@@ -1754,6 +1780,7 @@ void ShutdownSendBuilder()
     fpSendBuilder = nullptr;
     g_builderScanned = false;
     RemoveMemoryHooks();
+    g_sendCtx = nullptr;
     g_netMgr = nullptr;
     g_state = nullptr;
     g_lastManagerScanPtr = nullptr;
@@ -1765,29 +1792,34 @@ bool SendPacketRaw(const void* bytes, int len)
     if (len <= 0 || !bytes)
         return false;
 
-    if (!g_sendPacket || !g_netMgr)
+    if (!g_sendPacket)
+        return false;
+
+    void* sendCtx = g_sendCtx ? g_sendCtx : g_netMgr;
+    if (!sendCtx)
         return false;
 
     static volatile LONG s_attemptLogBudget = 64;
     if (s_attemptLogBudget > 0 && InterlockedDecrement(&s_attemptLogBudget) >= 0) {
         char status[200];
         sprintf_s(status, sizeof(status),
-                  "SendPacketRaw attempt len=%d netMgr=%p sendTarget=%p",
+                  "SendPacketRaw attempt len=%d sendCtx=%p netMgr=%p sendTarget=%p",
                   len,
+                  sendCtx,
                   g_netMgr,
                   g_sendPacketTarget);
         WriteRawLog(status);
     }
 
     void* vtbl = nullptr;
-    if (!SafeCopy(&vtbl, g_netMgr, sizeof(vtbl)) || !vtbl) {
-        WriteRawLog("SendPacketRaw: net manager pointer not readable");
+    if (!SafeCopy(&vtbl, sendCtx, sizeof(vtbl)) || !vtbl) {
+        WriteRawLog("SendPacketRaw: send context pointer not readable");
         return false;
     }
 
     bool sent = false;
     __try {
-        g_sendPacket(g_netMgr, bytes, len);
+        g_sendPacket(sendCtx, bytes, len);
         sent = true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1808,7 +1840,7 @@ bool SendPacketRaw(const void* bytes, int len)
 
 bool IsSendReady()
 {
-    return g_sendPacket && g_netMgr;
+    return g_sendPacket && (g_sendCtx || g_netMgr);
 }
 
 } // namespace Net
