@@ -1697,6 +1697,19 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
     char tagBuf[128];
     sprintf_s(tagBuf, sizeof(tagBuf), "H_SendPacket enter ctx=%p len=%d", thisPtr, len);
     WriteRawLog(tagBuf);
+    void* vtbl = nullptr;
+    if (SafeCopy(&vtbl, thisPtr, sizeof(vtbl)) && vtbl) {
+        void* entry0 = nullptr;
+        SafeCopy(&entry0, vtbl, sizeof(entry0));
+        char ctxBuf[192];
+        sprintf_s(ctxBuf, sizeof(ctxBuf), "H_SendPacket context summary: this=%p vtbl=%p entry0=%p",
+                  thisPtr,
+                  vtbl,
+                  entry0);
+        WriteRawLog(ctxBuf);
+    } else {
+        WriteRawLog("H_SendPacket context summary: failed to read vtable");
+    }
     DumpMemory("PLAIN-SendPacket", const_cast<void*>(pkt), len);
 
     if (pkt && len > 0) {
