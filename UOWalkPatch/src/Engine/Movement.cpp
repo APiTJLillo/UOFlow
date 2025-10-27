@@ -899,15 +899,27 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
 } // namespace
 
 extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
-    if (!Engine::MovementReady()) {
+    const bool movementReady = Engine::MovementReady();
+    const bool netReady = Net::IsSendReady();
+    const int fastWalkDepth = Engine::FastWalkQueueDepth();
+
+    char prereqBuf[160];
+    sprintf_s(prereqBuf, sizeof(prereqBuf),
+              "SendWalk prereq state: movement=%d net=%d fastWalkDepth=%d",
+              movementReady ? 1 : 0,
+              netReady ? 1 : 0,
+              fastWalkDepth);
+    WriteRawLog(prereqBuf);
+
+    if (!movementReady) {
         WriteRawLog("SendWalk prerequisites missing: movement not ready");
         return false;
     }
-    if (!Net::IsSendReady()) {
+    if (!netReady) {
         WriteRawLog("SendWalk prerequisites missing: network layer not ready");
         return false;
     }
-    if (Engine::FastWalkQueueDepth() <= 0) {
+    if (fastWalkDepth <= 0) {
         WriteRawLog("SendWalk no fast-walk key available");
         return false;
     }

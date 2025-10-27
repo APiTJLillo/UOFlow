@@ -1768,6 +1768,17 @@ bool SendPacketRaw(const void* bytes, int len)
     if (!g_sendPacket || !g_netMgr)
         return false;
 
+    static volatile LONG s_attemptLogBudget = 64;
+    if (s_attemptLogBudget > 0 && InterlockedDecrement(&s_attemptLogBudget) >= 0) {
+        char status[200];
+        sprintf_s(status, sizeof(status),
+                  "SendPacketRaw attempt len=%d netMgr=%p sendTarget=%p",
+                  len,
+                  g_netMgr,
+                  g_sendPacketTarget);
+        WriteRawLog(status);
+    }
+
     void* vtbl = nullptr;
     if (!SafeCopy(&vtbl, g_netMgr, sizeof(vtbl)) || !vtbl) {
         WriteRawLog("SendPacketRaw: net manager pointer not readable");
@@ -1782,6 +1793,15 @@ bool SendPacketRaw(const void* bytes, int len)
     __except (EXCEPTION_EXECUTE_HANDLER) {
         WriteRawLog("SendPacketRaw: exception while invoking client SendPacket");
         sent = false;
+    }
+    if (sent) {
+        static volatile LONG s_successLogBudget = 64;
+        if (s_successLogBudget > 0 && InterlockedDecrement(&s_successLogBudget) >= 0) {
+            char status[160];
+            sprintf_s(status, sizeof(status),
+                      "SendPacketRaw succeeded len=%d", len);
+            WriteRawLog(status);
+        }
     }
     return sent;
 }

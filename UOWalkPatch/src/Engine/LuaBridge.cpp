@@ -42,6 +42,7 @@ static thread_local bool g_inScriptRegistration = false;
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static int __cdecl Lua_Walk(lua_State* L);
 static int __cdecl Lua_BindWalk(lua_State* L);
+static int __cdecl Lua_FastWalkInfo(lua_State* L);
 
 static void LogWalkBindingState(lua_State* L, const char* stage)
 {
@@ -388,12 +389,31 @@ static int __cdecl Lua_BindWalk(lua_State* L)
     return 0;
 }
 
+static int __cdecl Lua_FastWalkInfo(lua_State* L)
+{
+    uint32_t key = Engine::PeekFastWalkKey();
+    int depth = Engine::FastWalkQueueDepth();
+
+    char buf[160];
+    sprintf_s(buf, sizeof(buf), "Lua_FastWalkInfo depth=%d nextKey=%08X", depth, key);
+    WriteRawLog(buf);
+
+    lua_pushnumber(L, static_cast<lua_Number>(depth));
+    if (key != 0) {
+        lua_pushnumber(L, static_cast<lua_Number>(key));
+    } else {
+        lua_pushnil(L);
+    }
+    return 2;
+}
+
 namespace Engine::Lua {
 
 void RegisterOurLuaFunctions()
 {
     static bool dummyReg = false;
     static bool walkReg = false;
+    static bool fastInfoReg = false;
     static lua_State* lastState = nullptr;
     static bool lastMovementReady = false;
 
@@ -421,6 +441,7 @@ void RegisterOurLuaFunctions()
     if (L != lastState || movementReady != lastMovementReady) {
         dummyReg = false;
         walkReg = false;
+        fastInfoReg = false;
         lastState = L;
         lastMovementReady = movementReady;
         WriteRawLog("Lua or movement state changed; reset registration flags");
@@ -443,6 +464,18 @@ void RegisterOurLuaFunctions()
         if (registered) {
             WriteRawLog("Successfully registered DummyPrint");
             dummyReg = true;
+        }
+    }
+
+    if (!fastInfoReg) {
+        WriteRawLog("Registering fastWalkInfo Lua function...");
+        if (RegisterViaClient(L, Lua_FastWalkInfo, "fastWalkInfo") ||
+            RegisterFunctionSafe(L, Lua_FastWalkInfo, "fastWalkInfo")) {
+            WriteRawLog("Successfully registered fastWalkInfo");
+            fastInfoReg = true;
+        } else {
+            WriteRawLog("Failed to register fastWalkInfo (will retry)");
+            return;
         }
     }
 
