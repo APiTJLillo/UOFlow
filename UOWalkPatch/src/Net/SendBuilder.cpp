@@ -140,7 +140,7 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
         HookSendBuilderFromNetMgr();
     LONG previous = InterlockedExchange(&g_needWalkReg, 0);
     if (previous != 0)
-        Engine::Lua::RegisterOurLuaFunctions();
+        Engine::Lua::ScheduleWalkBinding();
     g_sendPacket(thisPtr, pkt, len);
 }
 

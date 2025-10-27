@@ -51,11 +51,12 @@ extern "C" {
 
 	LUA_API void         lua_createtable(lua_State* L, int narr, int nrec);
 	LUA_API void         lua_getfield(lua_State* L, int idx, const char* k);
-        LUA_API void         lua_setfield(lua_State* L, int idx, const char* k);
+	LUA_API void         lua_setfield(lua_State* L, int idx, const char* k);
 	LUA_API void         lua_rawget(lua_State* L, int idx);
 	LUA_API void         lua_rawset(lua_State* L, int idx);
 	LUA_API void         lua_rawgeti(lua_State* L, int idx, int n);
 	LUA_API void         lua_rawseti(lua_State* L, int idx, int n);
+	LUA_API const void*  lua_topointer(lua_State* L, int idx);
 	LUA_API int          lua_setmetatable(lua_State* L, int objindex);
 	LUA_API int          lua_getmetatable(lua_State* L, int objindex);
 
@@ -66,6 +67,8 @@ extern "C" {
 #define LUA_GLOBALSINDEX (-10002)
 #define lua_pushcfunction(L,f) lua_pushcclosure(L,f,0)
 #define lua_setglobal(L,s) lua_setfield(L, LUA_GLOBALSINDEX, (s))
+#define lua_getglobal(L,s) lua_getfield(L, LUA_GLOBALSINDEX, (s))
+#define lua_pop(L,n) lua_settop(L, -(n)-1)
 
 	/* Project-specific; keep cdecl */
 	typedef int(__cdecl* RegisterLuaFunction_t)(lua_State* L, void* func, const char* name);

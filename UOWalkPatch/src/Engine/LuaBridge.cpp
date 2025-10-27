@@ -1,5 +1,7 @@
 #include <windows.h>
 #include <cstdio>
+#include <cctype>
+#include <cstring>
 #include <minhook.h>
 
 #include "Core/Logging.hpp"
@@ -8,6 +10,7 @@
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
 #include "LuaPlus.h"
+
 
 namespace {
     using ClientRegisterFn = int(__stdcall*)(void*, void*, const char*);
@@ -18,15 +21,77 @@ namespace {
     void* g_registerTarget = nullptr;
     void* g_engineContext = nullptr;
     void* g_clientContext = nullptr;
+
+    struct ObservedContext {
+        void* ctx;
+        unsigned flags;
+    };
+
+    static constexpr size_t kMaxObservedContexts = 8;
+static ObservedContext g_observedContexts[kMaxObservedContexts]{};
+
+enum ContextLogBits : unsigned {
+    kLogWalk = 1u << 0,
+    kLogBindWalk = 1u << 1,
+};
+
+static volatile LONG g_pendingRegistration = 0;
+static thread_local bool g_inScriptRegistration = false;
 }
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
+static int __cdecl Lua_Walk(lua_State* L);
+static int __cdecl Lua_BindWalk(lua_State* L);
+
+static void LogWalkBindingState(lua_State* L, const char* stage)
+{
+    if (!L)
+        return;
+
+    int walkType = LUA_TNONE;
+    const void* walkPtr = nullptr;
+    int bindType = LUA_TNONE;
+    const void* bindPtr = nullptr;
+
+    __try {
+        int top = lua_gettop(L);
+        lua_getglobal(L, "walk");
+        walkType = lua_type(L, -1);
+        if (walkType == LUA_TFUNCTION) {
+            walkPtr = lua_topointer(L, -1);
+        }
+        lua_pop(L, 1);
+
+        lua_getglobal(L, "bindWalk");
+        bindType = lua_type(L, -1);
+        if (bindType == LUA_TFUNCTION) {
+            bindPtr = lua_topointer(L, -1);
+        }
+        lua_pop(L, 1);
+        lua_settop(L, top);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("LogWalkBindingState: exception while inspecting globals");
+    }
+
+    char buf[256];
+    sprintf_s(buf, sizeof(buf), "%s: walk=%s%p bindWalk=%s%p",
+        stage ? stage : "WalkBindingState",
+        (walkType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, walkType),
+        walkPtr,
+        (bindType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, bindType),
+        bindPtr);
+    WriteRawLog(buf);
+}
 
 static bool RegisterFunctionSafe(lua_State* L, lua_CFunction fn, const char* name)
 {
     __try {
         lua_pushcfunction(L, fn);
         lua_setglobal(L, name);
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "RegisterFunctionSafe: set global '%s' to %p", name ? name : "<null>", reinterpret_cast<void*>(fn));
+        WriteRawLog(buf);
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -79,9 +144,9 @@ static bool RegisterViaClient(lua_State* L, lua_CFunction fn, const char* name)
         success = false;
     }
 
-    char buf[160];
-    sprintf_s(buf, sizeof(buf), "RegisterViaClient('%s') ctx=%p => %s",
-        name ? name : "<null>", context, success ? "ok" : "fail");
+    char buf[200];
+    sprintf_s(buf, sizeof(buf), "RegisterViaClient('%s') ctx=%p fn=%p => %s (Lua_Walk=%p)",
+        name ? name : "<null>", context, fn, success ? "ok" : "fail", reinterpret_cast<void*>(&Lua_Walk));
     WriteRawLog(buf);
 
     if (!success && L) {
@@ -90,6 +155,43 @@ static bool RegisterViaClient(lua_State* L, lua_CFunction fn, const char* name)
     }
 
     return success;
+}
+
+static void ForceWalkBinding(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+
+    InterlockedExchange(&g_pendingRegistration, 0);
+
+    const void* desiredPtr = reinterpret_cast<const void*>(Lua_Walk);
+    const char* tag = reason ? reason : "EnsureWalkBinding";
+
+    char stateBuf[160];
+    sprintf_s(stateBuf, sizeof(stateBuf), "%s pre-bind", tag);
+    LogWalkBindingState(L, stateBuf);
+
+    char buf[224];
+    sprintf_s(buf, sizeof(buf), "%s: ensuring walk binding via client helper (Lua_Walk=%p ctx=%p)",
+        tag,
+        desiredPtr,
+        g_clientContext);
+    WriteRawLog(buf);
+
+    bool helperOk = RegisterViaClient(L, Lua_Walk, "walk");
+    if (helperOk) {
+        WriteRawLog("ForceWalkBinding: client helper rebound walk successfully");
+    } else {
+        WriteRawLog("ForceWalkBinding: client helper failed; will rely on direct Lua binding");
+        if (RegisterFunctionSafe(L, Lua_Walk, "walk")) {
+            WriteRawLog("ForceWalkBinding: direct Lua binding ensured walk global");
+        } else {
+            WriteRawLog("ForceWalkBinding: direct Lua binding failed");
+        }
+    }
+
+    sprintf_s(stateBuf, sizeof(stateBuf), "%s post-bind", tag);
+    LogWalkBindingState(L, stateBuf);
 }
 
 static bool ResolveRegisterFunction()
@@ -130,16 +232,126 @@ static bool ResolveRegisterFunction()
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
 {
+    auto ensureContextSlot = [](void* context, bool* isNew) -> ObservedContext* {
+        if (!context) {
+            if (isNew) {
+                *isNew = false;
+            }
+            return nullptr;
+        }
+        for (size_t i = 0; i < kMaxObservedContexts; ++i) {
+            if (g_observedContexts[i].ctx == context) {
+                if (isNew) {
+                    *isNew = false;
+                }
+                return &g_observedContexts[i];
+            }
+        }
+        for (size_t i = 0; i < kMaxObservedContexts; ++i) {
+            if (!g_observedContexts[i].ctx) {
+                g_observedContexts[i].ctx = context;
+                g_observedContexts[i].flags = 0;
+                if (isNew) {
+                    *isNew = true;
+                }
+                return &g_observedContexts[i];
+            }
+        }
+        if (isNew) {
+            *isNew = false;
+        }
+        return nullptr;
+    };
+
+    auto containsWalk = [](const char* str) -> bool {
+        if (!str) {
+            return false;
+        }
+        const char* p = str;
+        while (*p) {
+            if (std::tolower(static_cast<unsigned char>(*p)) == 'w') {
+                if (std::tolower(static_cast<unsigned char>(p[1])) == 'a' &&
+                    std::tolower(static_cast<unsigned char>(p[2])) == 'l' &&
+                    std::tolower(static_cast<unsigned char>(p[3])) == 'k') {
+                    return true;
+                }
+            }
+            ++p;
+        }
+        return false;
+    };
+
+    char buf[192];
+    sprintf_s(buf, sizeof(buf), "Hook_Register ctx=%p func=%p name=%s", ctx, func, name ? name : "<null>");
+    WriteRawLog(buf);
+
     if (ctx && ctx != g_clientContext) {
         g_clientContext = ctx;
-        char buf[192];
-        sprintf_s(buf, sizeof(buf), "Hook_Register captured ctx=%p func=%p name=%s",
-            ctx, func, name ? name : "<null>");
-        WriteRawLog(buf);
         Engine::RequestWalkRegistration();
+        InterlockedExchange(&g_pendingRegistration, 1);
     }
 
-    return g_clientRegister ? g_clientRegister(ctx, func, name) : 0;
+    bool isNewCtx = false;
+    ObservedContext* slot = ensureContextSlot(ctx, &isNewCtx);
+    if (isNewCtx) {
+        char info[160];
+        sprintf_s(info, sizeof(info), "Observed new script context %p (name=%s func=%p)",
+            ctx, name ? name : "<null>", func);
+        WriteRawLog(info);
+        Engine::RequestWalkRegistration();
+        InterlockedExchange(&g_pendingRegistration, 1);
+    }
+
+    unsigned flag = 0;
+    if (name) {
+        if (_stricmp(name, "walk") == 0 || containsWalk(name)) {
+            flag |= kLogWalk;
+        } else if (_stricmp(name, "bindWalk") == 0) {
+            flag |= kLogBindWalk;
+        }
+    }
+
+    if (slot && flag) {
+        slot->flags |= flag;
+        char info[256];
+        sprintf_s(info, sizeof(info), "Context %p registering %s -> func=%p (flags=0x%X)",
+            ctx, name ? name : "<null>", func, slot->flags);
+        WriteRawLog(info);
+        Engine::RequestWalkRegistration();
+        InterlockedExchange(&g_pendingRegistration, 1);
+    }
+
+    int rc = g_clientRegister ? g_clientRegister(ctx, func, name) : 0;
+
+    uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
+    uintptr_t bindInt = reinterpret_cast<uintptr_t>(&Lua_BindWalk);
+    void* walkPtr = reinterpret_cast<void*>(walkInt);
+    void* bindPtr = reinterpret_cast<void*>(bindInt);
+    if (name && ctx) {
+        if (_stricmp(name, "walk") == 0 && func == walkPtr) {
+            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
+                if (RegisterFunctionSafe(L, Lua_Walk, "walk")) {
+                    LogWalkBindingState(L, "Hook_Register post-walk");
+                }
+            }
+        } else if (_stricmp(name, "bindWalk") == 0 && func == bindPtr) {
+            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
+                if (RegisterFunctionSafe(L, Lua_BindWalk, "bindWalk")) {
+                    LogWalkBindingState(L, "Hook_Register post-bindWalk");
+                }
+            }
+        }
+    }
+
+    if (!g_inScriptRegistration) {
+        if (InterlockedExchange(&g_pendingRegistration, 0)) {
+            g_inScriptRegistration = true;
+            Engine::Lua::RegisterOurLuaFunctions();
+            g_inScriptRegistration = false;
+        }
+    }
+
+    return rc;
 }
 
 static int __cdecl Lua_DummyPrint(lua_State*)
@@ -159,9 +371,21 @@ static int __cdecl Lua_Walk(lua_State* L)
         if (top >= 2)
             run = lua_toboolean(L, 2) ? 1 : 0;
     }
+    char buf[128];
+    sprintf_s(buf, sizeof(buf), "Lua_Walk invoked dir=%d run=%d", dir, run);
+    WriteRawLog(buf);
+
     bool ok = SendWalk(dir, run);
+    WriteRawLog(ok ? "Lua_Walk -> walk enqueued" : "Lua_Walk -> walk failed");
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
+}
+
+static int __cdecl Lua_BindWalk(lua_State* L)
+{
+    WriteRawLog("Lua_BindWalk requested");
+    Engine::Lua::EnsureWalkBinding("Lua.BindWalk");
+    return 0;
 }
 
 namespace Engine::Lua {
@@ -238,12 +462,31 @@ void RegisterOurLuaFunctions()
         }
         if (registered) {
             WriteRawLog("Successfully registered walk");
+            char buf[160];
+            sprintf_s(buf, sizeof(buf), "walk registration used fn=%p (Lua_Walk=%p)",
+                reinterpret_cast<void*>(Lua_Walk), reinterpret_cast<void*>(&Lua_Walk));
+            WriteRawLog(buf);
             walkReg = true;
         }
     }
     else if (!movementReady && !walkReg) {
         WriteRawLog("walk function prerequisites missing");
     }
+
+    WriteRawLog("Ensuring walk binding via helper registration");
+    ForceWalkBinding(L, "post-register");
+
+    static bool bindReg = false;
+    if (!bindReg) {
+        WriteRawLog("Registering bindWalk Lua function...");
+        if (RegisterViaClient(L, Lua_BindWalk, "bindWalk") || RegisterFunctionSafe(L, Lua_BindWalk, "bindWalk")) {
+            WriteRawLog("Successfully registered bindWalk");
+            bindReg = true;
+        } else {
+            WriteRawLog("Failed to register bindWalk (will retry) ");
+        }
+    }
+
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 
@@ -258,6 +501,18 @@ void UpdateEngineContext(void* context)
         WriteRawLog("LuaBridge engine context cleared");
     }
     Engine::RequestWalkRegistration();
+}
+
+void EnsureWalkBinding(const char* reason)
+{
+    if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
+        ForceWalkBinding(L, reason ? reason : "EnsureWalkBinding");
+    }
+}
+
+void ScheduleWalkBinding()
+{
+    InterlockedExchange(&g_pendingRegistration, 1);
 }
 
 bool InitLuaBridge()
