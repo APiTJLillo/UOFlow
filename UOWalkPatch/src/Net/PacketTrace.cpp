@@ -19,12 +19,13 @@ static int (WSAAPI* g_real_recv)(SOCKET, char*, int, int) = nullptr;
 static int (WSAAPI* g_real_WSARecv)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_WSARecvFrom)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, sockaddr*, LPINT, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) = nullptr;
+static bool shouldLogTraces = false;
 
 static void TraceOutbound(const char* buf, int len)
 {
     Logf("send-family len=%d id=%02X", len, (unsigned char)buf[0]);
     int dumpLen = len > 64 ? 64 : len;
-    if (dumpLen > 0)
+    if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Outbound packet", (void*)buf, dumpLen);
 }
 
@@ -32,7 +33,7 @@ static void TraceInbound(const char* buf, int len)
 {
     Logf("recv-family len=%d id=%02X", len, (unsigned char)buf[0]);
     int dumpLen = len > 64 ? 64 : len;
-    if (dumpLen > 0)
+    if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Inbound packet", (void*)buf, dumpLen);
     if ((unsigned char)buf[0] == 0xB8 && len >= 5)
     {

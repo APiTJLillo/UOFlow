@@ -27,8 +27,21 @@ static thread_local int g_updateDepth = 0;
 static uint32_t g_fastWalkKeys[32]{};
 static int g_fwTop = 0;
 
+static constexpr int kStepDx[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+static constexpr int kStepDy[8] = {-1, -1, 0, 1, 1, 1, 0, -1};
+
 static void FindMoveComponent();
 static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr, uint32_t dir, int runFlag);
+
+static int NormalizeDirection(int dir)
+{
+    if (dir >= 0)
+        return dir & 7;
+    int normalized = dir % 8;
+    if (normalized < 0)
+        normalized += 8;
+    return normalized & 7;
+}
 
 } // namespace
 
@@ -174,36 +187,43 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
 
 } // namespace
 
-extern "C" __declspec(dllexport) void __stdcall SendWalk(int dir, int run) {
+extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     if (!Net::IsSendReady()) {
         WriteRawLog("SendWalk prerequisites missing");
-        return;
+        return false;
     }
+
+    const int normalizedDir = NormalizeDirection(dir);
+    const bool shouldRun = run != 0;
+
     uint8_t pkt[7]{};
     pkt[0] = 0x02;
-    pkt[1] = uint8_t(dir & 7) | (run ? 0x80 : 0);
+    pkt[1] = static_cast<uint8_t>(normalizedDir) | (shouldRun ? 0x80 : 0);
     static uint8_t seq = 0;
     if (++seq == 0)
         seq = 1;
     pkt[2] = seq;
+
     uint32_t key = Engine::PopFastWalkKey();
     if (!key) {
         WriteRawLog("SendWalk no fast-walk key");
-        return;
+        return false;
     }
+
     *reinterpret_cast<uint32_t*>(pkt + 3) = htonl(key);
     if (!Net::SendPacketRaw(pkt, sizeof(pkt))) {
-        WriteRawLog("SendWalk prerequisites missing");
-        return;
+        WriteRawLog("SendWalk send failed");
+        return false;
     }
+
     if (g_moveComp && g_origUpdate && g_dest) {
         struct Vec3 { int16_t x, y; int8_t z; };
         Vec3 tmp = *reinterpret_cast<Vec3*>(g_dest);
-        static const int dx[8] = {0,1,1,1,0,-1,-1,-1};
-        static const int dy[8] = {-1,-1,0,1,1,1,0,-1};
-        tmp.x += dx[dir & 7];
-        tmp.y += dy[dir & 7];
-        g_origUpdate(g_moveComp, &tmp, (uint32_t)(dir & 7), run ? 1 : 0);
+        tmp.x += kStepDx[normalizedDir];
+        tmp.y += kStepDy[normalizedDir];
+        g_origUpdate(g_moveComp, &tmp, static_cast<uint32_t>(normalizedDir), shouldRun ? 1 : 0);
     }
+
+    return true;
 }
 

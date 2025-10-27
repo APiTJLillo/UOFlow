@@ -5,6 +5,7 @@ namespace Engine::Lua {
     bool InitLuaBridge();
     void ShutdownLuaBridge();
     void RegisterOurLuaFunctions();
+    void UpdateEngineContext(void* context);
 }
 
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);

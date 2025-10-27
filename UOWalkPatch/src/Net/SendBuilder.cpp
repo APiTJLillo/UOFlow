@@ -7,6 +7,7 @@
 #include "Core/Utils.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/GlobalState.hpp"
+#include "Engine/LuaBridge.hpp"
 
 // Define the global variable that was previously only declared as extern
 volatile LONG g_needWalkReg = 0;
@@ -137,8 +138,9 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
         g_netMgr = thisPtr;
     if (!g_builderScanned)
         HookSendBuilderFromNetMgr();
-    if (g_sendBuilderHooked || g_builderScanned)
-        InterlockedExchange(&g_needWalkReg, 1);
+    LONG previous = InterlockedExchange(&g_needWalkReg, 0);
+    if (previous != 0)
+        Engine::Lua::RegisterOurLuaFunctions();
     g_sendPacket(thisPtr, pkt, len);
 }
 

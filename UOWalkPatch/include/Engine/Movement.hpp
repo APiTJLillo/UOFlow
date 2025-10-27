@@ -16,5 +16,4 @@ namespace Engine {
     void RequestWalkRegistration();
 }
 
-extern "C" __declspec(dllexport) void __stdcall SendWalk(int dir, int run);
-
+extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run);

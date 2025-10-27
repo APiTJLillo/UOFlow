@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <cstdio>
+#include <minhook.h>
 
 #include "Core/Logging.hpp"
 #include "Net/SendBuilder.hpp"
@@ -8,16 +9,140 @@
 #include "Engine/LuaBridge.hpp"
 #include "LuaPlus.h"
 
-static int __cdecl Lua_DummyPrint(lua_State* L);
-static int __cdecl Lua_Walk(lua_State* L);
+namespace {
+    using ClientRegisterFn = int(__stdcall*)(void*, void*, const char*);
 
-extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len)
-{
-    if (!Net::SendPacketRaw(bytes, len))
-        WriteRawLog("SendRaw called before prerequisites were ready");
+    ClientRegisterFn g_clientRegister = nullptr;
+    ClientRegisterFn g_origRegister = nullptr;
+    bool g_registerResolved = false;
+    void* g_registerTarget = nullptr;
+    void* g_engineContext = nullptr;
+    void* g_clientContext = nullptr;
 }
 
-static int __cdecl Lua_DummyPrint(lua_State* L)
+static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
+
+static bool RegisterFunctionSafe(lua_State* L, lua_CFunction fn, const char* name)
+{
+    __try {
+        lua_pushcfunction(L, fn);
+        lua_setglobal(L, name);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        char buf[128];
+        sprintf_s(buf, sizeof(buf), "Exception registering Lua function '%s'", name ? name : "<null>");
+        WriteRawLog(buf);
+        return false;
+    }
+}
+
+static bool RegisterViaClient(lua_State* L, lua_CFunction fn, const char* name)
+{
+    if (!fn || !name)
+        return false;
+
+    if (!g_clientRegister && !g_origRegister)
+        return false;
+
+    void* context = g_clientContext;
+    const GlobalStateInfo* info = Engine::Info();
+    void* candidateCtx = info ? info->scriptContext : nullptr;
+    if ((!context || (candidateCtx && context != candidateCtx))) {
+        context = candidateCtx;
+        g_clientContext = context;
+        if (context) {
+            char buf[128];
+            sprintf_s(buf, sizeof(buf), "RegisterViaClient: refreshed script context %p", context);
+            WriteRawLog(buf);
+        }
+    }
+
+    if (!context) {
+        WriteRawLog("RegisterViaClient: script context unavailable");
+        return false;
+    }
+
+    ClientRegisterFn target = g_origRegister ? g_origRegister : g_clientRegister;
+    if (!target)
+        return false;
+
+    bool success = false;
+    __try {
+        int rc = target(context, reinterpret_cast<void*>(fn), name);
+        success = (rc != 0);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "Client register threw for '%s'", name ? name : "<null>");
+        WriteRawLog(buf);
+        success = false;
+    }
+
+    char buf[160];
+    sprintf_s(buf, sizeof(buf), "RegisterViaClient('%s') ctx=%p => %s",
+        name ? name : "<null>", context, success ? "ok" : "fail");
+    WriteRawLog(buf);
+
+    if (!success && L) {
+        WriteRawLog("RegisterViaClient: client helper failed, using direct Lua registration");
+        success = RegisterFunctionSafe(L, fn, name);
+    }
+
+    return success;
+}
+
+static bool ResolveRegisterFunction()
+{
+    if (g_registerResolved && g_origRegister)
+        return true;
+
+    void* addr = Engine::FindRegisterLuaFunction();
+    if (!addr) {
+        WriteRawLog("ResolveRegisterFunction: unable to find client register helper");
+        return false;
+    }
+
+    g_registerTarget = addr;
+    char buf[128];
+    sprintf_s(buf, sizeof(buf), "ResolveRegisterFunction: register helper = %p", addr);
+    WriteRawLog(buf);
+
+    if (!g_origRegister) {
+        MH_STATUS init = MH_Initialize();
+        if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED) {
+            WriteRawLog("ResolveRegisterFunction: MH_Initialize failed; hook disabled");
+            return false;
+        }
+        if (MH_CreateHook(addr, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegister)) != MH_OK ||
+            MH_EnableHook(addr) != MH_OK) {
+            g_origRegister = nullptr;
+            WriteRawLog("ResolveRegisterFunction: MH_CreateHook/MH_EnableHook failed; hook disabled");
+            return false;
+        }
+        WriteRawLog("ResolveRegisterFunction: register hook installed for context capture");
+    }
+
+    g_clientRegister = g_origRegister;
+    g_registerResolved = true;
+    return true;
+}
+
+static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
+{
+    if (ctx && ctx != g_clientContext) {
+        g_clientContext = ctx;
+        char buf[192];
+        sprintf_s(buf, sizeof(buf), "Hook_Register captured ctx=%p func=%p name=%s",
+            ctx, func, name ? name : "<null>");
+        WriteRawLog(buf);
+        Engine::RequestWalkRegistration();
+    }
+
+    return g_clientRegister ? g_clientRegister(ctx, func, name) : 0;
+}
+
+static int __cdecl Lua_DummyPrint(lua_State*)
 {
     WriteRawLog("[Lua] DummyPrint() was invoked!");
     return 0;
@@ -27,16 +152,16 @@ static int __cdecl Lua_Walk(lua_State* L)
 {
     int dir = 0;
     int run = 0;
-    if (L)
-    {
+    if (L) {
         int top = lua_gettop(L);
         if (top >= 1)
-            dir = (int)(lua_tointeger(L, 1)) & 7;
+            dir = static_cast<int>(lua_tointeger(L, 1));
         if (top >= 2)
             run = lua_toboolean(L, 2) ? 1 : 0;
     }
-    SendWalk(dir, run);
-    return 0;
+    bool ok = SendWalk(dir, run);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
 }
 
 namespace Engine::Lua {
@@ -47,9 +172,25 @@ void RegisterOurLuaFunctions()
     static bool walkReg = false;
     static lua_State* lastState = nullptr;
     static bool lastMovementReady = false;
+
+    ResolveRegisterFunction();
+
+    if (Engine::RefreshLuaStateFromSlot()) {
+        WriteRawLog("Lua state refreshed from global slot; pending re-registration");
+    }
+
     auto L = static_cast<lua_State*>(Engine::LuaState());
-    if (!L)
+    if (!L) {
+        char buf[160];
+        auto slotAddr = Engine::GlobalStateSlotAddress();
+        auto slotValue = Engine::GlobalStateSlotValue();
+        sprintf_s(buf, sizeof(buf),
+            "Lua state not available yet (slot=%p value=%p)",
+            reinterpret_cast<void*>(slotAddr),
+            slotValue);
+        WriteRawLog(buf);
         return;
+    }
 
     bool movementReady = Engine::MovementReady();
 
@@ -63,18 +204,42 @@ void RegisterOurLuaFunctions()
 
     if (!dummyReg) {
         WriteRawLog("Registering DummyPrint Lua function...");
-        lua_pushcfunction(L, Lua_DummyPrint);
-        lua_setglobal(L, "DummyPrint");
-        WriteRawLog("Successfully registered DummyPrint");
-        dummyReg = true;
+        bool registered = RegisterViaClient(L, Lua_DummyPrint, "DummyPrint");
+        if (!registered) {
+            char buf[128];
+            sprintf_s(buf, sizeof(buf), "DummyPrint registration using lua_State=%p", static_cast<void*>(L));
+            WriteRawLog(buf);
+            if (RegisterFunctionSafe(L, Lua_DummyPrint, "DummyPrint")) {
+                registered = true;
+            } else {
+                WriteRawLog("Failed to register DummyPrint; postponing remaining registrations");
+                return;
+            }
+        }
+        if (registered) {
+            WriteRawLog("Successfully registered DummyPrint");
+            dummyReg = true;
+        }
     }
 
     if (movementReady && !walkReg) {
         WriteRawLog("Registering walk Lua function...");
-        lua_pushcfunction(L, Lua_Walk);
-        lua_setglobal(L, "walk");
-        WriteRawLog("Successfully registered walk");
-        walkReg = true;
+        bool registered = RegisterViaClient(L, Lua_Walk, "walk");
+        if (!registered) {
+            char buf[128];
+            sprintf_s(buf, sizeof(buf), "walk registration using lua_State=%p", static_cast<void*>(L));
+            WriteRawLog(buf);
+            if (RegisterFunctionSafe(L, Lua_Walk, "walk")) {
+                registered = true;
+            } else {
+                WriteRawLog("Failed to register walk; will retry");
+                return;
+            }
+        }
+        if (registered) {
+            WriteRawLog("Successfully registered walk");
+            walkReg = true;
+        }
     }
     else if (!movementReady && !walkReg) {
         WriteRawLog("walk function prerequisites missing");
@@ -82,14 +247,37 @@ void RegisterOurLuaFunctions()
     WriteRawLog("RegisterOurLuaFunctions completed");
 }
 
+void UpdateEngineContext(void* context)
+{
+    g_engineContext = context;
+    if (context) {
+        char buf[128];
+        sprintf_s(buf, sizeof(buf), "LuaBridge engine context updated: %p", context);
+        WriteRawLog(buf);
+    } else {
+        WriteRawLog("LuaBridge engine context cleared");
+    }
+    Engine::RequestWalkRegistration();
+}
+
 bool InitLuaBridge()
 {
+    ResolveRegisterFunction();
+    Engine::RequestWalkRegistration();
     return true;
 }
 
 void ShutdownLuaBridge()
 {
-    // no-op
+    if (g_registerTarget) {
+        MH_DisableHook(g_registerTarget);
+        MH_RemoveHook(g_registerTarget);
+    }
+    g_origRegister = nullptr;
+    g_clientRegister = nullptr;
+    g_registerResolved = false;
+    g_registerTarget = nullptr;
+    g_clientContext = nullptr;
 }
 
 } // namespace Engine::Lua

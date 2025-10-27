@@ -5,7 +5,8 @@
 struct GlobalStateInfo {
     void*    luaState;
     void*    databaseManager;
-    uint8_t  reserved8[8];
+    void*    reserved0;
+    void*    scriptContext;
     void*    resourceManager;
     uint32_t initFlags;
     void*    networkConfig;
@@ -22,5 +23,8 @@ namespace Engine {
     void ReportLuaState(void* L);
     void* LuaState();
     const GlobalStateInfo* Info();
+    uintptr_t GlobalStateSlotAddress();
+    GlobalStateInfo* GlobalStateSlotValue();
+    bool RefreshLuaStateFromSlot();
+    void* FindRegisterLuaFunction();
 }
-

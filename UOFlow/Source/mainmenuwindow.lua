@@ -93,7 +93,7 @@ function MainMenuWindow.OnOpenBugReportItem()
 end
 
 function MainMenuWindow.OnOpenCharacterSummary()
-	ToggleWindowByName( "CharacterSummaryWindow", "", MainMenuWindow.ToggleCharacterSummaryWindow )
+	CharacterSummary.CopyAndNotify()
 	WindowSetShowing("MainMenuWindow", false)
 end
 
@@ -116,7 +116,7 @@ function MainMenuWindow.ToggleBugReportWindow()
 end
 
 function MainMenuWindow.ToggleCharacterSummaryWindow()
-	ToggleWindowByName( "CharacterSummaryWindow", "", MainMenuWindow.ToggleCharacterSummaryWindow )
+	CharacterSummary.CopyAndNotify()
 end
 
 function MainMenuWindow.OnToggleAgentsSettings()

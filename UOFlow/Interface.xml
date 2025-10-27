@@ -86,7 +86,6 @@
 	<Include file="Source/WarShield.xml"/>
 	<Include file="Source/CrystalPortal.xml"/>
 	<Include file="Source/VendorSearch.xml"/>
-	<Include file="Source/CharacterSummaryWindow.xml"/>
 	<Include file="Source/QuickStats.xml"/>		
 	<Include file="Source/FontSelector.xml"/>
 	<Include file="Source/LegacyRunebook.xml"/>
@@ -196,7 +195,7 @@
 		<Script file="Source/GumpsParsing.lua"/>
 		<Script file="Source/CrystalPortal.lua"/>
 		<Script file="Source/VendorSearch.lua"/>
-		<Script file="Source/CharacterSummaryWindow.lua"/>
+		<Script file="Source/CharacterSummary.lua"/>
 		<Script file="Source/QuickStats.lua"/>
 		<Script file="Source/LegacyRunebook.lua"/>
 		<Script file="Source/LegacyRunebookLoader.lua"/>

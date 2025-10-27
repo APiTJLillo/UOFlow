@@ -28,22 +28,27 @@ void Init(HMODULE self) {
     g_logPath[0] = '\0';
     g_logAnnounced = FALSE;
 
-    char dllPath[MAX_PATH];
-    if (GetModuleFileNameA(self, dllPath, MAX_PATH)) {
+    char dllPath[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameA(self, dllPath, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
         char* lastSlash = strrchr(dllPath, '\\');
-        if (lastSlash) {
-            strcpy_s(lastSlash + 1, MAX_PATH - (lastSlash - dllPath), "uowalkpatch_debug.log");
-            g_logFile = CreateFileA(
-                dllPath,
-                GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                NULL,
-                CREATE_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL,
-                NULL
-            );
-            if (g_logFile != INVALID_HANDLE_VALUE) {
-                strcpy_s(g_logPath, dllPath);
+        if (lastSlash && lastSlash + 1 < dllPath + MAX_PATH) {
+            size_t destIndex = static_cast<size_t>((lastSlash + 1) - dllPath);
+            size_t remaining = MAX_PATH - destIndex;
+            if (remaining > 1 &&
+                strcpy_s(lastSlash + 1, remaining, "uowalkpatch_debug.log") == 0) {
+                g_logFile = CreateFileA(
+                    dllPath,
+                    GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    NULL,
+                    CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL,
+                    NULL
+                );
+                if (g_logFile != INVALID_HANDLE_VALUE) {
+                    strcpy_s(g_logPath, MAX_PATH, dllPath);
+                }
             }
         }
     }
@@ -71,21 +76,26 @@ void WriteRawLog(const char* message) {
     }
 
     if (g_logFile == INVALID_HANDLE_VALUE && g_hModule != NULL) {
-        GetModuleFileNameA(g_hModule, g_logPath, MAX_PATH);
-        char* lastSlash = strrchr(g_logPath, '\\');
-        if (lastSlash) {
-            strcpy_s(lastSlash + 1, MAX_PATH - (lastSlash - g_logPath), "uowalkpatch_debug.log");
-            g_logFile = CreateFileA(
-                g_logPath,
-                GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                NULL,
-                CREATE_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL,
-                NULL
-            );
-            if (g_logFile == INVALID_HANDLE_VALUE) {
-                LogLastError("CreateFile for log");
+        if (GetModuleFileNameA(g_hModule, g_logPath, MAX_PATH) > 0) {
+            char* lastSlash = strrchr(g_logPath, '\\');
+            if (lastSlash && lastSlash + 1 < g_logPath + MAX_PATH) {
+                size_t destIndex = static_cast<size_t>((lastSlash + 1) - g_logPath);
+                size_t remaining = MAX_PATH - destIndex;
+                if (remaining > 1 &&
+                    strcpy_s(lastSlash + 1, remaining, "uowalkpatch_debug.log") == 0) {
+                    g_logFile = CreateFileA(
+                        g_logPath,
+                        GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL,
+                        CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL,
+                        NULL
+                    );
+                    if (g_logFile == INVALID_HANDLE_VALUE) {
+                        LogLastError("CreateFile for log");
+                    }
+                }
             }
         }
     }

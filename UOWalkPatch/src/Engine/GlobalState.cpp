@@ -20,6 +20,7 @@ static DWORD* g_globalStateSlot = nullptr;
 static LONG g_once = 0;
 static PVOID g_vehHandle = nullptr;
 static bool g_luaStateCaptured = false;
+static GlobalStateInfo* g_lastValidatedInfo = nullptr;
 
 // Forward declarations
 static void* FindGlobalStateInfo();
@@ -28,6 +29,89 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate);
 static void InstallWriteWatch();
 static DWORD WINAPI WaitForLua(LPVOID);
 static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x);
+static GlobalStateInfo* ReadSlotUnsafe();
+
+void* FindRegisterLuaFunction() {
+    HMODULE hExe = GetModuleHandleA(nullptr);
+    if (!hExe) {
+        WriteRawLog("FindRegisterLuaFunction: no module handle");
+        return nullptr;
+    }
+
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), hExe, &mi, sizeof(mi))) {
+        WriteRawLog("FindRegisterLuaFunction: GetModuleInformation failed");
+        return nullptr;
+    }
+
+    BYTE* base = static_cast<BYTE*>(mi.lpBaseOfDll);
+    SIZE_T size = mi.SizeOfImage;
+
+    static const char kAnchor[] = "GetBuildVersion";
+    BYTE* anchor = FindBytes(base, size, reinterpret_cast<const BYTE*>(kAnchor), sizeof(kAnchor));
+    if (!anchor) {
+        WriteRawLog("FindRegisterLuaFunction: anchor string not found");
+        return nullptr;
+    }
+    uintptr_t anchorAddr = reinterpret_cast<uintptr_t>(anchor);
+
+    char buffer[160];
+    sprintf_s(buffer, sizeof(buffer), "FindRegisterLuaFunction: anchor string at %p", anchor);
+    WriteRawLog(buffer);
+
+    auto tryRecordSlot = [&](BYTE* cursor) {
+        for (BYTE* k = cursor - 0x80; k && k < cursor + 0x80; ++k) {
+            if (k[0] == 0xA3) {
+                g_globalStateSlot = reinterpret_cast<DWORD*>(*reinterpret_cast<DWORD*>(k + 1));
+                sprintf_s(buffer, sizeof(buffer), "FindRegisterLuaFunction: slot via A3 at %p -> %p", k, g_globalStateSlot);
+                WriteRawLog(buffer);
+                return;
+            }
+            if (k[0] == 0x89 && (k[1] & 0x07) == 0x05) {
+                g_globalStateSlot = reinterpret_cast<DWORD*>(*reinterpret_cast<DWORD*>(k + 2));
+                sprintf_s(buffer, sizeof(buffer), "FindRegisterLuaFunction: slot via 89 %02X at %p -> %p", k[1], k, g_globalStateSlot);
+                WriteRawLog(buffer);
+                return;
+            }
+        }
+    };
+
+    for (BYTE* p = base; p < base + size - 5; ++p) {
+        bool ref =
+            (p[0] == 0x68 && *reinterpret_cast<DWORD*>(p + 1) == static_cast<DWORD>(anchorAddr)) ||
+            (p[0] == 0x8D && (p[1] & 0xC7) == 0x05 && *reinterpret_cast<DWORD*>(p + 2) == static_cast<DWORD>(anchorAddr));
+        if (!ref)
+            continue;
+
+        sprintf_s(buffer, sizeof(buffer), "FindRegisterLuaFunction: string ref at %p", p);
+        WriteRawLog(buffer);
+
+        for (BYTE* q = p; q < p + 0x40; ++q) {
+            if (q[0] == 0xE8) {
+                INT32 rel = *reinterpret_cast<INT32*>(q + 1);
+                BYTE* callee = q + 5 + rel;
+                sprintf_s(buffer, sizeof(buffer),
+                    "FindRegisterLuaFunction: direct call at %p -> %p", q, callee);
+                WriteRawLog(buffer);
+                tryRecordSlot(q);
+                return callee;
+            }
+            if (q[0] == 0xFF && q[1] == 0x15) {
+                DWORD disp = *reinterpret_cast<DWORD*>(q + 2);
+                BYTE** ind = reinterpret_cast<BYTE**>(q + 6 + disp);
+                BYTE* callee = ind ? *ind : nullptr;
+                sprintf_s(buffer, sizeof(buffer),
+                    "FindRegisterLuaFunction: indirect call at %p -> %p", q, callee);
+                WriteRawLog(buffer);
+                tryRecordSlot(q);
+                return callee;
+            }
+        }
+    }
+
+    WriteRawLog("FindRegisterLuaFunction: no callsite located");
+    return nullptr;
+}
 
 static void* FindOwnerOfLuaState(void* lua) {
     if (!lua) return nullptr;
@@ -137,6 +221,44 @@ static void* FindGlobalStateInfo() {
     BYTE* base = (BYTE*)hExe;
     IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
     IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+
+    // Primary lookup: signature scan for mov ecx, [globalStateInfo]; mov eax, [ecx+0C]
+    const char* kGlobalStateSig = "8B 0D ?? ?? ?? ?? 8B 41 0C";
+    if (!g_globalStateSlot) {
+        BYTE* hit = FindPatternText(kGlobalStateSig);
+        if (hit) {
+            DWORD slotAddr = *reinterpret_cast<DWORD*>(hit + 2);
+            if (slotAddr) {
+                auto slot = reinterpret_cast<GlobalStateInfo**>(slotAddr);
+                char buffer[160];
+                sprintf_s(buffer, sizeof(buffer),
+                    "GlobalState signature hit at %p (slot %p)", hit, slot);
+                WriteRawLog(buffer);
+
+                g_globalStateSlot = reinterpret_cast<DWORD*>(slotAddr);
+                InstallWriteWatch();
+
+                __try {
+                    GlobalStateInfo* info = slot ? *slot : nullptr;
+                    if (info && info->luaState && info->databaseManager) {
+                        sprintf_s(buffer, sizeof(buffer),
+                            "Signature resolved GlobalStateInfo @ %p:\n"
+                            "  Lua State: %p\n"
+                            "  DB Manager: %p\n"
+                            "  Resource Mgr: %p",
+                            info, info->luaState, info->databaseManager, info->resourceManager);
+                        WriteRawLog(buffer);
+                        return info;
+                    }
+                    if (!info)
+                        WriteRawLog("GlobalState slot currently NULL; waiting for guard page notification");
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {
+                    WriteRawLog("Access violation reading GlobalState slot from signature");
+                }
+            }
+        }
+    }
 
     static const struct {
         const wchar_t* w;
@@ -248,6 +370,10 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
         return nullptr;
     }
 
+    if (candidate == g_lastValidatedInfo && candidate->luaState == g_luaState) {
+        return candidate;
+    }
+
     __try {
         if (candidate->luaState && candidate->databaseManager) {
             char buffer[256];
@@ -255,15 +381,52 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
                 "Write hook validated GlobalStateInfo @ %p:\n"
                 "  Lua State: %p\n"
                 "  DB Manager: %p\n"
+                "  Script Ctx: %p\n"
                 "  Resource Mgr: %p",
                 candidate, candidate->luaState,
                 candidate->databaseManager,
+                candidate->scriptContext,
                 candidate->resourceManager);
             WriteRawLog(buffer);
+
+            void* engineCtx = candidate->engineContext;
+            void* networkCfg = candidate->networkConfig;
+            if (engineCtx) {
+                __try {
+                    void** vtbl = *reinterpret_cast<void***>(engineCtx);
+                    void* entries[8]{};
+                    for (int i = 0; i < 8; ++i)
+                        entries[i] = vtbl ? vtbl[i] : nullptr;
+                    char extra[256];
+                    sprintf_s(extra, sizeof(extra),
+                        "  engineContext=%p vtbl=%p entries={%p,%p,%p,%p,%p,%p,%p,%p} networkConfig=%p",
+                        engineCtx, vtbl,
+                        entries[0], entries[1], entries[2], entries[3],
+                        entries[4], entries[5], entries[6], entries[7],
+                        networkCfg);
+                    WriteRawLog(extra);
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {
+                    char extra[160];
+                    sprintf_s(extra, sizeof(extra),
+                        "  engineContext=%p (vtbl read failed) networkConfig=%p",
+                        engineCtx, networkCfg);
+                    WriteRawLog(extra);
+                }
+                Engine::Lua::UpdateEngineContext(engineCtx);
+            } else {
+                char extra[160];
+                sprintf_s(extra, sizeof(extra),
+                    "  engineContext=%p networkConfig=%p",
+                    engineCtx, networkCfg);
+                WriteRawLog(extra);
+                Engine::Lua::UpdateEngineContext(nullptr);
+            }
 
             g_globalStateInfo = candidate;
             g_luaState = candidate->luaState;
             g_luaStateCaptured = true;
+            g_lastValidatedInfo = candidate;
 
             // The Lua VM is now known; ensure helper registration runs
             RequestWalkRegistration();
@@ -284,7 +447,7 @@ static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x) {
         DWORD oldProtect;
         VirtualProtect(g_globalStateSlot, sizeof(void*), PAGE_READWRITE, &oldProtect);
 
-        GlobalStateInfo* info = *(GlobalStateInfo**)g_globalStateSlot;
+        GlobalStateInfo* info = ReadSlotUnsafe();
         ValidateGlobalState(info);
 
         return EXCEPTION_CONTINUE_EXECUTION;
@@ -315,6 +478,21 @@ static void InstallWriteWatch() {
             WriteRawLog(buffer);
         }
     }
+}
+
+static GlobalStateInfo* ReadSlotUnsafe()
+{
+    if (!g_globalStateSlot)
+        return nullptr;
+    GlobalStateInfo* value = nullptr;
+    __try {
+        value = *reinterpret_cast<GlobalStateInfo**>(g_globalStateSlot);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Exception reading GlobalState slot value");
+        value = nullptr;
+    }
+    return value;
 }
 
 static DWORD WINAPI WaitForLua(LPVOID) {
@@ -396,6 +574,32 @@ void* LuaState() {
 
 const GlobalStateInfo* Info() {
     return g_globalStateInfo;
+}
+
+uintptr_t GlobalStateSlotAddress() {
+    return reinterpret_cast<uintptr_t>(g_globalStateSlot);
+}
+
+GlobalStateInfo* GlobalStateSlotValue() {
+    return ReadSlotUnsafe();
+}
+
+bool RefreshLuaStateFromSlot()
+{
+    GlobalStateInfo* slotVal = ReadSlotUnsafe();
+    if (!slotVal || !slotVal->luaState || !slotVal->databaseManager) {
+        return false;
+    }
+
+    bool changed = (slotVal != g_lastValidatedInfo) || (slotVal->luaState != g_luaState);
+    if (changed) {
+        char buffer[160];
+        sprintf_s(buffer, sizeof(buffer),
+            "Refreshing Lua state from slot: info=%p lua=%p", slotVal, slotVal->luaState);
+        WriteRawLog(buffer);
+        ValidateGlobalState(slotVal);
+    }
+    return changed;
 }
 
 } // namespace Engine
