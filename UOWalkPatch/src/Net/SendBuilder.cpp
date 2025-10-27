@@ -203,6 +203,53 @@ static bool IsGameVtableAddress(void* addr)
            protect == PAGE_EXECUTE_READWRITE;
 }
 
+struct SendPacketAttemptContext {
+    void* sendCtx;
+    void* vtbl;
+    void* vtblFirstEntry;
+    bool vtblEntryExecutable;
+    const void* payload;
+    int payloadLen;
+    void* sendPacketFn;
+    void* sendPacketTarget;
+};
+
+static thread_local SendPacketAttemptContext g_lastSendAttempt{};
+
+static int SendPacketExceptionFilter(unsigned code, EXCEPTION_POINTERS* info)
+{
+    void* exceptionAddress = (info && info->ExceptionRecord) ? info->ExceptionRecord->ExceptionAddress : nullptr;
+    char buf[256];
+    sprintf_s(buf, sizeof(buf),
+              "SendPacketRaw exception code=%08X addr=%p sendCtx=%p vtbl=%p entry=%p exec=%d sendFn=%p target=%p len=%d",
+              code,
+              exceptionAddress,
+              g_lastSendAttempt.sendCtx,
+              g_lastSendAttempt.vtbl,
+              g_lastSendAttempt.vtblFirstEntry,
+              g_lastSendAttempt.vtblEntryExecutable ? 1 : 0,
+              g_lastSendAttempt.sendPacketFn,
+              g_lastSendAttempt.sendPacketTarget,
+              g_lastSendAttempt.payloadLen);
+    WriteRawLog(buf);
+
+    if (g_lastSendAttempt.payload && g_lastSendAttempt.payloadLen > 0) {
+        const unsigned char* bytes = static_cast<const unsigned char*>(g_lastSendAttempt.payload);
+        int dumpLen = g_lastSendAttempt.payloadLen < 16 ? g_lastSendAttempt.payloadLen : 16;
+        char dump[3 * 16 + 1] = {};
+        char* out = dump;
+        for (int i = 0; i < dumpLen; ++i) {
+            sprintf_s(out, 4, "%02X ", bytes[i]);
+            out += 3;
+        }
+        char dumpMsg[128];
+        sprintf_s(dumpMsg, sizeof(dumpMsg), "SendPacketRaw payload prefix: %s", dump);
+        WriteRawLog(dumpMsg);
+    }
+
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 static void TryHookSendBuilder(void* endpoint);
 static bool TryDiscoverEndpointFromManager(void* manager);
 static bool TryDiscoverFromEngineContext();
@@ -1540,7 +1587,6 @@ static void HookSendBuilderFromNetMgr()
             g_lastNetCfgBase = mbi.BaseAddress;
             g_lastNetCfgRegionSize = mbi.RegionSize;
         }
-
         if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD)) {
             if (!g_loggedNetScanFailure) {
                 WriteRawLog("HookSendBuilderFromNetMgr: networkConfig region not readable yet");
@@ -1795,7 +1841,7 @@ bool SendPacketRaw(const void* bytes, int len)
     if (!g_sendPacket)
         return false;
 
-    void* sendCtx = g_sendCtx ? g_sendCtx : g_netMgr;
+    void* sendCtx = g_netMgr ? g_netMgr : g_sendCtx;
     if (!sendCtx)
         return false;
 
@@ -1816,14 +1862,35 @@ bool SendPacketRaw(const void* bytes, int len)
         WriteRawLog("SendPacketRaw: send context pointer not readable");
         return false;
     }
+    void* vtblEntry = nullptr;
+    if (!SafeCopy(&vtblEntry, vtbl, sizeof(vtblEntry))) {
+        WriteRawLog("SendPacketRaw: failed to read vtable[0]");
+    }
+    bool entryExecutable = IsExecutableCodeAddress(vtblEntry);
+    if (!entryExecutable) {
+        char warn[200];
+        sprintf_s(warn, sizeof(warn),
+                  "SendPacketRaw warning: vtable entry not executable vtbl=%p entry=%p",
+                  vtbl,
+                  vtblEntry);
+        WriteRawLog(warn);
+    }
+
+    g_lastSendAttempt.sendCtx = sendCtx;
+    g_lastSendAttempt.vtbl = vtbl;
+    g_lastSendAttempt.vtblFirstEntry = vtblEntry;
+    g_lastSendAttempt.vtblEntryExecutable = entryExecutable;
+    g_lastSendAttempt.payload = bytes;
+    g_lastSendAttempt.payloadLen = len;
+    g_lastSendAttempt.sendPacketFn = reinterpret_cast<void*>(g_sendPacket);
+    g_lastSendAttempt.sendPacketTarget = g_sendPacketTarget;
 
     bool sent = false;
     __try {
         g_sendPacket(sendCtx, bytes, len);
         sent = true;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("SendPacketRaw: exception while invoking client SendPacket");
+    __except (SendPacketExceptionFilter(GetExceptionCode(), GetExceptionInformation())) {
         sent = false;
     }
     if (sent) {

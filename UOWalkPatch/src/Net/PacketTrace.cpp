@@ -23,6 +23,17 @@ static int (WSAAPI* g_real_WSARecvFrom)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWOR
 static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) = nullptr;
 static bool shouldLogTraces = true;
 
+static uint32_t ExtractFastWalkKey0x2E(const char* buf, int len)
+{
+    if (!buf || len < 7)
+        return 0;
+    uint32_t b3 = static_cast<uint8_t>(buf[3]);
+    uint32_t b4 = static_cast<uint8_t>(buf[4]);
+    uint32_t b5 = static_cast<uint8_t>(buf[5]);
+    uint32_t b6 = static_cast<uint8_t>(buf[6]);
+    return (b3 << 24) | (b4 << 16) | (b5 << 8) | b6;
+}
+
 static void LogFastWalkReceipt(const char* source, uint32_t key)
 {
     static volatile LONG s_budget = 32;
@@ -40,6 +51,11 @@ static void TraceOutbound(const char* buf, int len)
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Outbound packet", (void*)buf, dumpLen);
+    if (len >= 7 && (unsigned char)buf[0] == 0x2E) {
+        uint32_t key = ExtractFastWalkKey0x2E(buf, len);
+        if (key)
+            Engine::RecordObservedFastWalkKey(key);
+    }
     Net::PollSendBuilder();
 }
 
@@ -50,6 +66,11 @@ static void TraceInbound(const char* buf, int len)
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Inbound packet", (void*)buf, dumpLen);
+    if (len >= 7 && (unsigned char)buf[0] == 0x2E) {
+        uint32_t key = ExtractFastWalkKey0x2E(buf, len);
+        if (key)
+            Engine::RecordObservedFastWalkKey(key);
+    }
     Net::PollSendBuilder();
     if ((unsigned char)buf[0] == 0xB8)
     {

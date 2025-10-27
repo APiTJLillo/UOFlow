@@ -11,6 +11,8 @@
 #include "Engine/LuaBridge.hpp"
 #include "LuaPlus.h"
 
+extern "C" LUA_API void lua_pushlightuserdata(lua_State* L, void* p);
+
 
 namespace {
     using ClientRegisterFn = int(__stdcall*)(void*, void*, const char*);
@@ -43,6 +45,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static int __cdecl Lua_Walk(lua_State* L);
 static int __cdecl Lua_BindWalk(lua_State* L);
 static int __cdecl Lua_FastWalkInfo(lua_State* L);
+static int __cdecl Lua_MovementInfo(lua_State* L);
 
 static void LogWalkBindingState(lua_State* L, const char* stage)
 {
@@ -407,6 +410,95 @@ static int __cdecl Lua_FastWalkInfo(lua_State* L)
     return 2;
 }
 
+static int __cdecl Lua_MovementInfo(lua_State* L)
+{
+    Engine::MovementDebugStatus status{};
+    const char* reason = nullptr;
+    bool ready = false;
+
+    __try {
+        Engine::GetMovementDebugStatus(status);
+        ready = Engine::MovementReadyWithReason(&reason);
+        status.ready = ready;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Lua_MovementInfo: exception while capturing status");
+        lua_pushnil(L);
+        return 1;
+    }
+
+    char buf[256];
+    sprintf_s(buf, sizeof(buf),
+              "Lua_MovementInfo ready=%d updateHook=%d moveComp=%p candidate=%p pending=%d age=%u dir=%d run=%d depth=%d",
+              status.ready ? 1 : 0,
+              status.updateHookInstalled ? 1 : 0,
+              status.movementComponentPtr,
+              status.movementCandidatePtr,
+              status.pendingMoveActive ? 1 : 0,
+              status.pendingAgeMs,
+              status.pendingDir,
+              status.pendingRun ? 1 : 0,
+              status.fastWalkDepth);
+    WriteRawLog(buf);
+
+    lua_createtable(L, 0, 12);
+
+    lua_pushboolean(L, status.ready);
+    lua_setfield(L, -2, "ready");
+
+    lua_pushboolean(L, status.updateHookInstalled);
+    lua_setfield(L, -2, "updateHookInstalled");
+
+    lua_pushboolean(L, status.movementComponentCaptured);
+    lua_setfield(L, -2, "movementComponentCaptured");
+
+    lua_pushboolean(L, status.movementCandidatePending);
+    lua_setfield(L, -2, "movementCandidatePending");
+
+    lua_pushboolean(L, status.pendingMoveActive);
+    lua_setfield(L, -2, "pendingMoveActive");
+
+    lua_pushnumber(L, static_cast<lua_Number>(status.pendingAgeMs));
+    lua_setfield(L, -2, "pendingAgeMs");
+
+    lua_pushnumber(L, static_cast<lua_Number>(status.pendingDir));
+    lua_setfield(L, -2, "pendingDir");
+
+    lua_pushboolean(L, status.pendingRun);
+    lua_setfield(L, -2, "pendingRun");
+
+    lua_pushnumber(L, static_cast<lua_Number>(status.fastWalkDepth));
+    lua_setfield(L, -2, "fastWalkDepth");
+
+    auto pushPointerFields = [&](const char* userdataField, const char* stringField, void* ptr) {
+        if (ptr) {
+            lua_pushlightuserdata(L, ptr);
+            lua_setfield(L, -2, userdataField);
+
+            char ptrBuf[32];
+            sprintf_s(ptrBuf, sizeof(ptrBuf), "0x%p", ptr);
+            lua_pushstring(L, ptrBuf);
+            lua_setfield(L, -2, stringField);
+        } else {
+            lua_pushnil(L);
+            lua_setfield(L, -2, userdataField);
+            lua_pushnil(L);
+            lua_setfield(L, -2, stringField);
+        }
+    };
+
+    pushPointerFields("movementComponentPtr", "movementComponentPtrStr", status.movementComponentPtr);
+    pushPointerFields("movementCandidatePtr", "movementCandidatePtrStr", status.movementCandidatePtr);
+    pushPointerFields("destinationPtr", "destinationPtrStr", status.destinationPtr);
+
+    if (reason && reason[0] != '\0') {
+        lua_pushstring(L, reason);
+        lua_setfield(L, -2, "reason");
+    }
+
+    return 1;
+}
+
 namespace Engine::Lua {
 
 void RegisterOurLuaFunctions()
@@ -414,6 +506,7 @@ void RegisterOurLuaFunctions()
     static bool dummyReg = false;
     static bool walkReg = false;
     static bool fastInfoReg = false;
+    static bool movementInfoReg = false;
     static lua_State* lastState = nullptr;
     static bool lastMovementReady = false;
 
@@ -442,6 +535,7 @@ void RegisterOurLuaFunctions()
         dummyReg = false;
         walkReg = false;
         fastInfoReg = false;
+        movementInfoReg = false;
         lastState = L;
         lastMovementReady = movementReady;
         WriteRawLog("Lua or movement state changed; reset registration flags");
@@ -475,6 +569,18 @@ void RegisterOurLuaFunctions()
             fastInfoReg = true;
         } else {
             WriteRawLog("Failed to register fastWalkInfo (will retry)");
+            return;
+        }
+    }
+
+    if (!movementInfoReg) {
+        WriteRawLog("Registering movementInfo Lua function...");
+        if (RegisterViaClient(L, Lua_MovementInfo, "movementInfo") ||
+            RegisterFunctionSafe(L, Lua_MovementInfo, "movementInfo")) {
+            WriteRawLog("Successfully registered movementInfo");
+            movementInfoReg = true;
+        } else {
+            WriteRawLog("Failed to register movementInfo (will retry)");
             return;
         }
     }

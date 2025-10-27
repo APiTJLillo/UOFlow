@@ -42,6 +42,11 @@ static volatile LONG g_pendingMoveActive = 0;
 static volatile LONG g_pendingTick = 0;
 static volatile LONG g_pendingDir = 0;
 static volatile LONG g_pendingRunFlag = 0;
+static volatile LONG g_lastObservedNetworkKey = 0;
+static volatile LONG g_fastWalkProbeBudget = 64;
+static uint32_t g_lastProbeAttemptKey = 0;
+static uint32_t g_lastLoggedCandidateKey = 0;
+static int g_fastWalkStorageOffset = -1;
 
 static constexpr int kStepDx[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 static constexpr int kStepDy[8] = {-1, -1, 0, 1, 1, 1, 0, -1};
@@ -172,6 +177,7 @@ static void LogQueueEntry(const char* label, const uint8_t* data, size_t len = k
          hiVals[3], loVals[3]);
 }
 
+static void ProbeFastWalkStorage(const uint8_t* compPtrData);
 static bool CopyMemorySafe(const void* src, void* dst, size_t len);
 
 static void LogMovementVtable(void* thisPtr)
@@ -287,6 +293,58 @@ static bool EnqueueViaUpdate(int dir, bool shouldRun, int stepScale)
     return true;
 }
 
+static void ProbeFastWalkStorage(const uint8_t* compPtrData)
+{
+    if (!compPtrData)
+        return;
+
+    LONG budget = InterlockedCompareExchange(&g_fastWalkProbeBudget, 0, 0);
+    if (budget <= 0)
+        return;
+
+    uint32_t key = static_cast<uint32_t>(InterlockedCompareExchange(&g_lastObservedNetworkKey, 0, 0));
+    if (key == 0)
+        return;
+
+    if (g_fastWalkStorageOffset >= 0 && g_lastProbeAttemptKey == key)
+        return;
+    if (g_fastWalkStorageOffset < 0 && g_lastProbeAttemptKey == key)
+        return;
+
+    g_lastProbeAttemptKey = key;
+
+    size_t hitOffset = SIZE_MAX;
+    for (size_t offset = 0; offset + sizeof(uint32_t) <= kDestCopySize; ++offset) {
+        uint32_t value = 0;
+        std::memcpy(&value, compPtrData + offset, sizeof(value));
+        if (value == key) {
+            hitOffset = offset;
+            break;
+        }
+    }
+
+    if (hitOffset != SIZE_MAX) {
+        g_fastWalkStorageOffset = static_cast<int>(hitOffset);
+        if (g_lastLoggedCandidateKey != key) {
+            g_lastLoggedCandidateKey = key;
+            Logf("FastWalk storage candidate: key=%08X offset=0x%X within movement snapshot", key, static_cast<unsigned>(hitOffset));
+            char buf[160];
+            sprintf_s(buf, sizeof(buf), "FastWalk storage candidate offset=0x%X key=%08X", static_cast<unsigned>(hitOffset), key);
+            WriteRawLog(buf);
+            if (hitOffset + 4 * sizeof(uint32_t) <= kDestCopySize) {
+                uint32_t preview[4]{};
+                std::memcpy(preview, compPtrData + hitOffset, sizeof(preview));
+                Logf("FastWalk slot preview: {%08X %08X %08X %08X}", preview[0], preview[1], preview[2], preview[3]);
+            }
+        }
+        InterlockedDecrement(&g_fastWalkProbeBudget);
+    } else {
+        if (InterlockedDecrement(&g_fastWalkProbeBudget) >= 0) {
+            Logf("FastWalk probe miss for key=%08X (no match in movement snapshot)", key);
+        }
+    }
+}
+
 static bool CopyMemorySafe(const void* src, void* dst, size_t len)
 {
     if (!src || !dst || len == 0)
@@ -342,6 +400,26 @@ static int NormalizeDirection(int dir)
 
 namespace Engine {
 
+static bool MovementReadyInternal(const char** reasonOut)
+{
+    if (!g_updateState) {
+        if (reasonOut)
+            *reasonOut = "movement hook not installed";
+        return false;
+    }
+    if (!g_moveComp) {
+        if (reasonOut) {
+            *reasonOut = g_moveCandidate
+                ? "movement component candidate pending"
+                : "movement component not discovered";
+        }
+        return false;
+    }
+    if (reasonOut)
+        *reasonOut = nullptr;
+    return true;
+}
+
 void PushFastWalkKey(uint32_t key) {
     const int capacity = static_cast<int>(sizeof(g_fastWalkKeys) / sizeof(g_fastWalkKeys[0]));
     if (g_fwTop < capacity) {
@@ -385,8 +463,35 @@ int FastWalkQueueDepth() {
     return g_fwTop;
 }
 
+void RecordObservedFastWalkKey(uint32_t key) {
+    InterlockedExchange(&g_lastObservedNetworkKey, static_cast<LONG>(key));
+}
+
 bool MovementReady() {
-    return g_updateState && g_moveComp;
+    return MovementReadyInternal(nullptr);
+}
+
+bool MovementReadyWithReason(const char** reasonOut) {
+    return MovementReadyInternal(reasonOut);
+}
+
+void GetMovementDebugStatus(MovementDebugStatus& out) {
+    std::memset(&out, 0, sizeof(out));
+    out.updateHookInstalled = g_updateState != nullptr;
+    out.movementComponentCaptured = g_moveComp != nullptr;
+    out.movementCandidatePending = g_moveCandidate != nullptr && g_moveComp == nullptr;
+    out.movementComponentPtr = g_moveComp;
+    out.movementCandidatePtr = g_moveCandidate;
+    out.destinationPtr = g_dest;
+    out.fastWalkDepth = g_fwTop;
+    out.ready = MovementReadyInternal(nullptr);
+
+    out.pendingMoveActive = g_pendingMoveActive != 0;
+    DWORD now = GetTickCount();
+    DWORD pendingTick = static_cast<DWORD>(g_pendingTick);
+    out.pendingAgeMs = out.pendingMoveActive ? (now - pendingTick) : 0;
+    out.pendingDir = static_cast<int>(g_pendingDir);
+    out.pendingRun = g_pendingRunFlag != 0;
 }
 
 void RequestWalkRegistration() {
@@ -639,6 +744,7 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
 
     if (thisPtr == g_moveComp && haveCompPtrData) {
         LogMovementVtable(thisPtr);
+        ProbeFastWalkStorage(compPtrData);
 
         uint32_t head = 0;
         uint32_t tail = 0;
@@ -899,7 +1005,8 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
 } // namespace
 
 extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
-    const bool movementReady = Engine::MovementReady();
+    const char* movementReason = nullptr;
+    const bool movementReady = Engine::MovementReadyWithReason(&movementReason);
     const bool netReady = Net::IsSendReady();
     const int fastWalkDepth = Engine::FastWalkQueueDepth();
 
@@ -912,7 +1019,15 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     WriteRawLog(prereqBuf);
 
     if (!movementReady) {
-        WriteRawLog("SendWalk prerequisites missing: movement not ready");
+        if (movementReason && movementReason[0] != '\0') {
+            char reasonBuf[160];
+            sprintf_s(reasonBuf, sizeof(reasonBuf),
+                      "SendWalk prerequisites missing: movement not ready (%s)",
+                      movementReason);
+            WriteRawLog(reasonBuf);
+        } else {
+            WriteRawLog("SendWalk prerequisites missing: movement not ready");
+        }
         return false;
     }
     if (!netReady) {
