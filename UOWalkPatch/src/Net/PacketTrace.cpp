@@ -23,7 +23,8 @@ static bool shouldLogTraces = false;
 
 static void TraceOutbound(const char* buf, int len)
 {
-    Logf("send-family len=%d id=%02X", len, (unsigned char)buf[0]);
+    if(shouldLogTraces)
+        Logf("send-family len=%d id=%02X", len, (unsigned char)buf[0]);
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Outbound packet", (void*)buf, dumpLen);
@@ -31,7 +32,8 @@ static void TraceOutbound(const char* buf, int len)
 
 static void TraceInbound(const char* buf, int len)
 {
-    Logf("recv-family len=%d id=%02X", len, (unsigned char)buf[0]);
+    if(shouldLogTraces)
+        Logf("recv-family len=%d id=%02X", len, (unsigned char)buf[0]);
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Inbound packet", (void*)buf, dumpLen);
