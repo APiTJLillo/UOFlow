@@ -9,6 +9,7 @@
 #include "Engine/GlobalState.hpp"
 #include "Engine/LuaBridge.hpp"
 #include "Engine/Movement.hpp"
+#include "Net/SendBuilder.hpp"
 
 namespace Engine {
 
@@ -427,6 +428,8 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
             g_luaState = candidate->luaState;
             g_luaStateCaptured = true;
             g_lastValidatedInfo = candidate;
+
+            Net::InitSendBuilder(candidate);
 
             // The Lua VM is now known; ensure helper registration runs
             RequestWalkRegistration();

@@ -11,6 +11,7 @@ namespace Engine {
 
     void PushFastWalkKey(uint32_t key);
     uint32_t PopFastWalkKey();
+    int FastWalkQueueDepth();
 
     bool MovementReady();
     void RequestWalkRegistration();

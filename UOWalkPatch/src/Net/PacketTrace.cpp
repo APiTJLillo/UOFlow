@@ -2,11 +2,13 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <minhook.h>
+#include <cstdio>
 #include <cstdint>
 
 #include "Core/Logging.hpp"
 #include "Core/Utils.hpp"
 #include "Net/PacketTrace.hpp"
+#include "Net/SendBuilder.hpp"
 #include "Engine/Movement.hpp"
 
 namespace {
@@ -19,7 +21,17 @@ static int (WSAAPI* g_real_recv)(SOCKET, char*, int, int) = nullptr;
 static int (WSAAPI* g_real_WSARecv)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_WSARecvFrom)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, sockaddr*, LPINT, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) = nullptr;
-static bool shouldLogTraces = false;
+static bool shouldLogTraces = true;
+
+static void LogFastWalkReceipt(const char* source, uint32_t key)
+{
+    static volatile LONG s_budget = 32;
+    if (!source)
+        source = "?";
+    if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
+        Logf("FastWalk key received via %s key=%08X depth=%d", source, key, Engine::FastWalkQueueDepth());
+    }
+}
 
 static void TraceOutbound(const char* buf, int len)
 {
@@ -28,6 +40,7 @@ static void TraceOutbound(const char* buf, int len)
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Outbound packet", (void*)buf, dumpLen);
+    Net::PollSendBuilder();
 }
 
 static void TraceInbound(const char* buf, int len)
@@ -37,10 +50,24 @@ static void TraceInbound(const char* buf, int len)
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Inbound packet", (void*)buf, dumpLen);
-    if ((unsigned char)buf[0] == 0xB8 && len >= 5)
+    Net::PollSendBuilder();
+    if ((unsigned char)buf[0] == 0xB8)
     {
-        uint32_t key = ntohl(*(uint32_t*)(buf + 1));
-        Engine::PushFastWalkKey(key);
+        uint32_t key = 0;
+        if (len >= 5) {
+            key = ntohl(*(const uint32_t*)(buf + 1));
+        } else if (len >= 3) {
+            key = ntohs(*(const uint16_t*)(buf + 1));
+        }
+        if (key != 0) {
+            Engine::PushFastWalkKey(key);
+            LogFastWalkReceipt("0xB8", key);
+            char msg[96];
+            sprintf_s(msg, sizeof(msg), "FastWalk(0xB8) key=%08X len=%d", key, len);
+            WriteRawLog(msg);
+        } else if (shouldLogTraces) {
+            Logf("FastWalk 0xB8 packet ignored len=%d", len);
+        }
     }
     else if (len >= 6 && (unsigned char)buf[0] == 0xBF)
     {
@@ -54,6 +81,10 @@ static void TraceInbound(const char* buf, int len)
             {
                 uint32_t key = ntohl(*(uint32_t*)p);
                 Engine::PushFastWalkKey(key);
+                LogFastWalkReceipt("0xBF:01", key);
+                char msg[96];
+                sprintf_s(msg, sizeof(msg), "FastWalk(0xBF:01) key=%08X", key);
+                WriteRawLog(msg);
                 p += 4;
             }
         }
@@ -61,6 +92,10 @@ static void TraceInbound(const char* buf, int len)
         {
             uint32_t key = ntohl(*(uint32_t*)(payload + 1));
             Engine::PushFastWalkKey(key);
+            LogFastWalkReceipt("0xBF:02", key);
+            char msg[96];
+            sprintf_s(msg, sizeof(msg), "FastWalk(0xBF:02) key=%08X", key);
+            WriteRawLog(msg);
         }
     }
 }

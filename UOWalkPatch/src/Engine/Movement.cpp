@@ -32,6 +32,10 @@ static long g_updateLogCount = 0;
 static thread_local int g_updateDepth = 0;
 static uint32_t g_fastWalkKeys[32]{};
 static int g_fwTop = 0;
+static volatile LONG g_fwPushLogBudget = 16;
+static volatile LONG g_fwPopLogBudget = 8;
+static volatile LONG g_fwEmptyWarnBudget = 8;
+static volatile LONG g_fwOverflowWarned = 0;
 static Vec3 g_expectedDest{};
 static volatile LONG g_expectValid = 0;
 static volatile LONG g_pendingMoveActive = 0;
@@ -328,12 +332,40 @@ static int NormalizeDirection(int dir)
 namespace Engine {
 
 void PushFastWalkKey(uint32_t key) {
-    if (g_fwTop < (int)(sizeof(g_fastWalkKeys) / sizeof(g_fastWalkKeys[0])))
+    const int capacity = static_cast<int>(sizeof(g_fastWalkKeys) / sizeof(g_fastWalkKeys[0]));
+    if (g_fwTop < capacity) {
         g_fastWalkKeys[g_fwTop++] = key;
+        if (g_fwPushLogBudget > 0 && InterlockedDecrement(&g_fwPushLogBudget) >= 0) {
+            Logf("FastWalk key queued key=%08X depth=%d", key, g_fwTop);
+            char buf[96];
+            sprintf_s(buf, sizeof(buf), "FastWalk queue push key=%08X depth=%d", key, g_fwTop);
+            WriteRawLog(buf);
+        }
+    } else if (InterlockedCompareExchange(&g_fwOverflowWarned, 1, 0) == 0) {
+        Logf("FastWalk queue overflow; dropping key=%08X (capacity=%d)", key, capacity);
+        WriteRawLog("FastWalk queue overflow");
+    }
 }
 
 uint32_t PopFastWalkKey() {
-    return g_fwTop > 0 ? g_fastWalkKeys[--g_fwTop] : 0;
+    if (g_fwTop > 0) {
+        uint32_t key = g_fastWalkKeys[--g_fwTop];
+        if (g_fwPopLogBudget > 0 && InterlockedDecrement(&g_fwPopLogBudget) >= 0) {
+            Logf("FastWalk key dequeued key=%08X depth=%d", key, g_fwTop);
+            char buf[96];
+            sprintf_s(buf, sizeof(buf), "FastWalk queue pop key=%08X depth=%d", key, g_fwTop);
+            WriteRawLog(buf);
+        }
+        return key;
+    }
+    if (g_fwEmptyWarnBudget > 0 && InterlockedDecrement(&g_fwEmptyWarnBudget) >= 0) {
+        WriteRawLog("FastWalk queue empty on PopFastWalkKey");
+    }
+    return 0;
+}
+
+int FastWalkQueueDepth() {
+    return g_fwTop;
 }
 
 bool MovementReady() {
