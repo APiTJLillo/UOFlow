@@ -1,0 +1,2275 @@
+Running North
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000000  p3=00000002  this=5F7D7388
+Running North East
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000001  p3=00000002  this=5F7D7388
+Running East
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000002  p3=00000002  this=5F7D7388
+Running South East
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000003  p3=00000002  this=5F7D7388
+Running South
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000004  p3=00000002  this=5F7D7388
+Running South West
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000005  p3=00000002  this=5F7D7388
+Running West
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000006  p3=00000002  this=5F7D7388
+Running North West
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000007  p3=00000002  this=5F7D7388
+
+Walking North
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000000  p3=00000001  this=5F7D7388
+Walking North East
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000001  p3=00000001  this=5F7D7388
+Walking East
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000002  p3=00000001  this=5F7D7388
+Walking South East
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000003  p3=00000001  this=5F7D7388
+Walking South
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000004  p3=00000001  this=5F7D7388
+Walking South West
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000005  p3=00000001  this=5F7D7388
+Walking West
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000006  p3=00000001  this=5F7D7388
+Walking North West
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000007  p3=00000001  this=5F7D7388
+
+Turning in place
+
+S to N
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000000  p3=00000001  this=5F7D7388
+N to S
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000004  p3=00000001  this=5F7D7388
+S to W
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000006  p3=00000001  this=5F7D7388
+W to E
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000002  p3=00000001  this=5F7D7388
+E to NW
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000007  p3=00000001  this=5F7D7388
+NW to SE
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000003  p3=00000001  this=5F7D7388
+SE to SW
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000005  p3=00000001  this=5F7D7388
+SW to NE
+INT3 breakpoint at uosa.005F64A0!
+@hit -> p1=5F80E744  p2=00000001  p3=00000001  this=5F7D7388
+
+Other character: 
+Run N
+@hit -> p1=5EA9456C  p2=00000000  p3=00000002  this=5EA930A8
+Run NE
+@hit -> p1=5EA9456C  p2=00000001  p3=00000002  this=5EA930A8
+Run E
+@hit -> p1=5EA9456C  p2=00000002  p3=00000002  this=5EA930A8
+Run SE
+@hit -> p1=5EA9456C  p2=00000003  p3=00000002  this=5EA930A8
+Run S
+@hit -> p1=5EA9456C  p2=00000004  p3=00000002  this=5EA930A8
+Run SW
+@hit -> p1=5EA9456C  p2=00000005  p3=00000002  this=5EA930A8
+Run W
+@hit -> p1=5EA9456C  p2=00000006  p3=00000002  this=5EA930A8
+Run NW
+@hit -> p1=5EA9456C  p2=00000007  p3=00000002  this=5EA930A8
+Walk N
+@hit -> p1=5EA9456C  p2=00000000  p3=00000001  this=5EA930A8
+Walk NE
+@hit -> p1=5EA9456C  p2=00000001  p3=00000001  this=5EA930A8
+Walk E
+@hit -> p1=5EA9456C  p2=00000002  p3=00000001  this=5EA930A8
+Walk SE
+@hit -> p1=5EA9456C  p2=00000003  p3=00000001  this=5EA930A8
+Walk S
+@hit -> p1=5EA9456C  p2=00000004  p3=00000001  this=5EA930A8
+Walk SW
+@hit -> p1=5EA9456C  p2=00000005  p3=00000001  this=5EA930A8
+Walk W
+@hit -> p1=5EA9456C  p2=00000006  p3=00000001  this=5EA930A8
+Walk NW
+@hit -> p1=5EA9456C  p2=00000007  p3=00000001  this=5EA930A8
+
+Pure idle/no-move does not trigger the breakpoint
+
+
+
+
+
+5 checkpoints
+005F64A0 Function start
+0x005F64AE (after push edi) — prologue end.
+0x005F64C4 (before external call) — original params.
+0x005F6520 (before second call) — post-exit mask.
+0x005F655C (before 2nd vcall) — post-update.
+0x005F6601 (before material write) — forwarded values.
+
+Run N
+@hit @ 005F64A0  p1=5DC04B34  p2=00000000  p3=00000002  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000000  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000000  p2=5DC04B34  p3=00000003  this=5DC0311C
+Run NE
+@hit @ 005F64A0  p1=5DC04B34  p2=00000001  p3=00000002  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000001  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000001  p2=5DC04B34  p3=00000003  this=5DC0311C
+Run E
+@hit @ 005F64A0  p1=5DC04B34  p2=00000002  p3=00000002  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000002  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000002  p2=5DC04B34  p3=00000003  this=5DC0311C
+Run SE
+@hit @ 005F64A0  p1=5DC04B34  p2=00000003  p3=00000002  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000003  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000003  p2=5DC04B34  p3=00000003  this=5DC0311C
+Run S
+@hit @ 005F64A0  p1=5DC04B34  p2=00000004  p3=00000002  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000004  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000004  p2=5DC04B34  p3=00000003  this=5DC0311C
+Run SW
+@hit @ 005F64A0  p1=5DC04B34  p2=00000005  p3=00000002  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000005  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000005  p2=5DC04B34  p3=00000003  this=5DC0311C
+Run W
+@hit @ 005F64A0  p1=5DC04B34  p2=00000006  p3=00000002  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000006  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000006  p2=5DC04B34  p3=00000003  this=5DC0311C
+Run NW
+@hit @ 005F64A0  p1=5DC04B34  p2=00000007  p3=00000002  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000007  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000007  p2=5DC04B34  p3=00000003  this=5DC0311C
+
+Walk N
+@hit @ 005F64A0  p1=5DC04B34  p2=00000000  p3=00000001  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000000  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000000  p2=5DC04B34  p3=00000003  this=5DC0311C
+Walk NE
+@hit @ 005F64A0  p1=5DC04B34  p2=00000001  p3=00000001  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000001  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=0019F554
+@hit @ 005F6601  p1=00000001  p2=5DC04B34  p3=00000003  this=5DC0311C
+Walk E
+@hit @ 005F64A0  p1=5DC04B34  p2=00000002  p3=00000001  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000002  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000002  p2=5DC04B34  p3=00000003  this=5DC0311C
+Walk SE
+@hit @ 005F64A0  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000003  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000003  p2=5DC04B34  p3=00000003  this=5DC0311C
+Walk S
+@hit @ 005F64A0  p1=5DC04B34  p2=00000004  p3=00000001  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000004  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000004  p2=5DC04B34  p3=00000003  this=5DC0311C
+Walk SW
+@hit @ 005F64A0  p1=5DC04B34  p2=00000005  p3=00000001  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000005  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000005  p2=5DC04B34  p3=00000003  this=5DC0311C
+Walk W
+@hit @ 005F64A0  p1=5DC04B34  p2=00000006  p3=00000001  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000006  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000006  p2=5DC04B34  p3=00000003  this=5DC0311C
+Walk NW
+@hit @ 005F64A0  p1=5DC04B34  p2=00000007  p3=00000001  this=5DC030D8
+@hit @ 005F64AE  p1=00000003  p2=00000001  p3=00000000  this=5DC030D8
+@hit @ 005F64C4  p1=00000007  p2=5DC04B34  p3=00000003  this=5DC030D8
+@hit @ 005F6520  p1=5DC04B34  p2=00000003  p3=00000001  this=00000000
+@hit @ 005F655C  p1=5DC04B34  p2=00000003  p3=00000001  this=5DC0311C
+@hit @ 005F6601  p1=00000007  p2=5DC04B34  p3=00000003  this=5DC0311C
+
+
+Phase 0 – Workspace Preparation
+Task
+x32dbg
+Ghidra
+Create a repeatable test run
+Launch the target with x32dbg, open File ▸ Save snapshot so you can restore the identical memory layout for re‑runs.
+—
+Import to Ghidra
+—
+File ▸ New Project, drag in the executable or DLL, choose correct language (usually x86:LE:32:default), then OK to auto‑analysis (leave defaults).
+
+
+Phase 1 – Function Boundary Discovery
+1‑A Find a reliable call‑site
+In Ghidra’s Symbol Tree ▸ Functions type a few bytes from the disassembly you posted (83 EC 58 53 55) in the Search ▸ Memory dialog – you will land inside the routine.
+
+
+Hit P (Define Function). Now Ghidra treats that address as a function and highlights all incoming calls (green arrows).
+
+
+1‑B Break at the call‑site in x32dbg
+Double‑click any caller address in Ghidra; copy the RVA.
+
+
+In x32dbg press Ctrl+G, paste the RVA, Enter, right‑click ▸ Breakpoint ▸ Toggle.
+
+
+Run (F9). Execution breaks on the call.
+
+
+Step Into (F7) once – the EIP you land on is the true entry.
+ Write it down.
+
+
+Tip: If you suspect a jump table/vtable entry, set a hardware execute breakpoint on the MOVed address instead of stepping.
+Call comes from (005F7462 | E8 39F0FFFF              | call uosa.5F64A0                        |)
+Registers at that point:
+(EAX : 00000002
+EBX : 00000001
+ECX : 5841A4B0
+EDX : 00000004
+EBP : 00000003
+ESP : 0019F564
+ESI : 58451014
+EDI : 00000005
+EIP : 005F7462     uosa.005F7462
+EFLAGS : 00200344
+ZF : 1
+OF : 0
+CF : 0
+PF : 1
+SF : 0
+TF : 1     L'ā'
+AF : 0
+DF : 0
+IF : 1
+LastError : 00000000
+LastStatus : 00000000
+GS : 002B     uosa.53002B
+ES : 002B
+CS : 0023
+FS : 0053
+DS : 002B
+SS : 002B
+ST(0) : FFFF0000000000000000
+ST(1) : FFFF0000000000000000
+ST(2) : 3FFF8000000000000000
+ST(3) : 3FFF8000000000000000
+ST(4) : 3FFF8000000000000000
+ST(5) : 4000C000000000000000
+ST(6) : 00000000000000000000
+ST(7) : 4006B14DE20000000000
+x87TagWord : FFFF     amdxn32.7C5FFFF
+x87ControlWord : 007F
+x87StatusWord : 0022
+x87TW_0 : 3 (Empty)
+x87TW_1 : 3 (Empty)
+x87TW_2 : 3 (Empty)
+x87TW_3 : 3 (Empty)
+x87TW_4 : 3 (Empty)
+x87TW_5 : 3 (Empty)
+x87TW_6 : 3 (Empty)
+x87TW_7 : 3 (Empty)
+x87SW_B : 0
+x87SW_C3 : 0
+x87SW_TOP : 0 (ST0=x87r0)
+x87SW_C2 : 0
+x87SW_C1 : 0
+x87SW_O : 0
+x87SW_ES : 0
+x87SW_SF : 0     L'Ā'
+x87SW_P : 1
+x87SW_U : 0
+x87SW_Z : 0
+x87SW_D : 1     uosa.440001
+x87SW_I : 0
+x87SW_C0 : 0
+x87CW_IC : 0
+x87CW_RC : 0 (Round Near)
+x87CW_PC : 0 (Real4)
+x87CW_PM : 1
+x87CW_UM : 1
+x87CW_OM : 1
+x87CW_ZM : 1
+x87CW_DM : 1     L'ā'
+x87CW_IM : 1
+MxCsr : 00001FA3
+MxCsr_FZ : 0
+MxCsr_PM : 1
+MxCsr_UM : 1
+MxCsr_OM : 1
+MxCsr_ZM : 1
+MxCsr_IM : 1
+MxCsr_DM : 1
+MxCsr_DAZ : 0     L'Ā'
+MxCsr_PE : 1
+MxCsr_UE : 0
+MxCsr_OE : 0
+MxCsr_ZE : 0
+MxCsr_DE : 1     L'ā'
+MxCsr_IE : 1
+MxCsr_RC : 0 (Round Near)
+XMM0  : 00000000000000000000000043314DE2
+XMM1  : 00000000000000000000000046761957
+XMM2  : 00000000000000000000000046690D76
+XMM3  : 00000000000000000000000043A8C000
+XMM4  : 00000000000000000000000043C60D55
+XMM5  : 00000000000000000000000044170839
+XMM6  : FF840066FF920095FFDE004DFFC20005
+XMM7  : 0003002B0009FFFE000EFFCDFFE1FFE9
+K0  : 0000000000000000
+K1  : 0000000000000000
+K2  : 0000000000000000
+K3  : 0000000000000000
+K4  : 0000000000000000
+K5  : 0000000000000000
+K6  : 0000000000000000
+K7  : 0000000000000000
+DR0 : 00000000
+DR1 : 00000000
+DR2 : 00000000
+DR3 : 00000000
+DR6 : 00000000
+DR7 : 00000000)
+Stepped forward to (005F64A0 | 83EC 58                  | sub esp,58                              |)
+
+Registers at that point (EAX : 00000002
+EBX : 00000001
+ECX : 5841A4B0
+EDX : 00000004
+EBP : 00000003
+ESP : 0019F560     "gt_"
+ESI : 58451014
+EDI : 00000005
+EIP : 005F64A0     uosa.005F64A0
+EFLAGS : 00200246
+ZF : 1
+OF : 0
+CF : 0
+PF : 1
+SF : 0
+TF : 0     L'Ā'
+AF : 0     L'Ā'
+DF : 0
+IF : 1
+LastError : 00000000
+LastStatus : 00000000
+GS : 002B     uosa.53002B
+ES : 002B
+CS : 0023
+FS : 0053
+DS : 002B
+SS : 002B
+ST(0) : FFFF0000000000000000
+ST(1) : FFFF0000000000000000
+ST(2) : 3FFF8000000000000000
+ST(3) : 3FFF8000000000000000
+ST(4) : 3FFF8000000000000000
+ST(5) : 4000C000000000000000
+ST(6) : 00000000000000000000
+ST(7) : 4006B14DE20000000000
+x87TagWord : FFFF
+x87ControlWord : 007F
+x87StatusWord : 0022
+x87TW_0 : 3 (Empty)
+x87TW_1 : 3 (Empty)
+x87TW_2 : 3 (Empty)
+x87TW_3 : 3 (Empty)
+x87TW_4 : 3 (Empty)
+x87TW_5 : 3 (Empty)
+x87TW_6 : 3 (Empty)
+x87TW_7 : 3 (Empty)
+x87SW_B : 0
+x87SW_C3 : 0
+x87SW_TOP : 0 (ST0=x87r0)
+x87SW_C2 : 0
+x87SW_C1 : 0
+x87SW_O : 0
+x87SW_ES : 0
+x87SW_SF : 0     L'Ā'
+x87SW_P : 1
+x87SW_U : 0
+x87SW_Z : 0     L'Ā'
+x87SW_D : 1
+x87SW_I : 0
+x87SW_C0 : 0
+x87CW_IC : 0
+x87CW_RC : 0 (Round Near)
+x87CW_PC : 0 (Real4)
+x87CW_PM : 1
+x87CW_UM : 1
+x87CW_OM : 1
+x87CW_ZM : 1
+x87CW_DM : 1     L'ā'
+x87CW_IM : 1
+MxCsr : 00001FA3
+MxCsr_FZ : 0
+MxCsr_PM : 1
+MxCsr_UM : 1
+MxCsr_OM : 1
+MxCsr_ZM : 1
+MxCsr_IM : 1
+MxCsr_DM : 1
+MxCsr_DAZ : 0     L'Ā'
+MxCsr_PE : 1
+MxCsr_UE : 0
+MxCsr_OE : 0
+MxCsr_ZE : 0
+MxCsr_DE : 1     L'ā'
+MxCsr_IE : 1
+MxCsr_RC : 0 (Round Near)
+XMM0  : 00000000000000000000000043314DE2
+XMM1  : 00000000000000000000000046761957
+XMM2  : 00000000000000000000000046690D76
+XMM3  : 00000000000000000000000043A8C000
+XMM4  : 00000000000000000000000043C60D55
+XMM5  : 00000000000000000000000044170839
+XMM6  : FF840066FF920095FFDE004DFFC20005
+XMM7  : 0003002B0009FFFE000EFFCDFFE1FFE9
+K0  : 0000000000000000
+K1  : 0000000000000000
+K2  : 0000000000000000
+K3  : 0000000000000000
+K4  : 0000000000000000
+K5  : 0000000000000000
+K6  : 0000000000000000
+K7  : 0000000000000000
+DR0 : 00000000
+DR1 : 00000000
+DR2 : 00000000
+DR3 : 00000000
+DR6 : 00000000
+DR7 : 00000000)
+
+Registers mentioned should include a walk/run value of 2(run) and a direction value of 5(southwest).
+
+
+
+1‑C Enumerate the exits
+In Ghidra: inside the function press Ctrl+Shift+F → search for ret. Note every ret’s offset and the immediate word (e.g. C2 0C 00).
+ In x32dbg: at the entry press Ctrl+T (Run to User Code), then Ctrl+O (Run until return); confirm the same ret is hit.
+
+Return imagebase offsets:
+Runs to this return: uosa + 1f7207 c2 0c 00 - 005F7207 at the time of running
+Unable to reach this return in my testing: uosa + 1f7459 c2 0c 00 
+Runs to this return: uosa + 1f7473 c2 0c 00 - 005F7473 at the time of running
+
+
+Phase 2 – Prologue/Epilogue & Stack Frame Layout
+Still in x32dbg at the entry, examine the first 3–6 instructions.
+ Typical MSVC:
+
+ perl
+Copy
+push ebp
+mov  ebp, esp
+sub  esp, 0x58
+
+Our instructions:
+sub esp,58
+push ebx
+push ebp
+mov ebp,dword ptr ss:[esp+64]
+cmp byte ptr ss:[ebp+79],0
+push esi
+
+
+
+Note the sub esp,?? value → that is the local stack size.
+Sub esp, 58
+Scroll to each exit in Ghidra and verify ESP is restored (look for add esp,0x58 or leave). This ensures no custom unwinding tricks are hidden.
+005F7207 C2 0C00
+pop edi
+pop ebp
+pop ebx
+add esp,1C
+ret
+uosa + 1f7459 C2 0C00
+pop edi
+pop ebp
+pop ebx
+add esp,1C
+ret
+005F7473 C2 0C00
+pop edi
+mov dword ptr ds:[esi+80],ebp
+pop ebp
+pop ebx
+add esp,1C
+ret
+
+
+
+Phase 3 – Calling‑Convention Proof
+Observation
+Meaning
+ret is plain C3 (no immediate)
+Caller cleans stack ⇒ __cdecl
+ret 0x0C and ECX used as object pointer
+__thiscall (3 dword args on stack)
+ret 0x10 and first two params arrive in ECX, EDX
+__fastcall
+Any add esp, ?? in callers right after call
+Evidence of __cdecl
+
+Action: record which rule matches. If unsure, keep reading — remaining phases will converge on one choice.
+Observations:
+Epilogue: C2 0C 00 → pops 12 bytes (3 dwords).
+ECX behaviour: always loaded with object ptr before each virtual call; treated as this.
+Call‑sites: mov ecx,ptr + 3 pushes + call, no add esp.
+Conclusion: __thiscall with three explicit stack parameters.
+
+
+Phase 4 – Live Register & Stack Audit
+Set a breakpoint at the entry (x32dbg ‣ Breakpoints pane).
+
+
+Run, and when it hits:
+
+
+Screenshot the Registers window – ECX, EDX, XMM0‑XMM3 in particular.
+
+
+In the Stack pane note the first 4–5 dwords ([ESP] etc.).
+
+
+Step (F7) until the first mov eax,[esp+??] or similar; jot down which parameter slot each register/stack location maps to.
+
+
+Repeat for at least two more call‑sites so you can see patterns (e.g., ECX is always a v‑table pointer).
+
+On BP hit:
+EAX : 00000002
+EBX : 00000001
+ECX : 58262000
+EDX : 00000004
+EBP : 00000003
+ESP : 0019F560     "gt_"
+ESI : 58263A7C
+EDI : 00000002
+EIP : 005F64A0     uosa.005F64A0
+EFLAGS : 00200344
+ZF : 1
+OF : 0
+CF : 0
+PF : 1
+SF : 0
+TF : 1     L'ā'
+AF : 0
+DF : 0
+IF : 1
+LastError : 00000000
+LastStatus : 00000000
+GS : 002B     uosa.53002B
+ES : 002B
+CS : 0023
+FS : 0053
+DS : 002B
+SS : 002B
+ST(0) : FFFF0000000000000000
+ST(1) : FFFF0000000000000000
+ST(2) : 3FFF8000000000000000
+ST(3) : 3FFEB534020000000000
+ST(4) : 3FFF8000000000000000
+ST(5) : 4000C000000000000000
+ST(6) : 00000000000000000000
+ST(7) : 40079388AF0000000000
+x87TagWord : FFFF
+x87ControlWord : 007F
+x87StatusWord : 0022
+x87TW_0 : 3 (Empty)
+x87TW_1 : 3 (Empty)
+x87TW_2 : 3 (Empty)
+x87TW_3 : 3 (Empty)
+x87TW_4 : 3 (Empty)
+x87TW_5 : 3 (Empty)
+x87TW_6 : 3 (Empty)
+x87TW_7 : 3 (Empty)
+x87SW_B : 0
+x87SW_C3 : 0
+x87SW_TOP : 0 (ST0=x87r0)
+x87SW_C2 : 0
+x87SW_C1 : 0
+x87SW_O : 0
+x87SW_ES : 0
+x87SW_SF : 0     L'Ā'
+x87SW_P : 1
+x87SW_U : 0
+x87SW_Z : 0
+x87SW_D : 1     uosa.730001
+x87SW_I : 0
+x87SW_C0 : 0
+x87CW_IC : 0
+x87CW_RC : 0 (Round Near)
+x87CW_PC : 0 (Real4)
+x87CW_PM : 1
+x87CW_UM : 1
+x87CW_OM : 1
+x87CW_ZM : 1
+x87CW_DM : 1     L'ā'
+x87CW_IM : 1
+MxCsr : 00001FA3
+MxCsr_FZ : 0
+MxCsr_PM : 1
+MxCsr_UM : 1
+MxCsr_OM : 1
+MxCsr_ZM : 1
+MxCsr_IM : 1
+MxCsr_DM : 1
+MxCsr_DAZ : 0     L'Ā'
+MxCsr_PE : 1
+MxCsr_UE : 0
+MxCsr_OE : 0
+MxCsr_ZE : 0
+MxCsr_DE : 1     L'ā'
+MxCsr_IE : 1
+MxCsr_RC : 0 (Round Near)
+XMM0  : 000000000000000000000000439388AF
+XMM1  : 000000000000000000000000472A64FA
+XMM2  : 00000000000000000000000046DECB2E
+XMM3  : 00000000000000000000000043A8C000
+XMM4  : 00000000000000000000000043C60D55
+XMM5  : 00000000000000000000000044170839
+XMM6  : 00000000000000000000000000000000
+XMM7  : 00000000000000000000000000000000
+On [esp+??]
+EAX : 00000002
+EBX : 00000001
+ECX : 58262000
+EDX : 00000004
+EBP : 00000003
+ESP : 0019F500
+ESI : 58263A7C
+EDI : 00000002
+EIP : 005F64A5     uosa.005F64A5
+EFLAGS : 00200212
+ZF : 0
+OF : 0
+CF : 0
+PF : 0     L'Ā'
+SF : 0
+TF : 0     L'Ā'
+AF : 1
+DF : 0
+IF : 1
+LastError : 00000000
+LastStatus : 00000000
+GS : 002B     uosa.53002B
+ES : 002B
+CS : 0023
+FS : 0053
+DS : 002B
+SS : 002B
+ST(0) : FFFF0000000000000000
+ST(1) : FFFF0000000000000000
+ST(2) : 3FFF8000000000000000
+ST(3) : 3FFEB534020000000000
+ST(4) : 3FFF8000000000000000
+ST(5) : 4000C000000000000000
+ST(6) : 00000000000000000000
+ST(7) : 40079388AF0000000000
+x87TagWord : FFFF     amdxn32.7C6FFFF
+x87ControlWord : 007F
+x87StatusWord : 0022
+x87TW_0 : 3 (Empty)
+x87TW_1 : 3 (Empty)
+x87TW_2 : 3 (Empty)
+x87TW_3 : 3 (Empty)
+x87TW_4 : 3 (Empty)
+x87TW_5 : 3 (Empty)
+x87TW_6 : 3 (Empty)
+x87TW_7 : 3 (Empty)
+x87SW_B : 0
+x87SW_C3 : 0
+x87SW_TOP : 0 (ST0=x87r0)
+x87SW_C2 : 0
+x87SW_C1 : 0
+x87SW_O : 0
+x87SW_ES : 0
+x87SW_SF : 0     L'Ā'
+x87SW_P : 1
+x87SW_U : 0
+x87SW_Z : 0     L'Ā'
+x87SW_D : 1
+x87SW_I : 0
+x87SW_C0 : 0
+x87CW_IC : 0
+x87CW_RC : 0 (Round Near)
+x87CW_PC : 0 (Real4)
+x87CW_PM : 1
+x87CW_UM : 1
+x87CW_OM : 1
+x87CW_ZM : 1
+x87CW_DM : 1     L'ā'
+x87CW_IM : 1
+MxCsr : 00001FA3
+MxCsr_FZ : 0
+MxCsr_PM : 1
+MxCsr_UM : 1
+MxCsr_OM : 1
+MxCsr_ZM : 1
+MxCsr_IM : 1
+MxCsr_DM : 1
+MxCsr_DAZ : 0     L'Ā'
+MxCsr_PE : 1
+MxCsr_UE : 0
+MxCsr_OE : 0
+MxCsr_ZE : 0
+MxCsr_DE : 1     L'ā'
+MxCsr_IE : 1
+MxCsr_RC : 0 (Round Near)
+XMM0  : 000000000000000000000000439388AF
+XMM1  : 000000000000000000000000472A64FA
+XMM2  : 00000000000000000000000046DECB2E
+XMM3  : 00000000000000000000000043A8C000
+XMM4  : 00000000000000000000000043C60D55
+XMM5  : 00000000000000000000000044170839
+XMM6  : 00000000000000000000000000000000
+XMM7  : 00000000000000000000000000000000
+K0  : 0000000000000000
+K1  : 0000000000000000
+K2  : 0000000000000000
+K3  : 0000000000000000
+K4  : 0000000000000000
+K5  : 0000000000000000
+K6  : 0000000000000000
+K7  : 0000000000000000
+DR0 : 00000000
+DR1 : 00000000
+DR2 : 00000000
+DR3 : 00000000
+DR6 : 00000000
+DR7 : 00000000
+
+Stepping through, the +4 and +8 registers
+At start
+1: [esp+4] 00000001 00000001
+2: [esp+8] 00000000 00000000
+
+
+At 005f64ae
+1: [esp+4] 00000003 00000003
+2: [esp+8] 00000001 00000001
+At 005F64AF
+1: [esp+4] 59B95974 59B95974
+2: [esp+8] 00000003 00000003
+
+
+
+
+Phase 5 – Cross‑Reference Audit (all callers)
+In Ghidra
+Place cursor on first instruction of the function, press X → “References to…”.
+
+
+Export list via Right‑click ▸ Export to CSV.
+
+
+Review each line: number of pushes preceding the call, any mov ecx, thisptr, etc.
+
+
+In x32dbg
+For each caller address, set breakpoint.
+
+
+When hit, observe the code immediately before the call:
+
+ asm
+Copy
+mov  ecx, edi        ; ? maybe 'this'
+push 1
+push ebx
+call target          ; <— ours
+ Count pushes (two) and note register loads – add to your table.
+
+
+
+Phase 6 – Runtime Trace (“black‑box” confirmation)
+Keep breakpoint at entry.
+
+
+Right‑click CPU ▸ Trace ▸ Run trace ▸ trace into
+
+
+Stop condition: Instruction == ret.
+
+
+Run. x32dbg records every executed instruction.
+
+
+When trace stops on ret, inspect the Trace tab:
+
+
+First and last ESP values (balance check).
+
+
+Which arguments are read (look for R flag in trace).
+
+
+Save trace to file for documentation.
+
+Phase 7 – High‑Level Type Inference
+Ghidra Decompiler window (press F4).
+
+
+Watch how each parameter is used:
+
+
+If you see if ((arg3 & 1) == 0) → arg3 is very likely a byte/BOOL.
+
+
+Indexing like arg2[i] → pointer or array length.
+
+
+Calls to known APIs (memcpy, wcscpy) with the argument → guess char* / wchar_t*.
+
+
+Rename variables (L key) and set data types (Right‑click ▸ Data Type) as you deduce them; Ghidra propagates the info.
+
+
+
+Phase 8 – Leverage Metadata
+In Ghidra:
+Symbol Tree ▸ Class Structures – if the binary was built with RTTI you may see vftable for Foo.
+
+
+Search ▸ Strings – locate class/namespace names near the function.
+
+
+Right‑click the function ▸ Edit Function Signature and assign any type names you recognize.
+
+
+
+Phase 9 – Compiler Clues
+Sign
+Compiler
+Implication
+Presence of __security_cookie checks, _chkstk thunk
+MSVC (post‑2005)
+Uses __thiscall for class members, __stdcall for WinAPI‑style, __cdecl for free funcs.
+No frame pointer (mov ebp,esp missing)
+GCC/Clang with FPO
+May use __cdecl exclusively unless explicitly declared.
+
+If you find MSVC fingerprints and ECX is set at call‑sites, you can lock on __thiscall.
+
+Phase 10 – Signature Validation Tests
+Always duplicate the original ret‑size when patching, otherwise the caller’s ESP will misalign.
+10‑A Stack‑balance test
+In x32dbg set a hardware breakpoint on the ret.
+
+
+At entry record ESP in the Notes window (Ctrl+Alt+N).
+
+
+When ret triggers, compare current ESP with saved value.
+ Mismatch → your parameter count / pop‑size is wrong.
+
+
+10‑B Parameter fuzzing
+At entry, right‑click each suspected stack arg in the Dump pane → Binary ▸ Fill with 0xCC (or 0xDEADBEEF).
+
+
+Continue. If the program crashes on e.g. mov eax,[ecx], map crash address to the corrupted argument.
+
+
+10‑C Stub replacement
+Make a copy of first 5 bytes for trampoline later.
+
+
+Patch the entry to:
+
+ asm
+Copy
+xor eax,eax
+ret 0x0C      ; ♦ same immediate as original!
+
+
+Run the software. If no crashes, you have the right pop‑size and number of parameters (even if the return value isn’t yet correct).
+
+
+
+Phase 11 – Build the Hook
+With MinHook / your own detour code, the wrapper must use exactly the same calling convention plus any register‑padding required by the library.
+Example (MSVC style)
+cpp
+Copy
+//--------------------------------------------------
+// 1.  Prototype you deduced
+//--------------------------------------------------
+typedef int  (__thiscall* tUpdate)
+              (Foo* _this, int arg1, bool arg2, Bar* arg3);
+
+// 2.  Pointer for the original
+tUpdate  oUpdate = nullptr;
+
+// 3.  Your hook (using MSVC inline assembly or naked wrapper)
+int __fastcall hkUpdate(Foo* _this, int /*edx*/, int arg1,
+                        bool arg2, Bar* arg3)
+{
+    // pre‑hook logic
+    int ret = oUpdate(_this, arg1, arg2, arg3);
+    // post‑hook logic
+    return ret;
+}
+
+// 4.  Install
+MH_CreateHook(pUpdate, &hkUpdate, reinterpret_cast<LPVOID*>(&oUpdate));
+MH_EnableHook(pUpdate);
+
+If the function turned out to be __stdcall with three dword parameters popped (ret 0x0C), the hook’s prototype becomes int __stdcall, and you omit the edx slot.
+
+Quick Reference Checklist (print & tick)
+All entries & all exits recorded
+
+
+Size of sub esp, ?? noted
+
+
+pop‑size from every ret noted
+
+
+Each live‑register captured at entry
+
+
+Cross‑ref table filled (push count + ECX/EDX loads)
+
+
+Stack‑balance test passes
+
+
+Fuzz test mapped each argument
+
+
+Stub replacement runs crash‑free
+
+
+Hook compiled & injected without breaking the application
+
+
+Complete every box and you will have a 100 % positive identification of the calling convention, parameter list, and return type, ready for a stable inline or trampoline hook.
+
+Target function decompiled in ghidra:
+
+
+/* WARNING: Removing unreachable block (ram,0x005f6519) */
+
+undefined4 updateDataStructureState(uint this,uint direction,int walkRun,void *dest)
+
+{
+  uint dataStructurePointer;
+  char arraysMatchFlag;
+  char conversionSuccessFlag;
+  uint in_EAX;
+  uint currentStatusFlag;
+  int *tempIntPointer;
+  int currentElementIndex;
+  undefined4 *coordinatesPointer;
+  undefined4 computedResultValue;
+  int resourceAllocationStatus;
+  int *resourceManager;
+  undefined4 unusedParam;
+  undefined4 tempCalculationValue1;
+  undefined4 tempCalculationValue2;
+  undefined4 tempCalculationValue3;
+  undefined4 tempCalculationValue4;
+  undefined4 tempCalculationValue5;
+  undefined4 tempCalculationValue6;
+  undefined4 tempCalculationValue7;
+  undefined4 tempCalculationValue8;
+  undefined4 tempCalculationValue9;
+  undefined4 tempCalculationValue10;
+  undefined4 tempCalculationValue11;
+  undefined4 tempCalculationValue12;
+  undefined4 tempCalculationValue13;
+  undefined4 defaultCalcReturn1;
+  undefined4 defaultCalcReturn2;
+  undefined4 defaultCalcReturn3;
+  undefined4 defaultCalcReturn4;
+  undefined4 defaultCalcReturn5;
+  undefined4 defaultCalcReturn6;
+  undefined4 defaultCalcReturn7;
+  undefined4 defaultCalcReturn8;
+  undefined4 defaultCalcReturn9;
+  undefined4 defaultCalcReturn10;
+  undefined4 defaultCalcReturn11;
+  undefined4 defaultCalcReturn12;
+  undefined4 defaultCalcReturn13;
+  float10 floatCalculationResult;
+  float totalFloatValue;
+  longlong currentSystemTime;
+  uint intermediateStateCode;
+  uint intermediateIndex;
+  uint currentDataState;
+  int *dataPointerArray [2];
+  undefined8 convertedTimeResult;
+  int *playerDirectionRef;
+  float offsetFloatValue;
+  float adjustedCoordinateX;
+  float adjustedCoordinateY;
+  float calculatedFloatValue;
+  float finalCoordinateX;
+  float finalCoordinateY;
+  float finalCoordinateZ;
+  undefined1 temporaryArray [4];
+  int finalArrayIndexX;
+  int finalArrayIndexY;
+  float intermediateCoordinateX;
+  float intermediateCoordinateY;
+  float intermediateCoordinateZ;
+  char collisionDetectionFlag;
+  int *resourceIdentifier;
+  
+  dataStructurePointer = this;
+  if ((*(char *)(this + 0x79) != '\0') || (*(char *)(this + 0x7a) != '\0')) goto LAB_005f6495;
+  processException(this + 4,dataPointerArray);
+  convertedTimeResult = CONCAT44(convertedTimeResult._4_4_,(undefined4)convertedTimeResult);
+  if (dataPointerArray[0] != (int *)0x0) {
+    currentStatusFlag = (**(code **)(*dataPointerArray[0] + 0xa0))();
+    convertedTimeResult = CONCAT44(convertedTimeResult._4_4_,(undefined4)convertedTimeResult);
+    if ((currentStatusFlag & 1) == 0) {
+      if (*(char *)(dataStructurePointer + 0x9c) == '\0') {
+        if (*(uint *)(dataStructurePointer + 0x98) <= globalStatus) goto LAB_005f63eb;
+        *(undefined1 *)(dataStructurePointer + 0x9c) = 1;
+        convertedTimeResult = CONCAT44(convertedTimeResult._4_4_,(undefined4)convertedTimeResult);
+      }
+      else {
+        convertedTimeResult = CONCAT44(convertedTimeResult._4_4_,(undefined4)convertedTimeResult);
+        if ((*(uint *)(dataStructurePointer + 0x98) < 2) &&
+           (convertedTimeResult =
+                 CONCAT44(convertedTimeResult._4_4_,(undefined4)convertedTimeResult),
+           *(uint *)(dataStructurePointer + 0x98) <= globalStatus)) {
+          *(undefined1 *)(dataStructurePointer + 0x9c) = 0;
+LAB_005f63eb:
+          tempIntPointer =
+               (int *)(**(code **)(*dataPointerArray[0] + 0x28))(&intermediateCoordinateX);
+          arraysMatchFlag = areArraysEqual(tempIntPointer);
+          if ((arraysMatchFlag != '\0') &&
+             (currentElementIndex = (**(code **)(*dataPointerArray[0] + 0x40))(),
+             currentElementIndex == *(int *)(dataStructurePointer + 0xac))) {
+            arraysMatchFlag = processDataBlocks(dataStructurePointer);
+            convertedTimeResult =
+                 CONCAT44(convertedTimeResult._4_4_,(undefined4)convertedTimeResult);
+            if (arraysMatchFlag != '\0') goto LAB_005f648c;
+          }
+          coordinatesPointer =
+               (undefined4 *)(**(code **)(*dataPointerArray[0] + 0x28))(&intermediateCoordinateX);
+          *(undefined4 *)(dataStructurePointer + 0xa0) = *coordinatesPointer;
+          *(undefined4 *)(dataStructurePointer + 0xa4) = coordinatesPointer[1];
+          *(undefined4 *)(dataStructurePointer + 0xa8) = coordinatesPointer[2];
+          computedResultValue = (**(code **)(*dataPointerArray[0] + 0x40))();
+          *(undefined4 *)(dataStructurePointer + 0xac) = computedResultValue;
+          convertedTimeResult = CONCAT44(convertedTimeResult._4_4_,(undefined4)convertedTimeResult);
+          if (direction != 8) {
+            if (*(int *)(dataStructurePointer + 0x98) == 0) {
+              if (*(int *)(dataStructurePointer + 0x1c) != 0) {
+                currentElementIndex = getElementFromDataStructure(unusedParam,dataStructurePointer);
+                goto LAB_005f64ae;
+              }
+LAB_005f64b2:
+              copyAndIncrementReference();
+              tempIntPointer = playerDirectionRef;
+              coordinatesPointer =
+                   (undefined4 *)(**(code **)(*playerDirectionRef + 0x28))(temporaryArray);
+              intermediateCoordinateX = (float)coordinatesPointer[1];
+              finalArrayIndexY = *coordinatesPointer;
+              intermediateCoordinateY = (float)coordinatesPointer[2];
+              currentDataState = (**(code **)(*tempIntPointer + 0x40))();
+              convertedTimeResult = convertUnixTimeToFileTime();
+              if (convertedTimeResult < *(longlong *)(dataStructurePointer + 0xb0)) {
+                convertedTimeResult = *(longlong *)(dataStructurePointer + 0xb0);
+              }
+              decrementResourceReferenceCount();
+            }
+            else {
+              tempIntPointer = (int *)calculateElementIndex(unusedParam,dataStructurePointer + 0x88)
+              ;
+              currentElementIndex = *tempIntPointer;
+LAB_005f64ae:
+              if (currentElementIndex == 0) goto LAB_005f64b2;
+              intermediateCoordinateX =
+                   (float)(*(int *)(currentElementIndex + 0x44) +
+                          *(int *)(currentElementIndex + 0x58));
+              intermediateCoordinateY =
+                   (float)(*(int *)(currentElementIndex + 0x5c) +
+                          *(int *)(currentElementIndex + 0x48));
+              currentDataState = *(uint *)(currentElementIndex + 0x1c);
+              convertedTimeResult = *(longlong *)(currentElementIndex + 0x50);
+              intermediateCoordinateZ =
+                   (float)(*(int *)(currentElementIndex + 0x60) +
+                          *(int *)(currentElementIndex + 0x4c));
+            }
+            finalCoordinateX = (float)(int)intermediateCoordinateX;
+            finalCoordinateY = (float)(int)intermediateCoordinateY;
+            currentElementIndex = 0;
+            finalCoordinateZ = (float)(int)intermediateCoordinateZ;
+            arraysMatchFlag = '\0';
+            intermediateStateCode = direction;
+            finalArrayIndexX = 0;
+            finalArrayIndexY = 0;
+            if (walkRun == 0) {
+LAB_005f6864:
+              if (currentDataState != intermediateStateCode) {
+                tempIntPointer = (int *)0x5f6879;
+                resourceAllocationStatus = allocateMemoryResource(0x70);
+                if (resourceAllocationStatus != 0) {
+                  resourceIdentifier = (int *)0x5f6889;
+                  resourceManager = (int *)resetMovementAttributes();
+                  if (resourceManager != (int *)0x0) {
+                    *(undefined1 *)(dataStructurePointer + 0x7b) = 1;
+                    resourceManager[0x11] = (int)intermediateCoordinateX;
+                    resourceManager[0x12] = (int)intermediateCoordinateY;
+                    resourceManager[0x13] = (int)intermediateCoordinateZ;
+                    resourceManager[0xe] = (int)finalCoordinateX;
+                    resourceManager[0xb] = (int)finalCoordinateX;
+                    resourceManager[0xf] = (int)finalCoordinateY;
+                    resourceManager[0xc] = (int)finalCoordinateY;
+                    resourceManager[0x10] = (int)finalCoordinateZ;
+                    resourceManager[0xd] = (int)finalCoordinateZ;
+                    copyAndIncrementReference(dataPointerArray);
+                    updateResourceReferences((int)resourceManager,tempIntPointer,resourceIdentifier)
+                    ;
+                    resourceManager[7] = intermediateStateCode;
+                    resourceManager[8] = walkRun;
+                    floatCalculationResult = (float10)(**(code **)(*resourceManager + 0xc))();
+                    resourceManager[10] = (int)(float)floatCalculationResult;
+                    currentSystemTime = calculateAdjustedFloatValue();
+                    *(longlong *)(resourceManager + 0x14) = currentSystemTime + convertedTimeResult;
+                    intermediateCoordinateX = *(float *)(dataStructurePointer + 0x30);
+                    intermediateCoordinateY = *(float *)(dataStructurePointer + 0x34);
+                    intermediateCoordinateZ = *(float *)(dataStructurePointer + 0x38);
+                    totalFloatValue = (float)resourceManager[0x19] + intermediateCoordinateX;
+                    goto LAB_005f6931;
+                  }
+                }
+              }
+              if (arraysMatchFlag == '\0') goto LAB_005f648c;
+            }
+            else {
+              playerDirectionRef = *(int **)(&entityXData + direction * 8);
+              offsetFloatValue = *(float *)(&entityYData + direction * 8);
+              adjustedCoordinateX = (float)playerDirectionRef + finalCoordinateX;
+              adjustedCoordinateY = offsetFloatValue + finalCoordinateY;
+              performDoubleOperation(adjustedCoordinateX);
+              currentElementIndex = computeRoundedValue(tempCalculationValue1,defaultCalcReturn1);
+              performDoubleOperation(adjustedCoordinateY);
+              finalArrayIndexX = computeRoundedValue(tempCalculationValue2,defaultCalcReturn2);
+              collisionDetectionFlag = pathfindingFlag;
+              currentStatusFlag = direction;
+              if ((direction & 1) != 0) {
+LAB_005f680f:
+                arraysMatchFlag =
+                     updateEntityCoordinatesAndDetectCollision
+                               (dataStructurePointer,currentStatusFlag,finalCoordinateX,
+                                finalCoordinateY,finalCoordinateZ,&intermediateStateCode);
+                performDoubleOperation(adjustedCoordinateX);
+                currentElementIndex = computeRoundedValue(tempCalculationValue9,defaultCalcReturn9);
+                performDoubleOperation(adjustedCoordinateY);
+                finalArrayIndexX = computeRoundedValue(tempCalculationValue10,defaultCalcReturn10);
+                performDoubleOperation(calculatedFloatValue);
+                finalArrayIndexY = computeRoundedValue(tempCalculationValue11,defaultCalcReturn11);
+                goto LAB_005f6864;
+              }
+              this = this & 0xffffff00;
+              if ((0.0 <= adjustedCoordinateX) && (0.0 <= adjustedCoordinateY)) {
+                conversionSuccessFlag =
+                     processResourceData(dataStructurePointer,(uint *)(int)finalCoordinateX,
+                                         (int)finalCoordinateY,(uint *)(int)finalCoordinateZ,
+                                         (int)adjustedCoordinateX,(int)adjustedCoordinateY,
+                                         &intermediateIndex,(undefined *)&this);
+                if (conversionSuccessFlag != '\0') {
+                  calculatedFloatValue = (float)(int)intermediateIndex;
+                  finalArrayIndexY = (int)calculatedFloatValue;
+                  arraysMatchFlag = '\x01';
+                  goto LAB_005f6864;
+                }
+              }
+              if ((collisionDetectionFlag == '\0') || ((char)this != '\0')) goto LAB_005f6864;
+              if (currentDataState == direction) {
+LAB_005f675d:
+                intermediateStateCode = direction - 1;
+                if (direction == 0) {
+                  intermediateStateCode = 7;
+                }
+                arraysMatchFlag =
+                     updateEntityCoordinatesAndDetectCollision
+                               (dataStructurePointer,intermediateStateCode,finalCoordinateX,
+                                finalCoordinateY,finalCoordinateZ,&intermediateStateCode);
+                performDoubleOperation(adjustedCoordinateX);
+                currentElementIndex = computeRoundedValue(tempCalculationValue6,defaultCalcReturn6);
+                performDoubleOperation(adjustedCoordinateY);
+                finalArrayIndexX = computeRoundedValue(tempCalculationValue7,defaultCalcReturn7);
+                performDoubleOperation(calculatedFloatValue);
+                finalArrayIndexY = computeRoundedValue(tempCalculationValue8,defaultCalcReturn8);
+                if (arraysMatchFlag != '\0') goto LAB_005f6864;
+                intermediateStateCode = direction + 1;
+                currentStatusFlag = intermediateStateCode;
+                goto LAB_005f680f;
+              }
+              intermediateStateCode = currentDataState;
+              if ((currentDataState & 1) != 0) {
+                arraysMatchFlag =
+                     updateEntityCoordinatesAndDetectCollision
+                               (dataStructurePointer,currentDataState,finalCoordinateX,
+                                finalCoordinateY,finalCoordinateZ,&intermediateStateCode);
+                performDoubleOperation(adjustedCoordinateX);
+                currentElementIndex = computeRoundedValue(tempCalculationValue3,defaultCalcReturn3);
+                performDoubleOperation(adjustedCoordinateY);
+                finalArrayIndexX = computeRoundedValue(tempCalculationValue4,defaultCalcReturn4);
+                performDoubleOperation(calculatedFloatValue);
+                finalArrayIndexY = computeRoundedValue(tempCalculationValue5,defaultCalcReturn5);
+                if (arraysMatchFlag != '\0') goto LAB_005f6864;
+                goto LAB_005f675d;
+              }
+              playerDirectionRef = *(int **)(&entityXData + currentDataState * 8);
+              offsetFloatValue = *(float *)(&entityYData + currentDataState * 8);
+              adjustedCoordinateY = offsetFloatValue + finalCoordinateY;
+              adjustedCoordinateX = (float)playerDirectionRef + finalCoordinateX;
+              performDoubleOperation(adjustedCoordinateX);
+              currentElementIndex = computeRoundedValue(tempCalculationValue12,defaultCalcReturn12);
+              performDoubleOperation(adjustedCoordinateY);
+              finalArrayIndexX = computeRoundedValue(tempCalculationValue13,defaultCalcReturn13);
+              if ((adjustedCoordinateX < 0.0) || (adjustedCoordinateY < 0.0)) goto LAB_005f675d;
+              arraysMatchFlag =
+                   processResourceData(dataStructurePointer,(uint *)(int)finalCoordinateX,
+                                       (int)finalCoordinateY,(uint *)(int)finalCoordinateZ,
+                                       (int)adjustedCoordinateX,(int)adjustedCoordinateY,
+                                       &intermediateIndex,(undefined *)&this);
+              if (arraysMatchFlag == '\0') goto LAB_005f675d;
+              calculatedFloatValue = (float)(int)intermediateIndex;
+              finalArrayIndexY = (int)calculatedFloatValue;
+            }
+            if (walkRun != 0) {
+              resourceIdentifier = (int *)0x70;
+              tempIntPointer = (int *)0x5f6a5e;
+              resourceAllocationStatus = allocateMemoryResource(0x70);
+              if (resourceAllocationStatus == 0) {
+                resourceManager = (int *)0x0;
+              }
+              else {
+                resourceIdentifier = (int *)0x5f6a6a;
+                resourceManager = (int *)resetPlayerMovementData();
+              }
+              resourceManager[0x12] = finalArrayIndexX;
+              resourceManager[0x13] = finalArrayIndexY;
+              resourceManager[0x11] = currentElementIndex;
+              resourceManager[0xe] = (int)adjustedCoordinateX;
+              resourceManager[0xf] = (int)adjustedCoordinateY;
+              resourceManager[0x10] = (int)calculatedFloatValue;
+              resourceManager[0xb] = (int)finalCoordinateX;
+              resourceManager[0xc] = (int)finalCoordinateY;
+              resourceManager[0xd] = (int)finalCoordinateZ;
+              copyAndIncrementReference(dataPointerArray);
+              updateResourceReferences((int)resourceManager,tempIntPointer,resourceIdentifier);
+              resourceManager[7] = intermediateStateCode;
+              resourceManager[8] = walkRun;
+              floatCalculationResult = (float10)(**(code **)(*resourceManager + 0xc))();
+              resourceManager[10] = (int)(float)floatCalculationResult;
+              currentSystemTime = calculateAdjustedFloatValue();
+              *(longlong *)(resourceManager + 0x14) = currentSystemTime + convertedTimeResult;
+              intermediateCoordinateX = *(float *)(dataStructurePointer + 0x30);
+              intermediateCoordinateY = *(float *)(dataStructurePointer + 0x34);
+              intermediateCoordinateZ = *(float *)(dataStructurePointer + 0x38);
+              totalFloatValue = intermediateCoordinateX + (float)resourceManager[0x19];
+LAB_005f6931:
+              resourceManager[0x19] = (int)totalFloatValue;
+              resourceManager[0x1a] = (int)((float)resourceManager[0x1a] + intermediateCoordinateY);
+              resourceManager[0x1b] = (int)((float)resourceManager[0x1b] + intermediateCoordinateZ);
+              callProcessData();
+              computedResultValue = decrementResourceReferenceCount();
+              return CONCAT31((int3)((uint)computedResultValue >> 8),1);
+            }
+          }
+        }
+      }
+    }
+  }
+LAB_005f648c:
+  in_EAX = decrementResourceReferenceCount();
+LAB_005f6495:
+  return in_EAX & 0xffffff00;
+}
+
+
+Listing in Ghidra:
+
+                             **************************************************************
+                             *                          FUNCTION                          *
+                             **************************************************************
+                             undefined4 __stdcall updateDataStructureState(uint this,
+                               assume FS_OFFSET = 0xffdff000
+             undefined4        EAX:4          <RETURN>
+             uint              Stack[0x4]:4   this                                    XREF[1]:     005f6375(R)  
+             uint              Stack[0x8]:4   direction
+             int               Stack[0xc]:4   walkRun
+             void *            Stack[0x10]:4  dest
+             undefined8        EDX:4,EAX:4    currentSystemTime                       XREF[3]:     005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        EAX:4          currentStatusFlag                       XREF[1]:     005f63b2(W)  
+             undefined4        EAX:4          tempIntPointer                          XREF[2]:     005f63fd(W), 
+                                                                                                   005f6403(W)  
+             undefined1        AL:1           arraysMatchFlag                         XREF[7]:     005f6403(W), 
+                                                                                                   005f6413(W), 
+                                                                                                   005f6433(W), 
+                                                                                                   005f644c(W), 
+                                                                                                   005f6686(W), 
+                                                                                                   005f6874(W), 
+                                                                                                   005f6884(W)  
+             undefined4        EAX:4          currentElementIndex                     XREF[1]:     005f6413(W)  
+             undefined4        EAX:4          coordinatesPointer                      XREF[1]:     005f6433(W)  
+             undefined4        EAX:4          computedResultValue                     XREF[2]:     005f644c(W), 
+                                                                                                   005f6686(W)  
+             undefined4        ECX:4          unusedParam                             XREF[3]:     005f65e0(W), 
+                                                                                                   005f65f7(W), 
+                                                                                                   005f6710(W)  
+             undefined4        ECX:4          tempCalculationValue1                   XREF[3]:     005f65e0(W), 
+                                                                                                   005f65f7(W), 
+                                                                                                   005f6710(W)  
+             undefined4        EDX:4          defaultCalcReturn1                      XREF[11]:    005f6727(W), 
+                                                                                                   005f6740(W), 
+                                                                                                   005f67a0(W), 
+                                                                                                   005f67b7(W), 
+                                                                                                   005f67d0(W), 
+                                                                                                   005f6823(W), 
+                                                                                                   005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue2                   XREF[2]:     005f65f7(W), 
+                                                                                                   005f6710(W)  
+             undefined4        EDX:4          defaultCalcReturn2                      XREF[11]:    005f6727(W), 
+                                                                                                   005f6740(W), 
+                                                                                                   005f67a0(W), 
+                                                                                                   005f67b7(W), 
+                                                                                                   005f67d0(W), 
+                                                                                                   005f6823(W), 
+                                                                                                   005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined1        AL:1           conversionSuccessFlag                   XREF[3]:     005f6686(W), 
+                                                                                                   005f6874(W), 
+                                                                                                   005f6884(W)  
+             undefined4        ECX:4          tempCalculationValue3                   XREF[1]:     005f6710(W)  
+             undefined4        EDX:4          defaultCalcReturn3                      XREF[11]:    005f6727(W), 
+                                                                                                   005f6740(W), 
+                                                                                                   005f67a0(W), 
+                                                                                                   005f67b7(W), 
+                                                                                                   005f67d0(W), 
+                                                                                                   005f6823(W), 
+                                                                                                   005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue4
+             undefined4        EDX:4          defaultCalcReturn4                      XREF[11]:    005f6727(W), 
+                                                                                                   005f6740(W), 
+                                                                                                   005f67a0(W), 
+                                                                                                   005f67b7(W), 
+                                                                                                   005f67d0(W), 
+                                                                                                   005f6823(W), 
+                                                                                                   005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue5
+             undefined4        EDX:4          defaultCalcReturn5                      XREF[10]:    005f6740(W), 
+                                                                                                   005f67a0(W), 
+                                                                                                   005f67b7(W), 
+                                                                                                   005f67d0(W), 
+                                                                                                   005f6823(W), 
+                                                                                                   005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue6
+             undefined4        EDX:4          defaultCalcReturn6                      XREF[9]:     005f67a0(W), 
+                                                                                                   005f67b7(W), 
+                                                                                                   005f67d0(W), 
+                                                                                                   005f6823(W), 
+                                                                                                   005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue7
+             undefined4        EDX:4          defaultCalcReturn7                      XREF[8]:     005f67b7(W), 
+                                                                                                   005f67d0(W), 
+                                                                                                   005f6823(W), 
+                                                                                                   005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue8
+             undefined4        EDX:4          defaultCalcReturn8                      XREF[7]:     005f67d0(W), 
+                                                                                                   005f6823(W), 
+                                                                                                   005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue9
+             undefined4        EDX:4          defaultCalcReturn9                      XREF[6]:     005f6823(W), 
+                                                                                                   005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue10
+             undefined4        EDX:4          defaultCalcReturn10                     XREF[5]:     005f683a(W), 
+                                                                                                   005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue11
+             undefined4        EDX:4          defaultCalcReturn11                     XREF[4]:     005f6853(W), 
+                                                                                                   005f68fe(W), 
+                                                                                                   005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        EAX:4          resourceAllocationStatus                XREF[1]:     005f6874(W)  
+             undefined4        EAX:4          resourceManager                         XREF[1]:     005f6884(W)  
+             undefined1[10]    ST0:10         floatCalculationResult                  XREF[1]:     005f68f3(W)  
+             undefined4        XMM0_Da:4      totalFloatValue                         XREF[1]:     005f6923(W)  
+             undefined4        ECX:4          tempCalculationValue12
+             undefined4        EDX:4          defaultCalcReturn12                     XREF[2]:     005f69ae(W), 
+                                                                                                   005f69c5(W)  
+             undefined4        ECX:4          tempCalculationValue13
+             undefined4        EDX:4          defaultCalcReturn13                     XREF[1]:     005f69c5(W)  
+             undefined4        Stack[-0x4]:4  intermediateCoordinateZ
+             undefined4        Stack[-0x8]:4  intermediateCoordinateY
+             undefined4        Stack[-0xc]:4  intermediateCoordinateX
+             undefined4        Stack[-0x10]:4 finalArrayIndexY
+             undefined4        Stack[-0x14]:4 finalArrayIndexX
+             undefined4        Stack[-0x18]:4 temporaryArray
+             undefined4        Stack[-0x1c]:4 finalCoordinateZ
+             undefined4        Stack[-0x20]:4 finalCoordinateY
+             undefined4        Stack[-0x24]:4 finalCoordinateX
+             undefined4        Stack[-0x28]:4 calculatedFloatValue
+             undefined4        Stack[-0x2c]:4 adjustedCoordinateY
+             undefined4        Stack[-0x30]:4 adjustedCoordinateX
+             undefined4        Stack[-0x34]:4 offsetFloatValue
+             undefined4        Stack[-0x38]:4 playerDirectionRef
+             undefined8        Stack[-0x40]:8 convertedTimeResult
+             undefined4        Stack[-0x48]:4 dataPointerArray                        XREF[3]:     005f638f(*), 
+                                                                                                   005f639c(R), 
+                                                                                                   005f648c(*)  
+             undefined4        Stack[-0x4c]:4 currentDataState
+             undefined4        Stack[-0x50]:4 intermediateIndex
+             undefined4        Stack[-0x54]:4 intermediateStateCode
+             undefined4        HASH:3f066fb   dataStructureRef
+             undefined1        HASH:3f969e0   collisionDetectionFlag
+             undefined4        HASH:3f9f270   resourceIdentifier
+                             updateDataStructureState                        XREF[4]:     FUN_005ed330:005ed474(c), 
+                                                                                          processInputData:005f7332(c), 
+                                                                                          handleDataProcessing:005f7438(c), 
+                                                                                          FUN_005f7440:005f748d(c)  
+        005f6370 83 ec 58        SUB        ESP,0x58
+        005f6373 53              PUSH       EBX
+        005f6374 55              PUSH       EBP
+        005f6375 8b 6c 24 64     MOV        EBP,dword ptr [ESP + this]
+        005f6379 80 7d 79 00     CMP        byte ptr [EBP + 0x79],0x0
+        005f637d 56              PUSH       ESI
+        005f637e 57              PUSH       EDI
+        005f637f 0f 85 10        JNZ        LAB_005f6495
+                 01 00 00
+        005f6385 80 7d 7a 00     CMP        byte ptr [EBP + 0x7a],0x0
+        005f6389 0f 85 06        JNZ        LAB_005f6495
+                 01 00 00
+        005f638f 8d 44 24 20     LEA        EAX=>dataPointerArray,[ESP + 0x20]
+        005f6393 50              PUSH       EAX
+        005f6394 8d 4d 04        LEA        ECX,[EBP + 0x4]
+        005f6397 e8 54 8c        CALL       processException                                 undefined processException(int o
+                 e3 ff
+        005f639c 8b 74 24 20     MOV        ESI,dword ptr [ESP + dataPointerArray]
+        005f63a0 85 f6           TEST       ESI,ESI
+        005f63a2 0f 84 e4        JZ         LAB_005f648c
+                 00 00 00
+        005f63a8 8b 16           MOV        EDX,dword ptr [ESI]
+        005f63aa 8b 82 a0        MOV        EAX,dword ptr [EDX + 0xa0]
+                 00 00 00
+        005f63b0 8b ce           MOV        ECX,ESI
+        005f63b2 ff d0           CALL       currentStatusFlag
+        005f63b4 a8 01           TEST       currentStatusFlag,0x1
+        005f63b6 0f 85 d0        JNZ        LAB_005f648c
+                 00 00 00
+        005f63bc 80 bd 9c        CMP        byte ptr [EBP + 0x9c],0x0
+                 00 00 00 00
+        005f63c3 0f 84 aa        JZ         LAB_005f6473
+                 00 00 00
+        005f63c9 8b 85 98        MOV        currentStatusFlag,dword ptr [EBP + 0x98]
+                 00 00 00
+        005f63cf 83 f8 02        CMP        currentStatusFlag,0x2
+        005f63d2 0f 83 b4        JNC        LAB_005f648c
+                 00 00 00
+        005f63d8 3b 05 5c        CMP        currentStatusFlag,dword ptr [globalStatus]       = 00000005h
+                 44 db 00
+        005f63de 0f 87 a8        JA         LAB_005f648c
+                 00 00 00
+        005f63e4 c6 85 9c        MOV        byte ptr [EBP + 0x9c],0x0
+                 00 00 00 00
+                             LAB_005f63eb                                    XREF[1]:     005f647f(j)  
+        005f63eb 8b 16           MOV        EDX,dword ptr [ESI]
+        005f63ed 8b 52 28        MOV        EDX,dword ptr [EDX + 0x28]
+        005f63f0 8d 44 24 5c     LEA        currentStatusFlag,[ESP + 0x5c]
+        005f63f4 50              PUSH       currentStatusFlag
+        005f63f5 8b ce           MOV        ECX,ESI
+        005f63f7 8d bd a0        LEA        EDI,[EBP + 0xa0]
+                 00 00 00
+        005f63fd ff d2           CALL       EDX
+        005f63ff 8b c8           MOV        ECX,tempIntPointer
+        005f6401 8b c7           MOV        tempIntPointer,EDI
+        005f6403 e8 f8 c2        CALL       areArraysEqual                                   undefined areArraysEqual(int * s
+                 e1 ff
+        005f6408 84 c0           TEST       arraysMatchFlag,arraysMatchFlag
+        005f640a 74 1b           JZ         LAB_005f6427
+        005f640c 8b 06           MOV        arraysMatchFlag,dword ptr [ESI]
+        005f640e 8b 50 40        MOV        EDX,dword ptr [arraysMatchFlag + 0x40]
+        005f6411 8b ce           MOV        ECX,ESI
+        005f6413 ff d2           CALL       EDX
+        005f6415 3b 85 ac        CMP        currentElementIndex,dword ptr [EBP + 0xac]
+                 00 00 00
+        005f641b 75 0a           JNZ        LAB_005f6427
+        005f641d 55              PUSH       EBP
+        005f641e e8 0d e6        CALL       processDataBlocks                                undefined processDataBlocks(int 
+                 ff ff
+        005f6423 84 c0           TEST       currentElementIndex,currentElementIndex
+        005f6425 75 65           JNZ        LAB_005f648c
+                             LAB_005f6427                                    XREF[2]:     005f640a(j), 005f641b(j)  
+        005f6427 8b 06           MOV        currentElementIndex,dword ptr [ESI]
+        005f6429 8b 50 28        MOV        EDX,dword ptr [currentElementIndex + 0x28]
+        005f642c 8d 4c 24 5c     LEA        ECX,[ESP + 0x5c]
+        005f6430 51              PUSH       ECX
+        005f6431 8b ce           MOV        ECX,ESI
+        005f6433 ff d2           CALL       EDX
+        005f6435 8b 08           MOV        ECX,dword ptr [coordinatesPointer]
+        005f6437 89 0f           MOV        dword ptr [EDI],ECX
+        005f6439 8b 50 04        MOV        EDX,dword ptr [coordinatesPointer + 0x4]
+        005f643c 89 57 04        MOV        dword ptr [EDI + 0x4],EDX
+        005f643f 8b 40 08        MOV        coordinatesPointer,dword ptr [coordinatesPoint
+        005f6442 89 47 08        MOV        dword ptr [EDI + 0x8],coordinatesPointer
+        005f6445 8b 16           MOV        EDX,dword ptr [ESI]
+        005f6447 8b 42 40        MOV        coordinatesPointer,dword ptr [EDX + 0x40]
+        005f644a 8b ce           MOV        ECX,ESI
+        005f644c ff d0           CALL       computedResultValue
+        005f644e 83 7c 24        CMP        dword ptr [ESP + 0x70],0x8
+                 70 08
+        005f6453 89 85 ac        MOV        dword ptr [EBP + 0xac],computedResultValue
+                 00 00 00
+        005f6459 74 31           JZ         LAB_005f648c
+        005f645b 83 bd 98        CMP        dword ptr [EBP + 0x98],0x0
+                 00 00 00 00
+        005f6462 74 3d           JZ         LAB_005f64a1
+        005f6464 8d 95 88        LEA        EDX,[EBP + 0x88]
+                 00 00 00
+        005f646a e8 a1 1b        CALL       calculateElementIndex                            undefined calculateElementIndex(
+                 00 00
+        005f646f 8b 00           MOV        computedResultValue,dword ptr [computedResultV
+        005f6471 eb 3b           JMP        LAB_005f64ae
+                             LAB_005f6473                                    XREF[1]:     005f63c3(j)  
+        005f6473 8b 8d 98        MOV        unusedParam,dword ptr [EBP + 0x98]
+                 00 00 00
+        005f6479 3b 0d 5c        CMP        unusedParam,dword ptr [globalStatus]             = 00000005h
+                 44 db 00
+        005f647f 0f 86 66        JBE        LAB_005f63eb
+                 ff ff ff
+        005f6485 c6 85 9c        MOV        byte ptr [EBP + 0x9c],0x1
+                 00 00 00 01
+                             LAB_005f648c                                    XREF[8]:     005f63a2(j), 005f63b6(j), 
+                                                                                          005f63d2(j), 005f63de(j), 
+                                                                                          005f6425(j), 005f6459(j), 
+                                                                                          005f6a46(j), 005f6a51(j)  
+        005f648c 8d 44 24 20     LEA        computedResultValue=>dataPointerArray,[ESP + 0
+        005f6490 e8 5b c4        CALL       decrementResourceReferenceCount                  undefined decrementResourceRefer
+                 e1 ff
+                             LAB_005f6495                                    XREF[2]:     005f637f(j), 005f6389(j)  
+        005f6495 32 c0           XOR        computedResultValue,computedResultValue
+        005f6497 5f              POP        EDI
+        005f6498 5e              POP        ESI
+        005f6499 5d              POP        EBP
+        005f649a 5b              POP        EBX
+        005f649b 83 c4 58        ADD        ESP,0x58
+        005f649e c2 0c 00        RET        0xc
+                             LAB_005f64a1                                    XREF[1]:     005f6462(j)  
+        005f64a1 83 7d 1c 00     CMP        dword ptr [EBP + 0x1c],0x0
+        005f64a5 74 0b           JZ         LAB_005f64b2
+        005f64a7 8b d5           MOV        EDX,EBP
+        005f64a9 e8 22 d7        CALL       getElementFromDataStructure                      undefined getElementFromDataStru
+                 ff ff
+                             LAB_005f64ae                                    XREF[1]:     005f6471(j)  
+        005f64ae 85 c0           TEST       computedResultValue,computedResultValue
+        005f64b0 75 7e           JNZ        LAB_005f6530
+                             LAB_005f64b2                                    XREF[1]:     005f64a5(j)  
+        005f64b2 8b 0d 5c        MOV        unusedParam,dword ptr [resourceLockPtr]
+                 91 e1 00
+        005f64b8 8d 44 24 30     LEA        computedResultValue,[ESP + 0x30]
+        005f64bc e8 cf a2        CALL       copyAndIncrementReference                        undefined copyAndIncrementRefere
+                 e2 ff
+        005f64c1 8b 74 24 30     MOV        ESI,dword ptr [ESP + 0x30]
+        005f64c5 8b 16           MOV        EDX,dword ptr [ESI]
+        005f64c7 8b 52 28        MOV        EDX,dword ptr [EDX + 0x28]
+        005f64ca 8d 44 24 50     LEA        computedResultValue,[ESP + 0x50]
+        005f64ce 50              PUSH       computedResultValue
+        005f64cf 8b ce           MOV        unusedParam,ESI
+        005f64d1 ff d2           CALL       EDX
+        005f64d3 8b 50 04        MOV        EDX,dword ptr [computedResultValue + 0x4]
+        005f64d6 8b 08           MOV        unusedParam,dword ptr [computedResultValue]
+        005f64d8 8b 40 08        MOV        computedResultValue,dword ptr [computedResultV
+        005f64db 89 54 24 60     MOV        dword ptr [ESP + 0x60],EDX
+        005f64df 8b 16           MOV        EDX,dword ptr [ESI]
+        005f64e1 89 4c 24 5c     MOV        dword ptr [ESP + 0x5c],unusedParam
+        005f64e5 89 44 24 64     MOV        dword ptr [ESP + 0x64],computedResultValue
+        005f64e9 8b 42 40        MOV        computedResultValue,dword ptr [EDX + 0x40]
+        005f64ec 8b ce           MOV        unusedParam,ESI
+        005f64ee ff d0           CALL       computedResultValue
+        005f64f0 8b 3d f4        MOV        EDI,dword ptr [primaryResourceConfiguration]
+                 c5 e3 00
+        005f64f6 89 44 24 1c     MOV        dword ptr [ESP + 0x1c],computedResultValue
+        005f64fa e8 11 18        CALL       convertUnixTimeToFileTime                        undefined convertUnixTimeToFileT
+                 ff ff
+        005f64ff 8b 8d b4        MOV        unusedParam,dword ptr [EBP + 0xb4]
+                 00 00 00
+        005f6505 3b ca           CMP        unusedParam,EDX
+        005f6507 8b b5 b0        MOV        ESI,dword ptr [EBP + 0xb0]
+                 00 00 00
+        005f650d 89 44 24 28     MOV        dword ptr [ESP + 0x28],computedResultValue
+        005f6511 89 54 24 2c     MOV        dword ptr [ESP + 0x2c],EDX
+        005f6515 7c 0e           JL         LAB_005f6525
+        005f6517 7f 04           JG         LAB_005f651d
+        005f6519 3b f0           CMP        ESI,computedResultValue
+        005f651b 76 08           JBE        LAB_005f6525
+                             LAB_005f651d                                    XREF[1]:     005f6517(j)  
+        005f651d 89 74 24 28     MOV        dword ptr [ESP + 0x28],ESI
+        005f6521 89 4c 24 2c     MOV        dword ptr [ESP + 0x2c],unusedParam
+                             LAB_005f6525                                    XREF[2]:     005f6515(j), 005f651b(j)  
+        005f6525 8d 44 24 30     LEA        computedResultValue,[ESP + 0x30]
+        005f6529 e8 c2 c3        CALL       decrementResourceReferenceCount                  undefined decrementResourceRefer
+                 e1 ff
+        005f652e eb 39           JMP        LAB_005f6569
+                             LAB_005f6530                                    XREF[1]:     005f64b0(j)  
+        005f6530 8b 48 58        MOV        unusedParam,dword ptr [computedResultValue + 0
+        005f6533 8b 78 44        MOV        EDI,dword ptr [computedResultValue + 0x44]
+        005f6536 8b 50 5c        MOV        EDX,dword ptr [computedResultValue + 0x5c]
+        005f6539 8b 70 60        MOV        ESI,dword ptr [computedResultValue + 0x60]
+        005f653c 8b 58 4c        MOV        EBX,dword ptr [computedResultValue + 0x4c]
+        005f653f 03 f9           ADD        EDI,unusedParam
+        005f6541 8b 48 48        MOV        unusedParam,dword ptr [computedResultValue + 0
+        005f6544 03 d1           ADD        EDX,unusedParam
+        005f6546 8b 48 1c        MOV        unusedParam,dword ptr [computedResultValue + 0
+        005f6549 89 54 24 60     MOV        dword ptr [ESP + 0x60],EDX
+        005f654d 8b 50 50        MOV        EDX,dword ptr [computedResultValue + 0x50]
+        005f6550 8b 40 54        MOV        computedResultValue,dword ptr [computedResultV
+        005f6553 03 f3           ADD        ESI,EBX
+        005f6555 89 7c 24 5c     MOV        dword ptr [ESP + 0x5c],EDI
+        005f6559 89 74 24 64     MOV        dword ptr [ESP + 0x64],ESI
+        005f655d 89 4c 24 1c     MOV        dword ptr [ESP + 0x1c],unusedParam
+        005f6561 89 54 24 28     MOV        dword ptr [ESP + 0x28],EDX
+        005f6565 89 44 24 2c     MOV        dword ptr [ESP + 0x2c],computedResultValue
+                             LAB_005f6569                                    XREF[1]:     005f652e(j)  
+        005f6569 f3 0f 2a        CVTSI2SS   XMM0,dword ptr [ESP + 0x5c]
+                 44 24 5c
+        005f656f 8b 4c 24 70     MOV        unusedParam,dword ptr [ESP + 0x70]
+        005f6573 f3 0f 11        MOVSS      dword ptr [ESP + 0x44],XMM0
+                 44 24 44
+        005f6579 f3 0f 2a        CVTSI2SS   XMM0,dword ptr [ESP + 0x60]
+                 44 24 60
+        005f657f 33 ff           XOR        EDI,EDI
+        005f6581 f3 0f 11        MOVSS      dword ptr [ESP + 0x48],XMM0
+                 44 24 48
+        005f6587 f3 0f 2a        CVTSI2SS   XMM0,dword ptr [ESP + 0x64]
+                 44 24 64
+        005f658d 32 db           XOR        BL,BL
+        005f658f 83 7c 24        CMP        dword ptr [ESP + 0x74],0x0
+                 74 00
+        005f6594 f3 0f 11        MOVSS      dword ptr [ESP + 0x4c],XMM0
+                 44 24 4c
+        005f659a 89 4c 24 14     MOV        dword ptr [ESP + 0x14],unusedParam
+        005f659e 89 7c 24 54     MOV        dword ptr [ESP + 0x54],EDI
+        005f65a2 89 7c 24 58     MOV        dword ptr [ESP + 0x58],EDI
+        005f65a6 0f 84 b8        JZ         LAB_005f6864
+                 02 00 00
+        005f65ac 8b c1           MOV        computedResultValue,unusedParam
+        005f65ae 8b 14 c5        MOV        EDX,dword ptr [computedResultValue*0x8 + entit
+                 08 aa dd 00
+        005f65b5 8b 04 c5        MOV        computedResultValue,dword ptr [computedResultV
+                 0c aa dd 00
+        005f65bc 89 54 24 30     MOV        dword ptr [ESP + 0x30],EDX
+        005f65c0 d9 44 24 30     FLD        float ptr [ESP + 0x30]
+        005f65c4 d8 44 24 44     FADD       float ptr [ESP + 0x44]
+        005f65c8 89 44 24 34     MOV        dword ptr [ESP + 0x34],computedResultValue
+        005f65cc 51              PUSH       unusedParam
+        005f65cd d9 54 24 3c     FST        float ptr [ESP + 0x3c]
+        005f65d1 d9 44 24 38     FLD        float ptr [ESP + 0x38]
+        005f65d5 d8 44 24 4c     FADD       float ptr [ESP + 0x4c]
+        005f65d9 d9 5c 24 40     FSTP       float ptr [ESP + 0x40]
+        005f65dd d9 1c 24        FSTP       float ptr [ESP]
+        005f65e0 e8 cb da        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f65e5 83 c4 04        ADD        ESP,0x4
+        005f65e8 e8 73 3b        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f65ed d9 44 24 3c     FLD        float ptr [ESP + 0x3c]
+        005f65f1 51              PUSH       tempCalculationValue1
+        005f65f2 d9 1c 24        FSTP       float ptr [ESP]
+        005f65f5 8b f8           MOV        EDI,computedResultValue
+        005f65f7 e8 b4 da        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f65fc 83 c4 04        ADD        ESP,0x4
+        005f65ff e8 5c 3b        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f6604 8b 54 24 70     MOV        defaultCalcReturn2,dword ptr [ESP + 0x70]
+        005f6608 f6 c2 01        TEST       defaultCalcReturn2,0x1
+        005f660b 89 44 24 54     MOV        dword ptr [ESP + 0x54],computedResultValue
+        005f660f 74 24           JZ         LAB_005f6635
+        005f6611 8d 4c 24 14     LEA        tempCalculationValue2,[ESP + 0x14]
+        005f6615 51              PUSH       tempCalculationValue2
+        005f6616 8b 4c 24 48     MOV        tempCalculationValue2,dword ptr [ESP + 0x48]
+        005f661a 83 ec 0c        SUB        ESP,0xc
+        005f661d 8b c4           MOV        computedResultValue,ESP
+        005f661f 89 08           MOV        dword ptr [computedResultValue],tempCalculatio
+        005f6621 8b 4c 24 58     MOV        tempCalculationValue2,dword ptr [ESP + 0x58]
+        005f6625 89 48 04        MOV        dword ptr [computedResultValue + 0x4],tempCalc
+        005f6628 8b 4c 24 5c     MOV        tempCalculationValue2,dword ptr [ESP + 0x5c]
+        005f662c 89 48 08        MOV        dword ptr [computedResultValue + 0x8],tempCalc
+        005f662f 52              PUSH       defaultCalcReturn2
+        005f6630 e9 da 01        JMP        LAB_005f680f
+                 00 00
+                             LAB_005f6635                                    XREF[1]:     005f660f(j)  
+        005f6635 a0 12 89        MOV        computedResultValue,[pathfindingFlag]
+                 e3 00
+        005f663a f3 0f 10        MOVSS      XMM1,dword ptr [ESP + 0x38]
+                 4c 24 38
+        005f6640 0f 57 d2        XORPS      XMM2,XMM2
+        005f6643 0f 2f ca        COMISS     XMM1,XMM2
+        005f6646 88 44 24 13     MOV        byte ptr [ESP + 0x13],computedResultValue
+        005f664a c6 44 24        MOV        byte ptr [ESP + 0x6c],0x0
+                 6c 00
+        005f664f 72 5d           JC         LAB_005f66ae
+        005f6651 f3 0f 10        MOVSS      XMM0,dword ptr [ESP + 0x3c]
+                 44 24 3c
+        005f6657 0f 2f c2        COMISS     XMM0,XMM2
+        005f665a 72 52           JC         LAB_005f66ae
+        005f665c 8d 4c 24 6c     LEA        tempCalculationValue2,[ESP + 0x6c]
+        005f6660 51              PUSH       tempCalculationValue2
+        005f6661 8d 54 24 1c     LEA        defaultCalcReturn2,[ESP + 0x1c]
+        005f6665 52              PUSH       defaultCalcReturn2
+        005f6666 f3 0f 2c        CVTTSS2SI  defaultCalcReturn2,dword ptr [ESP + 0x54]
+                 54 24 54
+        005f666c f3 0f 2c c0     CVTTSS2SI  computedResultValue,XMM0
+        005f6670 50              PUSH       computedResultValue
+        005f6671 f3 0f 2c        CVTTSS2SI  computedResultValue,dword ptr [ESP + 0x54]
+                 44 24 54
+        005f6677 f3 0f 2c c9     CVTTSS2SI  tempCalculationValue2,XMM1
+        005f667b 51              PUSH       tempCalculationValue2
+        005f667c f3 0f 2c        CVTTSS2SI  tempCalculationValue2,dword ptr [ESP + 0x54]
+                 4c 24 54
+        005f6682 52              PUSH       defaultCalcReturn2
+        005f6683 50              PUSH       computedResultValue
+        005f6684 51              PUSH       tempCalculationValue2
+        005f6685 55              PUSH       EBP
+        005f6686 e8 c5 e9        CALL       processResourceData                              undefined processResourceData(un
+                 ff ff
+        005f668b 84 c0           TEST       conversionSuccessFlag,conversionSuccessFlag
+        005f668d 74 1b           JZ         LAB_005f66aa
+        005f668f f3 0f 2a        CVTSI2SS   XMM0,dword ptr [ESP + 0x18]
+                 44 24 18
+        005f6695 f3 0f 2c d0     CVTTSS2SI  defaultCalcReturn2,XMM0
+        005f6699 b3 01           MOV        BL,0x1
+        005f669b f3 0f 11        MOVSS      dword ptr [ESP + 0x40],XMM0
+                 44 24 40
+        005f66a1 89 54 24 58     MOV        dword ptr [ESP + 0x58],defaultCalcReturn2
+        005f66a5 e9 ba 01        JMP        LAB_005f6864
+                 00 00
+                             LAB_005f66aa                                    XREF[1]:     005f668d(j)  
+        005f66aa 8b 54 24 70     MOV        defaultCalcReturn2,dword ptr [ESP + 0x70]
+                             LAB_005f66ae                                    XREF[2]:     005f664f(j), 005f665a(j)  
+        005f66ae 80 7c 24        CMP        byte ptr [ESP + 0x13],0x0
+                 13 00
+        005f66b3 0f 84 ab        JZ         LAB_005f6864
+                 01 00 00
+        005f66b9 80 7c 24        CMP        byte ptr [ESP + 0x6c],0x0
+                 6c 00
+        005f66be 0f 85 a0        JNZ        LAB_005f6864
+                 01 00 00
+        005f66c4 8b 4c 24 1c     MOV        tempCalculationValue2,dword ptr [ESP + 0x1c]
+        005f66c8 3b ca           CMP        tempCalculationValue2,defaultCalcReturn2
+        005f66ca 0f 84 8d        JZ         LAB_005f675d
+                 00 00 00
+        005f66d0 f6 c1 01        TEST       tempCalculationValue2,0x1
+        005f66d3 89 4c 24 14     MOV        dword ptr [ESP + 0x14],tempCalculationValue2
+        005f66d7 0f 84 95        JZ         LAB_005f6972
+                 02 00 00
+        005f66dd 8b 54 24 44     MOV        defaultCalcReturn2,dword ptr [ESP + 0x44]
+        005f66e1 8d 44 24 14     LEA        conversionSuccessFlag,[ESP + 0x14]
+        005f66e5 50              PUSH       conversionSuccessFlag
+        005f66e6 83 ec 0c        SUB        ESP,0xc
+        005f66e9 8b c4           MOV        conversionSuccessFlag,ESP
+        005f66eb 89 10           MOV        dword ptr [conversionSuccessFlag],defaultCalcR
+        005f66ed 8b 54 24 58     MOV        defaultCalcReturn2,dword ptr [ESP + 0x58]
+        005f66f1 89 50 04        MOV        dword ptr [conversionSuccessFlag + 0x4],defaul
+        005f66f4 8b 54 24 5c     MOV        defaultCalcReturn2,dword ptr [ESP + 0x5c]
+        005f66f8 51              PUSH       tempCalculationValue2
+        005f66f9 55              PUSH       EBP
+        005f66fa 8d 74 24 50     LEA        ESI,[ESP + 0x50]
+        005f66fe 89 50 08        MOV        dword ptr [conversionSuccessFlag + 0x8],defaul
+        005f6701 e8 8a f6        CALL       updateEntityCoordinatesAndDetectCollision        undefined updateEntityCoordinate
+                 ff ff
+        005f6706 d9 44 24 38     FLD        float ptr [ESP + 0x38]
+        005f670a 51              PUSH       tempCalculationValue2
+        005f670b d9 1c 24        FSTP       float ptr [ESP]
+        005f670e 8a d8           MOV        BL,conversionSuccessFlag
+        005f6710 e8 9b d9        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f6715 83 c4 04        ADD        ESP,0x4
+        005f6718 e8 43 3a        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f671d d9 44 24 3c     FLD        float ptr [ESP + 0x3c]
+        005f6721 51              PUSH       tempCalculationValue3
+        005f6722 d9 1c 24        FSTP       float ptr [ESP]
+        005f6725 8b f8           MOV        EDI,conversionSuccessFlag
+        005f6727 e8 84 d9        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f672c 83 c4 04        ADD        ESP,0x4
+        005f672f e8 2c 3a        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f6734 d9 44 24 40     FLD        float ptr [ESP + 0x40]
+        005f6738 51              PUSH       tempCalculationValue4
+        005f6739 d9 1c 24        FSTP       float ptr [ESP]
+        005f673c 89 44 24 58     MOV        dword ptr [ESP + 0x58],conversionSuccessFlag
+        005f6740 e8 6b d9        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f6745 83 c4 04        ADD        ESP,0x4
+        005f6748 e8 13 3a        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f674d 84 db           TEST       BL,BL
+        005f674f 89 44 24 58     MOV        dword ptr [ESP + 0x58],conversionSuccessFlag
+        005f6753 0f 85 0b        JNZ        LAB_005f6864
+                 01 00 00
+                             LAB_005f6759                                    XREF[3]:     005f69e2(j), 005f69f1(j), 
+                                                                                          005f6a28(j)  
+        005f6759 8b 54 24 70     MOV        defaultCalcReturn5,dword ptr [ESP + 0x70]
+                             LAB_005f675d                                    XREF[1]:     005f66ca(j)  
+        005f675d 85 d2           TEST       defaultCalcReturn5,defaultCalcReturn5
+        005f675f 8d 4a ff        LEA        tempCalculationValue5,[defaultCalcReturn5 + -0
+        005f6762 75 05           JNZ        LAB_005f6769
+        005f6764 b9 07 00        MOV        tempCalculationValue5,0x7
+                 00 00
+                             LAB_005f6769                                    XREF[1]:     005f6762(j)  
+        005f6769 8d 54 24 14     LEA        defaultCalcReturn5,[ESP + 0x14]
+        005f676d 52              PUSH       defaultCalcReturn5
+        005f676e 8b 54 24 48     MOV        defaultCalcReturn5,dword ptr [ESP + 0x48]
+        005f6772 83 ec 0c        SUB        ESP,0xc
+        005f6775 8b c4           MOV        conversionSuccessFlag,ESP
+        005f6777 89 10           MOV        dword ptr [conversionSuccessFlag],defaultCalcR
+        005f6779 8b 54 24 58     MOV        defaultCalcReturn5,dword ptr [ESP + 0x58]
+        005f677d 89 50 04        MOV        dword ptr [conversionSuccessFlag + 0x4],defaul
+        005f6780 8b 54 24 5c     MOV        defaultCalcReturn5,dword ptr [ESP + 0x5c]
+        005f6784 51              PUSH       tempCalculationValue5
+        005f6785 55              PUSH       EBP
+        005f6786 8d 74 24 50     LEA        ESI,[ESP + 0x50]
+        005f678a 89 4c 24 2c     MOV        dword ptr [ESP + 0x2c],tempCalculationValue5
+        005f678e 89 50 08        MOV        dword ptr [conversionSuccessFlag + 0x8],defaul
+        005f6791 e8 fa f5        CALL       updateEntityCoordinatesAndDetectCollision        undefined updateEntityCoordinate
+                 ff ff
+        005f6796 d9 44 24 38     FLD        float ptr [ESP + 0x38]
+        005f679a 51              PUSH       tempCalculationValue5
+        005f679b d9 1c 24        FSTP       float ptr [ESP]
+        005f679e 8a d8           MOV        BL,conversionSuccessFlag
+        005f67a0 e8 0b d9        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f67a5 83 c4 04        ADD        ESP,0x4
+        005f67a8 e8 b3 39        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f67ad d9 44 24 3c     FLD        float ptr [ESP + 0x3c]
+        005f67b1 51              PUSH       tempCalculationValue6
+        005f67b2 d9 1c 24        FSTP       float ptr [ESP]
+        005f67b5 8b f8           MOV        EDI,conversionSuccessFlag
+        005f67b7 e8 f4 d8        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f67bc 83 c4 04        ADD        ESP,0x4
+        005f67bf e8 9c 39        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f67c4 d9 44 24 40     FLD        float ptr [ESP + 0x40]
+        005f67c8 51              PUSH       tempCalculationValue7
+        005f67c9 d9 1c 24        FSTP       float ptr [ESP]
+        005f67cc 89 44 24 58     MOV        dword ptr [ESP + 0x58],conversionSuccessFlag
+        005f67d0 e8 db d8        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f67d5 83 c4 04        ADD        ESP,0x4
+        005f67d8 e8 83 39        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f67dd 84 db           TEST       BL,BL
+        005f67df 89 44 24 58     MOV        dword ptr [ESP + 0x58],conversionSuccessFlag
+        005f67e3 75 7f           JNZ        LAB_005f6864
+        005f67e5 8b 4c 24 70     MOV        tempCalculationValue8,dword ptr [ESP + 0x70]
+        005f67e9 8b 54 24 44     MOV        defaultCalcReturn8,dword ptr [ESP + 0x44]
+        005f67ed 8d 44 24 14     LEA        conversionSuccessFlag,[ESP + 0x14]
+        005f67f1 50              PUSH       conversionSuccessFlag
+        005f67f2 83 c1 01        ADD        tempCalculationValue8,0x1
+        005f67f5 83 ec 0c        SUB        ESP,0xc
+        005f67f8 8b c4           MOV        conversionSuccessFlag,ESP
+        005f67fa 89 10           MOV        dword ptr [conversionSuccessFlag],defaultCalcR
+        005f67fc 8b 54 24 58     MOV        defaultCalcReturn8,dword ptr [ESP + 0x58]
+        005f6800 89 50 04        MOV        dword ptr [conversionSuccessFlag + 0x4],defaul
+        005f6803 8b 54 24 5c     MOV        defaultCalcReturn8,dword ptr [ESP + 0x5c]
+        005f6807 89 4c 24 24     MOV        dword ptr [ESP + 0x24],tempCalculationValue8
+        005f680b 89 50 08        MOV        dword ptr [conversionSuccessFlag + 0x8],defaul
+        005f680e 51              PUSH       tempCalculationValue8
+                             LAB_005f680f                                    XREF[1]:     005f6630(j)  
+        005f680f 55              PUSH       EBP
+        005f6810 8d 74 24 50     LEA        ESI,[ESP + 0x50]
+        005f6814 e8 77 f5        CALL       updateEntityCoordinatesAndDetectCollision        undefined updateEntityCoordinate
+                 ff ff
+        005f6819 d9 44 24 38     FLD        float ptr [ESP + 0x38]
+        005f681d 51              PUSH       tempCalculationValue8
+        005f681e d9 1c 24        FSTP       float ptr [ESP]
+        005f6821 8a d8           MOV        BL,conversionSuccessFlag
+        005f6823 e8 88 d8        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f6828 83 c4 04        ADD        ESP,0x4
+        005f682b e8 30 39        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f6830 d9 44 24 3c     FLD        float ptr [ESP + 0x3c]
+        005f6834 51              PUSH       tempCalculationValue9
+        005f6835 d9 1c 24        FSTP       float ptr [ESP]
+        005f6838 8b f8           MOV        EDI,conversionSuccessFlag
+        005f683a e8 71 d8        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f683f 83 c4 04        ADD        ESP,0x4
+        005f6842 e8 19 39        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f6847 d9 44 24 40     FLD        float ptr [ESP + 0x40]
+        005f684b 51              PUSH       tempCalculationValue10
+        005f684c d9 1c 24        FSTP       float ptr [ESP]
+        005f684f 89 44 24 58     MOV        dword ptr [ESP + 0x58],conversionSuccessFlag
+        005f6853 e8 58 d8        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f6858 83 c4 04        ADD        ESP,0x4
+        005f685b e8 00 39        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f6860 89 44 24 58     MOV        dword ptr [ESP + 0x58],conversionSuccessFlag
+                             LAB_005f6864                                    XREF[6]:     005f65a6(j), 005f66a5(j), 
+                                                                                          005f66b3(j), 005f66be(j), 
+                                                                                          005f6753(j), 005f67e3(j)  
+        005f6864 8b 44 24 14     MOV        conversionSuccessFlag,dword ptr [ESP + 0x14]
+        005f6868 39 44 24 1c     CMP        dword ptr [ESP + 0x1c],conversionSuccessFlag
+        005f686c 0f 84 d2        JZ         LAB_005f6a44
+                 01 00 00
+        005f6872 6a 70           PUSH       0x70
+        005f6874 e8 f7 69        CALL       allocateMemoryResource                           undefined allocateMemoryResource
+                 e8 ff
+        005f6879 83 c4 04        ADD        ESP,0x4
+        005f687c 85 c0           TEST       resourceAllocationStatus,resourceAllocationSta
+        005f687e 0f 84 c0        JZ         LAB_005f6a44
+                 01 00 00
+        005f6884 e8 97 e0        CALL       resetMovementAttributes                          undefined resetMovementAttribute
+                 ff ff
+        005f6889 8b f0           MOV        ESI,resourceManager
+        005f688b 85 f6           TEST       ESI,ESI
+        005f688d 0f 84 b1        JZ         LAB_005f6a44
+                 01 00 00
+        005f6893 8b 54 24 60     MOV        defaultCalcReturn11,dword ptr [ESP + 0x60]
+        005f6897 8b 4c 24 5c     MOV        tempCalculationValue11,dword ptr [ESP + 0x5c]
+        005f689b 8b 44 24 64     MOV        resourceManager,dword ptr [ESP + 0x64]
+        005f689f c6 45 7b 01     MOV        byte ptr [EBP + 0x7b],0x1
+        005f68a3 89 4e 44        MOV        dword ptr [ESI + 0x44],tempCalculationValue11
+        005f68a6 8b 4c 24 48     MOV        tempCalculationValue11,dword ptr [ESP + 0x48]
+        005f68aa 89 56 48        MOV        dword ptr [ESI + 0x48],defaultCalcReturn11
+        005f68ad 8b 54 24 44     MOV        defaultCalcReturn11,dword ptr [ESP + 0x44]
+        005f68b1 89 46 4c        MOV        dword ptr [ESI + 0x4c],resourceManager
+        005f68b4 8b 44 24 4c     MOV        resourceManager,dword ptr [ESP + 0x4c]
+        005f68b8 89 56 38        MOV        dword ptr [ESI + 0x38],defaultCalcReturn11
+        005f68bb 89 56 2c        MOV        dword ptr [ESI + 0x2c],defaultCalcReturn11
+        005f68be 89 4e 3c        MOV        dword ptr [ESI + 0x3c],tempCalculationValue11
+        005f68c1 89 4e 30        MOV        dword ptr [ESI + 0x30],tempCalculationValue11
+        005f68c4 83 ec 08        SUB        ESP,0x8
+        005f68c7 89 46 40        MOV        dword ptr [ESI + 0x40],resourceManager
+        005f68ca 89 46 34        MOV        dword ptr [ESI + 0x34],resourceManager
+        005f68cd 8d 4c 24 28     LEA        tempCalculationValue11,[ESP + 0x28]
+        005f68d1 8b c4           MOV        resourceManager,ESP
+        005f68d3 e8 f8 bf        CALL       copyAndIncrementReference                        undefined copyAndIncrementRefere
+                 e1 ff
+        005f68d8 56              PUSH       ESI
+        005f68d9 e8 32 cb        CALL       updateResourceReferences                         undefined updateResourceReferenc
+                 ff ff
+        005f68de 8b 4c 24 14     MOV        tempCalculationValue11,dword ptr [ESP + 0x14]
+        005f68e2 8b 54 24 74     MOV        defaultCalcReturn11,dword ptr [ESP + 0x74]
+        005f68e6 8b 06           MOV        resourceManager,dword ptr [ESI]
+        005f68e8 89 4e 1c        MOV        dword ptr [ESI + 0x1c],tempCalculationValue11
+        005f68eb 89 56 20        MOV        dword ptr [ESI + 0x20],defaultCalcReturn11
+        005f68ee 8b 50 0c        MOV        defaultCalcReturn11,dword ptr [resourceManager
+        005f68f1 8b ce           MOV        tempCalculationValue11,ESI
+        005f68f3 ff d2           CALL       defaultCalcReturn11
+        005f68f5 d9 56 28        FST        float ptr [ESI + 0x28]
+        005f68f8 d8 0d dc        FMUL       float ptr [DAT_00cf40dc]
+                 40 cf 00
+        005f68fe e8 93 38        CALL       calculateAdjustedFloatValue                      undefined calculateAdjustedFloat
+                 5e 00
+        005f6903 03 44 24 28     ADD        currentSystemTime,dword ptr [ESP + 0x28]
+        005f6907 13 54 24 2c     ADC        currentSystemTime,dword ptr [ESP + 0x2c]
+        005f690b 89 46 50        MOV        dword ptr [ESI + 0x50],currentSystemTime
+        005f690e 89 56 54        MOV        dword ptr [ESI + 0x54],currentSystemTime
+        005f6911 8b 45 30        MOV        currentSystemTime,dword ptr [EBP + 0x30]
+        005f6914 8b 4d 34        MOV        tempCalculationValue11,dword ptr [EBP + 0x34]
+        005f6917 8b 55 38        MOV        currentSystemTime,dword ptr [EBP + 0x38]
+        005f691a f3 0f 10        MOVSS      XMM0,dword ptr [ESI + 0x64]
+                 46 64
+        005f691f 89 44 24 5c     MOV        dword ptr [ESP + 0x5c],currentSystemTime
+        005f6923 f3 0f 58        ADDSS      totalFloatValue,dword ptr [ESP + 0x5c]
+                 44 24 5c
+        005f6929 89 4c 24 60     MOV        dword ptr [ESP + 0x60],tempCalculationValue11
+        005f692d 89 54 24 64     MOV        dword ptr [ESP + 0x64],currentSystemTime
+                             LAB_005f6931                                    XREF[1]:     005f6b12(j)  
+        005f6931 f3 0f 11        MOVSS      dword ptr [ESI + 0x64],totalFloatValue
+                 46 64
+        005f6936 f3 0f 10        MOVSS      totalFloatValue,dword ptr [ESI + 0x68]
+                 46 68
+        005f693b f3 0f 58        ADDSS      totalFloatValue,dword ptr [ESP + 0x60]
+                 44 24 60
+        005f6941 f3 0f 11        MOVSS      dword ptr [ESI + 0x68],totalFloatValue
+                 46 68
+        005f6946 f3 0f 10        MOVSS      totalFloatValue,dword ptr [ESI + 0x6c]
+                 46 6c
+        005f694b f3 0f 58        ADDSS      totalFloatValue,dword ptr [ESP + 0x64]
+                 44 24 64
+        005f6951 56              PUSH       ESI
+        005f6952 55              PUSH       EBP
+        005f6953 f3 0f 11        MOVSS      dword ptr [ESI + 0x6c],totalFloatValue
+                 46 6c
+        005f6958 e8 f3 f6        CALL       callProcessData                                  undefined callProcessData(void)
+                 ff ff
+        005f695d 8d 44 24 20     LEA        currentSystemTime,[ESP + 0x20]
+        005f6961 e8 8a bf        CALL       decrementResourceReferenceCount                  undefined decrementResourceRefer
+                 e1 ff
+        005f6966 5f              POP        EDI
+        005f6967 5e              POP        ESI
+        005f6968 5d              POP        EBP
+        005f6969 b0 01           MOV        currentSystemTime,0x1
+        005f696b 5b              POP        EBX
+        005f696c 83 c4 58        ADD        ESP,0x58
+        005f696f c2 0c 00        RET        0xc
+                             LAB_005f6972                                    XREF[1]:     005f66d7(j)  
+        005f6972 8b 04 cd        MOV        currentSystemTime,dword ptr [tempCalculationVa
+                 08 aa dd 00
+        005f6979 8b 0c cd        MOV        tempCalculationValue11,dword ptr [tempCalculat
+                 0c aa dd 00
+        005f6980 89 4c 24 34     MOV        dword ptr [ESP + 0x34],tempCalculationValue11
+        005f6984 d9 44 24 34     FLD        float ptr [ESP + 0x34]
+        005f6988 d8 44 24 48     FADD       float ptr [ESP + 0x48]
+        005f698c 89 44 24 30     MOV        dword ptr [ESP + 0x30],currentSystemTime
+        005f6990 f3 0f 10        MOVSS      totalFloatValue,dword ptr [ESP + 0x30]
+                 44 24 30
+        005f6996 f3 0f 58        ADDSS      totalFloatValue,dword ptr [ESP + 0x44]
+                 44 24 44
+        005f699c d9 5c 24 3c     FSTP       float ptr [ESP + 0x3c]
+        005f69a0 f3 0f 11        MOVSS      dword ptr [ESP + 0x38],totalFloatValue
+                 44 24 38
+        005f69a6 d9 44 24 38     FLD        float ptr [ESP + 0x38]
+        005f69aa 51              PUSH       tempCalculationValue11
+        005f69ab d9 1c 24        FSTP       float ptr [ESP]
+        005f69ae e8 fd d6        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f69b3 83 c4 04        ADD        ESP,0x4
+        005f69b6 e8 a5 37        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f69bb d9 44 24 3c     FLD        float ptr [ESP + 0x3c]
+        005f69bf 51              PUSH       tempCalculationValue12
+        005f69c0 d9 1c 24        FSTP       float ptr [ESP]
+        005f69c3 8b f8           MOV        EDI,currentSystemTime
+        005f69c5 e8 e6 d6        CALL       performDoubleOperation                           undefined performDoubleOperation
+                 e4 ff
+        005f69ca 83 c4 04        ADD        ESP,0x4
+        005f69cd e8 8e 37        CALL       computeRoundedValue                              undefined computeRoundedValue(un
+                 5e 00
+        005f69d2 f3 0f 10        MOVSS      XMM2,dword ptr [ESP + 0x38]
+                 54 24 38
+        005f69d8 0f 57 c9        XORPS      XMM1,XMM1
+        005f69db 0f 2f d1        COMISS     XMM2,XMM1
+        005f69de 89 44 24 54     MOV        dword ptr [ESP + 0x54],currentSystemTime
+        005f69e2 0f 82 71        JC         LAB_005f6759
+                 fd ff ff
+        005f69e8 f3 0f 10        MOVSS      totalFloatValue,dword ptr [ESP + 0x3c]
+                 44 24 3c
+        005f69ee 0f 2f c1        COMISS     totalFloatValue,XMM1
+        005f69f1 0f 82 62        JC         LAB_005f6759
+                 fd ff ff
+        005f69f7 8d 54 24 6c     LEA        defaultCalcReturn13,[ESP + 0x6c]
+        005f69fb 52              PUSH       defaultCalcReturn13
+        005f69fc 8d 44 24 1c     LEA        currentSystemTime,[ESP + 0x1c]
+        005f6a00 50              PUSH       currentSystemTime
+        005f6a01 f3 0f 2c        CVTTSS2SI  currentSystemTime,dword ptr [ESP + 0x54]
+                 44 24 54
+        005f6a07 f3 0f 2c c8     CVTTSS2SI  tempCalculationValue13,totalFloatValue
+        005f6a0b 51              PUSH       tempCalculationValue13
+        005f6a0c f3 0f 2c        CVTTSS2SI  tempCalculationValue13,dword ptr [ESP + 0x54]
+                 4c 24 54
+        005f6a12 f3 0f 2c d2     CVTTSS2SI  defaultCalcReturn13,XMM2
+        005f6a16 52              PUSH       defaultCalcReturn13
+        005f6a17 f3 0f 2c        CVTTSS2SI  defaultCalcReturn13,dword ptr [ESP + 0x54]
+                 54 24 54
+        005f6a1d 50              PUSH       currentSystemTime
+        005f6a1e 51              PUSH       tempCalculationValue13
+        005f6a1f 52              PUSH       defaultCalcReturn13
+        005f6a20 55              PUSH       EBP
+        005f6a21 e8 2a e6        CALL       processResourceData                              undefined processResourceData(un
+                 ff ff
+        005f6a26 84 c0           TEST       currentSystemTime,currentSystemTime
+        005f6a28 0f 84 2b        JZ         LAB_005f6759
+                 fd ff ff
+        005f6a2e f3 0f 2a        CVTSI2SS   totalFloatValue,dword ptr [ESP + 0x18]
+                 44 24 18
+        005f6a34 f3 0f 2c c0     CVTTSS2SI  currentSystemTime,totalFloatValue
+        005f6a38 f3 0f 11        MOVSS      dword ptr [ESP + 0x40],totalFloatValue
+                 44 24 40
+        005f6a3e 89 44 24 58     MOV        dword ptr [ESP + 0x58],currentSystemTime
+        005f6a42 eb 08           JMP        LAB_005f6a4c
+                             LAB_005f6a44                                    XREF[3]:     005f686c(j), 005f687e(j), 
+                                                                                          005f688d(j)  
+        005f6a44 84 db           TEST       BL,BL
+        005f6a46 0f 84 40        JZ         LAB_005f648c
+                 fa ff ff
+                             LAB_005f6a4c                                    XREF[1]:     005f6a42(j)  
+        005f6a4c 83 7c 24        CMP        dword ptr [ESP + 0x74],0x0
+                 74 00
+        005f6a51 0f 84 35        JZ         LAB_005f648c
+                 fa ff ff
+        005f6a57 6a 70           PUSH       0x70
+        005f6a59 e8 12 68        CALL       allocateMemoryResource                           undefined allocateMemoryResource
+                 e8 ff
+        005f6a5e 83 c4 04        ADD        ESP,0x4
+        005f6a61 85 c0           TEST       currentSystemTime,currentSystemTime
+        005f6a63 74 09           JZ         LAB_005f6a6e
+        005f6a65 e8 76 0a        CALL       resetPlayerMovementData                          undefined resetPlayerMovementDat
+                 00 00
+        005f6a6a 8b f0           MOV        ESI,currentSystemTime
+        005f6a6c eb 02           JMP        LAB_005f6a70
+                             LAB_005f6a6e                                    XREF[1]:     005f6a63(j)  
+        005f6a6e 33 f6           XOR        ESI,ESI
+                             LAB_005f6a70                                    XREF[1]:     005f6a6c(j)  
+        005f6a70 8b 44 24 54     MOV        currentSystemTime,dword ptr [ESP + 0x54]
+        005f6a74 8b 4c 24 58     MOV        tempCalculationValue13,dword ptr [ESP + 0x58]
+        005f6a78 8b 54 24 38     MOV        defaultCalcReturn13,dword ptr [ESP + 0x38]
+        005f6a7c 89 46 48        MOV        dword ptr [ESI + 0x48],currentSystemTime
+        005f6a7f 8b 44 24 3c     MOV        currentSystemTime,dword ptr [ESP + 0x3c]
+        005f6a83 89 4e 4c        MOV        dword ptr [ESI + 0x4c],tempCalculationValue13
+        005f6a86 8b 4c 24 40     MOV        tempCalculationValue13,dword ptr [ESP + 0x40]
+        005f6a8a 89 7e 44        MOV        dword ptr [ESI + 0x44],EDI
+        005f6a8d 89 56 38        MOV        dword ptr [ESI + 0x38],defaultCalcReturn13
+        005f6a90 8b 54 24 44     MOV        defaultCalcReturn13,dword ptr [ESP + 0x44]
+        005f6a94 89 46 3c        MOV        dword ptr [ESI + 0x3c],currentSystemTime
+        005f6a97 8b 44 24 48     MOV        currentSystemTime,dword ptr [ESP + 0x48]
+        005f6a9b 89 4e 40        MOV        dword ptr [ESI + 0x40],tempCalculationValue13
+        005f6a9e 8b 4c 24 4c     MOV        tempCalculationValue13,dword ptr [ESP + 0x4c]
+        005f6aa2 89 56 2c        MOV        dword ptr [ESI + 0x2c],defaultCalcReturn13
+        005f6aa5 89 46 30        MOV        dword ptr [ESI + 0x30],currentSystemTime
+        005f6aa8 83 ec 08        SUB        ESP,0x8
+        005f6aab 89 4e 34        MOV        dword ptr [ESI + 0x34],tempCalculationValue13
+        005f6aae 8d 4c 24 28     LEA        tempCalculationValue13,[ESP + 0x28]
+        005f6ab2 8b c4           MOV        currentSystemTime,ESP
+        005f6ab4 e8 17 be        CALL       copyAndIncrementReference                        undefined copyAndIncrementRefere
+                 e1 ff
+        005f6ab9 56              PUSH       ESI
+        005f6aba e8 51 c9        CALL       updateResourceReferences                         undefined updateResourceReferenc
+                 ff ff
+        005f6abf 8b 54 24 14     MOV        defaultCalcReturn13,dword ptr [ESP + 0x14]
+        005f6ac3 8b 44 24 74     MOV        currentSystemTime,dword ptr [ESP + 0x74]
+        005f6ac7 89 56 1c        MOV        dword ptr [ESI + 0x1c],defaultCalcReturn13
+        005f6aca 8b 16           MOV        defaultCalcReturn13,dword ptr [ESI]
+        005f6acc 89 46 20        MOV        dword ptr [ESI + 0x20],currentSystemTime
+        005f6acf 8b 42 0c        MOV        currentSystemTime,dword ptr [defaultCalcReturn
+        005f6ad2 8b ce           MOV        tempCalculationValue13,ESI
+        005f6ad4 ff d0           CALL       currentSystemTime
+        005f6ad6 d9 56 28        FST        float ptr [ESI + 0x28]
+        005f6ad9 d8 0d dc        FMUL       float ptr [DAT_00cf40dc]
+                 40 cf 00
+        005f6adf e8 b2 36        CALL       calculateAdjustedFloatValue                      undefined calculateAdjustedFloat
+                 5e 00
+        005f6ae4 03 44 24 28     ADD        currentSystemTime,dword ptr [ESP + 0x28]
+        005f6ae8 13 54 24 2c     ADC        defaultCalcReturn13,dword ptr [ESP + 0x2c]
+        005f6aec 89 46 50        MOV        dword ptr [ESI + 0x50],currentSystemTime
+        005f6aef 89 56 54        MOV        dword ptr [ESI + 0x54],defaultCalcReturn13
+        005f6af2 8b 4d 30        MOV        tempCalculationValue13,dword ptr [EBP + 0x30]
+        005f6af5 8b 55 34        MOV        defaultCalcReturn13,dword ptr [EBP + 0x34]
+        005f6af8 8b 45 38        MOV        currentSystemTime,dword ptr [EBP + 0x38]
+        005f6afb 89 4c 24 5c     MOV        dword ptr [ESP + 0x5c],tempCalculationValue13
+        005f6aff f3 0f 10        MOVSS      totalFloatValue,dword ptr [ESP + 0x5c]
+                 44 24 5c
+        005f6b05 f3 0f 58        ADDSS      totalFloatValue,dword ptr [ESI + 0x64]
+                 46 64
+        005f6b0a 89 54 24 60     MOV        dword ptr [ESP + 0x60],defaultCalcReturn13
+        005f6b0e 89 44 24 64     MOV        dword ptr [ESP + 0x64],currentSystemTime
+        005f6b12 e9 1a fe        JMP        LAB_005f6931
+                 ff ff
+        005f6b17 cc              ??         CCh
+        005f6b18 cc              ??         CCh
+        005f6b19 cc              ??         CCh
+        005f6b1a cc              ??         CCh
+        005f6b1b cc              ??         CCh
+        005f6b1c cc              ??         CCh
+        005f6b1d cc              ??         CCh
+        005f6b1e cc              ??         CCh
+        005f6b1f cc              ??         CCh
+
+
+Bytes:
+
+83 ec 58 53 55 8b 6c 24 64 80 7d 79 00 56 57 0f 85 10 01 00 00 80 7d 7a 00 0f 85 06 01 00 00 8d 44 24 20 50 8d 4d 04 e8 54 8c e3 ff 8b 74 24 20 85 f6 0f 84 e4 00 00 00 8b 16 8b 82 a0 00 00 00 8b ce ff d0 a8 01 0f 85 d0 00 00 00 80 bd 9c 00 00 00 00 0f 84 aa 00 00 00 8b 85 98 00 00 00 83 f8 02 0f 83 b4 00 00 00 3b 05 5c 44 db 00 0f 87 a8 00 00 00 c6 85 9c 00 00 00 00 8b 16 8b 52 28 8d 44 24 5c 50 8b ce 8d bd a0 00 00 00 ff d2 8b c8 8b c7 e8 f8 c2 e1 ff 84 c0 74 1b 8b 06 8b 50 40 8b ce ff d2 3b 85 ac 00 00 00 75 0a 55 e8 0d e6 ff ff 84 c0 75 65 8b 06 8b 50 28 8d 4c 24 5c 51 8b ce ff d2 8b 08 89 0f 8b 50 04 89 57 04 8b 40 08 89 47 08 8b 16 8b 42 40 8b ce ff d0 83 7c 24 70 08 89 85 ac 00 00 00 74 31 83 bd 98 00 00 00 00 74 3d 8d 95 88 00 00 00 e8 a1 1b 00 00 8b 00 eb 3b 8b 8d 98 00 00 00 3b 0d 5c 44 db 00 0f 86 66 ff ff ff c6 85 9c 00 00 00 01 8d 44 24 20 e8 5b c4 e1 ff 32 c0 5f 5e 5d 5b 83 c4 58 c2 0c 00 83 7d 1c 00 74 0b 8b d5 e8 22 d7 ff ff 85 c0 75 7e 8b 0d 5c 91 e1 00 8d 44 24 30 e8 cf a2 e2 ff 8b 74 24 30 8b 16 8b 52 28 8d 44 24 50 50 8b ce ff d2 8b 50 04 8b 08 8b 40 08 89 54 24 60 8b 16 89 4c 24 5c 89 44 24 64 8b 42 40 8b ce ff d0 8b 3d f4 c5 e3 00 89 44 24 1c e8 11 18 ff ff 8b 8d b4 00 00 00 3b ca 8b b5 b0 00 00 00 89 44 24 28 89 54 24 2c 7c 0e 7f 04 3b f0 76 08 89 74 24 28 89 4c 24 2c 8d 44 24 30 e8 c2 c3 e1 ff eb 39 8b 48 58 8b 78 44 8b 50 5c 8b 70 60 8b 58 4c 03 f9 8b 48 48 03 d1 8b 48 1c 89 54 24 60 8b 50 50 8b 40 54 03 f3 89 7c 24 5c 89 74 24 64 89 4c 24 1c 89 54 24 28 89 44 24 2c f3 0f 2a 44 24 5c 8b 4c 24 70 f3 0f 11 44 24 44 f3 0f 2a 44 24 60 33 ff f3 0f 11 44 24 48 f3 0f 2a 44 24 64 32 db 83 7c 24 74 00 f3 0f 11 44 24 4c 89 4c 24 14 89 7c 24 54 89 7c 24 58 0f 84 b8 02 00 00 8b c1 8b 14 c5 08 aa dd 00 8b 04 c5 0c aa dd 00 89 54 24 30 d9 44 24 30 d8 44 24 44 89 44 24 34 51 d9 54 24 3c d9 44 24 38 d8 44 24 4c d9 5c 24 40 d9 1c 24 e8 cb da e4 ff 83 c4 04 e8 73 3b 5e 00 d9 44 24 3c 51 d9 1c 24 8b f8 e8 b4 da e4 ff 83 c4 04 e8 5c 3b 5e 00 8b 54 24 70 f6 c2 01 89 44 24 54 74 24 8d 4c 24 14 51 8b 4c 24 48 83 ec 0c 8b c4 89 08 8b 4c 24 58 89 48 04 8b 4c 24 5c 89 48 08 52 e9 da 01 00 00 a0 12 89 e3 00 f3 0f 10 4c 24 38 0f 57 d2 0f 2f ca 88 44 24 13 c6 44 24 6c 00 72 5d f3 0f 10 44 24 3c 0f 2f c2 72 52 8d 4c 24 6c 51 8d 54 24 1c 52 f3 0f 2c 54 24 54 f3 0f 2c c0 50 f3 0f 2c 44 24 54 f3 0f 2c c9 51 f3 0f 2c 4c 24 54 52 50 51 55 e8 c5 e9 ff ff 84 c0 74 1b f3 0f 2a 44 24 18 f3 0f 2c d0 b3 01 f3 0f 11 44 24 40 89 54 24 58 e9 ba 01 00 00 8b 54 24 70 80 7c 24 13 00 0f 84 ab 01 00 00 80 7c 24 6c 00 0f 85 a0 01 00 00 8b 4c 24 1c 3b ca 0f 84 8d 00 00 00 f6 c1 01 89 4c 24 14 0f 84 95 02 00 00 8b 54 24 44 8d 44 24 14 50 83 ec 0c 8b c4 89 10 8b 54 24 58 89 50 04 8b 54 24 5c 51 55 8d 74 24 50 89 50 08 e8 8a f6 ff ff d9 44 24 38 51 d9 1c 24 8a d8 e8 9b d9 e4 ff 83 c4 04 e8 43 3a 5e 00 d9 44 24 3c 51 d9 1c 24 8b f8 e8 84 d9 e4 ff 83 c4 04 e8 2c 3a 5e 00 d9 44 24 40 51 d9 1c 24 89 44 24 58 e8 6b d9 e4 ff 83 c4 04 e8 13 3a 5e 00 84 db 89 44 24 58 0f 85 0b 01 00 00 8b 54 24 70 85 d2 8d 4a ff 75 05 b9 07 00 00 00 8d 54 24 14 52 8b 54 24 48 83 ec 0c 8b c4 89 10 8b 54 24 58 89 50 04 8b 54 24 5c 51 55 8d 74 24 50 89 4c 24 2c 89 50 08 e8 fa f5 ff ff d9 44 24 38 51 d9 1c 24 8a d8 e8 0b d9 e4 ff 83 c4 04 e8 b3 39 5e 00 d9 44 24 3c 51 d9 1c 24 8b f8 e8 f4 d8 e4 ff 83 c4 04 e8 9c 39 5e 00 d9 44 24 40 51 d9 1c 24 89 44 24 58 e8 db d8 e4 ff 83 c4 04 e8 83 39 5e 00 84 db 89 44 24 58 75 7f 8b 4c 24 70 8b 54 24 44 8d 44 24 14 50 83 c1 01 83 ec 0c 8b c4 89 10 8b 54 24 58 89 50 04 8b 54 24 5c 89 4c 24 24 89 50 08 51 55 8d 74 24 50 e8 77 f5 ff ff d9 44 24 38 51 d9 1c 24 8a d8 e8 88 d8 e4 ff 83 c4 04 e8 30 39 5e 00 d9 44 24 3c 51 d9 1c 24 8b f8 e8 71 d8 e4 ff 83 c4 04 e8 19 39 5e 00 d9 44 24 40 51 d9 1c 24 89 44 24 58 e8 58 d8 e4 ff 83 c4 04 e8 00 39 5e 00 89 44 24 58 8b 44 24 14 39 44 24 1c 0f 84 d2 01 00 00 6a 70 e8 f7 69 e8 ff 83 c4 04 85 c0 0f 84 c0 01 00 00 e8 97 e0 ff ff 8b f0 85 f6 0f 84 b1 01 00 00 8b 54 24 60 8b 4c 24 5c 8b 44 24 64 c6 45 7b 01 89 4e 44 8b 4c 24 48 89 56 48 8b 54 24 44 89 46 4c 8b 44 24 4c 89 56 38 89 56 2c 89 4e 3c 89 4e 30 83 ec 08 89 46 40 89 46 34 8d 4c 24 28 8b c4 e8 f8 bf e1 ff 56 e8 32 cb ff ff 8b 4c 24 14 8b 54 24 74 8b 06 89 4e 1c 89 56 20 8b 50 0c 8b ce ff d2 d9 56 28 d8 0d dc 40 cf 00 e8 93 38 5e 00 03 44 24 28 13 54 24 2c 89 46 50 89 56 54 8b 45 30 8b 4d 34 8b 55 38 f3 0f 10 46 64 89 44 24 5c f3 0f 58 44 24 5c 89 4c 24 60 89 54 24 64 f3 0f 11 46 64 f3 0f 10 46 68 f3 0f 58 44 24 60 f3 0f 11 46 68 f3 0f 10 46 6c f3 0f 58 44 24 64 56 55 f3 0f 11 46 6c e8 f3 f6 ff ff 8d 44 24 20 e8 8a bf e1 ff 5f 5e 5d b0 01 5b 83 c4 58 c2 0c 00 8b 04 cd 08 aa dd 00 8b 0c cd 0c aa dd 00 89 4c 24 34 d9 44 24 34 d8 44 24 48 89 44 24 30 f3 0f 10 44 24 30 f3 0f 58 44 24 44 d9 5c 24 3c f3 0f 11 44 24 38 d9 44 24 38 51 d9 1c 24 e8 fd d6 e4 ff 83 c4 04 e8 a5 37 5e 00 d9 44 24 3c 51 d9 1c 24 8b f8 e8 e6 d6 e4 ff 83 c4 04 e8 8e 37 5e 00 f3 0f 10 54 24 38 0f 57 c9 0f 2f d1 89 44 24 54 0f 82 71 fd ff ff f3 0f 10 44 24 3c 0f 2f c1 0f 82 62 fd ff ff 8d 54 24 6c 52 8d 44 24 1c 50 f3 0f 2c 44 24 54 f3 0f 2c c8 51 f3 0f 2c 4c 24 54 f3 0f 2c d2 52 f3 0f 2c 54 24 54 50 51 52 55 e8 2a e6 ff ff 84 c0 0f 84 2b fd ff ff f3 0f 2a 44 24 18 f3 0f 2c c0 f3 0f 11 44 24 40 89 44 24 58 eb 08 84 db 0f 84 40 fa ff ff 83 7c 24 74 00 0f 84 35 fa ff ff 6a 70 e8 12 68 e8 ff 83 c4 04 85 c0 74 09 e8 76 0a 00 00 8b f0 eb 02 33 f6 8b 44 24 54 8b 4c 24 58 8b 54 24 38 89 46 48 8b 44 24 3c 89 4e 4c 8b 4c 24 40 89 7e 44 89 56 38 8b 54 24 44 89 46 3c 8b 44 24 48 89 4e 40 8b 4c 24 4c 89 56 2c 89 46 30 83 ec 08 89 4e 34 8d 4c 24 28 8b c4 e8 17 be e1 ff 56 e8 51 c9 ff ff 8b 54 24 14 8b 44 24 74 89 56 1c 8b 16 89 46 20 8b 42 0c 8b ce ff d0 d9 56 28 d8 0d dc 40 cf 00 e8 b2 36 5e 00 03 44 24 28 13 54 24 2c 89 46 50 89 56 54 8b 4d 30 8b 55 34 8b 45 38 89 4c 24 5c f3 0f 10 44 24 5c f3 0f 58 46 64 89 54 24 60 89 44 24 64 e9 1a fe ff ff cc cc cc cc cc cc cc cc cc
+
+

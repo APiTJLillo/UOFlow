@@ -1,0 +1,499 @@
+[07:19:38.986] [14920] Loading luaplus_1100.dll from:
+[07:19:38.989] [14920] Log file: C:\Users\dukey\Source\UOFlow\UOWalkPatch\build\bin\uowalkpatch_debug.log
+[07:19:38.991] [14920] C:\Users\dukey\Source\UOFlow\UOWalkPatch\build\bin\luaplus_1100.dll
+[07:19:39.081] [14920] Enumerating loaded modules:
+[07:19:39.083] [14920]   00400000 - 00E86000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\UOSA.exe
+[07:19:39.085] [14920]   779D0000 - 77B8F000: C:\WINDOWS\SYSTEM32\ntdll.dll
+[07:19:39.086] [14920]   76980000 - 76A70000: C:\WINDOWS\System32\KERNEL32.DLL
+[07:19:39.088] [14920]   76E90000 - 7715B000: C:\WINDOWS\System32\KERNELBASE.dll
+[07:19:39.090] [14920]   776B0000 - 77711000: C:\WINDOWS\System32\WS2_32.dll
+[07:19:39.092] [14920]   76A80000 - 76B90000: C:\WINDOWS\System32\ucrtbase.dll
+[07:19:39.094] [14920]   777C0000 - 7787C000: C:\WINDOWS\System32\RPCRT4.dll
+[07:19:39.096] [14920]   66E50000 - 66F3C000: C:\WINDOWS\SYSTEM32\DDRAW.dll
+[07:19:39.098] [14920]   75B20000 - 75CEA000: C:\WINDOWS\System32\USER32.dll
+[07:19:39.101] [14920]   64220000 - 64399000: C:\WINDOWS\SYSTEM32\d3d9.dll
+[07:19:39.103] [14920]   750A0000 - 750A8000: C:\WINDOWS\SYSTEM32\VERSION.dll
+[07:19:39.106] [14920]   759B0000 - 75A77000: C:\WINDOWS\System32\msvcrt.dll
+[07:19:39.108] [14920]   77880000 - 7789A000: C:\WINDOWS\System32\win32u.dll
+[07:19:39.109] [14920]   75D00000 - 75D83000: C:\WINDOWS\System32\sechost.dll
+[07:19:39.112] [14920]   75AF0000 - 75B13000: C:\WINDOWS\System32\GDI32.dll
+[07:19:39.113] [14920]   709E0000 - 709E6000: C:\WINDOWS\SYSTEM32\SHFOLDER.dll
+[07:19:39.115] [14920]   758C0000 - 759AC000: C:\WINDOWS\System32\gdi32full.dll
+[07:19:39.116] [14920]   75D90000 - 763B7000: C:\WINDOWS\System32\SHELL32.dll
+[07:19:39.118] [14920]   77720000 - 777A5000: C:\WINDOWS\System32\msvcp_win.dll
+[07:19:39.120] [14920]   763C0000 - 764BB000: C:\WINDOWS\System32\wintypes.dll
+[07:19:39.123] [14920]   764C0000 - 7653F000: C:\WINDOWS\System32\ADVAPI32.dll
+[07:19:39.124] [14920]   63EB0000 - 6421F000: C:\WINDOWS\SYSTEM32\d3dx9_34.dll
+[07:19:39.126] [14920]   76BA0000 - 76E25000: C:\WINDOWS\System32\combase.dll
+[07:19:39.128] [14920]   6A110000 - 6A216000: C:\WINDOWS\SYSTEM32\dxgi.dll
+[07:19:39.130] [14920]   71380000 - 71387000: C:\WINDOWS\SYSTEM32\DCIMAN32.dll
+[07:19:39.132] [14920]   718F0000 - 71914000: C:\WINDOWS\SYSTEM32\dwmapi.dll
+[07:19:39.134] [14920]   71BF0000 - 71C28000: C:\WINDOWS\SYSTEM32\DINPUT8.dll
+[07:19:39.136] [14920]   21100000 - 21199000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\mss32.dll
+[07:19:39.138] [14920]   02800000 - 02900000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\dbghelp.dll
+[07:19:39.140] [14920]   71AC0000 - 71AF3000: C:\WINDOWS\SYSTEM32\WINMM.dll
+[07:19:39.142] [14920]   75390000 - 753E5000: C:\WINDOWS\SYSTEM32\powrprof.dll
+[07:19:39.144] [14920]   714B0000 - 714E7000: C:\WINDOWS\SYSTEM32\dxcore.dll
+[07:19:39.149] [14920]   76550000 - 76575000: C:\WINDOWS\System32\IMM32.DLL
+[07:19:39.151] [14920]   74F80000 - 74F8E000: C:\WINDOWS\SYSTEM32\UMPDC.dll
+[07:19:39.153] [14920]   6AFA0000 - 6B10D000: C:\WINDOWS\SYSTEM32\inputhost.dll
+[07:19:39.155] [14920]   6AEC0000 - 6AF9B000: C:\WINDOWS\SYSTEM32\CoreMessaging.dll
+[07:19:39.156] [14920]   76640000 - 766A9000: C:\WINDOWS\System32\bcryptPrimitives.dll
+[07:19:39.158] [14920]   73BA0000 - 73BAA000: C:\WINDOWS\SYSTEM32\CRYPTBASE.DLL
+[07:19:39.160] [14920]   72140000 - 721BF000: C:\WINDOWS\system32\uxtheme.dll
+[07:19:39.164] [14920]   69E20000 - 69EBC000: C:\WINDOWS\System32\DriverStore\FileRepository\nvlt.inf_amd64_35c5f766fd22cb74\nvldumd.dll
+[07:19:39.165] [14920]   746A0000 - 746AE000: C:\WINDOWS\SYSTEM32\msasn1.dll
+[07:19:39.168] [14920]   72E70000 - 72E9B000: C:\WINDOWS\SYSTEM32\cryptnet.dll
+[07:19:39.170] [14920]   77260000 - 77367000: C:\WINDOWS\System32\CRYPT32.dll
+[07:19:39.172] [14920]   732E0000 - 73336000: C:\WINDOWS\SYSTEM32\wldp.dll
+[07:19:39.174] [14920]   69CF0000 - 69E15000: C:\WINDOWS\SYSTEM32\drvstore.dll
+[07:19:39.176] [14920]   713F0000 - 71414000: C:\WINDOWS\SYSTEM32\devobj.dll
+[07:19:39.178] [14920]   75140000 - 75183000: C:\WINDOWS\SYSTEM32\cfgmgr32.dll
+[07:19:39.178] [14920]   75A80000 - 75AE5000: C:\WINDOWS\System32\wintrust.dll
+[07:19:39.180] [14920]   76580000 - 7659B000: C:\WINDOWS\System32\imagehlp.dll
+[07:19:39.182] [14920]   73BF0000 - 73C04000: C:\WINDOWS\SYSTEM32\CRYPTSP.dll
+[07:19:39.184] [14920]   73BB0000 - 73BE3000: C:\WINDOWS\system32\rsaenh.dll
+[07:19:39.186] [14920]   74FA0000 - 74FBA000: C:\WINDOWS\SYSTEM32\bcrypt.dll
+[07:19:39.188] [14920]   0EA80000 - 117B6000: C:\WINDOWS\System32\DriverStore\FileRepository\nvlt.inf_amd64_35c5f766fd22cb74\nvgpucomp32.dll
+[07:19:39.190] [14920]   77420000 - 77574000: C:\WINDOWS\System32\ole32.dll
+[07:19:39.191] [14920]   69740000 - 697E6000: C:\WINDOWS\System32\DriverStore\FileRepository\nvlt.inf_amd64_35c5f766fd22cb74\NvMemMapStorage.dll
+[07:19:39.192] [14920]   117C0000 - 13B47000: C:\WINDOWS\System32\DriverStore\FileRepository\nvlt.inf_amd64_35c5f766fd22cb74\nvd3dum.dll
+[07:19:39.192] [14920]   70A20000 - 70A71000: C:\WINDOWS\SYSTEM32\directxdatabasehelper.dll
+[07:19:39.194] [14920]   74F60000 - 74F75000: C:\WINDOWS\SYSTEM32\kernel.appcore.dll
+[07:19:39.196] [14920]   696D0000 - 69737000: C:\WINDOWS\SYSTEM32\D3DREF9.DLL
+[07:19:39.198] [14920]   73FC0000 - 7469C000: C:\WINDOWS\SYSTEM32\windows.storage.dll
+[07:19:39.200] [14920]   76710000 - 767DF000: C:\WINDOWS\System32\SHCORE.dll
+[07:19:39.201] [14920]   766B0000 - 766FF000: C:\WINDOWS\System32\shlwapi.dll
+[07:19:39.202] [14920]   73E20000 - 73E3D000: C:\WINDOWS\SYSTEM32\profapi.dll
+[07:19:39.203] [14920]   778A0000 - 779B8000: C:\WINDOWS\System32\MSCTF.dll
+[07:19:39.203] [14920]   77370000 - 7740E000: C:\WINDOWS\System32\OLEAUT32.dll
+[07:19:39.204] [14920]   695C0000 - 696C4000: C:\WINDOWS\SYSTEM32\textinputframework.dll
+[07:19:39.205] [14920]   73110000 - 73130000: C:\WINDOWS\SYSTEM32\gpapi.dll
+[07:19:39.208] [14920]   69480000 - 695BC000: C:\WINDOWS\System32\DriverStore\FileRepository\nvlt.inf_amd64_35c5f766fd22cb74\nvppe.dll
+[07:19:39.210] [14920]   73D40000 - 73D94000: C:\WINDOWS\system32\mswsock.dll
+[07:19:39.212] [14920]   73150000 - 7315B000: C:\WINDOWS\SYSTEM32\HID.DLL
+[07:19:39.214] [14920]   75450000 - 758A1000: C:\WINDOWS\System32\SETUPAPI.DLL
+[07:19:39.214] [14920]   26F00000 - 26F21000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\miles\mssmp3.asi
+[07:19:39.214] [14920]   26400000 - 2642A000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\miles\mssvoice.asi
+[07:19:39.216] [14920]   23000000 - 23006000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\miles\mssdolby.flt
+[07:19:39.216] [14920]   22300000 - 22306000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\miles\mssds3d.flt
+[07:19:39.218] [14920]   24100000 - 24112000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\miles\mssdsp.flt
+[07:19:39.220] [14920]   0E950000 - 0E961000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\miles\msseax.flt
+[07:19:39.222] [14920]   0E970000 - 0E977000: C:\Program Files (x86)\Electronic Arts\Ultima Online Enhanced\miles\msssrs.flt
+[07:19:39.224] [14920]   702E0000 - 70356000: C:\WINDOWS\SYSTEM32\DSOUND.DLL
+[07:19:39.227] [14920]   6A070000 - 6A10A000: C:\WINDOWS\SYSTEM32\ResampleDmo.DLL
+[07:19:39.228] [14920]   71240000 - 7125F000: C:\WINDOWS\SYSTEM32\winmmbase.dll
+[07:19:39.229] [14920]   71C50000 - 71C59000: C:\WINDOWS\SYSTEM32\msdmo.dll
+[07:19:39.229] [14920]   77160000 - 771EA000: C:\WINDOWS\System32\clbcatq.dll
+[07:19:39.230] [14920]   711B0000 - 7122E000: C:\WINDOWS\System32\MMDevApi.dll
+[07:19:39.231] [14920]   70FF0000 - 71165000: C:\WINDOWS\SYSTEM32\AUDIOSES.DLL
+[07:19:39.233] [14920]   713A0000 - 713B0000: C:\WINDOWS\SYSTEM32\resourcepolicyclient.dll
+[07:19:39.235] [14920]   69F60000 - 6A069000: C:\Windows\System32\Windows.UI.dll
+[07:19:39.237] [14920]   71390000 - 71399000: C:\WINDOWS\SYSTEM32\avrt.dll
+[07:19:39.239] [14920]   691E0000 - 69472000: C:\WINDOWS\SYSTEM32\CoreUIComponents.dll
+[07:19:39.240] [14920]   71B00000 - 71B12000: C:\WINDOWS\system32\napinsp.dll
+[07:19:39.242] [14920]   73C20000 - 73CFD000: C:\WINDOWS\SYSTEM32\DNSAPI.dll
+[07:19:39.244] [14920]   75200000 - 75227000: C:\WINDOWS\SYSTEM32\IPHLPAPI.DLL
+[07:19:39.246] [14920]   758B0000 - 758B7000: C:\WINDOWS\System32\NSI.dll
+[07:19:39.249] [14920]   71440000 - 7144E000: C:\WINDOWS\System32\winrnr.dll
+[07:19:39.251] [14920]   713C0000 - 713DE000: C:\WINDOWS\system32\nlansp_c.dll
+[07:19:39.253] [14920]   71420000 - 71432000: C:\WINDOWS\system32\wshbth.dll
+[07:19:39.254] [14920]   73160000 - 731C2000: C:\WINDOWS\System32\fwpuclnt.dll
+[07:19:39.256] [14920]   73100000 - 73108000: C:\Windows\System32\rasadhlp.dll
+[07:19:39.258] [14920]   65FA0000 - 66045000: C:\WINDOWS\SYSTEM32\TextShaping.dll
+[07:19:39.261] [14920]   1D080000 - 1D1A3000: C:\Users\dukey\Source\UOFlow\UOWalkPatch\build\bin\UOWalkPatchDLL.dll
+[07:19:39.263] [14920]   1AD10000 - 1AD4D000: C:\Users\dukey\Source\UOFlow\UOWalkPatch\build\bin\luaplus_1100.dll
+[07:19:39.265] [14920]   209F0000 - 20A93000: C:\WINDOWS\WinSxS\x86_microsoft.vc90.crt_1fc8b3b9a1e18e3b_9.0.30729.9635_none_508ff82ebcbafee0\MSVCR90.dll
+[07:19:39.271] [14920] Found updateDataStructureState at 005F65C0
+[07:19:39.302] [14920] updateDataStructureState hook installed
+[07:19:39.335] [14920] send hook installed
+[07:19:39.368] [14920] WSASend hook installed
+[07:19:39.399] [14920] WSASendTo hook installed
+[07:19:39.431] [14920] sendto hook installed
+[07:19:39.464] [14920] recv hook installed
+[07:19:39.495] [14920] WSARecv hook installed
+[07:19:39.527] [14920] WSARecvFrom hook installed
+[07:19:39.560] [14920] recvfrom hook installed
+[07:19:39.567] [14920] Found SendPacket at 0082FB60
+[07:19:39.600] [14920] SendPacket hook installed
+[07:19:39.602] [8440] Starting Lua state scan thread...
+[07:19:39.605] [8440] GlobalState signature hit at 004971A3 (slot 00E3D540)
+[07:19:39.607] [8440] Installing write watch on slot 00E3D540
+[07:19:39.609] [8440] Guard-page write watch installed successfully
+[07:19:39.611] [8440] Write hook validated GlobalStateInfo @ 4DB7BED4:
+  Lua State: 00CED49C
+  DB Manager: 4DB79B84
+  Resource Mgr: 4DBD0CE4
+[07:19:39.613] [8440] Signature resolved GlobalStateInfo @ 4DB7BED4:
+  Lua State: 00CED49C
+  DB Manager: 4DB79B84
+  Resource Mgr: 4DBD0CE4
+[07:19:39.615] [8440] Scanner found Lua State @ 00CED49C
+[07:19:41.877] [12620] send-family len=7 id=2E
+[07:19:41.880] [12620] Memory dump Outbound packet at 5BD77E8C:
+[07:19:41.883] [12620]   5BD77E8C: 2E E0 00 0E D8 98 2F                              ....../.........
+[07:19:43.866] [12620] send-family len=21 id=EF
+[07:19:43.876] [12620] Memory dump Outbound packet at 5F18E4C4:
+[07:19:43.878] [12620]   5F18E4C4: EF AC 16 D0 01 00 00 00 43 00 00 00 00 00 00 00   ........C.......
+[07:19:43.880] [12620]   5F18E4D4: 71 00 00 00 00                                    q...............
+[07:19:44.358] [12620] recv-family len=1166 id=A8
+[07:19:44.361] [12620] Memory dump Inbound packet at 4DB219FC:
+[07:19:44.362] [12620]   4DB219FC: A8 04 8E 00 00 1D 00 13 4F 63 65 61 6E 69 61 00   ........Oceania.
+[07:19:44.364] [12620]   4DB21A0C: 43 61 74 73 6B 69 6C 6C 73 00 00 00 00 00 00 00   Catskills.......
+[07:19:44.366] [12620]   4DB21A1C: 00 00 00 00 00 00 00 00 01 F6 06 89 FC 36 00 10   .............6..
+[07:19:44.878] [12620] send-family len=268 id=6C
+[07:19:44.882] [12620] Memory dump Outbound packet at 584051EC:
+[07:19:44.883] [12620]   584051EC: 6C 27 6D 49 DB 12 F6 04 FD 87 BF A0 2F 6A 4B DA   l'mI......../jK.
+[07:19:44.885] [12620]   584051FC: B1 C6 66 4D D9 93 B0 24 ED 89 8C 62 CE 91 C0 86   ..fM...$...b....
+[07:19:44.888] [12620]   5840520C: AC A9 A3 2A EA 8A B0 E2 EE 08 7F C2 5E 50 D7 B4   ...*........^P..
+[07:19:44.906] [12620] send-family len=7 id=2E
+[07:19:44.908] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.910] [12620]   5D1F204C: 2E E0 00 0E D8 A4 05                              ................
+[07:19:44.912] [12620] send-family len=7 id=2E
+[07:19:44.914] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.915] [12620]   5D1F204C: 2E E0 00 0E D8 A4 0A                              ................
+[07:19:44.918] [12620] send-family len=7 id=2E
+[07:19:44.919] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.921] [12620]   5D1F204C: 2E E0 00 0E D8 A4 10                              ................
+[07:19:44.923] [12620] send-family len=7 id=2E
+[07:19:44.926] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.928] [12620]   5D1F204C: 2E E0 00 0E D8 A4 16                              ................
+[07:19:44.928] [12620] send-family len=7 id=2E
+[07:19:44.929] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.929] [12620]   5D1F204C: 2E E0 00 0E D8 A4 1B                              ................
+[07:19:44.929] [12620] send-family len=7 id=2E
+[07:19:44.932] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.933] [12620]   5D1F204C: 2E E0 00 0E D8 A4 1C                              ................
+[07:19:44.935] [12620] send-family len=7 id=2E
+[07:19:44.938] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.940] [12620]   5D1F204C: 2E E0 00 0E D8 A4 22                              ......".........
+[07:19:44.940] [12620] send-family len=7 id=2E
+[07:19:44.941] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.941] [12620]   5D1F204C: 2E E0 00 0E D8 A4 26                              ......&.........
+[07:19:44.941] [12620] send-family len=7 id=2E
+[07:19:44.943] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.945] [12620]   5D1F204C: 2E E0 00 0E D8 A4 27                              ......'.........
+[07:19:44.947] [12620] send-family len=7 id=2E
+[07:19:44.949] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.951] [12620]   5D1F204C: 2E E0 00 0E D8 A4 2D                              ......-.........
+[07:19:44.951] [12620] send-family len=7 id=2E
+[07:19:44.953] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.953] [12620]   5D1F204C: 2E E0 00 0E D8 A4 32                              ......2.........
+[07:19:44.953] [12620] send-family len=7 id=2E
+[07:19:44.955] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.957] [12620]   5D1F204C: 2E E0 00 0E D8 A4 34                              ......4.........
+[07:19:44.959] [12620] send-family len=7 id=2E
+[07:19:44.961] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.963] [12620]   5D1F204C: 2E E0 00 0E D8 A4 39                              ......9.........
+[07:19:44.965] [12620] send-family len=7 id=2E
+[07:19:44.965] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.965] [12620]   5D1F204C: 2E E0 00 0E D8 A4 3F                              ......?.........
+[07:19:44.967] [12620] send-family len=7 id=2E
+[07:19:44.969] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.971] [12620]   5D1F204C: 2E E0 00 0E D8 A4 40                              ......@.........
+[07:19:44.973] [12620] send-family len=7 id=2E
+[07:19:44.974] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.976] [12620]   5D1F204C: 2E E0 00 0E D8 A4 46                              ......F.........
+[07:19:44.976] [12620] send-family len=7 id=2E
+[07:19:44.977] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.977] [12620]   5D1F204C: 2E E0 00 0E D8 A4 4B                              ......K.........
+[07:19:44.978] [12620] send-family len=7 id=2E
+[07:19:44.980] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.982] [12620]   5D1F204C: 2E E0 00 0E D8 A4 4C                              ......L.........
+[07:19:44.984] [12620] send-family len=7 id=2E
+[07:19:44.986] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.988] [12620]   5D1F204C: 2E E0 00 0E D8 A4 52                              ......R.........
+[07:19:44.988] [12620] send-family len=7 id=2E
+[07:19:44.988] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.989] [12620]   5D1F204C: 2E E0 00 0E D8 A4 56                              ......V.........
+[07:19:44.989] [12620] send-family len=7 id=2E
+[07:19:44.991] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.993] [12620]   5D1F204C: 2E E0 00 0E D8 A4 58                              ......X.........
+[07:19:44.995] [12620] send-family len=7 id=2E
+[07:19:44.996] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:44.999] [12620]   5D1F204C: 2E E0 00 0E D8 A4 5D                              ......].........
+[07:19:45.001] [12620] send-family len=7 id=2E
+[07:19:45.003] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:45.005] [12620]   5D1F204C: 2E E0 00 0E D8 A4 63                              ......c.........
+[07:19:45.007] [12620] send-family len=7 id=2E
+[07:19:45.009] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:45.011] [12620]   5D1F204C: 2E E0 00 0E D8 A4 69                              ......i.........
+[07:19:45.013] [12620] send-family len=7 id=2E
+[07:19:45.015] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:45.018] [12620]   5D1F204C: 2E E0 00 0E D8 A4 6F                              ......o.........
+[07:19:45.020] [12620] send-family len=7 id=2E
+[07:19:45.021] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:45.023] [12620]   5D1F204C: 2E E0 00 0E D8 A4 76                              ......v.........
+[07:19:45.026] [12620] send-family len=7 id=2E
+[07:19:45.027] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:45.029] [12620]   5D1F204C: 2E E0 00 0E D8 A4 7C                              ......|.........
+[07:19:45.031] [12620] send-family len=7 id=2E
+[07:19:45.033] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:45.035] [12620]   5D1F204C: 2E E0 00 0E D8 A4 81                              ................
+[07:19:45.038] [12620] send-family len=7 id=2E
+[07:19:45.039] [12620] Memory dump Outbound packet at 5D1F204C:
+[07:19:45.041] [12620]   5D1F204C: 2E E0 00 0E D8 A4 87                              ................
+[07:19:45.093] [12620] recv-family len=40 id=2E
+[07:19:45.096] [12620] Memory dump Inbound packet at 51D96974:
+[07:19:45.098] [12620]   51D96974: 2E E0 00 0E D8 A4 26 74 F0 2A CD 76 00 00 00 00   ......&t.*.v....
+[07:19:45.100] [12620]   51D96984: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.101] [12620]   51D96994: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.104] [12620] recv-family len=40 id=2E
+[07:19:45.106] [12620] Memory dump Inbound packet at 59CF95E4:
+[07:19:45.108] [12620]   59CF95E4: 2E E0 00 0E D8 A4 27 74 F0 2A CD 76 00 00 00 00   ......'t.*.v....
+[07:19:45.110] [12620]   59CF95F4: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.112] [12620]   59CF9604: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.114] [12620] recv-family len=40 id=2E
+[07:19:45.115] [12620] Memory dump Inbound packet at 5D6F2404:
+[07:19:45.117] [12620]   5D6F2404: 2E E0 00 0E D8 A4 2D 74 F0 2A CD 76 00 00 00 00   ......-t.*.v....
+[07:19:45.119] [12620]   5D6F2414: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.121] [12620]   5D6F2424: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.123] [12620] recv-family len=40 id=2E
+[07:19:45.125] [12620] Memory dump Inbound packet at 51C7E0EC:
+[07:19:45.127] [12620]   51C7E0EC: 2E E0 00 0E D8 A4 32 74 F0 2A CD 76 00 00 00 00   ......2t.*.v....
+[07:19:45.129] [12620]   51C7E0FC: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.131] [12620]   51C7E10C: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.133] [12620] recv-family len=40 id=2E
+[07:19:45.135] [12620] Memory dump Inbound packet at 4FAFDE94:
+[07:19:45.138] [12620]   4FAFDE94: 2E E0 00 0E D8 A4 39 74 F0 2A CD 76 00 00 00 00   ......9t.*.v....
+[07:19:45.140] [12620]   4FAFDEA4: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.142] [12620]   4FAFDEB4: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.144] [12620] recv-family len=40 id=2E
+[07:19:45.146] [12620] Memory dump Inbound packet at 58DCFFAC:
+[07:19:45.148] [12620]   58DCFFAC: 2E E0 00 0E D8 A4 3F 74 F0 2A CD 76 00 00 00 00   ......?t.*.v....
+[07:19:45.149] [12620]   58DCFFBC: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.151] [12620]   58DCFFCC: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.154] [12620] recv-family len=40 id=2E
+[07:19:45.154] [12620] Memory dump Inbound packet at 5903A20C:
+[07:19:45.155] [12620]   5903A20C: 2E E0 00 0E D8 A4 4B 74 F0 2A CD 76 00 00 00 00   ......Kt.*.v....
+[07:19:45.156] [12620]   5903A21C: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.157] [12620]   5903A22C: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.159] [12620] recv-family len=40 id=2E
+[07:19:45.161] [12620] Memory dump Inbound packet at 5ABDA3EC:
+[07:19:45.163] [12620]   5ABDA3EC: 2E E0 00 0E D8 A4 40 74 F0 2A CD 76 00 00 00 00   ......@t.*.v....
+[07:19:45.165] [12620]   5ABDA3FC: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.167] [12620]   5ABDA40C: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.168] [12620] recv-family len=40 id=2E
+[07:19:45.168] [12620] Memory dump Inbound packet at 5D57B0D4:
+[07:19:45.169] [12620]   5D57B0D4: 2E E0 00 0E D8 A4 34 74 F0 2A CD 76 00 00 00 00   ......4t.*.v....
+[07:19:45.172] [12620]   5D57B0E4: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.173] [12620]   5D57B0F4: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.175] [12620] recv-family len=40 id=2E
+[07:19:45.177] [12620] Memory dump Inbound packet at 590F167C:
+[07:19:45.179] [12620]   590F167C: 2E E0 00 0E D8 A4 46 74 F0 2A CD 76 00 00 00 00   ......Ft.*.v....
+[07:19:45.180] [12620]   590F168C: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.180] [12620]   590F169C: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.181] [12620] recv-family len=40 id=2E
+[07:19:45.181] [12620] Memory dump Inbound packet at 5BB75854:
+[07:19:45.184] [12620]   5BB75854: 2E E0 00 0E D8 A4 4C 74 F0 2A CD 76 00 00 00 00   ......Lt.*.v....
+[07:19:45.186] [12620]   5BB75864: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.189] [12620]   5BB75874: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.190] [12620] recv-family len=40 id=2E
+[07:19:45.192] [12620] Memory dump Inbound packet at 60E1E504:
+[07:19:45.194] [12620]   60E1E504: 2E E0 00 0E D8 A4 56 74 F0 2A CD 76 00 00 00 00   ......Vt.*.v....
+[07:19:45.195] [12620]   60E1E514: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.195] [12620]   60E1E524: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.196] [12620] recv-family len=40 id=2E
+[07:19:45.198] [12620] Memory dump Inbound packet at 4E8A75D4:
+[07:19:45.200] [12620]   4E8A75D4: 2E E0 00 0E D8 A4 52 74 F0 2A CD 76 00 00 00 00   ......Rt.*.v....
+[07:19:45.202] [12620]   4E8A75E4: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.204] [12620]   4E8A75F4: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.217] [12620] recv-family len=40 id=2E
+[07:19:45.218] [12620] Memory dump Inbound packet at 57297F14:
+[07:19:45.218] [12620]   57297F14: 2E E0 00 0E D8 A4 58 74 F0 2A CD 76 00 00 00 00   ......Xt.*.v....
+[07:19:45.218] [12620]   57297F24: 0D 2B CD 76 6E 05 70 EB 00 A9 5D 00 20 D7 6B 75   .+.vn.p...]. .ku
+[07:19:45.219] [12620]   57297F34: 00 00 00 00 24 00 00 00                           ....$...........
+[07:19:45.391] [12620] send-family len=3 id=6E
+[07:19:45.394] [12620] Memory dump Outbound packet at 50ECBF74:
+[07:19:45.396] [12620]   50ECBF74: 6E 98 B3                                          n...............
+[07:19:45.399] [12620] send-family len=7 id=2E
+[07:19:45.401] [12620] Memory dump Outbound packet at 50ECBF74:
+[07:19:45.401] [12620]   50ECBF74: 2E E0 00 0E D8 A5 F0                              ................
+[07:19:45.452] [12620] recv-family len=11 id=8C
+[07:19:45.454] [12620] Memory dump Inbound packet at 4DB219FC:
+[07:19:45.456] [12620]   4DB219FC: 8C 0F C5 46 9C 13 89 3C 54 14 3B                  ...F...<T.;.....
+[07:19:45.483] [12620] send-family len=4 id=3C
+[07:19:45.485] [12620] Memory dump Outbound packet at 59AFD0EC:
+[07:19:45.487] [12620]   59AFD0EC: 3C 54 14 3B                                       <T.;............
+[07:19:45.562] [12620] recv-family len=595 id=D9
+[07:19:45.565] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:45.567] [12620]   4DB019F4: D9 77 CC 34 4A 7A AC 6F B3 81 DE 3E CF 87 27 44   .w.4Jz.o...>..'D
+[07:19:45.569] [12620]   4DB01A04: 76 13 D4 77 3B DA 2D 15 17 1C 25 82 A9 11 C4 96   v..w;.-...%.....
+[07:19:45.571] [12620]   4DB01A14: 59 E4 EF 89 C2 AC 93 1B 73 12 6C 3E 37 4C 44 96   Y.......s.l>7LD.
+[07:19:45.575] [12620] send-family len=9 id=E1
+[07:19:45.577] [12620] Memory dump Outbound packet at 5730452C:
+[07:19:45.579] [12620]   5730452C: E1 2C 8F AA 59 11 3D 86 88                        .,..Y.=.........
+[07:19:46.284] [12620] send-family len=73 id=89
+[07:19:46.286] [12620] Memory dump Outbound packet at 4F6EDE7C:
+[07:19:46.288] [12620]   4F6EDE7C: 89 C7 94 CB 5D 38 78 DC 30 9E A5 6B 3B DB 4B D7   ....]8x.0..k;.K.
+[07:19:46.291] [12620]   4F6EDE8C: 40 88 FD 37 6F 7F 9E 83 8F 2B C8 CA 0F 3F 1A AE   @..7o....+...?..
+[07:19:46.293] [12620]   4F6EDE9C: 65 79 09 14 1B AB DA 30 50 5F 56 D1 E7 F9 74 98   ey.....0P_V...t.
+[07:19:46.527] [12620] recv-family len=12419 id=CF
+[07:19:46.531] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:46.535] [12620]   4DB019F4: CF F5 14 22 FD 97 D2 74 13 AA A1 A1 CA 42 1E 56   ..."...t.....B.V
+[07:19:46.538] [12620]   4DB01A04: 4B D3 D9 36 2B 08 D2 A2 71 09 11 C4 96 6A 79 CD   K..6+...q....jy.
+[07:19:46.540] [12620]   4DB01A14: 3B 1C 2E 76 0C D2 86 B4 3A 06 65 9C EF 88 79 D7   ;..v....:.e...y.
+[07:19:47.292] [12620] send-family len=10 id=91
+[07:19:47.295] [12620] Memory dump Outbound packet at 571ED8CC:
+[07:19:47.297] [12620]   571ED8CC: 91 F6 51 D3 AB 65 2E A3 E7 82                     ..Q..e..........
+[07:19:47.299] [12620] send-family len=9 id=96
+[07:19:47.302] [12620] Memory dump Outbound packet at 571ED8CC:
+[07:19:47.303] [12620]   571ED8CC: 96 A0 47 64 EF EE 4B 04 97                        ..Gd..K.........
+[07:19:47.306] [12620] send-family len=64 id=57
+[07:19:47.309] [12620] Memory dump Outbound packet at 53A507CC:
+[07:19:47.311] [12620]   53A507CC: 57 07 9F 72 57 B8 8B 07 F8 6B 6D 77 76 B2 7E D4   W..rW....kmwv.~.
+[07:19:47.314] [12620]   53A507DC: DF 6F 73 81 B6 7B 77 76 97 9F 79 8B 3B 02 19 1D   .os..{wv..y.;...
+[07:19:47.316] [12620]   53A507EC: EF E4 24 24 8B 75 C7 E7 88 30 8B 41 66 D2 0F BC   ..$$.u...0.Af...
+[07:19:47.319] [12620] send-family len=2 id=78
+[07:19:47.321] [12620] Memory dump Outbound packet at 50BDFFEC:
+[07:19:47.324] [12620]   50BDFFEC: 78 E9                                             x...............
+[07:19:47.586] [12620] send-family len=9 id=74
+[07:19:47.588] [12620] Memory dump Outbound packet at 55E1688C:
+[07:19:47.591] [12620]   55E1688C: 74 94 F6 AC 9B 87 A1 7B B1                        t......{........
+[07:19:47.600] [12620] send-family len=10 id=05
+[07:19:47.603] [12620] Memory dump Outbound packet at 5A830AC4:
+[07:19:47.605] [12620]   5A830AC4: 05 72 7E 40 FA 8E A9 55 69 A2                     .r~@...Ui.......
+[07:19:47.638] [12620] send-family len=2 id=C3
+[07:19:47.640] [12620] Memory dump Outbound packet at 54D8F4B4:
+[07:19:47.642] [12620]   54D8F4B4: C3 F1                                             ................
+[07:19:47.651] [12620] send-family len=451 id=64
+[07:19:47.652] [12620] Memory dump Outbound packet at 56801204:
+[07:19:47.652] [12620]   56801204: 64 91 F4 83 0F 0C B5 D9 F6 38 DD 08 0A 71 4D 66   d........8...qMf
+[07:19:47.653] [12620]   56801214: EF DE 6D 3B 27 E8 AB 47 3F 48 CD CC 4A 5C C9 03   ..m;'..G?H..J\..
+[07:19:47.654] [12620]   56801224: A2 4C 0D 60 6A 17 31 F6 D4 F3 0B A7 1F 9E C9 7E   .L.`j.1........~
+[07:19:47.654] [12620] send-family len=5 id=E6
+[07:19:47.655] [12620] Memory dump Outbound packet at 54E4D7C4:
+[07:19:47.656] [12620]   54E4D7C4: E6 0C 38 05 13                                    ..8.............
+[07:19:47.662] [12620] send-family len=12 id=1E
+[07:19:47.663] [12620] Memory dump Outbound packet at 5DCD6494:
+[07:19:47.663] [12620]   5DCD6494: 1E 1D 6C 9A EE 9A 4A 7B 76 04 DC CD               ..l...J{v.......
+[07:19:47.675] [12620] send-family len=5 id=8F
+[07:19:47.675] [12620] Memory dump Outbound packet at 54EA854C:
+[07:19:47.676] [12620]   54EA854C: 8F 1F 58 CC 50                                    ..X.P...........
+[07:19:47.678] [12620] recv-family len=1574 id=D8
+[07:19:47.679] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:47.680] [12620]   4DB019F4: D8 07 F0 7C 25 98 29 D8 B7 3F 37 6F 33 0F 0F 5A   ...|%.)..?7o3..Z
+[07:19:47.681] [12620]   4DB01A04: E4 66 BE 41 33 66 E9 25 0D A5 FF E7 6B 38 24 27   .f.A3f.%....k8$'
+[07:19:47.682] [12620]   4DB01A14: 5E 52 B4 9D D7 16 99 E7 4B 4B B4 C5 A0 46 85 11   ^R......KK...F..
+[07:19:47.685] [12620] send-family len=33 id=B8
+[07:19:47.686] [12620] Memory dump Outbound packet at 5CE07824:
+[07:19:47.687] [12620]   5CE07824: B8 34 48 B2 86 81 C3 EF BA 94 14 16 B6 3D DD 66   .4H..........=.f
+[07:19:47.687] [12620]   5CE07834: 61 62 81 37 23 3C A1 B5 22 A8 36 EB FE 11 F9 98   ab.7#<..".6.....
+[07:19:47.688] [12620]   5CE07844: 45                                                E...............
+[07:19:47.740] [12620] send-family len=15 id=A2
+[07:19:47.741] [12620] Memory dump Outbound packet at 5DBCD56C:
+[07:19:47.741] [12620]   5DBCD56C: A2 60 51 7C BF 4B EF D4 E7 CC 6D 64 59 D8 EB      .`Q|.K....mdY...
+[07:19:47.745] [12620] recv-family len=4593 id=4C
+[07:19:47.745] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:47.746] [12620]   4DB019F4: 4C 98 ED 64 A7 31 77 CE 1A 31 5F D7 74 91 2A 92   L..d.1w..1_.t.*.
+[07:19:47.747] [12620]   4DB01A04: CF A5 A6 AC 7C F1 D0 CD 23 36 54 0D 9C 5D B6 60   ....|...#6T..].`
+[07:19:47.747] [12620]   4DB01A14: 3B 51 C7 D6 8F FF AB B6 5D 7E 43 35 87 E9 9C F0   ;Q......]~C5....
+[07:19:47.793] [12620] recv-family len=6162 id=56
+[07:19:47.794] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:47.794] [12620]   4DB019F4: 56 8F A3 49 08 89 0F C8 B0 0B 1A 09 57 72 38 85   V..I........Wr8.
+[07:19:47.795] [12620]   4DB01A04: 2D 35 96 6A 79 D7 4F 3B DA 2D 15 17 1C 2D 36 1D   -5.jy.O;.-...-6.
+[07:19:47.795] [12620]   4DB01A14: A2 96 A1 72 E7 D6 FE ED D7 01 CB 10 42 38 30 79   ...r........B80y
+[07:19:47.818] [12620] recv-family len=165 id=73
+[07:19:47.819] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:47.820] [12620]   4DB019F4: 73 EC 05 2E 29 9F B4 0D 85 E2 A5 57 53 6F 96 4C   s...)......WSo.L
+[07:19:47.820] [12620]   4DB01A04: E5 47 61 52 AC 9B 6A 11 89 51 3E F5 81 E9 F4 4F   .GaR..j..Q>....O
+[07:19:47.821] [12620]   4DB01A14: B7 90 B6 89 74 B4 1B D6 86 7C BF 14 44 2E 99 98   ....t....|..D...
+[07:19:47.896] [12620] recv-family len=99 id=56
+[07:19:47.897] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:47.897] [12620]   4DB019F4: 56 91 18 36 66 07 46 DF 09 4A D3 73 F0 E8 6F E0   V..6f.F..J.s..o.
+[07:19:47.898] [12620]   4DB01A04: 4F 82 54 F7 17 1C 25 82 A9 11 DA DF CD 19 57 3C   O.T...%.......W<
+[07:19:47.898] [12620]   4DB01A14: D8 A2 C1 66 F4 40 13 42 A0 73 8B 6D B9 68 D4 B1   ...f.@.B.s.m.h..
+[07:19:48.150] [12620] recv-family len=19525 id=4E
+[07:19:48.152] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:48.153] [12620]   4DB019F4: 4E 00 F9 BF 13 11 BE B0 CE 13 9B D7 4F 3B DA 2D   N...........O;.-
+[07:19:48.154] [12620]   4DB01A04: 15 09 55 82 E2 29 62 27 EE 86 0A 34 13 0D 1A 24   ..U..)b'...4...$
+[07:19:48.154] [12620]   4DB01A14: 77 58 E7 F6 93 AA EF 47 BC 24 60 86 42 CC 1A 51   wX.....G.$`.B..Q
+[07:19:48.215] [12620] send-family len=59 id=14
+[07:19:48.216] [12620] Memory dump Outbound packet at 5D661ACC:
+[07:19:48.217] [12620]   5D661ACC: 14 46 3D 98 89 67 4D 87 F7 BF AD 54 61 5B E0 04   .F=..gM....Ta[..
+[07:19:48.217] [12620]   5D661ADC: C9 78 DC 54 A9 61 D7 FB 20 46 93 38 EB 30 4F 2C   .x.T.a.. F.8.0O,
+[07:19:48.218] [12620]   5D661AEC: 44 09 13 39 67 CC 49 B3 62 83 46 18 ED 65 EE 6E   D..9g.I.b.F..e.n
+[07:19:48.219] [12620]   5D661AFC: 1D 08 9B 71 3A A9 33 1D 6D C2 A7                  ...q:.3.m.......
+[07:19:48.222] [12620] recv-family len=117 id=D8
+[07:19:48.222] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:48.222] [12620]   4DB019F4: D8 D5 43 3B A1 50 BF CB AE BC 8C FD 5F 66 F9 3C   ..C;.P......_f.<
+[07:19:48.223] [12620]   4DB01A04: 04 95 51 F0 CB A8 5E 40 60 4C 11 C5 93 89 43 20   ..Q...^@`L....C 
+[07:19:48.223] [12620]   4DB01A14: FB B5 F9 F8 31 4A 97 CB AE BC 8F 78 5F 66 F9 2C   ....1J.....x_f.,
+[07:19:48.259] [12620] send-family len=47 id=70
+[07:19:48.260] [12620] Memory dump Outbound packet at 53ACAEBC:
+[07:19:48.261] [12620]   53ACAEBC: 70 17 5D EC 65 06 42 94 22 66 EC 74 B8 5C 2B 14   p.].e.B."f.t.\+.
+[07:19:48.261] [12620]   53ACAECC: B7 24 3E CF BB D6 C4 26 2D D3 9F BA FC C8 CA 51   .$>....&-......Q
+[07:19:48.262] [12620]   53ACAEDC: 7A 33 AE CE 38 7A 5B EC 20 B5 A0 8D 75 EB F4      z3..8z[. ...u...
+[07:19:48.263] [12620] recv-family len=1504 id=9C
+[07:19:48.264] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:48.264] [12620]   4DB019F4: 9C 59 26 CE 83 84 02 35 15 2A D9 3C A4 EF 2B 79   .Y&....5.*.<..+y
+[07:19:48.265] [12620]   4DB01A04: D9 FC BD EB CA 23 3B 68 3F 17 CE 29 05 76 54 4C   .....#;h?..).vTL
+[07:19:48.265] [12620]   4DB01A14: 1D DB CE 5A C2 A5 14 5C 1B 32 B8 81 16 D3 AB FA   ...Z...\.2......
+[07:19:48.352] [12620] recv-family len=1281 id=9C
+[07:19:48.353] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:48.354] [12620]   4DB019F4: 9C 5B E6 CE 83 84 09 67 0E 3B 35 85 B5 93 1A 35   .[.....g.;5....5
+[07:19:48.354] [12620]   4DB01A04: 61 D9 66 DF DA 5C 6D 6D 0D 41 83 6C D2 0F 16 89   a.f..\mm.A.l....
+[07:19:48.355] [12620]   4DB01A14: 79 1F 52 5B DF 01 15 C7 F9 A2 28 D4 47 AE 88 EA   y.R[......(.G...
+[07:19:48.414] [12620] recv-family len=194 id=A4
+[07:19:48.415] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:48.416] [12620]   4DB019F4: A4 04 0E F9 5C 33 89 68 7E 95 4C 8B 55 2E C5 0D   ....\3.h~.L.U...
+[07:19:48.416] [12620]   4DB01A04: 8F 36 D9 DA 2D 15 17 1C 25 9C E0 B6 A4 16 19 9A   .6..-...%.......
+[07:19:48.417] [12620]   4DB01A14: AE 03 02 2B E1 0E 77 18 94 A5 54 F8 4C 17 95 38   ...+..w...T.L..8
+[07:19:48.649] [12620] send-family len=5 id=F4
+[07:19:48.651] [12620] Memory dump Outbound packet at 551F0F6C:
+[07:19:48.653] [12620]   551F0F6C: F4 00 65 A2 75                                    ..e.u...........
+[07:19:48.653] [12620] recv-family len=40 id=85
+[07:19:48.654] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:48.654] [12620]   4DB019F4: 85 69 FA 9B F4 E3 8B EB 46 61 84 73 66 44 74 B5   .i......Fa.sfDt.
+[07:19:48.655] [12620]   4DB01A04: B7 96 AB 39 4F AD 47 47 72 5E 94 46 31 0E B1 4F   ...9O.GGr^.F1..O
+[07:19:48.655] [12620]   4DB01A14: 3B DA 2D 15 17 1C 25 B6                           ;.-...%.........
+[07:19:48.704] [12620] recv-family len=262 id=DA
+[07:19:48.705] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:48.706] [12620]   4DB019F4: DA 04 A2 32 0B 58 61 7C E1 B7 BB 75 D3 9B 95 78   ...2.Xa|...u...x
+[07:19:48.706] [12620]   4DB01A04: 99 B7 3C 9E 6B 79 41 27 90 EF 0E 1C 67 7F CB 6A   ..<.kyA'....g..j
+[07:19:48.707] [12620]   4DB01A14: 10 53 2A 49 6B 79 E0 0B 8C 8F 74 BC 0F 57 A7 CA   .S*Iky....t..W..
+[07:19:49.145] [12620] recv-family len=98 id=BA
+[07:19:49.148] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:49.148] [12620]   4DB019F4: BA 04 0E F9 5C 0E 75 CA A5 D9 BE F4 5E 07 D2 D6   ....\.u.....^...
+[07:19:49.149] [12620]   4DB01A04: A3 17 42 38 2D 15 17 1C 25 82 B7 58 63 F6 EA 0A   ..B8-...%..Xc...
+[07:19:49.150] [12620]   4DB01A14: 34 36 37 3D E8 B4 A1 1C 6E 90 D6 CF 5C 1E 75 8D   467=....n...\.u.
+[07:19:49.392] [12620] recv-family len=115 id=85
+[07:19:49.393] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:49.394] [12620]   4DB019F4: 85 69 FA 9B F4 E3 8B EB DD 61 F8 E9 BA BA 0D 70   .i.......a.....p
+[07:19:49.395] [12620]   4DB01A04: 9B 68 BB 7F 51 FE 56 61 1F 91 9F 81 8F E3 46 F7   .h..Q.Va......F.
+[07:19:49.396] [12620]   4DB01A14: 94 AE 75 6C F5 1C 25 82 A9 11 C4 88 23 DE B7 CF   ..ul..%.....#...
+[07:19:49.708] [12620] recv-family len=44 id=E0
+[07:19:49.709] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:49.710] [12620]   4DB019F4: E0 1E 0A A8 22 A8 5A DF F4 0D 51 1F 58 09 3C 48   ....".Z...Q.X.<H
+[07:19:49.710] [12620]   4DB01A04: 5B 47 84 AE A7 27 32 40 64 5F 69 9D 2E 0F 28 28   [G...'2@d_i...((
+[07:19:49.711] [12620]   4DB01A14: 95 5F 82 6B A5 3B 08 14 FC 73 99 07               ._.k.;...s......
+[07:19:49.924] [12620] recv-family len=97 id=3C
+[07:19:49.925] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:49.925] [12620]   4DB019F4: 3C 70 EF 0E 64 31 92 88 D9 BE F4 5E 07 D2 D6 A3   <p..d1.....^....
+[07:19:49.926] [12620]   4DB01A04: 17 42 38 2D 15 17 1C 25 82 A7 B3 AD 4E 4A 65 2F   .B8-...%....NJe/
+[07:19:49.926] [12620]   4DB01A14: 91 00 C6 D5 A1 21 DC 2C E0 E6 EA 17 87 69 87 54   .....!.,.....i.T
+[07:19:50.140] [12620] recv-family len=97 id=89
+[07:19:50.141] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:50.142] [12620]   4DB019F4: 89 4C 47 53 F5 6F C3 EF F2 06 21 0C FB C1 78 3B   .LGS.o....!...x;
+[07:19:50.142] [12620]   4DB01A04: 63 A3 CF 15 17 1C 25 82 A9 1F 66 FF B2 59 CB B7   c.....%...f..Y..
+[07:19:50.144] [12620]   4DB01A14: E5 BC 14 E4 7F 71 A5 90 6D 8E 33 30 48 7E 2A 49   .....q..m.30H~*I
+[07:19:50.407] [12620] send-family len=7 id=2E
+[07:19:50.408] [12620] Memory dump Outbound packet at 554F87FC:
+[07:19:50.408] [12620]   554F87FC: 2E E0 00 0E D8 B9 81                              ................
+[07:19:50.422] [12620] recv-family len=116 id=64
+[07:19:50.423] [12620] Memory dump Inbound packet at 4DB019F4:
+[07:19:50.423] [12620]   4DB019F4: 64 9E C2 99 FF DA 2C C1 92 34 D8 9B 29 14 95 04   d.....,..4..)...
+[07:19:50.424] [12620]   4DB01A04: 7A 40 5E 22 3F 54 99 CA 4C 64 CD 7D 9C 4D DE 83   z@^"?T..Ld.}.M..
+[07:19:50.424] [12620]   4DB01A14: 75 59 4D 6E FE 25 82 A9 11 C4 96 64 DB BE 97 1B   uYMn.%.....d....
+[07:19:50.718] [12620] Captured moveComp = 52A79630 (thread 12620)
+[07:19:50.719] [12620] updateState(this=52A79630, dest=5568976C, dir=1, run=1)
+[07:19:50.721] [12620] H_Update safe point - registering Lua helpers
+[07:19:50.722] [12620] Lua or movement state changed; reset registration flags
+[07:19:50.722] [12620] Registering DummyPrint Lua function...
+[07:19:50.746] [12620] send-family len=318 id=41
+[07:19:50.747] [12620] Memory dump Outbound packet at 4F4FDAEC:
+[07:19:50.747] [12620]   4F4FDAEC: 41 8B 82 9C FA D2 D5 24 81 9B 99 63 29 C9 9F 90   A......$...c)...
+[07:19:50.748] [12620]   4F4FDAFC: D2 48 B7 C9 3A B9 23 90 B3 AF 67 E0 9E 12 31 82   .H..:.#...g...1.
+[07:19:50.749] [12620]   4F4FDB0C: DF D6 D3 CF 8E 84 26 5B DE EA C7 FF E3 D3 02 19   ......&[........
+[07:19:51.007] [12620] Closing log file
+

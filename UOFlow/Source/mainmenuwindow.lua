@@ -42,6 +42,7 @@ function MainMenuWindow.Initialize()
 	LabelSetText("MainMenuWindowUOStoreText", GetStringFromTid(MainMenuWindow.TID.UOSTORE) )
 	
 	LabelSetText("MainMenuWindowBugReportItemText", GetStringFromTid(MainMenuWindow.TID.BUG_REPORT) )
+	LabelSetText("MainMenuWindowCharacterSummaryItemText", L"Character Summary" )
 	
 	WindowClearAnchors("MainMenuWindow")
 	WindowAddAnchor("MainMenuWindow", "center", "ResizeWindow", "center", 100, 0)
@@ -91,6 +92,11 @@ function MainMenuWindow.OnOpenBugReportItem()
 	WindowSetShowing("MainMenuWindow",false)
 end
 
+function MainMenuWindow.OnOpenCharacterSummary()
+	ToggleWindowByName( "CharacterSummaryWindow", "", MainMenuWindow.ToggleCharacterSummaryWindow )
+	WindowSetShowing("MainMenuWindow", false)
+end
+
 function MainMenuWindow.OnOpenHelp()
     BroadcastEvent( SystemData.Events.REQUEST_OPEN_HELP_MENU )
 	WindowSetShowing("MainMenuWindow",false)
@@ -107,6 +113,10 @@ end
 
 function MainMenuWindow.ToggleBugReportWindow()	
 	ToggleWindowByName( "BugReportWindow", "", MainMenuWindow.ToggleBugReportWindow )	
+end
+
+function MainMenuWindow.ToggleCharacterSummaryWindow()
+	ToggleWindowByName( "CharacterSummaryWindow", "", MainMenuWindow.ToggleCharacterSummaryWindow )
 end
 
 function MainMenuWindow.OnToggleAgentsSettings()

@@ -1,0 +1,48 @@
+Crash run – movement regression
+================================
+
+Environment
+-----------
+- Client: UOSA.exe (latest patched build from notes)
+- Injector: build\bin\UOWalkPatchDLL.dll (post signature change)
+- UI: UOFlow (custom)
+
+Steps to reproduce
+------------------
+1. Start UOSA via injector (captured in uowalkpatch_debug.log at 07:19:38).
+2. Log into production shard (Catskills) and load into New Haven.
+3. Toggle macro UI and execute script:
+     ```
+     Debug.Print(tostring(walk))
+     walk(1, true)
+     ```
+4. Attempt to walk manually via keyboard and via macro invocation.
+
+Observed behaviour
+------------------
+- Movement hooks install normally; see log lines
+  ```
+  Captured moveComp = 52A79630 (thread 12620)
+  updateState(this=52A79630, dest=5568976C, dir=1, run=1)
+  H_Update safe point - registering Lua helpers
+  Lua or movement state changed; reset registration flags
+  Registering DummyPrint Lua function...
+  ```
+- Registration halts after `DummyPrint`; there is no subsequent
+  “Registering walk” line before the client exits.
+- `_G.walk` is still nil inside the Lua console; DummyPrint appears.
+- Immediate client crash occurs during the same movement tick
+  (inferred from abrupt end of log & Windows crash dialog).
+
+Notes & hypotheses
+------------------
+- `Engine::MovementReady()` gates walk registration; we reset flags but
+  never log “walk function prerequisites missing” nor “Successfully registered walk”
+  in this run.
+- Crash likely triggered in/after `RegisterOurLuaFunctions` call while
+  movement hook is processing (`H_Update` context).
+- Need to inspect tail of `uowalkpatch_debug.log` (07:19:50.746 send 318 bytes id=41) –
+  suspect outgoing packet triggered state change before walk registration completed.
+- Revisit prerequisites: ensure `Engine::MovementReady()` true, Net::IsSendReady() true,
+  and `Engine::PopFastWalkKey()` returns >0 prior to Lua registration.
+

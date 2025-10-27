@@ -272,6 +272,26 @@
           </EventHandlers>
         </Window>        
 
+        <HorizontalResizeImage name="$parentDivider7" inherits="MenuSmallDivider" >
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentBugReportItem">
+              <AbsPoint x="-3" y="0" />
+            </Anchor>
+          </Anchors>
+        </HorizontalResizeImage>
+
+        <!-- Character Summary -->
+        <Window name="$parentCharacterSummaryItem" inherits="MenuItemTemplate" >
+          <Anchors>
+            <Anchor point="bottom" relativePoint="top" relativeTo="$parentDivider7">
+              <AbsPoint x="3" y="0" />
+            </Anchor>
+          </Anchors>
+          <EventHandlers>
+            <EventHandler event="OnLButtonUp" function="MainMenuWindow.OnOpenCharacterSummary" />
+          </EventHandlers>
+        </Window>
+
       </Windows>
     </Window>
 
