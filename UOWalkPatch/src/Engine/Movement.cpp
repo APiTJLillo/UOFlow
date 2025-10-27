@@ -47,7 +47,7 @@ static constexpr int kStepDx[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 static constexpr int kStepDy[8] = {-1, -1, 0, 1, 1, 1, 0, -1};
 static constexpr DWORD kPendingWindowMs = 500;
 static constexpr size_t kMaxTrackers = 96;
-static constexpr size_t kDestCopySize = 0x40;
+static constexpr size_t kDestCopySize = 0x200;
 static constexpr int kPtrDiffLogLimit = 128;
 static constexpr int kIndexSampleLimit = 32;
 static constexpr size_t kQueueEntrySize = 0x10;
@@ -266,7 +266,18 @@ static bool EnqueueViaUpdate(int dir, bool shouldRun, int stepScale)
               "SendWalk before enqueue (dir=%d run=%d)", dir, shouldRun ? 1 : 0);
     LogQueueState(beforeTag);
 
-    g_origUpdate(g_moveComp, scratch, static_cast<uint32_t>(dir), shouldRun ? 1 : 0);
+    bool updateSucceeded = false;
+    __try {
+        g_origUpdate(g_moveComp, scratch, static_cast<uint32_t>(dir), shouldRun ? 1 : 0);
+        updateSucceeded = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("EnqueueViaUpdate: exception invoking original update");
+        updateSucceeded = false;
+    }
+
+    if (!updateSucceeded)
+        return false;
 
     char afterTag[64];
     sprintf_s(afterTag, sizeof(afterTag),
@@ -361,6 +372,12 @@ uint32_t PopFastWalkKey() {
     if (g_fwEmptyWarnBudget > 0 && InterlockedDecrement(&g_fwEmptyWarnBudget) >= 0) {
         WriteRawLog("FastWalk queue empty on PopFastWalkKey");
     }
+    return 0;
+}
+
+uint32_t PeekFastWalkKey() {
+    if (g_fwTop > 0)
+        return g_fastWalkKeys[g_fwTop - 1];
     return 0;
 }
 
@@ -882,8 +899,16 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
 } // namespace
 
 extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
+    if (!Engine::MovementReady()) {
+        WriteRawLog("SendWalk prerequisites missing: movement not ready");
+        return false;
+    }
     if (!Net::IsSendReady()) {
-        WriteRawLog("SendWalk prerequisites missing");
+        WriteRawLog("SendWalk prerequisites missing: network layer not ready");
+        return false;
+    }
+    if (Engine::FastWalkQueueDepth() <= 0) {
+        WriteRawLog("SendWalk no fast-walk key available");
         return false;
     }
 
@@ -899,21 +924,36 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     pkt[0] = 0x02;
     pkt[1] = static_cast<uint8_t>(normalizedDir) | (shouldRun ? 0x80 : 0);
     static uint8_t seq = 0;
-    if (++seq == 0)
-        seq = 1;
-    pkt[2] = seq;
+    uint8_t nextSeq = static_cast<uint8_t>(seq + 1);
+    if (nextSeq == 0)
+        nextSeq = 1;
+    pkt[2] = nextSeq;
 
-    uint32_t key = Engine::PopFastWalkKey();
+    uint32_t key = Engine::PeekFastWalkKey();
     if (!key) {
-        WriteRawLog("SendWalk no fast-walk key");
+        WriteRawLog("SendWalk no fast-walk key available (peek)");
         return false;
     }
 
     *reinterpret_cast<uint32_t*>(pkt + 3) = htonl(key);
-    if (!Net::SendPacketRaw(pkt, sizeof(pkt))) {
+
+    bool sendOk = false;
+    __try {
+        sendOk = Net::SendPacketRaw(pkt, sizeof(pkt));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("SendWalk: exception during Net::SendPacketRaw");
+        sendOk = false;
+    }
+
+    if (!sendOk) {
         WriteRawLog("SendWalk send failed");
         return false;
     }
+
+    Engine::PopFastWalkKey();
+    seq = nextSeq;
+    WriteRawLog("SendWalk send succeeded");
 
     InterlockedExchange(&g_pendingDir, normalizedDir);
     InterlockedExchange(&g_pendingRunFlag, shouldRun ? 2 : 1);

@@ -1762,12 +1762,28 @@ void ShutdownSendBuilder()
 
 bool SendPacketRaw(const void* bytes, int len)
 {
-    if (len > 0 && g_sendPacket && g_netMgr)
-    {
-        g_sendPacket(g_netMgr, bytes, len);
-        return true;
+    if (len <= 0 || !bytes)
+        return false;
+
+    if (!g_sendPacket || !g_netMgr)
+        return false;
+
+    void* vtbl = nullptr;
+    if (!SafeCopy(&vtbl, g_netMgr, sizeof(vtbl)) || !vtbl) {
+        WriteRawLog("SendPacketRaw: net manager pointer not readable");
+        return false;
     }
-    return false;
+
+    bool sent = false;
+    __try {
+        g_sendPacket(g_netMgr, bytes, len);
+        sent = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("SendPacketRaw: exception while invoking client SendPacket");
+        sent = false;
+    }
+    return sent;
 }
 
 bool IsSendReady()
