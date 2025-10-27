@@ -266,6 +266,26 @@ static void FormatDiscoverySlotInfo(char* dest,
         sprintf_s(dest, destSize, "%p@+0x%02zx", pointerValue, offsetValue);
 }
 
+static bool IsExecutableSendContext(void* candidate, void** outVtbl = nullptr, void** outEntry0 = nullptr)
+{
+    if (!candidate)
+        return false;
+
+    void* vtbl = nullptr;
+    if (!SafeCopy(&vtbl, candidate, sizeof(vtbl)) || !vtbl)
+        return false;
+
+    void* entry0 = nullptr;
+    if (!SafeCopy(&entry0, vtbl, sizeof(entry0)))
+        return false;
+
+    if (outVtbl)
+        *outVtbl = vtbl;
+    if (outEntry0)
+        *outEntry0 = entry0;
+    return IsExecutableCodeAddress(entry0);
+}
+
 static void CaptureSendContext(void* candidate, const char* sourceTag)
 {
     if (!candidate)
@@ -273,8 +293,37 @@ static void CaptureSendContext(void* candidate, const char* sourceTag)
     if (!sourceTag)
         sourceTag = "?";
 
+    void* vtbl = nullptr;
+    void* entry0 = nullptr;
+    bool exec = IsExecutableSendContext(candidate, &vtbl, &entry0);
+    if (!exec) {
+        static volatile LONG s_skipLogBudget = 16;
+        if (s_skipLogBudget > 0 && InterlockedDecrement(&s_skipLogBudget) >= 0) {
+            char warn[192];
+            sprintf_s(warn, sizeof(warn),
+                      "SendCtx skip via %s candidate=%p vtbl=%p entry0=%p",
+                      sourceTag,
+                      candidate,
+                      vtbl,
+                      entry0);
+            WriteRawLog(warn);
+        }
+        return;
+    }
+
     if (g_sendCtx == candidate)
         return;
+
+    if (g_sendCtx) {
+        void* existingVtbl = nullptr;
+        void* existingEntry0 = nullptr;
+        bool existingExec = IsExecutableSendContext(g_sendCtx, &existingVtbl, &existingEntry0);
+        if (!existingExec) {
+            g_sendCtx = nullptr;
+        } else if (existingExec && existingVtbl == vtbl && existingEntry0 == entry0) {
+            return;
+        }
+    }
 
     char buf[160];
     if (!g_sendCtx) {
@@ -569,6 +618,11 @@ static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder)
     {
         WriteRawLog("Hook_SendBuilder: builder structure unreadable or length invalid");
         return fpSendBuilder ? fpSendBuilder(thisPtr, builder) : nullptr;
+    }
+
+    static volatile LONG s_structDumpBudget = 8;
+    if (s_structDumpBudget > 0 && InterlockedDecrement(&s_structDumpBudget) >= 0) {
+        DumpMemory("SendBuilder struct snapshot", builder, 0x20);
     }
 
     if (plainPtr && len > 0)
@@ -1851,10 +1905,44 @@ bool SendPacketRaw(const void* bytes, int len)
     if (len <= 0 || !bytes)
         return false;
 
+    if (fpSendBuilder && g_sendCtx)
+    {
+        struct BuilderStub
+        {
+            void* payload;
+            int length;
+        };
+        BuilderStub stub{};
+        stub.payload = const_cast<void*>(bytes);
+        stub.length = len;
+
+        bool builderSent = false;
+        __try {
+            fpSendBuilder(g_sendCtx, &stub);
+            builderSent = true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            builderSent = false;
+            WriteRawLog("SendPacketRaw: SendBuilder dispatch threw");
+        }
+
+        if (builderSent) {
+            static volatile LONG s_successLogBudgetBuilder = 64;
+            if (s_successLogBudgetBuilder > 0 && InterlockedDecrement(&s_successLogBudgetBuilder) >= 0) {
+                char status[160];
+                sprintf_s(status, sizeof(status),
+                          "SendPacketRaw via builder succeeded len=%d", len);
+                WriteRawLog(status);
+            }
+            return true;
+        }
+        // fall back to direct path if builder failed
+    }
+
     if (!g_sendPacket)
         return false;
 
-    void* sendCtx = g_netMgr ? g_netMgr : g_sendCtx;
+    void* sendCtx = g_sendCtx ? g_sendCtx : g_netMgr;
     if (!sendCtx)
         return false;
 

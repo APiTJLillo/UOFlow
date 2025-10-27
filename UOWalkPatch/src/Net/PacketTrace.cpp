@@ -22,6 +22,7 @@ static int (WSAAPI* g_real_WSARecv)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, L
 static int (WSAAPI* g_real_WSARecvFrom)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, sockaddr*, LPINT, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) = nullptr;
 static bool shouldLogTraces = true;
+static volatile LONG g_fastWalkScanMissBudget = 8;
 
 static uint32_t ExtractFastWalkKey0x2E(const char* buf, int len)
 {
@@ -42,6 +43,74 @@ static void LogFastWalkReceipt(const char* source, uint32_t key)
     if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
         Logf("FastWalk key received via %s key=%08X depth=%d", source, key, Engine::FastWalkQueueDepth());
     }
+}
+
+static bool HandleFastWalkKey(uint32_t key, const char* source)
+{
+    if (!key)
+        return false;
+
+    Engine::RecordObservedFastWalkKey(key);
+
+    if (Engine::PeekFastWalkKey() == key)
+        return false;
+
+    Engine::PushFastWalkKey(key);
+    LogFastWalkReceipt(source, key);
+
+    char msg[96];
+    sprintf_s(msg, sizeof(msg), "FastWalk(%s) key=%08X depth=%d",
+              source ? source : "?",
+              key,
+              Engine::FastWalkQueueDepth());
+    WriteRawLog(msg);
+    return true;
+}
+
+static bool ScanFastWalkPayload(const char* source, const uint8_t* data, size_t len)
+{
+    if (!data || len < 4)
+        return false;
+
+    // Pattern 1: embedded movement packet (0x02 [flags] [seq] key)
+    for (size_t i = 0; i + 7 <= len; ++i) {
+        if (data[i] == 0x02 && (data[i + 1] & 0x80)) {
+            uint32_t key = (static_cast<uint32_t>(data[i + 3]) << 24) |
+                           (static_cast<uint32_t>(data[i + 4]) << 16) |
+                           (static_cast<uint32_t>(data[i + 5]) << 8) |
+                           static_cast<uint32_t>(data[i + 6]);
+            if (HandleFastWalkKey(key, source))
+                return true;
+        }
+    }
+
+    // Pattern 2: big-endian key scan (high byte 0x01)
+    for (size_t i = 0; i + 4 <= len; ++i) {
+        uint32_t key = (static_cast<uint32_t>(data[i]) << 24) |
+                       (static_cast<uint32_t>(data[i + 1]) << 16) |
+                       (static_cast<uint32_t>(data[i + 2]) << 8) |
+                       static_cast<uint32_t>(data[i + 3]);
+        if ((key & 0xFF000000u) == 0x01000000u && HandleFastWalkKey(key, source))
+            return true;
+
+        // Pattern 3: little-endian scan
+        uint32_t keyLe = static_cast<uint32_t>(data[i]) |
+                         (static_cast<uint32_t>(data[i + 1]) << 8) |
+                         (static_cast<uint32_t>(data[i + 2]) << 16) |
+                         (static_cast<uint32_t>(data[i + 3]) << 24);
+        if ((keyLe & 0xFF000000u) == 0x01000000u && HandleFastWalkKey(keyLe, source))
+            return true;
+    }
+
+    LONG remaining = InterlockedCompareExchange(&g_fastWalkScanMissBudget, 0, 0);
+    if (remaining > 0 && InterlockedDecrement(&g_fastWalkScanMissBudget) >= 0) {
+        Logf("FastWalk scan miss (%s) len=%zu", source ? source : "?", static_cast<size_t>(len));
+        size_t dumpLen = len < 32 ? len : 32;
+        if (dumpLen)
+            DumpMemory("FastWalk scan sample", const_cast<uint8_t*>(data), static_cast<int>(dumpLen));
+    }
+
+    return false;
 }
 
 static void TraceOutbound(const char* buf, int len)
@@ -66,13 +135,27 @@ static void TraceInbound(const char* buf, int len)
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Inbound packet", (void*)buf, dumpLen);
-    if (len >= 7 && (unsigned char)buf[0] == 0x2E) {
+
+    unsigned char opcode = len > 0 ? static_cast<unsigned char>(buf[0]) : 0;
+
+    if (opcode == 0x2E && len >= 7) {
         uint32_t key = ExtractFastWalkKey0x2E(buf, len);
-        if (key)
-            Engine::RecordObservedFastWalkKey(key);
+        if (!HandleFastWalkKey(key, "0x2E") && shouldLogTraces) {
+            if (key == 0) {
+                Logf("FastWalk 0x2E packet ignored len=%d", len);
+            } else {
+                Logf("FastWalk 0x2E duplicate key=%08X len=%d", key, len);
+            }
+        }
+    } else if ((opcode == 0x7B || opcode == 0x73) && len > 1) {
+        const uint8_t* payload = reinterpret_cast<const uint8_t*>(buf + 1);
+        size_t payloadLen = static_cast<size_t>(len - 1);
+        ScanFastWalkPayload(opcode == 0x7B ? "0x7B" : "0x73", payload, payloadLen);
     }
+
     Net::PollSendBuilder();
-    if ((unsigned char)buf[0] == 0xB8)
+
+    if (opcode == 0xB8)
     {
         uint32_t key = 0;
         if (len >= 5) {
@@ -80,17 +163,15 @@ static void TraceInbound(const char* buf, int len)
         } else if (len >= 3) {
             key = ntohs(*(const uint16_t*)(buf + 1));
         }
-        if (key != 0) {
-            Engine::PushFastWalkKey(key);
-            LogFastWalkReceipt("0xB8", key);
-            char msg[96];
-            sprintf_s(msg, sizeof(msg), "FastWalk(0xB8) key=%08X len=%d", key, len);
-            WriteRawLog(msg);
-        } else if (shouldLogTraces) {
-            Logf("FastWalk 0xB8 packet ignored len=%d", len);
+        if (!HandleFastWalkKey(key, "0xB8") && shouldLogTraces) {
+            if (key == 0) {
+                Logf("FastWalk 0xB8 packet ignored len=%d", len);
+            } else {
+                Logf("FastWalk 0xB8 duplicate key=%08X", key);
+            }
         }
     }
-    else if (len >= 6 && (unsigned char)buf[0] == 0xBF)
+    else if (opcode == 0xBF && len >= 6)
     {
         uint16_t sub = ((unsigned char)buf[3] << 8) | (unsigned char)buf[4];
         const uint8_t* payload = (const uint8_t*)buf + 5;
@@ -101,22 +182,14 @@ static void TraceInbound(const char* buf, int len)
             for (uint8_t i = 0; i < count && (p + 4 <= (const uint8_t*)buf + len); ++i)
             {
                 uint32_t key = ntohl(*(uint32_t*)p);
-                Engine::PushFastWalkKey(key);
-                LogFastWalkReceipt("0xBF:01", key);
-                char msg[96];
-                sprintf_s(msg, sizeof(msg), "FastWalk(0xBF:01) key=%08X", key);
-                WriteRawLog(msg);
+                HandleFastWalkKey(key, "0xBF:01");
                 p += 4;
             }
         }
         else if (sub == 0x02 && len >= 5 + 1 + 4)
         {
             uint32_t key = ntohl(*(uint32_t*)(payload + 1));
-            Engine::PushFastWalkKey(key);
-            LogFastWalkReceipt("0xBF:02", key);
-            char msg[96];
-            sprintf_s(msg, sizeof(msg), "FastWalk(0xBF:02) key=%08X", key);
-            WriteRawLog(msg);
+            HandleFastWalkKey(key, "0xBF:02");
         }
     }
 }
