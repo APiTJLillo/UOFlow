@@ -4,6 +4,7 @@
 #include <minhook.h>
 #include <cstdio>
 #include <cstdint>
+#include <atomic>
 
 #include "Core/Logging.hpp"
 #include "Core/Utils.hpp"
@@ -21,10 +22,42 @@ static int (WSAAPI* g_real_recv)(SOCKET, char*, int, int) = nullptr;
 static int (WSAAPI* g_real_WSARecv)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_WSARecvFrom)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, sockaddr*, LPINT, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) = nullptr;
+static int (WSAAPI* g_real_closesocket)(SOCKET) = nullptr;
 static bool shouldLogTraces = true;
 static volatile LONG g_fastWalkScanMissBudget = 8;
 static SOCKET g_lastSocket = INVALID_SOCKET;
 static SOCKET g_lastLoggedSocket = INVALID_SOCKET;
+static std::atomic<SOCKET> g_preferredSocket{INVALID_SOCKET};
+
+static void NoteSocketActivity(SOCKET s)
+{
+    if (s == INVALID_SOCKET)
+        return;
+    g_lastSocket = s;
+    SOCKET expected = INVALID_SOCKET;
+    g_preferredSocket.compare_exchange_strong(expected, s);
+}
+
+static void UpdatePreferredSocket(SOCKET s)
+{
+    if (s == INVALID_SOCKET) {
+        g_preferredSocket.store(INVALID_SOCKET);
+        return;
+    }
+    g_preferredSocket.store(s);
+    g_lastSocket = s;
+}
+
+static void HandleSocketInvalidated(SOCKET s)
+{
+    if (s == INVALID_SOCKET)
+        return;
+    SOCKET expected = s;
+    g_preferredSocket.compare_exchange_strong(expected, INVALID_SOCKET);
+    if (g_lastSocket == s)
+        g_lastSocket = INVALID_SOCKET;
+    Engine::OnSocketClosed(s);
+}
 
 static uint32_t ExtractFastWalkKey0x2E(const char* buf, int len)
 {
@@ -37,39 +70,46 @@ static uint32_t ExtractFastWalkKey0x2E(const char* buf, int len)
     return (b3 << 24) | (b4 << 16) | (b5 << 8) | b6;
 }
 
-static void LogFastWalkReceipt(const char* source, uint32_t key)
+static void LogFastWalkReceipt(SOCKET socket, const char* source, uint32_t key)
 {
     static volatile LONG s_budget = 32;
     if (!source)
         source = "?";
     if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
-        Logf("FastWalk key received via %s key=%08X depth=%d", source, key, Engine::FastWalkQueueDepth());
+        Logf("FastWalk key received via %s socket=%p key=%08X depth=%d",
+             source,
+             reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+             key,
+             Engine::FastWalkQueueDepth(socket));
     }
 }
 
-static bool HandleFastWalkKey(uint32_t key, const char* source)
+static bool HandleFastWalkKey(SOCKET socket, uint32_t key, const char* source)
 {
     if (!key)
         return false;
 
     Engine::RecordObservedFastWalkKey(key);
 
-    if (Engine::PeekFastWalkKey() == key)
+    if (Engine::PeekFastWalkKey(socket) == key)
         return false;
 
-    Engine::PushFastWalkKey(key);
-    LogFastWalkReceipt(source, key);
+    Engine::PushFastWalkKey(socket, key);
+    Engine::SetActiveFastWalkSocket(socket);
+    Net::SetPreferredSocket(socket);
+    LogFastWalkReceipt(socket, source, key);
 
-    char msg[96];
-    sprintf_s(msg, sizeof(msg), "FastWalk(%s) key=%08X depth=%d",
+    char msg[128];
+    sprintf_s(msg, sizeof(msg), "FastWalk(%s) socket=%p key=%08X depth=%d",
               source ? source : "?",
+              reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
               key,
-              Engine::FastWalkQueueDepth());
+              Engine::FastWalkQueueDepth(socket));
     WriteRawLog(msg);
     return true;
 }
 
-static bool ScanFastWalkPayload(const char* source, const uint8_t* data, size_t len)
+static bool ScanFastWalkPayload(SOCKET socket, const char* source, const uint8_t* data, size_t len)
 {
     if (!data || len < 4)
         return false;
@@ -81,7 +121,7 @@ static bool ScanFastWalkPayload(const char* source, const uint8_t* data, size_t 
                            (static_cast<uint32_t>(data[i + 4]) << 16) |
                            (static_cast<uint32_t>(data[i + 5]) << 8) |
                            static_cast<uint32_t>(data[i + 6]);
-            if (HandleFastWalkKey(key, source))
+            if (HandleFastWalkKey(socket, key, source))
                 return true;
         }
     }
@@ -92,7 +132,7 @@ static bool ScanFastWalkPayload(const char* source, const uint8_t* data, size_t 
                        (static_cast<uint32_t>(data[i + 1]) << 16) |
                        (static_cast<uint32_t>(data[i + 2]) << 8) |
                        static_cast<uint32_t>(data[i + 3]);
-        if ((key & 0xFF000000u) == 0x01000000u && HandleFastWalkKey(key, source))
+        if ((key & 0xFF000000u) == 0x01000000u && HandleFastWalkKey(socket, key, source))
             return true;
 
         // Pattern 3: little-endian scan
@@ -100,7 +140,7 @@ static bool ScanFastWalkPayload(const char* source, const uint8_t* data, size_t 
                          (static_cast<uint32_t>(data[i + 1]) << 8) |
                          (static_cast<uint32_t>(data[i + 2]) << 16) |
                          (static_cast<uint32_t>(data[i + 3]) << 24);
-        if ((keyLe & 0xFF000000u) == 0x01000000u && HandleFastWalkKey(keyLe, source))
+        if ((keyLe & 0xFF000000u) == 0x01000000u && HandleFastWalkKey(socket, keyLe, source))
             return true;
     }
 
@@ -117,8 +157,7 @@ static bool ScanFastWalkPayload(const char* source, const uint8_t* data, size_t 
 
 static void TraceOutbound(SOCKET s, const char* buf, int len)
 {
-    if (s != INVALID_SOCKET)
-        g_lastSocket = s;
+    NoteSocketActivity(s);
     if (s != INVALID_SOCKET && s != g_lastLoggedSocket) {
         g_lastLoggedSocket = s;
         char msg[128];
@@ -138,8 +177,9 @@ static void TraceOutbound(SOCKET s, const char* buf, int len)
     Net::PollSendBuilder();
 }
 
-static void TraceInbound(const char* buf, int len)
+static void TraceInbound(SOCKET s, const char* buf, int len)
 {
+    NoteSocketActivity(s);
     if(shouldLogTraces)
         Logf("recv-family len=%d id=%02X", len, (unsigned char)buf[0]);
     int dumpLen = len > 64 ? 64 : len;
@@ -150,7 +190,7 @@ static void TraceInbound(const char* buf, int len)
 
     if (opcode == 0x2E && len >= 7) {
         uint32_t key = ExtractFastWalkKey0x2E(buf, len);
-        if (!HandleFastWalkKey(key, "0x2E") && shouldLogTraces) {
+        if (!HandleFastWalkKey(s, key, "0x2E") && shouldLogTraces) {
             if (key == 0) {
                 Logf("FastWalk 0x2E packet ignored len=%d", len);
             } else {
@@ -160,10 +200,32 @@ static void TraceInbound(const char* buf, int len)
     } else if ((opcode == 0x7B || opcode == 0x73) && len > 1) {
         const uint8_t* payload = reinterpret_cast<const uint8_t*>(buf + 1);
         size_t payloadLen = static_cast<size_t>(len - 1);
-        ScanFastWalkPayload(opcode == 0x7B ? "0x7B" : "0x73", payload, payloadLen);
+        ScanFastWalkPayload(s, opcode == 0x7B ? "0x7B" : "0x73", payload, payloadLen);
     }
 
     Net::PollSendBuilder();
+
+    if (opcode == 0x22 && len >= 3) {
+        uint8_t seq = static_cast<uint8_t>(buf[1]);
+        uint8_t status = static_cast<uint8_t>(buf[2]);
+        char ackBuf[128];
+        sprintf_s(ackBuf, sizeof(ackBuf),
+                  "MovementAck socket=%p seq=%u status=%u",
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
+                  static_cast<unsigned>(seq),
+                  static_cast<unsigned>(status));
+        WriteRawLog(ackBuf);
+        Net::SetPreferredSocket(s);
+    } else if (opcode == 0x21 && len >= 2) {
+        uint8_t seq = static_cast<uint8_t>(buf[1]);
+        char rejBuf[128];
+        sprintf_s(rejBuf, sizeof(rejBuf),
+                  "MovementReject socket=%p seq=%u",
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
+                  static_cast<unsigned>(seq));
+        WriteRawLog(rejBuf);
+        Net::SetPreferredSocket(s);
+    }
 
     if (opcode == 0xB8)
     {
@@ -173,7 +235,7 @@ static void TraceInbound(const char* buf, int len)
         } else if (len >= 3) {
             key = ntohs(*(const uint16_t*)(buf + 1));
         }
-        if (!HandleFastWalkKey(key, "0xB8") && shouldLogTraces) {
+        if (!HandleFastWalkKey(s, key, "0xB8") && shouldLogTraces) {
             if (key == 0) {
                 Logf("FastWalk 0xB8 packet ignored len=%d", len);
             } else {
@@ -192,14 +254,14 @@ static void TraceInbound(const char* buf, int len)
             for (uint8_t i = 0; i < count && (p + 4 <= (const uint8_t*)buf + len); ++i)
             {
                 uint32_t key = ntohl(*(uint32_t*)p);
-                HandleFastWalkKey(key, "0xBF:01");
+                HandleFastWalkKey(s, key, "0xBF:01");
                 p += 4;
             }
         }
         else if (sub == 0x02 && len >= 5 + 1 + 4)
         {
             uint32_t key = ntohl(*(uint32_t*)(payload + 1));
-            HandleFastWalkKey(key, "0xBF:02");
+            HandleFastWalkKey(s, key, "0xBF:02");
         }
     }
 }
@@ -260,7 +322,7 @@ static int WSAAPI H_Recv(
 {
     int rc = g_real_recv ? g_real_recv(s, buf, len, flags) : 0;
     if (rc > 0)
-        TraceInbound(buf, rc);
+        TraceInbound(s, buf, rc);
     return rc;
 }
 
@@ -275,7 +337,7 @@ static int WSAAPI H_WSARecv(
 {
     int rc = g_real_WSARecv ? g_real_WSARecv(s, wsa, cnt, recvd, flags, ov, cr) : 0;
     if (rc == 0 && cnt && recvd && *recvd)
-        TraceInbound(wsa[0].buf, (int)*recvd);
+        TraceInbound(s, wsa[0].buf, (int)*recvd);
     return rc;
 }
 
@@ -292,7 +354,7 @@ static int WSAAPI H_WSARecvFrom(
 {
     int rc = g_real_WSARecvFrom ? g_real_WSARecvFrom(s, wsa, cnt, recvd, flags, from, fromlen, ov, cr) : 0;
     if (rc == 0 && cnt && recvd && *recvd)
-        TraceInbound(wsa[0].buf, (int)*recvd);
+        TraceInbound(s, wsa[0].buf, (int)*recvd);
     return rc;
 }
 
@@ -306,7 +368,15 @@ static int WSAAPI H_RecvFrom(
 {
     int rc = g_real_recvfrom ? g_real_recvfrom(s, buf, len, flags, from, fromlen) : 0;
     if (rc > 0)
-        TraceInbound(buf, rc);
+        TraceInbound(s, buf, rc);
+    return rc;
+}
+
+static int WSAAPI H_CloseSocket(SOCKET s)
+{
+    int rc = g_real_closesocket ? g_real_closesocket(s) : 0;
+    if (rc == 0)
+        HandleSocketInvalidated(s);
     return rc;
 }
 
@@ -317,10 +387,11 @@ static void InstallSendHooks()
     if (!ws) return;
     struct HookDef { const char* name; void* hook; void** tramp; };
     HookDef tbl[] = {
-        {"send",      (void*)H_Send,      (void**)&g_real_send},
-        {"WSASend",   (void*)H_WSASend,   (void**)&g_real_WSASend},
-        {"WSASendTo", (void*)H_WSASendTo, (void**)&g_real_WSASendTo},
-        {"sendto",    (void*)H_SendTo,    (void**)&g_real_sendto},
+        {"send",        (void*)H_Send,        (void**)&g_real_send},
+        {"WSASend",     (void*)H_WSASend,     (void**)&g_real_WSASend},
+        {"WSASendTo",   (void*)H_WSASendTo,   (void**)&g_real_WSASendTo},
+        {"sendto",      (void*)H_SendTo,      (void**)&g_real_sendto},
+        {"closesocket", (void*)H_CloseSocket, (void**)&g_real_closesocket},
     };
     for (auto& e : tbl)
     {
@@ -356,7 +427,8 @@ static void RemoveHooks()
     if (!ws) return;
     const char* names[] = {
         "send", "WSASend", "WSASendTo", "sendto",
-        "recv", "WSARecv", "WSARecvFrom", "recvfrom"
+        "recv", "WSARecv", "WSARecvFrom", "recvfrom",
+        "closesocket"
     };
     for (const char* name : names)
     {
@@ -384,12 +456,27 @@ void ShutdownPacketTrace()
 
 SOCKET GetLastSocket()
 {
+    SOCKET preferred = g_preferredSocket.load();
+    if (preferred != INVALID_SOCKET)
+        return preferred;
     return g_lastSocket;
+}
+
+SOCKET GetPreferredSocket()
+{
+    return g_preferredSocket.load();
 }
 
 void InvalidateLastSocket()
 {
-    g_lastSocket = INVALID_SOCKET;
+    SOCKET last = g_lastSocket;
+    HandleSocketInvalidated(last);
 }
+
+void SetPreferredSocket(SOCKET s)
+{
+    UpdatePreferredSocket(s);
+}
+
 
 } // namespace Net

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <winsock2.h>
 #include <windows.h>
 
 // Declare g_needWalkReg so it's accessible to other translation units
@@ -24,10 +25,16 @@ namespace Engine {
         int fastWalkDepth;
     };
 
-    void PushFastWalkKey(uint32_t key);
+    void PushFastWalkKey(SOCKET socket, uint32_t key);
     uint32_t PopFastWalkKey();
+    uint32_t PopFastWalkKey(SOCKET socket);
     uint32_t PeekFastWalkKey();
+    uint32_t PeekFastWalkKey(SOCKET socket);
     int FastWalkQueueDepth();
+    int FastWalkQueueDepth(SOCKET socket);
+    SOCKET GetActiveFastWalkSocket();
+    void SetActiveFastWalkSocket(SOCKET socket);
+    void OnSocketClosed(SOCKET socket);
     void RecordObservedFastWalkKey(uint32_t key);
 
     bool MovementReady();

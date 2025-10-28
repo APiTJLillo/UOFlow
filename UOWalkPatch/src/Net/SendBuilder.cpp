@@ -218,9 +218,11 @@ struct SendPacketAttemptContext {
 
 static thread_local SendPacketAttemptContext g_lastSendAttempt{};
 
-static bool TrySendViaSocket(const void* bytes, int len, const char* tag)
+static bool TrySendViaSocket(const void* bytes, int len, const char* tag, SOCKET preferredSocket)
 {
-    SOCKET sock = Net::GetLastSocket();
+    SOCKET sock = preferredSocket;
+    if (sock == INVALID_SOCKET)
+        sock = Net::GetLastSocket();
     if (sock == INVALID_SOCKET)
         return false;
 
@@ -1939,15 +1941,15 @@ void ShutdownSendBuilder()
     g_lastManagerScanTick = 0;
 }
 
-bool SendPacketRaw(const void* bytes, int len)
+bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint)
 {
     if (len <= 0 || !bytes)
         return false;
 
-    if (TrySendViaSocket(bytes, len, "SendPacketRaw via socket (preferred)"))
+    if (TrySendViaSocket(bytes, len, "SendPacketRaw via socket (preferred)", socketHint))
         return true;
     if (!g_sendPacket)
-        return TrySendViaSocket(bytes, len, "SendPacketRaw via socket (no sendCtx)");
+        return TrySendViaSocket(bytes, len, "SendPacketRaw via socket (no sendCtx)", socketHint);
 
     void* sendCtx = g_sendCtx ? g_sendCtx : g_netMgr;
     if (!sendCtx)
@@ -2010,7 +2012,7 @@ bool SendPacketRaw(const void* bytes, int len)
             WriteRawLog(status);
         }
     }
-    else if (TrySendViaSocket(bytes, len, "SendPacketRaw via socket fallback")) {
+    else if (TrySendViaSocket(bytes, len, "SendPacketRaw via socket fallback", socketHint)) {
         return true;
     }
     return sent;

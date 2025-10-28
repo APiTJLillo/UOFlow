@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cstddef>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <unordered_map>
 
 #include "Core/Logging.hpp"
 #include "Core/Utils.hpp"
@@ -30,8 +33,10 @@ static UpdateState_t g_origUpdate = nullptr;
 static volatile LONG g_haveMoveComp = 0;
 static long g_updateLogCount = 0;
 static thread_local int g_updateDepth = 0;
-static uint32_t g_fastWalkKeys[32]{};
-static int g_fwTop = 0;
+static constexpr size_t kFastWalkQueueCapacity = 64;
+static std::mutex g_fastWalkMutex;
+static std::unordered_map<SOCKET, std::deque<uint32_t>> g_fastWalkQueues;
+static SOCKET g_activeFastWalkSocket = INVALID_SOCKET;
 static volatile LONG g_fwPushLogBudget = 16;
 static volatile LONG g_fwPopLogBudget = 8;
 static volatile LONG g_fwEmptyWarnBudget = 8;
@@ -78,6 +83,36 @@ static uint8_t g_lastTailEntry[kQueueEntrySize]{};
 static bool g_haveHeadEntry = false;
 static bool g_haveTailEntry = false;
 static void** g_loggedVtable = nullptr;
+
+static SOCKET SelectNextActiveSocketLocked()
+{
+    for (auto& entry : g_fastWalkQueues) {
+        if (!entry.second.empty())
+            return entry.first;
+    }
+    return INVALID_SOCKET;
+}
+
+static std::deque<uint32_t>* FindQueueLocked(SOCKET socket)
+{
+    if (socket == INVALID_SOCKET)
+        return nullptr;
+    auto it = g_fastWalkQueues.find(socket);
+    if (it == g_fastWalkQueues.end())
+        return nullptr;
+    return &it->second;
+}
+
+static std::deque<uint32_t>& EnsureQueueLocked(SOCKET socket)
+{
+    return g_fastWalkQueues[socket];
+}
+
+static int GetQueueDepthLocked(SOCKET socket)
+{
+    auto* queue = FindQueueLocked(socket);
+    return queue ? static_cast<int>(queue->size()) : 0;
+}
 
 static uintptr_t ReadPointerSafe(void* base, ptrdiff_t offset)
 {
@@ -420,47 +455,131 @@ static bool MovementReadyInternal(const char** reasonOut)
     return true;
 }
 
-void PushFastWalkKey(uint32_t key) {
-    const int capacity = static_cast<int>(sizeof(g_fastWalkKeys) / sizeof(g_fastWalkKeys[0]));
-    if (g_fwTop < capacity) {
-        g_fastWalkKeys[g_fwTop++] = key;
-        if (g_fwPushLogBudget > 0 && InterlockedDecrement(&g_fwPushLogBudget) >= 0) {
-            Logf("FastWalk key queued key=%08X depth=%d", key, g_fwTop);
-            char buf[96];
-            sprintf_s(buf, sizeof(buf), "FastWalk queue push key=%08X depth=%d", key, g_fwTop);
-            WriteRawLog(buf);
+void PushFastWalkKey(SOCKET socket, uint32_t key) {
+    if (socket == INVALID_SOCKET || key == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    auto& queue = EnsureQueueLocked(socket);
+    if (queue.size() >= kFastWalkQueueCapacity) {
+        if (InterlockedCompareExchange(&g_fwOverflowWarned, 1, 0) == 0) {
+            Logf("FastWalk queue overflow; dropping key=%08X socket=%p (capacity=%zu)",
+                 key,
+                 reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+                 kFastWalkQueueCapacity);
+            WriteRawLog("FastWalk queue overflow");
         }
-    } else if (InterlockedCompareExchange(&g_fwOverflowWarned, 1, 0) == 0) {
-        Logf("FastWalk queue overflow; dropping key=%08X (capacity=%d)", key, capacity);
-        WriteRawLog("FastWalk queue overflow");
+        return;
     }
+
+    queue.push_back(key);
+    g_activeFastWalkSocket = socket;
+    int depth = static_cast<int>(queue.size());
+
+    if (g_fwPushLogBudget > 0 && InterlockedDecrement(&g_fwPushLogBudget) >= 0) {
+        Logf("FastWalk key queued socket=%p key=%08X depth=%d",
+             reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+             key,
+             depth);
+        char buf[128];
+        sprintf_s(buf, sizeof(buf),
+                  "FastWalk queue push socket=%p key=%08X depth=%d",
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+                  key,
+                  depth);
+        WriteRawLog(buf);
+    }
+}
+
+uint32_t PopFastWalkKey(SOCKET socket) {
+    if (socket == INVALID_SOCKET)
+        return 0;
+
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    auto it = g_fastWalkQueues.find(socket);
+    if (it == g_fastWalkQueues.end() || it->second.empty()) {
+        if (g_fwEmptyWarnBudget > 0 && InterlockedDecrement(&g_fwEmptyWarnBudget) >= 0) {
+            WriteRawLog("FastWalk queue empty on PopFastWalkKey");
+        }
+        return 0;
+    }
+
+    uint32_t key = it->second.front();
+    it->second.pop_front();
+    int depth = static_cast<int>(it->second.size());
+
+    if (g_fwPopLogBudget > 0 && InterlockedDecrement(&g_fwPopLogBudget) >= 0) {
+        Logf("FastWalk key dequeued socket=%p key=%08X depth=%d",
+             reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+             key,
+             depth);
+        char buf[128];
+        sprintf_s(buf, sizeof(buf),
+                  "FastWalk queue pop socket=%p key=%08X depth=%d",
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+                  key,
+                  depth);
+        WriteRawLog(buf);
+    }
+
+    if (it->second.empty()) {
+        g_fastWalkQueues.erase(it);
+        if (g_activeFastWalkSocket == socket)
+            g_activeFastWalkSocket = SelectNextActiveSocketLocked();
+    }
+
+    return key;
 }
 
 uint32_t PopFastWalkKey() {
-    if (g_fwTop > 0) {
-        uint32_t key = g_fastWalkKeys[--g_fwTop];
-        if (g_fwPopLogBudget > 0 && InterlockedDecrement(&g_fwPopLogBudget) >= 0) {
-            Logf("FastWalk key dequeued key=%08X depth=%d", key, g_fwTop);
-            char buf[96];
-            sprintf_s(buf, sizeof(buf), "FastWalk queue pop key=%08X depth=%d", key, g_fwTop);
-            WriteRawLog(buf);
-        }
-        return key;
-    }
-    if (g_fwEmptyWarnBudget > 0 && InterlockedDecrement(&g_fwEmptyWarnBudget) >= 0) {
-        WriteRawLog("FastWalk queue empty on PopFastWalkKey");
-    }
-    return 0;
+    return PopFastWalkKey(GetActiveFastWalkSocket());
+}
+
+uint32_t PeekFastWalkKey(SOCKET socket) {
+    if (socket == INVALID_SOCKET)
+        return 0;
+
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    auto* queue = FindQueueLocked(socket);
+    if (!queue || queue->empty())
+        return 0;
+    return queue->front();
 }
 
 uint32_t PeekFastWalkKey() {
-    if (g_fwTop > 0)
-        return g_fastWalkKeys[g_fwTop - 1];
-    return 0;
+    return PeekFastWalkKey(GetActiveFastWalkSocket());
+}
+
+int FastWalkQueueDepth(SOCKET socket) {
+    if (socket == INVALID_SOCKET)
+        return 0;
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    return GetQueueDepthLocked(socket);
 }
 
 int FastWalkQueueDepth() {
-    return g_fwTop;
+    return FastWalkQueueDepth(GetActiveFastWalkSocket());
+}
+
+SOCKET GetActiveFastWalkSocket() {
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    if (g_activeFastWalkSocket == INVALID_SOCKET)
+        g_activeFastWalkSocket = SelectNextActiveSocketLocked();
+    return g_activeFastWalkSocket;
+}
+
+void SetActiveFastWalkSocket(SOCKET socket) {
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    g_activeFastWalkSocket = socket;
+}
+
+void OnSocketClosed(SOCKET socket) {
+    if (socket == INVALID_SOCKET)
+        return;
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    g_fastWalkQueues.erase(socket);
+    if (g_activeFastWalkSocket == socket)
+        g_activeFastWalkSocket = SelectNextActiveSocketLocked();
 }
 
 void RecordObservedFastWalkKey(uint32_t key) {
@@ -483,7 +602,7 @@ void GetMovementDebugStatus(MovementDebugStatus& out) {
     out.movementComponentPtr = g_moveComp;
     out.movementCandidatePtr = g_moveCandidate;
     out.destinationPtr = g_dest;
-    out.fastWalkDepth = g_fwTop;
+    out.fastWalkDepth = FastWalkQueueDepth();
     out.ready = MovementReadyInternal(nullptr);
 
     out.pendingMoveActive = g_pendingMoveActive != 0;
@@ -532,9 +651,17 @@ void ShutdownMovementHooks() {
         g_origUpdate = nullptr;
     }
     g_moveComp = nullptr;
-    g_moveCandidate = nullptr;
-    g_dest = nullptr;
-    g_fwTop = 0;
+   g_moveCandidate = nullptr;
+   g_dest = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+        g_fastWalkQueues.clear();
+        g_activeFastWalkSocket = INVALID_SOCKET;
+    }
+    InterlockedExchange(&g_fwPushLogBudget, 16);
+    InterlockedExchange(&g_fwPopLogBudget, 8);
+    InterlockedExchange(&g_fwEmptyWarnBudget, 8);
+    InterlockedExchange(&g_fwOverflowWarned, 0);
     g_trackerCount = 0;
     g_trackerLogBudget = 8;
     g_haveCompPtrSnapshot = false;
@@ -1009,6 +1136,7 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     const bool movementReady = Engine::MovementReadyWithReason(&movementReason);
     const bool netReady = Net::IsSendReady();
     const int fastWalkDepth = Engine::FastWalkQueueDepth();
+    SOCKET movementSocket = Engine::GetActiveFastWalkSocket();
 
     char prereqBuf[160];
     sprintf_s(prereqBuf, sizeof(prereqBuf),
@@ -1038,6 +1166,10 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
         WriteRawLog("SendWalk no fast-walk key available");
         return false;
     }
+    if (movementSocket == INVALID_SOCKET) {
+        WriteRawLog("SendWalk no active socket for fast-walk queue");
+        return false;
+    }
 
     const int normalizedDir = NormalizeDirection(dir);
     const bool shouldRun = run != 0;
@@ -1056,7 +1188,7 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
         nextSeq = 1;
     pkt[2] = nextSeq;
 
-    uint32_t key = Engine::PeekFastWalkKey();
+    uint32_t key = Engine::PeekFastWalkKey(movementSocket);
     if (!key) {
         WriteRawLog("SendWalk no fast-walk key available (peek)");
         return false;
@@ -1066,7 +1198,7 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
 
     bool sendOk = false;
     __try {
-        sendOk = Net::SendPacketRaw(pkt, sizeof(pkt));
+        sendOk = Net::SendPacketRaw(pkt, sizeof(pkt), movementSocket);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         WriteRawLog("SendWalk: exception during Net::SendPacketRaw");
@@ -1078,7 +1210,7 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
         return false;
     }
 
-    Engine::PopFastWalkKey();
+    Engine::PopFastWalkKey(movementSocket);
     seq = nextSeq;
     WriteRawLog("SendWalk send succeeded");
 
