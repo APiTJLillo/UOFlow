@@ -30,6 +30,7 @@ static SOCKET g_lastLoggedSocket = INVALID_SOCKET;
 static std::atomic<SOCKET> g_preferredSocket{INVALID_SOCKET};
 
 static constexpr int kFastWalkReserveDepth = 2;
+static volatile LONG g_ackPayloadLogBudget = 4;
 
 static bool EvaluateFastWalkGate(const char* buf, int len, bool& suppressOut, int& depthOut)
 {
@@ -239,6 +240,11 @@ static void TraceOutbound(SOCKET& s, const char* buf, int len)
 
     if (opcode == 0x02) {
         s = SelectFastWalkSocket(s);
+        if (len >= 3) {
+            uint8_t seq = static_cast<uint8_t>(buf[2]);
+            if (!Engine::IsScriptedMovementSendInProgress())
+                Engine::RecordMovementSent(seq);
+        }
         if (len >= 7) {
             uint32_t key = ExtractFastWalkKey0x2E(buf, len);
             if (key) {
@@ -311,24 +317,94 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
     if (opcode == 0x22 && len >= 3) {
         uint8_t seq = static_cast<uint8_t>(buf[1]);
         uint8_t status = static_cast<uint8_t>(buf[2]);
-        char ackBuf[128];
-        sprintf_s(ackBuf, sizeof(ackBuf),
-                  "MovementAck socket=%p seq=%u status=%u",
-                  reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
-                  static_cast<unsigned>(seq),
-                  static_cast<unsigned>(status));
+        uint8_t expected = 0;
+        if (Engine::HaveAckSequence()) {
+            expected = static_cast<uint8_t>(Engine::GetLastAckSequence() + 1);
+            if (expected == 0)
+                expected = 1;
+        } else if (Engine::HaveSentSequence()) {
+            expected = static_cast<uint8_t>(Engine::GetLastSentSequence() + 1);
+            if (expected == 0)
+                expected = 1;
+        }
+        char ackBuf[160];
+        if (expected != 0) {
+            sprintf_s(ackBuf, sizeof(ackBuf),
+                      "WalkACK id=0x22 socket=%p seq=0x%02X status=0x%02X expected=0x%02X",
+                      reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
+                      static_cast<unsigned>(seq),
+                      static_cast<unsigned>(status),
+                      static_cast<unsigned>(expected));
+        } else {
+            sprintf_s(ackBuf, sizeof(ackBuf),
+                      "WalkACK id=0x22 socket=%p seq=0x%02X status=0x%02X",
+                      reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
+                      static_cast<unsigned>(seq),
+                      static_cast<unsigned>(status));
+        }
         WriteRawLog(ackBuf);
+        if (g_ackPayloadLogBudget > 0 && InterlockedDecrement(&g_ackPayloadLogBudget) >= 0) {
+            int dumpLen = (len < 8) ? len : 8;
+            char payloadBuf[192];
+            int offset = sprintf_s(payloadBuf, sizeof(payloadBuf), "WalkACK bytes:");
+            for (int i = 0; i < dumpLen && offset > 0; ++i) {
+                offset += sprintf_s(payloadBuf + offset,
+                                    sizeof(payloadBuf) - offset,
+                                    " %02X",
+                                    static_cast<unsigned>(static_cast<unsigned char>(buf[i])));
+                if (offset <= 0)
+                    break;
+            }
+            if (offset > 0)
+                WriteRawLog(payloadBuf);
+        }
         Engine::RecordMovementAck(seq, status);
         Engine::SetActiveFastWalkSocket(s);
         Net::SetPreferredSocket(s);
     } else if (opcode == 0x21 && len >= 2) {
         uint8_t seq = static_cast<uint8_t>(buf[1]);
-        char rejBuf[128];
-        sprintf_s(rejBuf, sizeof(rejBuf),
-                  "MovementReject socket=%p seq=%u",
-                  reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
-                  static_cast<unsigned>(seq));
+        uint8_t status = (len >= 3) ? static_cast<uint8_t>(buf[2]) : 0;
+        uint8_t expected = 0;
+        if (Engine::HaveAckSequence()) {
+            expected = static_cast<uint8_t>(Engine::GetLastAckSequence() + 1);
+            if (expected == 0)
+                expected = 1;
+        } else if (Engine::HaveSentSequence()) {
+            expected = static_cast<uint8_t>(Engine::GetLastSentSequence() + 1);
+            if (expected == 0)
+                expected = 1;
+        }
+        char rejBuf[192];
+        if (len >= 3) {
+            sprintf_s(rejBuf, sizeof(rejBuf),
+                      "WalkNACK id=0x21 socket=%p seq=0x%02X status=0x%02X expected=0x%02X",
+                      reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
+                      static_cast<unsigned>(seq),
+                      static_cast<unsigned>(status),
+                      static_cast<unsigned>(expected));
+        } else {
+            sprintf_s(rejBuf, sizeof(rejBuf),
+                      "WalkNACK id=0x21 socket=%p seq=0x%02X expected=0x%02X",
+                      reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
+                      static_cast<unsigned>(seq),
+                      static_cast<unsigned>(expected));
+        }
         WriteRawLog(rejBuf);
+        if (g_ackPayloadLogBudget > 0 && InterlockedDecrement(&g_ackPayloadLogBudget) >= 0) {
+            int dumpLen = (len < 8) ? len : 8;
+            char payloadBuf[192];
+            int offset = sprintf_s(payloadBuf, sizeof(payloadBuf), "WalkNACK bytes:");
+            for (int i = 0; i < dumpLen && offset > 0; ++i) {
+                offset += sprintf_s(payloadBuf + offset,
+                                    sizeof(payloadBuf) - offset,
+                                    " %02X",
+                                    static_cast<unsigned>(static_cast<unsigned char>(buf[i])));
+                if (offset <= 0)
+                    break;
+            }
+            if (offset > 0)
+                WriteRawLog(payloadBuf);
+        }
         Engine::RecordMovementReject(seq);
         Net::SetPreferredSocket(s);
     }

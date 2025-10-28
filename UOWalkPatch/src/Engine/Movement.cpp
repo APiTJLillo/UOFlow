@@ -58,6 +58,10 @@ static std::atomic<uint8_t> g_lastAckSeq{0};
 static std::atomic<uint8_t> g_lastSentSeq{0};
 static std::atomic<bool> g_haveAckSeq{false};
 static std::atomic<bool> g_haveSentSeq{false};
+static thread_local bool g_scriptSendInProgress = false;
+static std::atomic<uint32_t> g_lastMovementSendTickMs{0};
+static constexpr DWORD kMovementAckThrottleMs = 800;
+static volatile LONG g_sendThrottleLogBudget = 8;
 
 static constexpr int kStepDx[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 static constexpr int kStepDy[8] = {-1, -1, 0, 1, 1, 1, 0, -1};
@@ -474,20 +478,30 @@ static void ResetMovementSequenceState()
     g_lastSentSeq.store(0, std::memory_order_relaxed);
     g_haveAckSeq.store(false, std::memory_order_relaxed);
     g_haveSentSeq.store(false, std::memory_order_relaxed);
+    g_lastMovementSendTickMs.store(0, std::memory_order_relaxed);
 }
 
 static uint8_t NextMovementSequence()
 {
     uint8_t base = 0;
-    if (g_haveAckSeq.load(std::memory_order_acquire)) {
-        base = g_lastAckSeq.load(std::memory_order_relaxed);
-    } else if (g_haveSentSeq.load(std::memory_order_acquire)) {
+    if (g_haveSentSeq.load(std::memory_order_acquire)) {
         base = g_lastSentSeq.load(std::memory_order_relaxed);
+    } else if (g_haveAckSeq.load(std::memory_order_acquire)) {
+        base = g_lastAckSeq.load(std::memory_order_relaxed);
     }
     uint8_t next = static_cast<uint8_t>(base + 1);
     if (next == 0)
         next = 1;
     return next;
+}
+
+static bool MovementAckPending()
+{
+    if (!g_haveSentSeq.load(std::memory_order_acquire))
+        return false;
+    if (!g_haveAckSeq.load(std::memory_order_acquire))
+        return true;
+    return g_lastSentSeq.load(std::memory_order_relaxed) != g_lastAckSeq.load(std::memory_order_relaxed);
 }
 
 static SOCKET ResolveSocketAliasLocked(SOCKET socket)
@@ -769,6 +783,31 @@ void RecordMovementReject(uint8_t seq)
         sprintf_s(buf, sizeof(buf), "RecordMovementReject seq=%u", static_cast<unsigned>(seq));
         WriteRawLog(buf);
     }
+}
+
+bool IsScriptedMovementSendInProgress()
+{
+    return g_scriptSendInProgress;
+}
+
+bool HaveSentSequence()
+{
+    return g_haveSentSeq.load(std::memory_order_acquire);
+}
+
+bool HaveAckSequence()
+{
+    return g_haveAckSeq.load(std::memory_order_acquire);
+}
+
+uint8_t GetLastSentSequence()
+{
+    return g_lastSentSeq.load(std::memory_order_relaxed);
+}
+
+uint8_t GetLastAckSequence()
+{
+    return g_lastAckSeq.load(std::memory_order_relaxed);
 }
 
 bool MovementReady() {
@@ -1355,6 +1394,31 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
         return false;
     }
 
+    DWORD now = GetTickCount();
+    if (MovementAckPending()) {
+        uint32_t lastTick = g_lastMovementSendTickMs.load(std::memory_order_relaxed);
+        if (lastTick != 0) {
+            DWORD delta = now - lastTick;
+            if (delta < kMovementAckThrottleMs) {
+                if (g_sendThrottleLogBudget > 0 && InterlockedDecrement(&g_sendThrottleLogBudget) >= 0) {
+                    uint8_t lastSent = g_lastSentSeq.load(std::memory_order_relaxed);
+                    uint8_t lastAck = g_haveAckSeq.load(std::memory_order_relaxed)
+                        ? g_lastAckSeq.load(std::memory_order_relaxed)
+                        : 0;
+                    char throttleBuf[192];
+                    sprintf_s(throttleBuf,
+                              sizeof(throttleBuf),
+                              "SendWalk throttled: awaiting ack (lastSent=0x%02X lastAck=0x%02X age=%u ms)",
+                              static_cast<unsigned>(lastSent),
+                              static_cast<unsigned>(lastAck),
+                              static_cast<unsigned>(delta));
+                    WriteRawLog(throttleBuf);
+                }
+                return false;
+            }
+        }
+    }
+
     if (!movementReady) {
         if (movementReason && movementReason[0] != '\0') {
             char reasonBuf[160];
@@ -1400,6 +1464,7 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     WriteRawLog(seqBuf);
 
     bool sendOk = false;
+    g_scriptSendInProgress = true;
     __try {
         sendOk = Net::SendPacketRaw(pkt, sizeof(pkt), movementSocket);
     }
@@ -1407,6 +1472,7 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
         WriteRawLog("SendWalk: exception during Net::SendPacketRaw");
         sendOk = false;
     }
+    g_scriptSendInProgress = false;
 
     if (!sendOk) {
         WriteRawLog("SendWalk send failed");
@@ -1415,6 +1481,7 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
 
     Engine::PopFastWalkKey(movementSocket);
     Engine::RecordMovementSent(nextSeq);
+    g_lastMovementSendTickMs.store(GetTickCount(), std::memory_order_relaxed);
     WriteRawLog("SendWalk send succeeded");
 
     InterlockedExchange(&g_pendingDir, normalizedDir);

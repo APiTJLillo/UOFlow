@@ -40,6 +40,11 @@ namespace Engine {
     void RecordMovementSent(uint8_t seq);
     void RecordMovementAck(uint8_t seq, uint8_t status);
     void RecordMovementReject(uint8_t seq);
+    bool IsScriptedMovementSendInProgress();
+    bool HaveSentSequence();
+    bool HaveAckSequence();
+    uint8_t GetLastSentSequence();
+    uint8_t GetLastAckSequence();
 
     bool MovementReady();
     bool MovementReadyWithReason(const char** reasonOut);
