@@ -47,6 +47,8 @@ static int __cdecl Lua_BindWalk(lua_State* L);
 static int __cdecl Lua_FastWalkInfo(lua_State* L);
 static int __cdecl Lua_MovementInfo(lua_State* L);
 
+static lua_CFunction g_clientWalkFn = nullptr;
+
 static void LogWalkBindingState(lua_State* L, const char* stage)
 {
     if (!L)
@@ -325,11 +327,18 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         InterlockedExchange(&g_pendingRegistration, 1);
     }
 
+    uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
+    void* walkPtr = reinterpret_cast<void*>(walkInt);
+    if (name && _stricmp(name, "walk") == 0 && func && func != walkPtr) {
+        g_clientWalkFn = reinterpret_cast<lua_CFunction>(func);
+        char info[160];
+        sprintf_s(info, sizeof(info), "Captured client walk function %p", func);
+        WriteRawLog(info);
+    }
+
     int rc = g_clientRegister ? g_clientRegister(ctx, func, name) : 0;
 
-    uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
     uintptr_t bindInt = reinterpret_cast<uintptr_t>(&Lua_BindWalk);
-    void* walkPtr = reinterpret_cast<void*>(walkInt);
     void* bindPtr = reinterpret_cast<void*>(bindInt);
     if (name && ctx) {
         if (_stricmp(name, "walk") == 0 && func == walkPtr) {
@@ -378,6 +387,32 @@ static int __cdecl Lua_Walk(lua_State* L)
     char buf[128];
     sprintf_s(buf, sizeof(buf), "Lua_Walk invoked dir=%d run=%d", dir, run);
     WriteRawLog(buf);
+
+    if (g_clientWalkFn) {
+        int topBefore = lua_gettop(L);
+        int rc = 0;
+        bool ok = false;
+        __try {
+            rc = g_clientWalkFn(L);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            WriteRawLog("Lua_Walk: exception calling client handler");
+            rc = 0;
+        }
+        if (rc > 0) {
+            int topAfter = lua_gettop(L);
+            int firstResult = topAfter - rc + 1;
+            if (firstResult >= 1 && firstResult <= topAfter) {
+                ok = lua_toboolean(L, firstResult) != 0;
+            }
+        }
+        sprintf_s(buf, sizeof(buf), "Lua_Walk -> client handler %s (rc=%d stackDelta=%d)",
+                  ok ? "succeeded" : "failed",
+                  rc,
+                  lua_gettop(L) - topBefore);
+        WriteRawLog(buf);
+        return rc;
+    }
 
     bool ok = SendWalk(dir, run);
     WriteRawLog(ok ? "Lua_Walk -> walk enqueued" : "Lua_Walk -> walk failed");
