@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstring>
 #include <deque>
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 
@@ -52,6 +53,10 @@ static volatile LONG g_fastWalkProbeBudget = 64;
 static uint32_t g_lastProbeAttemptKey = 0;
 static uint32_t g_lastLoggedCandidateKey = 0;
 static int g_fastWalkStorageOffset = -1;
+static std::atomic<uint8_t> g_lastAckSeq{0};
+static std::atomic<uint8_t> g_lastSentSeq{0};
+static std::atomic<bool> g_haveAckSeq{false};
+static std::atomic<bool> g_haveSentSeq{false};
 
 static constexpr int kStepDx[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 static constexpr int kStepDy[8] = {-1, -1, 0, 1, 1, 1, 0, -1};
@@ -439,6 +444,8 @@ static bool CopyMemorySafe(const void* src, void* dst, size_t len)
 
 static void FindMoveComponent();
 static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr, uint32_t dir, int runFlag);
+static void ResetMovementSequenceState();
+static uint8_t NextMovementSequence();
 
 static int NormalizeDirection(int dir)
 {
@@ -448,6 +455,28 @@ static int NormalizeDirection(int dir)
     if (normalized < 0)
         normalized += 8;
     return normalized & 7;
+}
+
+static void ResetMovementSequenceState()
+{
+    g_lastAckSeq.store(0, std::memory_order_relaxed);
+    g_lastSentSeq.store(0, std::memory_order_relaxed);
+    g_haveAckSeq.store(false, std::memory_order_relaxed);
+    g_haveSentSeq.store(false, std::memory_order_relaxed);
+}
+
+static uint8_t NextMovementSequence()
+{
+    uint8_t base = 0;
+    if (g_haveAckSeq.load(std::memory_order_acquire)) {
+        base = g_lastAckSeq.load(std::memory_order_relaxed);
+    } else if (g_haveSentSeq.load(std::memory_order_acquire)) {
+        base = g_lastSentSeq.load(std::memory_order_relaxed);
+    }
+    uint8_t next = static_cast<uint8_t>(base + 1);
+    if (next == 0)
+        next = 1;
+    return next;
 }
 
 } // namespace
@@ -622,6 +651,52 @@ void RecordObservedFastWalkKey(uint32_t key) {
     InterlockedExchange(&g_lastObservedNetworkKey, static_cast<LONG>(key));
 }
 
+void RecordMovementSent(uint8_t seq)
+{
+    if (seq == 0)
+        seq = 1;
+    g_lastSentSeq.store(seq, std::memory_order_release);
+    g_haveSentSeq.store(true, std::memory_order_release);
+    static volatile LONG s_budget = 16;
+    if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
+        char buf[96];
+        sprintf_s(buf, sizeof(buf), "RecordMovementSent seq=%u", static_cast<unsigned>(seq));
+        WriteRawLog(buf);
+    }
+}
+
+void RecordMovementAck(uint8_t seq, uint8_t status)
+{
+    if (seq == 0)
+        seq = 1;
+    g_lastAckSeq.store(seq, std::memory_order_release);
+    g_haveAckSeq.store(true, std::memory_order_release);
+    g_lastSentSeq.store(seq, std::memory_order_release);
+    g_haveSentSeq.store(true, std::memory_order_release);
+    static volatile LONG s_budget = 32;
+    if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
+        char buf[128];
+        sprintf_s(buf, sizeof(buf), "RecordMovementAck seq=%u status=%u", static_cast<unsigned>(seq), static_cast<unsigned>(status));
+        WriteRawLog(buf);
+    }
+}
+
+void RecordMovementReject(uint8_t seq)
+{
+    if (seq == 0)
+        seq = 1;
+    g_lastAckSeq.store(seq, std::memory_order_release);
+    g_haveAckSeq.store(true, std::memory_order_release);
+    g_lastSentSeq.store(seq, std::memory_order_release);
+    g_haveSentSeq.store(true, std::memory_order_release);
+    static volatile LONG s_budget = 16;
+    if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
+        char buf[96];
+        sprintf_s(buf, sizeof(buf), "RecordMovementReject seq=%u", static_cast<unsigned>(seq));
+        WriteRawLog(buf);
+    }
+}
+
 bool MovementReady() {
     return MovementReadyInternal(nullptr);
 }
@@ -655,6 +730,8 @@ void RequestWalkRegistration() {
 }
 
 bool InitMovementHooks() {
+    ResetMovementSequenceState();
+
     const char* kUpdateSig =
         "83 EC 58 53 55 8B 6C 24 64 80 7D 79 00 56 57 0F 85 ?? ?? ?? 00"
         "80 7D 7A 00 0F 85 ?? ?? ?? 00";
@@ -717,6 +794,7 @@ void ShutdownMovementHooks() {
     InterlockedExchange(&g_pendingTick, 0);
     InterlockedExchange(&g_pendingDir, 0);
     InterlockedExchange(&g_pendingRunFlag, 0);
+    ResetMovementSequenceState();
 }
 
 } // namespace Engine
@@ -1231,6 +1309,14 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     }
 
     *reinterpret_cast<uint32_t*>(pkt + 3) = htonl(key);
+
+    char seqBuf[160];
+    sprintf_s(seqBuf, sizeof(seqBuf),
+              "SendWalk TX seq=%u key=%08X socket=%p",
+              static_cast<unsigned>(nextSeq),
+              static_cast<unsigned>(key),
+              reinterpret_cast<void*>(static_cast<uintptr_t>(movementSocket)));
+    WriteRawLog(seqBuf);
 
     bool sendOk = false;
     __try {

@@ -36,6 +36,9 @@ namespace Engine {
     void SetActiveFastWalkSocket(SOCKET socket);
     void OnSocketClosed(SOCKET socket);
     void RecordObservedFastWalkKey(uint32_t key);
+    void RecordMovementSent(uint8_t seq);
+    void RecordMovementAck(uint8_t seq, uint8_t status);
+    void RecordMovementReject(uint8_t seq);
 
     bool MovementReady();
     bool MovementReadyWithReason(const char** reasonOut);

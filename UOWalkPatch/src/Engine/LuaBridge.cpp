@@ -414,6 +414,7 @@ static int __cdecl Lua_Walk(lua_State* L)
         return rc;
     }
 
+    WriteRawLog("Lua_Walk using internal sender");
     bool ok = SendWalk(dir, run);
     WriteRawLog(ok ? "Lua_Walk -> walk enqueued" : "Lua_Walk -> walk failed");
     lua_pushboolean(L, ok ? 1 : 0);

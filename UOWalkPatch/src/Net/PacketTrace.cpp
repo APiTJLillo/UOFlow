@@ -310,6 +310,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
                   static_cast<unsigned>(seq),
                   static_cast<unsigned>(status));
         WriteRawLog(ackBuf);
+        Engine::RecordMovementAck(seq, status);
         Engine::SetActiveFastWalkSocket(s);
         Net::SetPreferredSocket(s);
     } else if (opcode == 0x21 && len >= 2) {
@@ -320,6 +321,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
                   reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
                   static_cast<unsigned>(seq));
         WriteRawLog(rejBuf);
+        Engine::RecordMovementReject(seq);
         Net::SetPreferredSocket(s);
     }
 
