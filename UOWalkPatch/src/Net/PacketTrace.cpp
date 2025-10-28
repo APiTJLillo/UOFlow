@@ -29,6 +29,25 @@ static SOCKET g_lastSocket = INVALID_SOCKET;
 static SOCKET g_lastLoggedSocket = INVALID_SOCKET;
 static std::atomic<SOCKET> g_preferredSocket{INVALID_SOCKET};
 
+static bool ShouldBlockOutboundFastWalkPacket(const char* buf, int len)
+{
+    if (!buf || len <= 0)
+        return false;
+    return static_cast<unsigned char>(buf[0]) == 0x2E;
+}
+
+static void LogBlockedFastWalkPacket(SOCKET s, const char* buf, int len)
+{
+    static volatile LONG budget = 8;
+    if (budget > 0 && InterlockedDecrement(&budget) >= 0) {
+        Logf("Blocking outbound fast-walk packet opcode=%02X socket=%p len=%d",
+             len > 0 ? static_cast<unsigned char>(buf[0]) : 0,
+             reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
+             len);
+        WriteRawLog("Blocking outbound fast-walk packet (opcode 0x2E)");
+    }
+}
+
 static void NoteSocketActivity(SOCKET s)
 {
     if (s == INVALID_SOCKET)
@@ -170,21 +189,20 @@ static void TraceOutbound(SOCKET& s, const char* buf, int len)
 {
     unsigned char opcode = (len > 0) ? static_cast<unsigned char>(buf[0]) : 0;
 
-    if (opcode == 0x2E) {
-        uint32_t key = (len >= 7) ? ExtractFastWalkKey0x2E(buf, len) : 0;
-        SOCKET routed = SelectFastWalkSocket(s);
-        if (key) {
-            char txBuf[160];
-            sprintf_s(txBuf, sizeof(txBuf),
-                      "FastWalk TX 0x2E via socket=%p key=%08X",
-                      reinterpret_cast<void*>(static_cast<uintptr_t>(routed)),
-                      key);
-            WriteRawLog(txBuf);
-            Engine::RecordObservedFastWalkKey(key);
-        }
-        s = routed;
-    } else if (opcode == 0x02) {
+    if (opcode == 0x02) {
         s = SelectFastWalkSocket(s);
+        if (len >= 7) {
+            uint32_t key = ExtractFastWalkKey0x2E(buf, len);
+            if (key) {
+                char txBuf[160];
+                sprintf_s(txBuf, sizeof(txBuf),
+                          "FastWalk TX 0x02 via socket=%p key=%08X",
+                          reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
+                          key);
+                WriteRawLog(txBuf);
+                Engine::RecordObservedFastWalkKey(key);
+            }
+        }
     }
 
     NoteSocketActivity(s);
@@ -300,6 +318,11 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
 
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
 {
+    if (ShouldBlockOutboundFastWalkPacket(buf, len)) {
+        LogBlockedFastWalkPacket(s, buf, len);
+        return len;
+    }
+
     TraceOutbound(s, buf, len);
     return g_real_send ? g_real_send(s, buf, len, flags) : 0;
 }
@@ -313,8 +336,15 @@ static int WSAAPI H_WSASend(
     LPWSAOVERLAPPED ov,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
-    if (cnt)
+    if (cnt) {
+        if (ShouldBlockOutboundFastWalkPacket(wsa[0].buf, static_cast<int>(wsa[0].len))) {
+            LogBlockedFastWalkPacket(s, wsa[0].buf, static_cast<int>(wsa[0].len));
+            if (sent)
+                *sent = wsa[0].len;
+            return 0;
+        }
         TraceOutbound(s, wsa[0].buf, (int)wsa[0].len);
+    }
     return g_real_WSASend ? g_real_WSASend(s, wsa, cnt, sent, flags, ov, cr) : 0;
 }
 
@@ -329,8 +359,15 @@ static int WSAAPI H_WSASendTo(
     LPWSAOVERLAPPED ov,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
-    if (cnt)
+    if (cnt) {
+        if (ShouldBlockOutboundFastWalkPacket(wsa[0].buf, static_cast<int>(wsa[0].len))) {
+            LogBlockedFastWalkPacket(s, wsa[0].buf, static_cast<int>(wsa[0].len));
+            if (sent)
+                *sent = wsa[0].len;
+            return 0;
+        }
         TraceOutbound(s, wsa[0].buf, (int)wsa[0].len);
+    }
     return g_real_WSASendTo ? g_real_WSASendTo(s, wsa, cnt, sent, flags, dst, dstlen, ov, cr) : 0;
 }
 
@@ -342,6 +379,11 @@ static int WSAAPI H_SendTo(
     const sockaddr* to,
     int tolen)
 {
+    if (ShouldBlockOutboundFastWalkPacket(buf, len)) {
+        LogBlockedFastWalkPacket(s, buf, len);
+        return len;
+    }
+
     TraceOutbound(s, buf, len);
     return g_real_sendto ? g_real_sendto(s, buf, len, flags, to, tolen) : 0;
 }
