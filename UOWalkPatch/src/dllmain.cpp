@@ -5,6 +5,7 @@
 
 #include "../include/Core/Logging.hpp"
 #include "../include/Core/MinHookHelpers.hpp"
+#include "../include/Core/CrashHandler.hpp"
 #include "../include/Engine/GlobalState.hpp"
 #include "../include/Engine/Movement.hpp"
 #include "../include/Engine/LuaBridge.hpp"
@@ -19,6 +20,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
     {
         DisableThreadLibraryCalls(hModule);
         Log::Init(hModule);
+        Core::CrashHandler::Init(hModule);
 
         // Determine directory of this DLL
         WCHAR dllDir[MAX_PATH];
@@ -87,6 +89,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Engine::ShutdownMovementHooks();
         Engine::ShutdownGlobalStateWatch();
         Core::MinHookHelpers::Shutdown();
+        Core::CrashHandler::Shutdown();
         Log::Shutdown();
         break;
     }

@@ -23,6 +23,7 @@ static int (WSAAPI* g_real_WSARecvFrom)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWOR
 static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) = nullptr;
 static bool shouldLogTraces = true;
 static volatile LONG g_fastWalkScanMissBudget = 8;
+static SOCKET g_lastSocket = INVALID_SOCKET;
 
 static uint32_t ExtractFastWalkKey0x2E(const char* buf, int len)
 {
@@ -113,8 +114,10 @@ static bool ScanFastWalkPayload(const char* source, const uint8_t* data, size_t 
     return false;
 }
 
-static void TraceOutbound(const char* buf, int len)
+static void TraceOutbound(SOCKET s, const char* buf, int len)
 {
+    if (s != INVALID_SOCKET)
+        g_lastSocket = s;
     if(shouldLogTraces)
         Logf("send-family len=%d id=%02X", len, (unsigned char)buf[0]);
     int dumpLen = len > 64 ? 64 : len;
@@ -196,7 +199,7 @@ static void TraceInbound(const char* buf, int len)
 
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
 {
-    TraceOutbound(buf, len);
+    TraceOutbound(s, buf, len);
     return g_real_send ? g_real_send(s, buf, len, flags) : 0;
 }
 
@@ -210,7 +213,7 @@ static int WSAAPI H_WSASend(
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
     if (cnt)
-        TraceOutbound(wsa[0].buf, (int)wsa[0].len);
+        TraceOutbound(s, wsa[0].buf, (int)wsa[0].len);
     return g_real_WSASend ? g_real_WSASend(s, wsa, cnt, sent, flags, ov, cr) : 0;
 }
 
@@ -226,7 +229,7 @@ static int WSAAPI H_WSASendTo(
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
     if (cnt)
-        TraceOutbound(wsa[0].buf, (int)wsa[0].len);
+        TraceOutbound(s, wsa[0].buf, (int)wsa[0].len);
     return g_real_WSASendTo ? g_real_WSASendTo(s, wsa, cnt, sent, flags, dst, dstlen, ov, cr) : 0;
 }
 
@@ -238,7 +241,7 @@ static int WSAAPI H_SendTo(
     const sockaddr* to,
     int tolen)
 {
-    TraceOutbound(buf, len);
+    TraceOutbound(s, buf, len);
     return g_real_sendto ? g_real_sendto(s, buf, len, flags, to, tolen) : 0;
 }
 
@@ -372,5 +375,14 @@ void ShutdownPacketTrace()
     RemoveHooks();
 }
 
-} // namespace Net
+SOCKET GetLastSocket()
+{
+    return g_lastSocket;
+}
 
+void InvalidateLastSocket()
+{
+    g_lastSocket = INVALID_SOCKET;
+}
+
+} // namespace Net

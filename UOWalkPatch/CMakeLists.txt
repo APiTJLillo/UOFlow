@@ -75,6 +75,7 @@ add_library(UOWalkPatchDLL SHARED
     src/Core/PatternScan.cpp
     src/Core/Utils.cpp
     src/Core/MinHookHelpers.cpp
+    src/Core/CrashHandler.cpp
     src/Net/PacketTrace.cpp
     src/Net/SendBuilder.cpp
     src/Engine/GlobalState.cpp

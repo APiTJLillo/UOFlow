@@ -1,3 +1,4 @@
+#include <winsock2.h>
 #include <windows.h>
 #include <dbghelp.h>
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include "Core/Logging.hpp"
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
+#include "Net/PacketTrace.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/LuaBridge.hpp"
@@ -215,6 +217,43 @@ struct SendPacketAttemptContext {
 };
 
 static thread_local SendPacketAttemptContext g_lastSendAttempt{};
+
+static bool TrySendViaSocket(const void* bytes, int len, const char* tag)
+{
+    SOCKET sock = Net::GetLastSocket();
+    if (sock == INVALID_SOCKET)
+        return false;
+
+    int rc = send(sock, reinterpret_cast<const char*>(bytes), len, 0);
+    if (rc == len) {
+        static volatile LONG s_socketSuccessLogBudget = 32;
+        if (tag && s_socketSuccessLogBudget > 0 && InterlockedDecrement(&s_socketSuccessLogBudget) >= 0) {
+            char status[200];
+            sprintf_s(status, sizeof(status),
+                      "%s succeeded len=%d socket=%p",
+                      tag,
+                      len,
+                      reinterpret_cast<void*>(static_cast<uintptr_t>(sock)));
+            WriteRawLog(status);
+        }
+        return true;
+    }
+
+    int err = WSAGetLastError();
+    if (err == WSAENOTCONN || err == WSAENOTSOCK)
+        Net::InvalidateLastSocket();
+
+    char warn[200];
+    sprintf_s(warn, sizeof(warn),
+              "%s failed len=%d rc=%d err=%d socket=%p",
+              tag ? tag : "SendPacketRaw socket fallback",
+              len,
+              rc,
+              err,
+              reinterpret_cast<void*>(static_cast<uintptr_t>(sock)));
+    WriteRawLog(warn);
+    return false;
+}
 
 static int SendPacketExceptionFilter(unsigned code, EXCEPTION_POINTERS* info)
 {
@@ -1905,12 +1944,16 @@ bool SendPacketRaw(const void* bytes, int len)
     if (len <= 0 || !bytes)
         return false;
 
+    if (TrySendViaSocket(bytes, len, "SendPacketRaw via socket (preferred)"))
+        return true;
+
     if (fpSendBuilder && g_sendCtx)
     {
-        struct BuilderStub
+        struct alignas(8) BuilderStub
         {
             void* payload;
             int length;
+            uint32_t reserved[6];
         };
         BuilderStub stub{};
         stub.payload = const_cast<void*>(bytes);
@@ -1940,7 +1983,7 @@ bool SendPacketRaw(const void* bytes, int len)
     }
 
     if (!g_sendPacket)
-        return false;
+        return TrySendViaSocket(bytes, len, "SendPacketRaw via socket (no sendCtx)");
 
     void* sendCtx = g_sendCtx ? g_sendCtx : g_netMgr;
     if (!sendCtx)
@@ -2002,6 +2045,9 @@ bool SendPacketRaw(const void* bytes, int len)
                       "SendPacketRaw succeeded len=%d", len);
             WriteRawLog(status);
         }
+    }
+    else if (TrySendViaSocket(bytes, len, "SendPacketRaw via socket fallback")) {
+        return true;
     }
     return sent;
 }
