@@ -95,8 +95,6 @@ static bool HandleFastWalkKey(SOCKET socket, uint32_t key, const char* source)
         return false;
 
     Engine::PushFastWalkKey(socket, key);
-    Engine::SetActiveFastWalkSocket(socket);
-    Net::SetPreferredSocket(socket);
     LogFastWalkReceipt(socket, source, key);
 
     char msg[128];
@@ -155,8 +153,40 @@ static bool ScanFastWalkPayload(SOCKET socket, const char* source, const uint8_t
     return false;
 }
 
-static void TraceOutbound(SOCKET s, const char* buf, int len)
+static SOCKET SelectFastWalkSocket(SOCKET fallback)
 {
+    SOCKET active = Engine::GetActiveFastWalkSocket();
+    if (active != INVALID_SOCKET)
+        return active;
+
+    SOCKET preferred = Net::GetPreferredSocket();
+    if (preferred != INVALID_SOCKET)
+        return preferred;
+
+    return fallback;
+}
+
+static void TraceOutbound(SOCKET& s, const char* buf, int len)
+{
+    unsigned char opcode = (len > 0) ? static_cast<unsigned char>(buf[0]) : 0;
+
+    if (opcode == 0x2E) {
+        uint32_t key = (len >= 7) ? ExtractFastWalkKey0x2E(buf, len) : 0;
+        SOCKET routed = SelectFastWalkSocket(s);
+        if (key) {
+            char txBuf[160];
+            sprintf_s(txBuf, sizeof(txBuf),
+                      "FastWalk TX 0x2E via socket=%p key=%08X",
+                      reinterpret_cast<void*>(static_cast<uintptr_t>(routed)),
+                      key);
+            WriteRawLog(txBuf);
+            Engine::RecordObservedFastWalkKey(key);
+        }
+        s = routed;
+    } else if (opcode == 0x02) {
+        s = SelectFastWalkSocket(s);
+    }
+
     NoteSocketActivity(s);
     if (s != INVALID_SOCKET && s != g_lastLoggedSocket) {
         g_lastLoggedSocket = s;
@@ -165,28 +195,29 @@ static void TraceOutbound(SOCKET s, const char* buf, int len)
         WriteRawLog(msg);
     }
     if(shouldLogTraces)
-        Logf("send-family len=%d id=%02X", len, (unsigned char)buf[0]);
+        Logf("send-family len=%d id=%02X", len, opcode);
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Outbound packet", (void*)buf, dumpLen);
-    if (len >= 7 && (unsigned char)buf[0] == 0x2E) {
-        uint32_t key = ExtractFastWalkKey0x2E(buf, len);
-        if (key)
-            Engine::RecordObservedFastWalkKey(key);
+
+    if (opcode == 0x3C) {
+        Engine::SetActiveFastWalkSocket(s);
+        Net::SetPreferredSocket(s);
     }
+
     Net::PollSendBuilder();
 }
 
 static void TraceInbound(SOCKET s, const char* buf, int len)
 {
+    unsigned char opcode = (len > 0) ? static_cast<unsigned char>(buf[0]) : 0;
+
     NoteSocketActivity(s);
     if(shouldLogTraces)
-        Logf("recv-family len=%d id=%02X", len, (unsigned char)buf[0]);
+        Logf("recv-family len=%d id=%02X", len, opcode);
     int dumpLen = len > 64 ? 64 : len;
     if (dumpLen > 0 && shouldLogTraces)
         DumpMemory("Inbound packet", (void*)buf, dumpLen);
-
-    unsigned char opcode = len > 0 ? static_cast<unsigned char>(buf[0]) : 0;
 
     if (opcode == 0x2E && len >= 7) {
         uint32_t key = ExtractFastWalkKey0x2E(buf, len);
@@ -215,6 +246,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
                   static_cast<unsigned>(seq),
                   static_cast<unsigned>(status));
         WriteRawLog(ackBuf);
+        Engine::SetActiveFastWalkSocket(s);
         Net::SetPreferredSocket(s);
     } else if (opcode == 0x21 && len >= 2) {
         uint8_t seq = static_cast<uint8_t>(buf[1]);

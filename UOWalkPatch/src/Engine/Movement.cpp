@@ -114,6 +114,25 @@ static int GetQueueDepthLocked(SOCKET socket)
     return queue ? static_cast<int>(queue->size()) : 0;
 }
 
+static size_t MergeQueuesToSocketLocked(SOCKET socket)
+{
+    if (socket == INVALID_SOCKET)
+        return 0;
+
+    auto& targetQueue = EnsureQueueLocked(socket);
+    size_t moved = 0;
+    for (auto it = g_fastWalkQueues.begin(); it != g_fastWalkQueues.end(); ++it) {
+        if (it->first == socket)
+            continue;
+        if (!it->second.empty()) {
+            moved += it->second.size();
+            targetQueue.insert(targetQueue.end(), it->second.begin(), it->second.end());
+            it->second.clear();
+        }
+    }
+    return moved;
+}
+
 static uintptr_t ReadPointerSafe(void* base, ptrdiff_t offset)
 {
     if (!base)
@@ -570,7 +589,24 @@ SOCKET GetActiveFastWalkSocket() {
 
 void SetActiveFastWalkSocket(SOCKET socket) {
     std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    SOCKET previous = g_activeFastWalkSocket;
+    size_t moved = 0;
+    if (socket != INVALID_SOCKET && socket != g_activeFastWalkSocket)
+        moved = MergeQueuesToSocketLocked(socket);
+
     g_activeFastWalkSocket = socket;
+
+    if (socket != previous) {
+        int depth = (socket == INVALID_SOCKET) ? 0 : GetQueueDepthLocked(socket);
+        char buf[192];
+        sprintf_s(buf, sizeof(buf),
+                  "SetActiveFastWalkSocket: old=%p new=%p moved=%zu nowDepth=%d",
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(previous)),
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+                  moved,
+                  depth);
+        WriteRawLog(buf);
+    }
 }
 
 void OnSocketClosed(SOCKET socket) {
@@ -1210,7 +1246,7 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
         return false;
     }
 
-    Engine::PopFastWalkKey(movementSocket);
+    Engine::PopFastWalkKey();
     seq = nextSeq;
     WriteRawLog("SendWalk send succeeded");
 
