@@ -24,6 +24,7 @@ static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) =
 static bool shouldLogTraces = true;
 static volatile LONG g_fastWalkScanMissBudget = 8;
 static SOCKET g_lastSocket = INVALID_SOCKET;
+static SOCKET g_lastLoggedSocket = INVALID_SOCKET;
 
 static uint32_t ExtractFastWalkKey0x2E(const char* buf, int len)
 {
@@ -118,6 +119,12 @@ static void TraceOutbound(SOCKET s, const char* buf, int len)
 {
     if (s != INVALID_SOCKET)
         g_lastSocket = s;
+    if (s != INVALID_SOCKET && s != g_lastLoggedSocket) {
+        g_lastLoggedSocket = s;
+        char msg[128];
+        sprintf_s(msg, sizeof(msg), "TraceOutbound: socket=%p", reinterpret_cast<void*>(static_cast<uintptr_t>(s)));
+        WriteRawLog(msg);
+    }
     if(shouldLogTraces)
         Logf("send-family len=%d id=%02X", len, (unsigned char)buf[0]);
     int dumpLen = len > 64 ? 64 : len;

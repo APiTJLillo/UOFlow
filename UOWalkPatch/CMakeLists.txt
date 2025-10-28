@@ -216,3 +216,8 @@ add_custom_command(
         "$<TARGET_FILE:UOWalkPatchDLL>"
         "$<TARGET_FILE_DIR:UOInjector>"
 )
+
+add_executable(DumpAnalyzer tools/DumpAnalyzer.cpp)
+target_link_libraries(DumpAnalyzer PRIVATE dbghelp)
+set_target_properties(DumpAnalyzer PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

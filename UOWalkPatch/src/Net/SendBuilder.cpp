@@ -1946,42 +1946,6 @@ bool SendPacketRaw(const void* bytes, int len)
 
     if (TrySendViaSocket(bytes, len, "SendPacketRaw via socket (preferred)"))
         return true;
-
-    if (fpSendBuilder && g_sendCtx)
-    {
-        struct alignas(8) BuilderStub
-        {
-            void* payload;
-            int length;
-            uint32_t reserved[6];
-        };
-        BuilderStub stub{};
-        stub.payload = const_cast<void*>(bytes);
-        stub.length = len;
-
-        bool builderSent = false;
-        __try {
-            fpSendBuilder(g_sendCtx, &stub);
-            builderSent = true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            builderSent = false;
-            WriteRawLog("SendPacketRaw: SendBuilder dispatch threw");
-        }
-
-        if (builderSent) {
-            static volatile LONG s_successLogBudgetBuilder = 64;
-            if (s_successLogBudgetBuilder > 0 && InterlockedDecrement(&s_successLogBudgetBuilder) >= 0) {
-                char status[160];
-                sprintf_s(status, sizeof(status),
-                          "SendPacketRaw via builder succeeded len=%d", len);
-                WriteRawLog(status);
-            }
-            return true;
-        }
-        // fall back to direct path if builder failed
-    }
-
     if (!g_sendPacket)
         return TrySendViaSocket(bytes, len, "SendPacketRaw via socket (no sendCtx)");
 
