@@ -150,6 +150,9 @@ static bool HandleFastWalkKey(SOCKET socket, uint32_t key, const char* source)
     if (!key)
         return false;
 
+    SOCKET canonical = Engine::ResolveFastWalkSocket(socket);
+    socket = canonical;
+
     Engine::RecordObservedFastWalkKey(key);
 
     if (Engine::PeekFastWalkKey(socket) == key)
@@ -221,10 +224,13 @@ static SOCKET SelectFastWalkSocket(SOCKET fallback)
         return active;
 
     SOCKET preferred = Net::GetPreferredSocket();
-    if (preferred != INVALID_SOCKET)
-        return preferred;
+    if (preferred != INVALID_SOCKET) {
+        SOCKET resolved = Engine::ResolveFastWalkSocket(preferred);
+        return resolved != INVALID_SOCKET ? resolved : preferred;
+    }
 
-    return fallback;
+    SOCKET resolvedFallback = Engine::ResolveFastWalkSocket(fallback);
+    return resolvedFallback != INVALID_SOCKET ? resolvedFallback : fallback;
 }
 
 static void TraceOutbound(SOCKET& s, const char* buf, int len)
@@ -271,6 +277,8 @@ static void TraceOutbound(SOCKET& s, const char* buf, int len)
 static void TraceInbound(SOCKET s, const char* buf, int len)
 {
     unsigned char opcode = (len > 0) ? static_cast<unsigned char>(buf[0]) : 0;
+    SOCKET canonical = Engine::ResolveFastWalkSocket(s);
+    SOCKET effectiveSocket = (canonical != INVALID_SOCKET) ? canonical : s;
 
     NoteSocketActivity(s);
     if(shouldLogTraces)
@@ -281,10 +289,10 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
 
     if (opcode == 0x2E && len >= 7) {
         uint32_t key = ExtractFastWalkKey0x2E(buf, len);
-        int depthBefore = Engine::FastWalkQueueDepth(s);
-        bool accepted = HandleFastWalkKey(s, key, "0x2E");
+        int depthBefore = Engine::FastWalkQueueDepth(effectiveSocket);
+        bool accepted = HandleFastWalkKey(effectiveSocket, key, "0x2E");
         if (accepted) {
-            LogInboundFastWalkKey("0x2E", s, key, depthBefore);
+            LogInboundFastWalkKey("0x2E", effectiveSocket, key, depthBefore);
         } else if (shouldLogTraces) {
             if (key == 0) {
                 Logf("FastWalk 0x2E packet ignored len=%d", len);
@@ -333,10 +341,10 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
         } else if (len >= 3) {
             key = ntohs(*(const uint16_t*)(buf + 1));
         }
-        int depthBefore = Engine::FastWalkQueueDepth(s);
-        bool accepted = HandleFastWalkKey(s, key, "0xB8");
+        int depthBefore = Engine::FastWalkQueueDepth(effectiveSocket);
+        bool accepted = HandleFastWalkKey(effectiveSocket, key, "0xB8");
         if (accepted) {
-            LogInboundFastWalkKey("0xB8", s, key, depthBefore);
+            LogInboundFastWalkKey("0xB8", effectiveSocket, key, depthBefore);
         } else if (shouldLogTraces) {
             if (key == 0) {
                 Logf("FastWalk 0xB8 packet ignored len=%d", len);
@@ -356,18 +364,18 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
             for (uint8_t i = 0; i < count && (p + 4 <= (const uint8_t*)buf + len); ++i)
             {
                 uint32_t key = ntohl(*(uint32_t*)p);
-                int depthBefore = Engine::FastWalkQueueDepth(s);
-                if (HandleFastWalkKey(s, key, "0xBF:01"))
-                    LogInboundFastWalkKey("0xBF:01", s, key, depthBefore);
+                int depthBefore = Engine::FastWalkQueueDepth(effectiveSocket);
+                if (HandleFastWalkKey(effectiveSocket, key, "0xBF:01"))
+                    LogInboundFastWalkKey("0xBF:01", effectiveSocket, key, depthBefore);
                 p += 4;
             }
         }
         else if (sub == 0x02 && len >= 5 + 1 + 4)
         {
             uint32_t key = ntohl(*(uint32_t*)(payload + 1));
-            int depthBefore = Engine::FastWalkQueueDepth(s);
-            if (HandleFastWalkKey(s, key, "0xBF:02"))
-                LogInboundFastWalkKey("0xBF:02", s, key, depthBefore);
+            int depthBefore = Engine::FastWalkQueueDepth(effectiveSocket);
+            if (HandleFastWalkKey(effectiveSocket, key, "0xBF:02"))
+                LogInboundFastWalkKey("0xBF:02", effectiveSocket, key, depthBefore);
         }
     }
 }
