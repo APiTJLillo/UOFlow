@@ -29,22 +29,64 @@ static SOCKET g_lastSocket = INVALID_SOCKET;
 static SOCKET g_lastLoggedSocket = INVALID_SOCKET;
 static std::atomic<SOCKET> g_preferredSocket{INVALID_SOCKET};
 
-static bool ShouldBlockOutboundFastWalkPacket(const char* buf, int len)
+static constexpr int kFastWalkReserveDepth = 2;
+
+static bool EvaluateFastWalkGate(const char* buf, int len, bool& suppressOut, int& depthOut)
 {
+    suppressOut = false;
+    depthOut = 0;
+
     if (!buf || len <= 0)
         return false;
-    return static_cast<unsigned char>(buf[0]) == 0x2E;
+
+    if (static_cast<unsigned char>(buf[0]) != 0x2E)
+        return false;
+
+    depthOut = Engine::FastWalkQueueDepth();
+    suppressOut = depthOut >= kFastWalkReserveDepth;
+    return true;
 }
 
-static void LogBlockedFastWalkPacket(SOCKET s, const char* buf, int len)
+static void LogFastWalkGateDecision(const char* action, SOCKET s, int depth)
 {
-    static volatile LONG budget = 8;
+    static volatile LONG budget = 16;
     if (budget > 0 && InterlockedDecrement(&budget) >= 0) {
-        Logf("Blocking outbound fast-walk packet opcode=%02X socket=%p len=%d",
-             len > 0 ? static_cast<unsigned char>(buf[0]) : 0,
+        Logf("FastWalk gate %s opcode=0x2E socket=%p depth=%d reserve=%d",
+             action,
              reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
-             len);
-        WriteRawLog("Blocking outbound fast-walk packet (opcode 0x2E)");
+             depth,
+             kFastWalkReserveDepth);
+        char buf[160];
+        sprintf_s(buf, sizeof(buf),
+                  "FastWalk gate %s: opcode=0x2E socket=%p depth=%d reserve=%d",
+                  action,
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
+                  depth,
+                  kFastWalkReserveDepth);
+        WriteRawLog(buf);
+    }
+}
+
+static void LogInboundFastWalkKey(const char* source, SOCKET socket, uint32_t key, int depthBefore)
+{
+    static volatile LONG budget = 48;
+    if (budget > 0 && InterlockedDecrement(&budget) >= 0) {
+        int depthAfter = Engine::FastWalkQueueDepth(socket);
+        Logf("FastWalk inbound %s socket=%p key=%08X depth=%d->%d",
+             source,
+             reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+             key,
+             depthBefore,
+             depthAfter);
+        char buf[192];
+        sprintf_s(buf, sizeof(buf),
+                  "FastWalk inbound %s socket=%p key=%08X depth=%d->%d",
+                  source,
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+                  key,
+                  depthBefore,
+                  depthAfter);
+        WriteRawLog(buf);
     }
 }
 
@@ -239,7 +281,11 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
 
     if (opcode == 0x2E && len >= 7) {
         uint32_t key = ExtractFastWalkKey0x2E(buf, len);
-        if (!HandleFastWalkKey(s, key, "0x2E") && shouldLogTraces) {
+        int depthBefore = Engine::FastWalkQueueDepth(s);
+        bool accepted = HandleFastWalkKey(s, key, "0x2E");
+        if (accepted) {
+            LogInboundFastWalkKey("0x2E", s, key, depthBefore);
+        } else if (shouldLogTraces) {
             if (key == 0) {
                 Logf("FastWalk 0x2E packet ignored len=%d", len);
             } else {
@@ -285,7 +331,11 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
         } else if (len >= 3) {
             key = ntohs(*(const uint16_t*)(buf + 1));
         }
-        if (!HandleFastWalkKey(s, key, "0xB8") && shouldLogTraces) {
+        int depthBefore = Engine::FastWalkQueueDepth(s);
+        bool accepted = HandleFastWalkKey(s, key, "0xB8");
+        if (accepted) {
+            LogInboundFastWalkKey("0xB8", s, key, depthBefore);
+        } else if (shouldLogTraces) {
             if (key == 0) {
                 Logf("FastWalk 0xB8 packet ignored len=%d", len);
             } else {
@@ -304,23 +354,32 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
             for (uint8_t i = 0; i < count && (p + 4 <= (const uint8_t*)buf + len); ++i)
             {
                 uint32_t key = ntohl(*(uint32_t*)p);
-                HandleFastWalkKey(s, key, "0xBF:01");
+                int depthBefore = Engine::FastWalkQueueDepth(s);
+                if (HandleFastWalkKey(s, key, "0xBF:01"))
+                    LogInboundFastWalkKey("0xBF:01", s, key, depthBefore);
                 p += 4;
             }
         }
         else if (sub == 0x02 && len >= 5 + 1 + 4)
         {
             uint32_t key = ntohl(*(uint32_t*)(payload + 1));
-            HandleFastWalkKey(s, key, "0xBF:02");
+            int depthBefore = Engine::FastWalkQueueDepth(s);
+            if (HandleFastWalkKey(s, key, "0xBF:02"))
+                LogInboundFastWalkKey("0xBF:02", s, key, depthBefore);
         }
     }
 }
 
 static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
 {
-    if (ShouldBlockOutboundFastWalkPacket(buf, len)) {
-        LogBlockedFastWalkPacket(s, buf, len);
-        return len;
+    bool suppress = false;
+    int depth = 0;
+    if (EvaluateFastWalkGate(buf, len, suppress, depth)) {
+        if (suppress) {
+            LogFastWalkGateDecision("suppressing", s, depth);
+            return len;
+        }
+        LogFastWalkGateDecision("forwarding", s, depth);
     }
 
     TraceOutbound(s, buf, len);
@@ -337,11 +396,16 @@ static int WSAAPI H_WSASend(
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
     if (cnt) {
-        if (ShouldBlockOutboundFastWalkPacket(wsa[0].buf, static_cast<int>(wsa[0].len))) {
-            LogBlockedFastWalkPacket(s, wsa[0].buf, static_cast<int>(wsa[0].len));
-            if (sent)
-                *sent = wsa[0].len;
-            return 0;
+        bool suppress = false;
+        int depth = 0;
+        if (EvaluateFastWalkGate(wsa[0].buf, static_cast<int>(wsa[0].len), suppress, depth)) {
+            if (suppress) {
+                LogFastWalkGateDecision("suppressing", s, depth);
+                if (sent)
+                    *sent = wsa[0].len;
+                return 0;
+            }
+            LogFastWalkGateDecision("forwarding", s, depth);
         }
         TraceOutbound(s, wsa[0].buf, (int)wsa[0].len);
     }
@@ -360,11 +424,16 @@ static int WSAAPI H_WSASendTo(
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
     if (cnt) {
-        if (ShouldBlockOutboundFastWalkPacket(wsa[0].buf, static_cast<int>(wsa[0].len))) {
-            LogBlockedFastWalkPacket(s, wsa[0].buf, static_cast<int>(wsa[0].len));
-            if (sent)
-                *sent = wsa[0].len;
-            return 0;
+        bool suppress = false;
+        int depth = 0;
+        if (EvaluateFastWalkGate(wsa[0].buf, static_cast<int>(wsa[0].len), suppress, depth)) {
+            if (suppress) {
+                LogFastWalkGateDecision("suppressing", s, depth);
+                if (sent)
+                    *sent = wsa[0].len;
+                return 0;
+            }
+            LogFastWalkGateDecision("forwarding", s, depth);
         }
         TraceOutbound(s, wsa[0].buf, (int)wsa[0].len);
     }
@@ -379,9 +448,14 @@ static int WSAAPI H_SendTo(
     const sockaddr* to,
     int tolen)
 {
-    if (ShouldBlockOutboundFastWalkPacket(buf, len)) {
-        LogBlockedFastWalkPacket(s, buf, len);
-        return len;
+    bool suppress = false;
+    int depth = 0;
+    if (EvaluateFastWalkGate(buf, len, suppress, depth)) {
+        if (suppress) {
+            LogFastWalkGateDecision("suppressing", s, depth);
+            return len;
+        }
+        LogFastWalkGateDecision("forwarding", s, depth);
     }
 
     TraceOutbound(s, buf, len);
