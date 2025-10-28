@@ -65,6 +65,8 @@ static thread_local bool g_scriptSendInProgress = false;
 static std::atomic<uint32_t> g_lastMovementSendTickMs{0};
 static constexpr DWORD kMovementAckThrottleMs = 800;
 static volatile LONG g_sendThrottleLogBudget = 8;
+static void* g_candidateDest = nullptr;
+static volatile LONG g_localEnqueueFailBudget = 8;
 
 static constexpr int kStepDx[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 static constexpr int kStepDy[8] = {-1, -1, 0, 1, 1, 1, 0, -1};
@@ -368,6 +370,81 @@ static bool EnqueueViaUpdate(int dir, bool shouldRun, int stepScale)
     LogQueueState(afterTag);
 
     return true;
+}
+
+static bool EnqueueViaUpdateWithComponent(void* component, void* destPtr, int dir, bool shouldRun, int stepScale, const char* reasonTag)
+{
+    if (!component || !destPtr || !g_origUpdate)
+        return false;
+
+    void* savedComp = g_moveComp;
+    void* savedDest = g_dest;
+
+    g_moveComp = component;
+    g_dest = destPtr;
+
+    bool queued = EnqueueViaUpdate(dir, shouldRun, stepScale);
+
+    if (!savedComp) {
+        if (queued) {
+            g_moveComp = component;
+            g_dest = destPtr;
+            g_candidateDest = destPtr;
+            Logf("LocalStep: adopted movement component = %p (reason=%s)", component, reasonTag ? reasonTag : "candidate");
+            Engine::RequestWalkRegistration();
+        } else {
+            g_moveComp = nullptr;
+            g_dest = nullptr;
+        }
+    } else {
+        g_moveComp = savedComp;
+        g_dest = savedDest;
+    }
+
+    if (queued) {
+        char buf[192];
+        sprintf_s(buf, sizeof(buf),
+                  "%s: enqueued predicted step dir=%d run=%d (comp=%p dest=%p)",
+                  reasonTag ? reasonTag : "LocalStep",
+                  dir,
+                  shouldRun ? 1 : 0,
+                  component,
+                  destPtr);
+        WriteRawLog(buf);
+    } else if (reasonTag) {
+        while (true) {
+            LONG current = g_localEnqueueFailBudget;
+            if (current <= 0)
+                break;
+            if (InterlockedCompareExchange(&g_localEnqueueFailBudget, current - 1, current) == current) {
+                char buf[192];
+                sprintf_s(buf, sizeof(buf),
+                          "%s: local enqueue failed (comp=%p dest=%p)",
+                          reasonTag,
+                          component,
+                          destPtr);
+                WriteRawLog(buf);
+                break;
+            }
+        }
+    }
+
+    return queued;
+}
+
+static bool TryQueueLocalStep(int dir, bool shouldRun, int stepScale)
+{
+    if (EnqueueViaUpdate(dir, shouldRun, stepScale))
+        return true;
+
+    void* candidateComp = g_moveCandidate ? g_moveCandidate : nullptr;
+    void* candidateDest = g_candidateDest;
+
+    if (candidateComp && candidateDest) {
+        return EnqueueViaUpdateWithComponent(candidateComp, candidateDest, dir, shouldRun, stepScale, "LocalStep(cand)");
+    }
+
+    return false;
 }
 
 static void ProbeFastWalkStorage(const uint8_t* compPtrData)
@@ -1066,6 +1143,10 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
         Logf("Captured movement candidate = %p (thread %lu)", g_moveCandidate, GetCurrentThreadId());
     }
 
+    if (thisPtr == g_moveCandidate && destPtr) {
+        g_candidateDest = destPtr;
+    }
+
     DWORD now = GetTickCount();
     bool dumpReserved = false;
     if (destPtr && (!g_moveComp || g_pendingMoveActive)) {
@@ -1122,6 +1203,7 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
         if (destPtr) {
             g_moveComp = thisPtr;
             g_dest = destPtr;
+            g_candidateDest = destPtr;
             Logf("Identified player movement component via ptr heuristic = %p (ptrA=%p offset=0x%X id=%u dest=%p)",
                  g_moveComp,
                  reinterpret_cast<void*>(ptrA),
@@ -1359,6 +1441,8 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
         }
     } else if (thisPtr == g_moveComp) {
         g_dest = destPtr;
+        if (destPtr)
+            g_candidateDest = destPtr;
     }
 
     if (g_expectValid && haveAfter) {
@@ -1367,6 +1451,7 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
             if (g_moveComp != thisPtr) {
                 g_moveComp = thisPtr;
                 g_dest = destPtr;
+                g_candidateDest = destPtr;
                 Logf("Adjusted player movement component = %p", g_moveComp);
                 Engine::RequestWalkRegistration();
             }
@@ -1530,12 +1615,14 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     InterlockedExchange(&g_pendingTick, static_cast<LONG>(GetTickCount()));
     InterlockedExchange(&g_pendingMoveActive, 1);
 
-    bool queuedLocally = movementReady ? EnqueueViaUpdate(normalizedDir, shouldRun, stepScale) : false;
+    bool queuedLocally = TryQueueLocalStep(normalizedDir, shouldRun, stepScale);
 
     if (!queuedLocally) {
-        Logf("SendWalk: local queue update skipped (comp=%p dest=%p orig=%s)",
+        Logf("SendWalk: local queue update skipped (comp=%p candidate=%p dest=%p candidateDest=%p orig=%s)",
              g_moveComp,
+             g_moveCandidate,
              g_dest,
+             g_candidateDest,
              g_origUpdate ? "yes" : "no");
     }
 

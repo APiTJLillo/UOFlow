@@ -149,8 +149,18 @@ static void CaptureClientWalkBinding(lua_State* L, const char* reason)
     if (!L)
         return;
 
-    if (g_clientWalkFn || g_clientWalkClosureValid)
+    if (g_clientWalkFn || g_clientWalkClosureValid) {
+        if (reason && reason[0] != '\0') {
+            char info[192];
+            sprintf_s(info, sizeof(info),
+                "CaptureClientWalkBinding(%s): handler already cached (C=%p closure=%d)",
+                reason,
+                reinterpret_cast<void*>(g_clientWalkFn),
+                g_clientWalkClosureValid ? 1 : 0);
+            WriteRawLog(info);
+        }
         return;
+    }
 
     int topBefore = 0;
     __try {
@@ -180,7 +190,12 @@ static void CaptureClientWalkBinding(lua_State* L, const char* reason)
                     walkPtr);
                 WriteRawLog(info);
             } else {
-                WriteRawLog("CaptureClientWalkBinding: walk global already bound to helper");
+                char info[224];
+                sprintf_s(info, sizeof(info),
+                    "CaptureClientWalkBinding(%s): walk global already bound to helper (ptr=%p)",
+                    reason ? reason : "<null>",
+                    walkPtr);
+                WriteRawLog(info);
             }
         } else {
             char info[160];
@@ -432,6 +447,25 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
 
     uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
     void* walkPtr = reinterpret_cast<void*>(walkInt);
+
+    if (name) {
+        if (_stricmp(name, "walk") == 0 && func && func != walkPtr) {
+            char info[192];
+            sprintf_s(info, sizeof(info),
+                "CaptureClientWalkBinding: observed walk registration ctx=%p func=%p",
+                ctx,
+                func);
+            WriteRawLog(info);
+        } else if (_stricmp(name, "bindWalk") == 0) {
+            char info[192];
+            sprintf_s(info, sizeof(info),
+                "CaptureClientWalkBinding: observed bindWalk registration ctx=%p func=%p",
+                ctx,
+                func);
+            WriteRawLog(info);
+        }
+    }
+
     if (name && _stricmp(name, "walk") == 0 && func && func != walkPtr) {
         g_clientWalkFn = reinterpret_cast<lua_CFunction>(func);
         ClearClientWalkClosure(static_cast<lua_State*>(Engine::LuaState()));
@@ -441,6 +475,18 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
     }
 
     int rc = g_clientRegister ? g_clientRegister(ctx, func, name) : 0;
+
+    if (name) {
+        if (_stricmp(name, "walk") == 0 && func && func != walkPtr) {
+            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
+                CaptureClientWalkBinding(L, "Hook_Register post-walk");
+            }
+        } else if (_stricmp(name, "bindWalk") == 0) {
+            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
+                CaptureClientWalkBinding(L, "Hook_Register bindWalk");
+            }
+        }
+    }
 
     uintptr_t bindInt = reinterpret_cast<uintptr_t>(&Lua_BindWalk);
     void* bindPtr = reinterpret_cast<void*>(bindInt);
