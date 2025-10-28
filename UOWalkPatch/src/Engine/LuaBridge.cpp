@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cctype>
 #include <cstring>
+#include <atomic>
 #include <minhook.h>
 
 #include "Core/Logging.hpp"
@@ -17,6 +18,9 @@ extern "C" LUA_API void lua_pushnumber(lua_State* L, lua_Number n);
 extern "C" LUA_API int lua_pcall(lua_State* L, int nargs, int nresults, int errfunc);
 extern "C" LUA_API void lua_remove(lua_State* L, int idx);
 extern "C" LUA_API const char* lua_tolstring(lua_State* L, int idx, size_t* len);
+extern "C" LUA_API void lua_pushboolean(lua_State* L, int b);
+extern "C" LUA_API void lua_pushcclosure(lua_State* L, lua_CFunction fn, int n);
+extern "C" LUA_API lua_CFunction lua_tocfunction(lua_State* L, int idx);
 
 #ifndef LUA_MULTRET
 #define LUA_MULTRET (-1)
@@ -42,7 +46,7 @@ namespace {
         unsigned flags;
     };
 
-    static constexpr size_t kMaxObservedContexts = 8;
+static constexpr size_t kMaxObservedContexts = 8;
 static ObservedContext g_observedContexts[kMaxObservedContexts]{};
 
 enum ContextLogBits : unsigned {
@@ -51,7 +55,27 @@ enum ContextLogBits : unsigned {
 };
 
 static volatile LONG g_pendingRegistration = 0;
-static thread_local bool g_inScriptRegistration = false;
+static std::atomic<bool> g_registrationInProgress{false};
+
+static void FlushPendingRegistration()
+{
+    if (InterlockedCompareExchange(&g_pendingRegistration, 0, 0) == 0)
+        return;
+
+    bool expected = false;
+    if (!g_registrationInProgress.compare_exchange_strong(expected, true))
+        return;
+
+    __try {
+        Engine::Lua::RegisterOurLuaFunctions();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("FlushPendingRegistration: exception during RegisterOurLuaFunctions");
+    }
+
+    g_registrationInProgress.store(false, std::memory_order_release);
+    InterlockedExchange(&g_pendingRegistration, 0);
+}
 }
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
@@ -61,6 +85,23 @@ static int __cdecl Lua_FastWalkInfo(lua_State* L);
 static int __cdecl Lua_MovementInfo(lua_State* L);
 
 static lua_CFunction g_clientWalkFn = nullptr;
+static bool g_clientWalkClosureValid = false;
+static constexpr const char* kClientWalkClosureGlobal = "_uoWalk_clientClosure";
+
+static void ClearClientWalkClosure(lua_State* L)
+{
+    g_clientWalkClosureValid = false;
+    if (!L)
+        return;
+
+    __try {
+        lua_pushnil(L);
+        lua_setglobal(L, kClientWalkClosureGlobal);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("ClearClientWalkClosure: exception while clearing closure global");
+    }
+}
 
 static void LogWalkBindingState(lua_State* L, const char* stage)
 {
@@ -101,6 +142,66 @@ static void LogWalkBindingState(lua_State* L, const char* stage)
         (bindType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, bindType),
         bindPtr);
     WriteRawLog(buf);
+}
+
+static void CaptureClientWalkBinding(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+
+    if (g_clientWalkFn || g_clientWalkClosureValid)
+        return;
+
+    int topBefore = 0;
+    __try {
+        topBefore = lua_gettop(L);
+        lua_getglobal(L, "walk");
+        if (lua_type(L, -1) == LUA_TFUNCTION) {
+            const void* walkPtr = lua_topointer(L, -1);
+            lua_CFunction cfn = lua_tocfunction(L, -1);
+            if (cfn && cfn != reinterpret_cast<lua_CFunction>(&Lua_Walk)) {
+                g_clientWalkFn = cfn;
+                ClearClientWalkClosure(L);
+                char info[224];
+                sprintf_s(info, sizeof(info),
+                    "CaptureClientWalkBinding(%s): captured C handler ptr=%p",
+                    reason ? reason : "<null>",
+                    reinterpret_cast<void*>(cfn));
+                WriteRawLog(info);
+            } else if (!cfn) {
+                ClearClientWalkClosure(L);
+                lua_pushvalue(L, -1);
+                lua_setglobal(L, kClientWalkClosureGlobal);
+                g_clientWalkClosureValid = true;
+                char info[256];
+                sprintf_s(info, sizeof(info),
+                    "CaptureClientWalkBinding(%s): captured Lua closure ptr=%p",
+                    reason ? reason : "<null>",
+                    walkPtr);
+                WriteRawLog(info);
+            } else {
+                WriteRawLog("CaptureClientWalkBinding: walk global already bound to helper");
+            }
+        } else {
+            char info[160];
+            sprintf_s(info, sizeof(info),
+                "CaptureClientWalkBinding(%s): global walk missing or type=%s",
+                reason ? reason : "<null>",
+                lua_typename(L, lua_type(L, -1)));
+            WriteRawLog(info);
+            lua_pop(L, 1);
+        }
+        lua_settop(L, topBefore);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("CaptureClientWalkBinding: exception during inspection");
+        __try {
+            if (L)
+                lua_settop(L, topBefore);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
 }
 
 static bool RegisterFunctionSafe(lua_State* L, lua_CFunction fn, const char* name)
@@ -191,23 +292,12 @@ static void ForceWalkBinding(lua_State* L, const char* reason)
     LogWalkBindingState(L, stateBuf);
 
     char buf[224];
-    sprintf_s(buf, sizeof(buf), "%s: ensuring walk binding via client helper (Lua_Walk=%p ctx=%p)",
+    sprintf_s(buf, sizeof(buf),
+        "%s: skipping walk rebinding (Lua_Walk=%p ctx=%p)",
         tag,
         desiredPtr,
         g_clientContext);
     WriteRawLog(buf);
-
-    bool helperOk = RegisterViaClient(L, Lua_Walk, "walk");
-    if (helperOk) {
-        WriteRawLog("ForceWalkBinding: client helper rebound walk successfully");
-    } else {
-        WriteRawLog("ForceWalkBinding: client helper failed; will rely on direct Lua binding");
-        if (RegisterFunctionSafe(L, Lua_Walk, "walk")) {
-            WriteRawLog("ForceWalkBinding: direct Lua binding ensured walk global");
-        } else {
-            WriteRawLog("ForceWalkBinding: direct Lua binding failed");
-        }
-    }
 
     sprintf_s(stateBuf, sizeof(stateBuf), "%s post-bind", tag);
     LogWalkBindingState(L, stateBuf);
@@ -344,6 +434,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
     void* walkPtr = reinterpret_cast<void*>(walkInt);
     if (name && _stricmp(name, "walk") == 0 && func && func != walkPtr) {
         g_clientWalkFn = reinterpret_cast<lua_CFunction>(func);
+        ClearClientWalkClosure(static_cast<lua_State*>(Engine::LuaState()));
         char info[160];
         sprintf_s(info, sizeof(info), "Captured client walk function %p", func);
         WriteRawLog(info);
@@ -369,13 +460,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         }
     }
 
-    if (!g_inScriptRegistration) {
-        if (InterlockedExchange(&g_pendingRegistration, 0)) {
-            g_inScriptRegistration = true;
-            Engine::Lua::RegisterOurLuaFunctions();
-            g_inScriptRegistration = false;
-        }
-    }
+    FlushPendingRegistration();
 
     return rc;
 }
@@ -384,6 +469,169 @@ static int __cdecl Lua_DummyPrint(lua_State*)
 {
     WriteRawLog("[Lua] DummyPrint() was invoked!");
     return 0;
+}
+
+struct ClientWalkCallResult {
+    bool invoked = false;
+    bool callSucceeded = false;
+    bool truthy = false;
+    bool sendObserved = false;
+};
+
+static ClientWalkCallResult InvokeClientWalk(lua_State* L, lua_CFunction fn, int dir, int runValue, bool includeRun, const char* label)
+{
+    ClientWalkCallResult result{};
+    if (!L || !fn)
+        return result;
+
+    int topBefore = 0;
+    __try {
+        topBefore = lua_gettop(L);
+        lua_pushcclosure(L, fn, 0);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Lua_Walk: exception while pushing client walk handler");
+        __try {
+            if (L)
+                lua_settop(L, topBefore);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+        return result;
+    }
+
+    result.invoked = true;
+
+    const void* pushedPtr = lua_topointer(L, -1);
+    if (pushedPtr == reinterpret_cast<const void*>(Lua_Walk)) {
+        WriteRawLog("Lua_Walk: client handler pointer resolved to helper; refusing recursion");
+        lua_settop(L, topBefore);
+        return result;
+    }
+
+    lua_pushnumber(L, dir);
+    if (includeRun)
+        lua_pushnumber(L, runValue);
+    int nargs = includeRun ? 2 : 1;
+
+    Engine::ArmMovementSendWatchdog();
+    int rc = lua_pcall(L, nargs, LUA_MULTRET, 0);
+    bool sendObserved = Engine::DisarmAndCheckMovementSend();
+    result.sendObserved = sendObserved;
+
+    if (rc != LUA_OK) {
+        const char* err = lua_tolstring(L, -1, nullptr);
+        char buf[256];
+        sprintf_s(buf, sizeof(buf),
+                  "Lua_Walk: client handler '%s' threw (%s)",
+                  label,
+                  err ? err : "<unknown>");
+        WriteRawLog(buf);
+        lua_pop(L, 1);
+        lua_settop(L, topBefore);
+        return result;
+    }
+
+    result.callSucceeded = true;
+
+    int topAfter = lua_gettop(L);
+    int resultCount = topAfter - topBefore;
+    bool truthy = true;
+    if (resultCount > 0) {
+        truthy = (lua_toboolean(L, topBefore + 1) != 0);
+    }
+    result.truthy = truthy;
+
+    char buf[256];
+    sprintf_s(buf, sizeof(buf),
+              "Lua_Walk -> client handler '%s' completed (results=%d truthy=%d sendObserved=%d)",
+              label,
+              resultCount,
+              truthy ? 1 : 0,
+              sendObserved ? 1 : 0);
+    WriteRawLog(buf);
+
+    lua_settop(L, topBefore);
+    return result;
+}
+
+static ClientWalkCallResult InvokeClientWalkClosure(lua_State* L, int dir, int runValue, bool includeRun, const char* label)
+{
+    ClientWalkCallResult result{};
+    if (!L || !g_clientWalkClosureValid)
+        return result;
+
+    int topBefore = 0;
+    __try {
+        topBefore = lua_gettop(L);
+        lua_getglobal(L, kClientWalkClosureGlobal);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("Lua_Walk: exception while pushing walk closure");
+        return result;
+    }
+
+    if (lua_type(L, -1) != LUA_TFUNCTION) {
+        char buf[224];
+        sprintf_s(buf, sizeof(buf),
+            "Lua_Walk: stored walk closure missing (type=%s); clearing cache",
+            lua_typename(L, lua_type(L, -1)));
+        WriteRawLog(buf);
+        ClearClientWalkClosure(L);
+        lua_settop(L, topBefore);
+        return result;
+    }
+
+    result.invoked = true;
+
+    if (!includeRun)
+        lua_pushnumber(L, dir);
+    else {
+        lua_pushnumber(L, dir);
+        lua_pushnumber(L, runValue);
+    }
+
+    int nargs = includeRun ? 2 : 1;
+
+    Engine::ArmMovementSendWatchdog();
+    int rc = lua_pcall(L, nargs, LUA_MULTRET, 0);
+    bool sendObserved = Engine::DisarmAndCheckMovementSend();
+    result.sendObserved = sendObserved;
+
+    if (rc != LUA_OK) {
+        const char* err = lua_tolstring(L, -1, nullptr);
+        char buf[256];
+        sprintf_s(buf, sizeof(buf),
+                  "Lua_Walk: walk closure '%s' threw (%s)",
+                  label,
+                  err ? err : "<unknown>");
+        WriteRawLog(buf);
+        lua_pop(L, 1);
+        lua_settop(L, topBefore);
+        return result;
+    }
+
+    result.callSucceeded = true;
+
+    int topAfter = lua_gettop(L);
+    int resultCount = topAfter - topBefore;
+    bool truthy = true;
+    if (resultCount > 0) {
+        truthy = (lua_toboolean(L, topBefore + 1) != 0);
+    }
+    result.truthy = truthy;
+
+    char buf[256];
+    sprintf_s(buf, sizeof(buf),
+              "Lua_Walk -> walk closure '%s' completed (results=%d truthy=%d sendObserved=%d)",
+              label,
+              resultCount,
+              truthy ? 1 : 0,
+              sendObserved ? 1 : 0);
+    WriteRawLog(buf);
+
+    lua_settop(L, topBefore);
+    return result;
 }
 
 static int __cdecl Lua_Walk(lua_State* L)
@@ -407,86 +655,84 @@ static int __cdecl Lua_Walk(lua_State* L)
     run = runValue != 0;
 
     SOCKET activeSocket = Engine::GetActiveFastWalkSocket();
-    int fastWalkDepth = Engine::FastWalkQueueDepth(activeSocket);
+   int fastWalkDepth = Engine::FastWalkQueueDepth(activeSocket);
 
     char buf[192];
     sprintf_s(buf, sizeof(buf),
-              "Lua_Walk invoked dir=%d run=%d activeSocket=%p fastWalkDepth=%d clientFn=%p",
+              "Lua_Walk invoked dir=%d run=%d activeSocket=%p fastWalkDepth=%d clientFn=%p closureValid=%d",
               dir,
               runValue,
               reinterpret_cast<void*>(static_cast<uintptr_t>(activeSocket)),
               fastWalkDepth,
-              reinterpret_cast<void*>(g_clientWalkFn));
+              reinterpret_cast<void*>(g_clientWalkFn),
+              g_clientWalkClosureValid ? 1 : 0);
     WriteRawLog(buf);
 
-    if (L) {
-        lua_getglobal(L, "walk");
-        bool haveFn = (lua_type(L, -1) == LUA_TFUNCTION);
+    bool clientAttempted = false;
+    bool clientHandled = false;
+    bool missingSend = false;
 
-        sprintf_s(buf, sizeof(buf),
-                  "Lua_Walk resolved client handler: haveFn=%d",
-                  haveFn ? 1 : 0);
-        WriteRawLog(buf);
-
-        if (haveFn) {
-            int fnIndex = lua_gettop(L);
-            auto invokeClient = [&](bool includeRun, const char* label) -> bool {
-                lua_pushvalue(L, fnIndex); // function copy
-                lua_pushnumber(L, dir);
-                if (includeRun)
-                    lua_pushnumber(L, runValue);
-                int nargs = includeRun ? 2 : 1;
-                int callTopBefore = lua_gettop(L);
-                int resultsStart = callTopBefore - nargs;
-                int rc = lua_pcall(L, nargs, LUA_MULTRET, 0);
-                if (rc != LUA_OK) {
-                    const char* err = lua_tolstring(L, -1, nullptr);
-                    char errBuf[192];
-                    sprintf_s(errBuf, sizeof(errBuf),
-                              "Lua_Walk: client handler '%s' threw (%s)",
-                              label,
-                              err ? err : "<unknown>");
-                    WriteRawLog(errBuf);
-                    lua_pop(L, 1);
-                    lua_settop(L, fnIndex);
-                    return false;
-                }
-
-                int topAfter = lua_gettop(L);
-                int resultCount = topAfter - fnIndex;
-                bool truthy = true;
-                if (resultCount > 0) {
-                    int firstResult = fnIndex + 1;
-                    truthy = (lua_toboolean(L, firstResult) != 0);
-                }
-
-                sprintf_s(buf, sizeof(buf),
-                          "Lua_Walk -> client handler '%s' completed (results=%d truthy=%d)",
-                          label,
-                          resultCount,
-                          truthy ? 1 : 0);
-                WriteRawLog(buf);
-
-                lua_settop(L, fnIndex); // discard results, keep original fn
-
-                if (truthy) {
-                    WriteRawLog("Lua_Walk -> client handler accepted request");
-                    lua_remove(L, fnIndex);
-                    return true;
-                }
-                return false;
-            };
-
-            if (invokeClient(false, "dir-only") || invokeClient(true, "dir+run")) {
-                lua_pushboolean(L, 1);
-                return 1;
+    if (L && g_clientWalkFn) {
+        auto attempt = [&](bool includeRun, const char* label) {
+            ClientWalkCallResult res = InvokeClientWalk(L, g_clientWalkFn, dir, runValue, includeRun, label);
+            if (!res.invoked)
+                return;
+            clientAttempted = true;
+            if (!res.callSucceeded || !res.truthy)
+                return;
+            if (res.sendObserved) {
+                clientHandled = true;
+                WriteRawLog("Lua_Walk -> client handler accepted request");
+                return;
             }
+            missingSend = true;
+        };
 
-            lua_remove(L, fnIndex);
-            WriteRawLog("Lua_Walk: client handler attempts failed; falling back to internal sender");
-        } else {
-            lua_pop(L, 1);
+        attempt(false, "dir-only");
+        if (!clientHandled)
+            attempt(true, "dir+run");
+
+        if (clientHandled) {
+            lua_pushboolean(L, 1);
+            return 1;
         }
+    } else if (L && !g_clientWalkFn) {
+        if (g_clientWalkClosureValid)
+            WriteRawLog("Lua_Walk: no captured client walk C function; will try Lua closure");
+        else
+            WriteRawLog("Lua_Walk: no captured client walk handler; will use internal sender");
+    }
+
+    if (L && !clientHandled && g_clientWalkClosureValid) {
+        auto attemptClosure = [&](bool includeRun, const char* label) {
+            ClientWalkCallResult res = InvokeClientWalkClosure(L, dir, runValue, includeRun, label);
+            if (!res.invoked)
+                return;
+            clientAttempted = true;
+            if (!res.callSucceeded || !res.truthy)
+                return;
+            if (res.sendObserved) {
+                clientHandled = true;
+                WriteRawLog("Lua_Walk -> walk closure accepted request");
+                return;
+            }
+            missingSend = true;
+        };
+
+        attemptClosure(false, "dir-only");
+        if (!clientHandled)
+            attemptClosure(true, "dir+run");
+
+        if (clientHandled) {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+
+    if (missingSend) {
+        WriteRawLog("Lua_Walk: client handler returned, but no client 0x02 observed; falling back");
+    } else if (clientAttempted) {
+        WriteRawLog("Lua_Walk: client handler attempts failed; falling back to internal sender");
     }
 
     WriteRawLog("Lua_Walk using internal sender");
@@ -615,7 +861,7 @@ namespace Engine::Lua {
 void RegisterOurLuaFunctions()
 {
     static bool dummyReg = false;
-    static bool walkReg = false;
+   static bool walkReg = false;
     static bool fastInfoReg = false;
     static bool movementInfoReg = false;
     static lua_State* lastState = nullptr;
@@ -649,6 +895,8 @@ void RegisterOurLuaFunctions()
         movementInfoReg = false;
         lastState = L;
         lastMovementReady = movementReady;
+        ClearClientWalkClosure(L);
+        g_clientWalkFn = nullptr;
         WriteRawLog("Lua or movement state changed; reset registration flags");
     }
 
@@ -696,8 +944,9 @@ void RegisterOurLuaFunctions()
         }
     }
 
-    if (movementReady && !walkReg) {
+    if (!walkReg) {
         WriteRawLog("Registering walk Lua function...");
+        CaptureClientWalkBinding(L, "pre-register");
         bool registered = RegisterViaClient(L, Lua_Walk, "walk");
         if (!registered) {
             char buf[128];
@@ -718,9 +967,6 @@ void RegisterOurLuaFunctions()
             WriteRawLog(buf);
             walkReg = true;
         }
-    }
-    else if (!movementReady && !walkReg) {
-        WriteRawLog("walk function prerequisites missing");
     }
 
     WriteRawLog("Ensuring walk binding via helper registration");
@@ -763,6 +1009,7 @@ void EnsureWalkBinding(const char* reason)
 void ScheduleWalkBinding()
 {
     InterlockedExchange(&g_pendingRegistration, 1);
+    FlushPendingRegistration();
 }
 
 bool InitLuaBridge()

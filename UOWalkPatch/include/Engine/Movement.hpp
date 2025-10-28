@@ -45,6 +45,9 @@ namespace Engine {
     bool HaveAckSequence();
     uint8_t GetLastSentSequence();
     uint8_t GetLastAckSequence();
+    void NotifyClientMovementSent();
+    void ArmMovementSendWatchdog();
+    bool DisarmAndCheckMovementSend(uint32_t timeoutMs = 100);
 
     bool MovementReady();
     bool MovementReadyWithReason(const char** reasonOut);

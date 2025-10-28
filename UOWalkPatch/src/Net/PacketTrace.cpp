@@ -242,8 +242,10 @@ static void TraceOutbound(SOCKET& s, const char* buf, int len)
         s = SelectFastWalkSocket(s);
         if (len >= 3) {
             uint8_t seq = static_cast<uint8_t>(buf[2]);
-            if (!Engine::IsScriptedMovementSendInProgress())
+            if (!Engine::IsScriptedMovementSendInProgress()) {
                 Engine::RecordMovementSent(seq);
+                Engine::NotifyClientMovementSent();
+            }
         }
         if (len >= 7) {
             uint32_t key = ExtractFastWalkKey0x2E(buf, len);

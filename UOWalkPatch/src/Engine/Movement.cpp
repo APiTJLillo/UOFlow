@@ -58,6 +58,9 @@ static std::atomic<uint8_t> g_lastAckSeq{0};
 static std::atomic<uint8_t> g_lastSentSeq{0};
 static std::atomic<bool> g_haveAckSeq{false};
 static std::atomic<bool> g_haveSentSeq{false};
+static std::atomic<bool> g_clientMovementSendObserved{false};
+static std::atomic<bool> g_movementWatchdogArmed{false};
+static std::atomic<DWORD> g_movementWatchdogStartTick{0};
 static thread_local bool g_scriptSendInProgress = false;
 static std::atomic<uint32_t> g_lastMovementSendTickMs{0};
 static constexpr DWORD kMovementAckThrottleMs = 800;
@@ -783,6 +786,44 @@ void RecordMovementReject(uint8_t seq)
         sprintf_s(buf, sizeof(buf), "RecordMovementReject seq=%u", static_cast<unsigned>(seq));
         WriteRawLog(buf);
     }
+}
+
+void NotifyClientMovementSent()
+{
+    g_clientMovementSendObserved.store(true, std::memory_order_release);
+}
+
+void ArmMovementSendWatchdog()
+{
+    g_clientMovementSendObserved.store(false, std::memory_order_release);
+    g_movementWatchdogStartTick.store(GetTickCount(), std::memory_order_relaxed);
+    g_movementWatchdogArmed.store(true, std::memory_order_release);
+}
+
+bool DisarmAndCheckMovementSend(uint32_t timeoutMs)
+{
+    bool armed = g_movementWatchdogArmed.exchange(false, std::memory_order_acq_rel);
+    if (!armed) {
+        return g_clientMovementSendObserved.exchange(false, std::memory_order_acq_rel);
+    }
+
+    if (timeoutMs == 0)
+        timeoutMs = 100;
+
+    DWORD start = g_movementWatchdogStartTick.load(std::memory_order_relaxed);
+    if (start == 0)
+        start = GetTickCount();
+
+    while (!g_clientMovementSendObserved.load(std::memory_order_acquire)) {
+        DWORD now = GetTickCount();
+        if (now - start >= timeoutMs)
+            break;
+        Sleep(1);
+    }
+
+    bool observed = g_clientMovementSendObserved.exchange(false, std::memory_order_acq_rel);
+    g_movementWatchdogStartTick.store(0, std::memory_order_relaxed);
+    return observed;
 }
 
 bool IsScriptedMovementSendInProgress()
