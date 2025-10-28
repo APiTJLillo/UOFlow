@@ -10,6 +10,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <string>
 
 #include "Core/Logging.hpp"
 #include "Core/Utils.hpp"
@@ -39,9 +40,6 @@ static std::mutex g_fastWalkMutex;
 static std::unordered_map<SOCKET, std::deque<uint32_t>> g_fastWalkQueues;
 static std::unordered_map<SOCKET, SOCKET> g_socketAliases;
 static SOCKET g_activeFastWalkSocket = INVALID_SOCKET;
-static volatile LONG g_fwPushLogBudget = 16;
-static volatile LONG g_fwPopLogBudget = 8;
-static volatile LONG g_fwEmptyWarnBudget = 8;
 static volatile LONG g_fwOverflowWarned = 0;
 static Vec3 g_expectedDest{};
 static volatile LONG g_expectValid = 0;
@@ -99,7 +97,43 @@ static bool g_haveHeadEntry = false;
 static bool g_haveTailEntry = false;
 static void** g_loggedVtable = nullptr;
 
+struct ECMoveCompSnapshot {
+    uint32_t head = 0;
+    uint32_t tail = 0;
+    uint32_t stateFlags = 0;
+    float posX = 0.0f;
+    float posZ = 0.0f;
+};
+
+static ECMoveCompSnapshot g_lastMoveSnapshot{};
+static bool g_moveSnapshotValid = false;
+static DWORD g_lastMoveSnapshotTick = 0;
+static std::atomic<DWORD> g_lastMoveReadErrorTick{0};
+static constexpr DWORD kMoveSnapshotHeartbeatMs = 500;
+static constexpr DWORD kMoveReadErrorCooldownMs = 5000;
+static constexpr size_t kStateFlagsOffset = 0x30;
+
+struct MoveTimelineEntry {
+    DWORD tick = 0;
+    int dir = 0;
+    bool run = false;
+    SOCKET socket = INVALID_SOCKET;
+    uint32_t key = 0;
+    std::string sender;
+};
+
+static std::mutex g_moveTimelineMutex;
+static std::unordered_map<uint8_t, MoveTimelineEntry> g_moveTimeline;
+static constexpr size_t kMaxTimelineEntries = 128;
+
 static SOCKET ResolveSocketAliasLocked(SOCKET socket);
+static void MaybeLogMoveSnapshot(void* component, const uint8_t* snapshot);
+static bool ExtractMoveSnapshot(const uint8_t* snapshot, ECMoveCompSnapshot& out);
+static void EmitMoveSnapshotLog(void* component, const ECMoveCompSnapshot& snapshot);
+static void LogMoveSnapshotError(void* component, const char* reason);
+static void TrackMovementTxInternal(uint8_t seq, int dir, bool run, SOCKET socket, uint32_t key, const char* sender);
+static void EmitMovementResponse(const char* kind, uint8_t seq, uint8_t status);
+static void PruneOldTimelineEntriesLocked();
 
 static SOCKET SelectNextActiveSocketLocked()
 {
@@ -537,6 +571,184 @@ static bool CopyMemorySafe(const void* src, void* dst, size_t len)
     return success;
 }
 
+static bool ExtractMoveSnapshot(const uint8_t* snapshot, ECMoveCompSnapshot& out)
+{
+    if (!snapshot)
+        return false;
+    if (0x28 + sizeof(float) > kDestCopySize)
+        return false;
+    if (kStateFlagsOffset + sizeof(uint32_t) > kDestCopySize)
+        return false;
+
+    std::memcpy(&out.head, snapshot + 0x10, sizeof(out.head));
+    std::memcpy(&out.tail, snapshot + 0x14, sizeof(out.tail));
+    std::memcpy(&out.stateFlags, snapshot + kStateFlagsOffset, sizeof(out.stateFlags));
+    std::memcpy(&out.posX, snapshot + 0x20, sizeof(out.posX));
+    std::memcpy(&out.posZ, snapshot + 0x28, sizeof(out.posZ));
+    return true;
+}
+
+static void EmitMoveSnapshotLog(void* component, const ECMoveCompSnapshot& snapshot)
+{
+    char buf[256];
+    sprintf_s(buf, sizeof(buf),
+              "[MoveComp] tid=%lu this=%p head=%u tail=%u flags=0x%08X pos=(%.3f,%.3f)",
+              GetCurrentThreadId(),
+              component,
+              snapshot.head,
+              snapshot.tail,
+              snapshot.stateFlags,
+              static_cast<double>(snapshot.posX),
+              static_cast<double>(snapshot.posZ));
+    WriteRawLog(buf);
+}
+
+static void LogMoveSnapshotError(void* component, const char* reason)
+{
+    DWORD now = GetTickCount();
+    DWORD last = g_lastMoveReadErrorTick.load(std::memory_order_relaxed);
+    if (now - last < kMoveReadErrorCooldownMs)
+        return;
+    if (!g_lastMoveReadErrorTick.compare_exchange_strong(last, now, std::memory_order_acq_rel))
+        return;
+
+    char buf[224];
+    sprintf_s(buf, sizeof(buf),
+              "[MoveComp] tid=%lu this=%p warn=%s",
+              GetCurrentThreadId(),
+              component,
+              reason ? reason : "snapshot-failed");
+    WriteRawLog(buf);
+}
+
+static void MaybeLogMoveSnapshot(void* component, const uint8_t* snapshot)
+{
+    if (!component || !snapshot)
+        return;
+
+    ECMoveCompSnapshot current{};
+    if (!ExtractMoveSnapshot(snapshot, current)) {
+        LogMoveSnapshotError(component, "extract-failed");
+        return;
+    }
+
+    DWORD now = GetTickCount();
+    bool shouldLog = !g_moveSnapshotValid;
+    if (g_moveSnapshotValid) {
+        if (current.head != g_lastMoveSnapshot.head ||
+            current.tail != g_lastMoveSnapshot.tail ||
+            current.stateFlags != g_lastMoveSnapshot.stateFlags) {
+            shouldLog = true;
+        } else if (now - g_lastMoveSnapshotTick >= kMoveSnapshotHeartbeatMs) {
+            shouldLog = true;
+        }
+    }
+
+    if (shouldLog) {
+        EmitMoveSnapshotLog(component, current);
+        g_lastMoveSnapshot = current;
+        g_moveSnapshotValid = true;
+        g_lastMoveSnapshotTick = now;
+    }
+}
+
+static void PruneOldTimelineEntriesLocked()
+{
+    if (g_moveTimeline.size() <= kMaxTimelineEntries)
+        return;
+    while (g_moveTimeline.size() > kMaxTimelineEntries) {
+        auto oldest = g_moveTimeline.begin();
+        for (auto it = g_moveTimeline.begin(); it != g_moveTimeline.end(); ++it) {
+            if (it->second.tick < oldest->second.tick)
+                oldest = it;
+        }
+        if (oldest != g_moveTimeline.end())
+            g_moveTimeline.erase(oldest);
+        else
+            break;
+    }
+}
+
+static void TrackMovementTxInternal(uint8_t seq, int dir, bool run, SOCKET socket, uint32_t key, const char* sender)
+{
+    if (seq == 0)
+        seq = 1;
+
+    MoveTimelineEntry entry{};
+    entry.tick = GetTickCount();
+    entry.dir = dir;
+    entry.run = run;
+    entry.socket = socket;
+    entry.key = key;
+    if (sender)
+        entry.sender = sender;
+    else
+        entry.sender = "unknown";
+
+    {
+        std::lock_guard<std::mutex> lock(g_moveTimelineMutex);
+        g_moveTimeline[seq] = entry;
+        if (g_moveTimeline.size() > kMaxTimelineEntries) {
+            PruneOldTimelineEntriesLocked();
+        }
+    }
+
+    char buf[320];
+    sprintf_s(buf, sizeof(buf),
+              "[Move] tid=%lu dir=%d run=%d TX seq=0x%02X key=0x%08X socket=%p sender=%s",
+              GetCurrentThreadId(),
+              dir,
+              run ? 1 : 0,
+              seq,
+              static_cast<unsigned>(key),
+              reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+              entry.sender.c_str());
+    WriteRawLog(buf);
+}
+
+static void EmitMovementResponse(const char* kind, uint8_t seq, uint8_t status)
+{
+    if (seq == 0)
+        seq = 1;
+
+    MoveTimelineEntry entry{};
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(g_moveTimelineMutex);
+        auto it = g_moveTimeline.find(seq);
+        if (it != g_moveTimeline.end()) {
+            entry = it->second;
+            g_moveTimeline.erase(it);
+            found = true;
+        }
+    }
+
+    DWORD now = GetTickCount();
+    char buf[320];
+    if (found) {
+        DWORD delta = now - entry.tick;
+        sprintf_s(buf, sizeof(buf),
+                  "[Move] tid=%lu %s seq=0x%02X status=0x%02X (+%u ms since TX) dir=%d run=%d sender=%s socket=%p",
+                  GetCurrentThreadId(),
+                  kind ? kind : "RESP",
+                  seq,
+                  static_cast<unsigned>(status),
+                  delta,
+                  entry.dir,
+                  entry.run ? 1 : 0,
+                  entry.sender.c_str(),
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(entry.socket)));
+    } else {
+        sprintf_s(buf, sizeof(buf),
+                  "[Move] tid=%lu %s seq=0x%02X status=0x%02X (+? since TX)",
+                  GetCurrentThreadId(),
+                  kind ? kind : "RESP",
+                  seq,
+                  static_cast<unsigned>(status));
+    }
+    WriteRawLog(buf);
+}
+
 static void FindMoveComponent();
 static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr, uint32_t dir, int runFlag);
 static void ResetMovementSequenceState();
@@ -646,7 +858,7 @@ void PushFastWalkKey(SOCKET socket, uint32_t key) {
                  key,
                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
                  kFastWalkQueueCapacity);
-            WriteRawLog("FastWalk queue overflow");
+            WriteRawLog("[FW] warn=overflow");
         }
         return;
     }
@@ -655,19 +867,14 @@ void PushFastWalkKey(SOCKET socket, uint32_t key) {
     g_activeFastWalkSocket = socket;
     int depth = static_cast<int>(queue.size());
 
-    if (g_fwPushLogBudget > 0 && InterlockedDecrement(&g_fwPushLogBudget) >= 0) {
-        Logf("FastWalk key queued socket=%p key=%08X depth=%d",
-             reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
-             key,
-             depth);
-        char buf[128];
-        sprintf_s(buf, sizeof(buf),
-                  "FastWalk queue push socket=%p key=%08X depth=%d",
-                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
-                  key,
-                  depth);
-        WriteRawLog(buf);
-    }
+    char buf[160];
+    sprintf_s(buf, sizeof(buf),
+              "[FW] tid=%lu +key=0x%08X depth=%d socket=%p",
+              GetCurrentThreadId(),
+              static_cast<unsigned>(key),
+              depth,
+              reinterpret_cast<void*>(static_cast<uintptr_t>(socket)));
+    WriteRawLog(buf);
 }
 
 uint32_t PopFastWalkKey(SOCKET socket) {
@@ -678,9 +885,7 @@ uint32_t PopFastWalkKey(SOCKET socket) {
 
     auto it = g_fastWalkQueues.find(socket);
     if (it == g_fastWalkQueues.end() || it->second.empty()) {
-        if (g_fwEmptyWarnBudget > 0 && InterlockedDecrement(&g_fwEmptyWarnBudget) >= 0) {
-            WriteRawLog("FastWalk queue empty on PopFastWalkKey");
-        }
+        WriteRawLog("[FW] warn=empty PopFastWalkKey");
         return 0;
     }
 
@@ -688,19 +893,14 @@ uint32_t PopFastWalkKey(SOCKET socket) {
     it->second.pop_front();
     int depth = static_cast<int>(it->second.size());
 
-    if (g_fwPopLogBudget > 0 && InterlockedDecrement(&g_fwPopLogBudget) >= 0) {
-        Logf("FastWalk key dequeued socket=%p key=%08X depth=%d",
-             reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
-             key,
-             depth);
-        char buf[128];
-        sprintf_s(buf, sizeof(buf),
-                  "FastWalk queue pop socket=%p key=%08X depth=%d",
-                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
-                  key,
-                  depth);
-        WriteRawLog(buf);
-    }
+    char buf[160];
+    sprintf_s(buf, sizeof(buf),
+              "[FW] tid=%lu -key=0x%08X depth=%d socket=%p",
+              GetCurrentThreadId(),
+              static_cast<unsigned>(key),
+              depth,
+              reinterpret_cast<void*>(static_cast<uintptr_t>(socket)));
+    WriteRawLog(buf);
 
     if (it->second.empty()) {
         g_fastWalkQueues.erase(it);
@@ -825,12 +1025,6 @@ void RecordMovementSent(uint8_t seq)
         seq = 1;
     g_lastSentSeq.store(seq, std::memory_order_release);
     g_haveSentSeq.store(true, std::memory_order_release);
-    static volatile LONG s_budget = 16;
-    if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
-        char buf[96];
-        sprintf_s(buf, sizeof(buf), "RecordMovementSent seq=%u", static_cast<unsigned>(seq));
-        WriteRawLog(buf);
-    }
 }
 
 void RecordMovementAck(uint8_t seq, uint8_t status)
@@ -841,15 +1035,10 @@ void RecordMovementAck(uint8_t seq, uint8_t status)
     g_haveAckSeq.store(true, std::memory_order_release);
     g_lastSentSeq.store(seq, std::memory_order_release);
     g_haveSentSeq.store(true, std::memory_order_release);
-    static volatile LONG s_budget = 32;
-    if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
-        char buf[128];
-        sprintf_s(buf, sizeof(buf), "RecordMovementAck seq=%u status=%u", static_cast<unsigned>(seq), static_cast<unsigned>(status));
-        WriteRawLog(buf);
-    }
+    EmitMovementResponse("ACK", seq, status);
 }
 
-void RecordMovementReject(uint8_t seq)
+void RecordMovementReject(uint8_t seq, uint8_t status)
 {
     if (seq == 0)
         seq = 1;
@@ -857,12 +1046,12 @@ void RecordMovementReject(uint8_t seq)
     g_haveAckSeq.store(true, std::memory_order_release);
     g_lastSentSeq.store(seq, std::memory_order_release);
     g_haveSentSeq.store(true, std::memory_order_release);
-    static volatile LONG s_budget = 16;
-    if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
-        char buf[96];
-        sprintf_s(buf, sizeof(buf), "RecordMovementReject seq=%u", static_cast<unsigned>(seq));
-        WriteRawLog(buf);
-    }
+    EmitMovementResponse("NACK", seq, status);
+}
+
+void TrackMovementTx(uint8_t seq, int dir, bool run, SOCKET socket, uint32_t key, const char* sender)
+{
+    TrackMovementTxInternal(seq, dir, run, socket, key, sender);
 }
 
 void NotifyClientMovementSent()
@@ -1010,9 +1199,6 @@ void ShutdownMovementHooks() {
         g_fastWalkQueues.clear();
         g_activeFastWalkSocket = INVALID_SOCKET;
     }
-    InterlockedExchange(&g_fwPushLogBudget, 16);
-    InterlockedExchange(&g_fwPopLogBudget, 8);
-    InterlockedExchange(&g_fwEmptyWarnBudget, 8);
     InterlockedExchange(&g_fwOverflowWarned, 0);
     g_trackerCount = 0;
     g_trackerLogBudget = 8;
@@ -1027,6 +1213,13 @@ void ShutdownMovementHooks() {
     std::memset(g_lastHeadEntry, 0, sizeof(g_lastHeadEntry));
     std::memset(g_lastTailEntry, 0, sizeof(g_lastTailEntry));
     g_loggedVtable = nullptr;
+    g_moveSnapshotValid = false;
+    g_lastMoveSnapshotTick = 0;
+    g_lastMoveReadErrorTick.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> timelineLock(g_moveTimelineMutex);
+        g_moveTimeline.clear();
+    }
     InterlockedExchange(&g_memDumpBudget, 4);
     InterlockedExchange(&g_expectValid, 0);
     InterlockedExchange(&g_pendingMoveActive, 0);
@@ -1138,6 +1331,7 @@ static bool ReadVec3Safe(void* ptr, Vec3& out)
 }
 
 static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr, uint32_t dir, int runFlag) {
+    Engine::Lua::ProcessLuaQueue();
     if (!g_moveCandidate && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0) {
         g_moveCandidate = thisPtr;
         Logf("Captured movement candidate = %p (thread %lu)", g_moveCandidate, GetCurrentThreadId());
@@ -1204,6 +1398,9 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
             g_moveComp = thisPtr;
             g_dest = destPtr;
             g_candidateDest = destPtr;
+            g_moveSnapshotValid = false;
+            g_lastMoveSnapshotTick = 0;
+            g_lastMoveReadErrorTick.store(0, std::memory_order_relaxed);
             Logf("Identified player movement component via ptr heuristic = %p (ptrA=%p offset=0x%X id=%u dest=%p)",
                  g_moveComp,
                  reinterpret_cast<void*>(ptrA),
@@ -1228,6 +1425,7 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
     }
 
     if (thisPtr == g_moveComp && haveCompPtrData) {
+        MaybeLogMoveSnapshot(thisPtr, compPtrData);
         LogMovementVtable(thisPtr);
         ProbeFastWalkStorage(compPtrData);
 
@@ -1430,6 +1628,9 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
                     if (matchesStep && runMatches) {
                         g_moveComp = thisPtr;
                         g_dest = destPtr;
+                        g_moveSnapshotValid = false;
+                        g_lastMoveSnapshotTick = 0;
+                        g_lastMoveReadErrorTick.store(0, std::memory_order_relaxed);
                         Logf("Identified player movement component = %p (dir=%u run=%d)", g_moveComp, dir, runFlag);
                         Engine::RequestWalkRegistration();
                         InterlockedExchange(&g_pendingMoveActive, 0);
@@ -1452,6 +1653,9 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
                 g_moveComp = thisPtr;
                 g_dest = destPtr;
                 g_candidateDest = destPtr;
+                g_moveSnapshotValid = false;
+                g_lastMoveSnapshotTick = 0;
+                g_lastMoveReadErrorTick.store(0, std::memory_order_relaxed);
                 Logf("Adjusted player movement component = %p", g_moveComp);
                 Engine::RequestWalkRegistration();
             }
@@ -1579,16 +1783,6 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
 
     *reinterpret_cast<uint32_t*>(pkt + 3) = htonl(key);
 
-    char seqBuf[160];
-    sprintf_s(seqBuf, sizeof(seqBuf),
-              "SendWalk TX dir=%d run=%d seq=0x%02X key=%08X socket=%p sender=internal",
-              normalizedDir,
-              shouldRun ? 1 : 0,
-              static_cast<unsigned>(nextSeq),
-              static_cast<unsigned>(key),
-              reinterpret_cast<void*>(static_cast<uintptr_t>(movementSocket)));
-    WriteRawLog(seqBuf);
-
     bool sendOk = false;
     g_scriptSendInProgress = true;
     __try {
@@ -1605,6 +1799,7 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
         return false;
     }
 
+    Engine::TrackMovementTx(nextSeq, normalizedDir, shouldRun, movementSocket, key, "internal");
     Engine::PopFastWalkKey(movementSocket);
     Engine::RecordMovementSent(nextSeq);
     g_lastMovementSendTickMs.store(GetTickCount(), std::memory_order_relaxed);

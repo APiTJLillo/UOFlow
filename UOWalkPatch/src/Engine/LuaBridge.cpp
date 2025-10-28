@@ -1,1081 +1,1068 @@
 #include <windows.h>
+#include <psapi.h>
 #include <cstdio>
 #include <cctype>
-#include <cstring>
 #include <atomic>
+#include <string>
+#include <deque>
+#include <mutex>
+#include <unordered_map>
+#include <functional>
+#include <exception>
+
 #include <minhook.h>
 
 #include "Core/Logging.hpp"
-#include "Net/SendBuilder.hpp"
 #include "Engine/GlobalState.hpp"
-#include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
+#include "Engine/Movement.hpp"
+
 #include "LuaPlus.h"
 
-extern "C" LUA_API void lua_pushlightuserdata(lua_State* L, void* p);
-extern "C" LUA_API void lua_pushvalue(lua_State* L, int idx);
-extern "C" LUA_API void lua_pushnumber(lua_State* L, lua_Number n);
-extern "C" LUA_API int lua_pcall(lua_State* L, int nargs, int nresults, int errfunc);
-extern "C" LUA_API void lua_remove(lua_State* L, int idx);
-extern "C" LUA_API const char* lua_tolstring(lua_State* L, int idx, size_t* len);
-extern "C" LUA_API void lua_pushboolean(lua_State* L, int b);
-extern "C" LUA_API void lua_pushcclosure(lua_State* L, lua_CFunction fn, int n);
-extern "C" LUA_API lua_CFunction lua_tocfunction(lua_State* L, int idx);
-
-#ifndef LUA_MULTRET
-#define LUA_MULTRET (-1)
+#ifndef LUA_NOREF
+#define LUA_NOREF (-2)
 #endif
 
-#ifndef LUA_OK
-#define LUA_OK 0
+#ifndef LUA_REFNIL
+#define LUA_REFNIL (-1)
 #endif
 
+#ifndef LUA_HOOKCALL
+#define LUA_HOOKCALL 0
+#define LUA_HOOKRET 1
+#define LUA_HOOKLINE 2
+#define LUA_HOOKCOUNT 3
+#define LUA_HOOKTAILRET 4
+#endif
+
+#ifndef LUA_MASKCALL
+#define LUA_MASKCALL (1 << LUA_HOOKCALL)
+#define LUA_MASKRET (1 << LUA_HOOKRET)
+#endif
+
+#ifndef LUA_IDSIZE
+#define LUA_IDSIZE 60
+#endif
+
+#ifndef lua_newtable
+#define lua_newtable(L) lua_createtable(L, 0, 0)
+#endif
+
+typedef struct lua_Debug {
+    int event;
+    const char* name;
+    const char* namewhat;
+    const char* what;
+    const char* source;
+    int currentline;
+    int nups;
+    int linedefined;
+    int lastlinedefined;
+    char short_src[LUA_IDSIZE];
+    int i_ci;
+} lua_Debug;
+
+extern "C" {
+    LUA_API void lua_pushvalue(lua_State* L, int idx);
+    LUA_API int lua_isnumber(lua_State* L, int idx);
+    LUA_API int lua_iscfunction(lua_State* L, int idx);
+    LUA_API lua_CFunction lua_tocfunction(lua_State* L, int idx);
+    LUA_API const char* lua_tolstring(lua_State* L, int idx, size_t* len);
+    LUA_API const char* lua_getupvalue(lua_State* L, int funcindex, int n);
+    LUA_API int lua_next(lua_State* L, int idx);
+    LUA_API int luaL_ref(lua_State* L, int t);
+    LUA_API void luaL_unref(lua_State* L, int t, int ref);
+    LUA_API lua_CFunction lua_atpanic(lua_State* L, lua_CFunction panicf);
+    typedef void(__cdecl* lua_Hook)(lua_State*, lua_Debug*);
+    LUA_API void lua_sethook(lua_State* L, lua_Hook func, int mask, int count);
+    LUA_API int lua_getstack(lua_State* L, int level, lua_Debug* ar);
+    LUA_API int lua_getinfo(lua_State* L, const char* what, lua_Debug* ar);
+}
+
+#ifndef lua_newtable
+#define lua_newtable(L) lua_createtable(L, 0, 0)
+#endif
+
+#ifndef LUA_REGISTRYINDEX
+#define LUA_REGISTRYINDEX (-10000)
+#endif
+
+#ifndef LUA_RIDX_GLOBALS
+#define LUA_RIDX_GLOBALS 2
+#endif
 
 namespace {
-    using ClientRegisterFn = int(__stdcall*)(void*, void*, const char*);
 
-    ClientRegisterFn g_clientRegister = nullptr;
-    ClientRegisterFn g_origRegister = nullptr;
-    bool g_registerResolved = false;
-    void* g_registerTarget = nullptr;
-    void* g_engineContext = nullptr;
-    void* g_clientContext = nullptr;
+using ClientRegisterFn = int(__stdcall*)(void*, void*, const char*);
+using LuaStateGetCStateFn = lua_State* (__thiscall*)(void*);
+using LuaStateAtPanicFn = lua_CFunction(__thiscall*)(void*, lua_CFunction);
 
-    struct ObservedContext {
-        void* ctx;
-        unsigned flags;
-    };
+static ClientRegisterFn g_origRegister = nullptr;
+static ClientRegisterFn g_clientRegister = nullptr;
+static void* g_registerTarget = nullptr;
+static std::atomic<bool> g_registerResolved{false};
+static std::atomic<DWORD> g_scriptThreadId{0};
+static std::atomic<lua_State*> g_mainLuaState{nullptr};
+static std::atomic<void*> g_mainLuaPlusState{nullptr};
+static void* g_engineContext = nullptr;
 
-static constexpr size_t kMaxObservedContexts = 8;
-static ObservedContext g_observedContexts[kMaxObservedContexts]{};
-
-enum ContextLogBits : unsigned {
-    kLogWalk = 1u << 0,
-    kLogBindWalk = 1u << 1,
+struct LuaTask {
+    std::string name;
+    std::function<void(lua_State*)> fn;
 };
 
-static volatile LONG g_pendingRegistration = 0;
-static std::atomic<bool> g_registrationInProgress{false};
+static std::mutex g_taskMutex;
+static std::deque<LuaTask> g_taskQueue;
+static std::atomic<bool> g_registrationQueued{false};
+static thread_local bool g_processingLuaQueue = false;
+static thread_local char g_cppExceptionDetail[192];
 
-static void FlushPendingRegistration()
-{
-    if (InterlockedCompareExchange(&g_pendingRegistration, 0, 0) == 0)
-        return;
+struct HandlerBinding {
+    lua_CFunction cfunc = nullptr;
+    int luaRef = LUA_NOREF;
+    std::string type;
+    int upvalueCount = 0;
+    const void* pointer = nullptr;
+};
 
-    bool expected = false;
-    if (!g_registrationInProgress.compare_exchange_strong(expected, true))
-        return;
+static std::mutex g_bindingMutex;
+static std::unordered_map<std::string, HandlerBinding> g_bindings;
+static int g_bindingRegistryRef = LUA_NOREF;
+static bool g_debugHookInstalled = false;
+static bool g_globalsDumped = false;
+static std::atomic<bool> g_queueLoggedDuringInit{false};
+static std::atomic<DWORD> g_lastQueueLogTick{0};
+static std::atomic<bool> g_panicInstalled{false};
+static std::atomic<bool> g_debugHookFailed{false};
+static std::atomic<bool> g_debugHookInfoFailed{false};
 
-    __try {
-        Engine::Lua::RegisterOurLuaFunctions();
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("FlushPendingRegistration: exception during RegisterOurLuaFunctions");
-    }
+static constexpr const char* kHelperWalkName = "uow_walk";
+static constexpr const char* kHelperDumpName = "uow_dump_walk_env";
+static constexpr const char* kBindingRegistryName = "_uowalk_binding_refs";
+static constexpr DWORD kQueueDrainLogCooldownMs = 1000;
 
-    g_registrationInProgress.store(false, std::memory_order_release);
-    InterlockedExchange(&g_pendingRegistration, 0);
-}
-}
+struct ModuleBounds {
+    uintptr_t base = 0;
+    size_t size = 0;
+    bool valid = false;
+};
 
+static std::atomic<bool> g_loggedStateNormalization{false};
+static LuaStateGetCStateFn g_luaStateGetCState = nullptr;
+static LuaStateAtPanicFn g_luaStateAtPanic = nullptr;
+
+static void EnsureScriptThread(DWORD tid, lua_State* L);
+static void ProcessPendingLuaTasks(lua_State* L);
+static void ScheduleLuaTask(const char* name, std::function<void(lua_State*)> fn);
+static bool ResolveRegisterFunction();
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
-static int __cdecl Lua_Walk(lua_State* L);
-static int __cdecl Lua_BindWalk(lua_State* L);
-static int __cdecl Lua_FastWalkInfo(lua_State* L);
-static int __cdecl Lua_MovementInfo(lua_State* L);
+static void InstallInstrumentation(lua_State* L);
+static void InstallDebugHook(lua_State* L);
+static void DumpGlobalsOnce(lua_State* L);
+static void CaptureBinding(const std::string& name, lua_State* L);
+static void ScheduleBindingCapture(const std::string& name);
+static int EnsureBindingRegistry(lua_State* L);
+static void ReleaseExistingBinding(lua_State* L, HandlerBinding& binding);
+static void LogLuaQueuePost(const char* name, lua_State* L, DWORD fromTid);
+static void LogLuaQueueDrain(lua_State* L, DWORD tid, const char* outcome, const char* detail = nullptr);
+static void LogLuaRunResult(const char* name, DWORD tid, const char* status, const char* detail = nullptr);
+static bool ShouldTrackBinding(const char* name);
+static lua_State* ResolveLuaState();
+static ModuleBounds GetLuaPlusModuleBounds();
+static bool LooksLikeLuaPlusState(void* candidate);
+static LuaStateGetCStateFn ResolveLuaPlusGetCState();
+static LuaStateAtPanicFn ResolveLuaPlusAtPanic();
+static lua_State* NormalizeLuaStatePointer(lua_State* candidate);
+static void EnsurePanicHandler(lua_State* L);
+static int LuaPanicHandler(lua_State* L);
+static void DumpWalkEnv(lua_State* L, const char* reason);
+static int Lua_UOWalk(lua_State* L);
+static int Lua_UOWDump(lua_State* L);
+static void CaptureTrackedBindings(lua_State* L);
+static void LogProbeBinding(const std::string& name, const HandlerBinding& binding);
+static void PushGlobalTable(lua_State* L);
+static void MaybeLogQueueDrain(lua_State* L, DWORD tid, const char* detail);
+static bool RunLuaTaskWithGuards(lua_State* L, std::function<void(lua_State*)>& fn, const char** outDetail) noexcept;
+static const char* FormatCppExceptionDetail(const char* tag, const char* value);
 
-static lua_CFunction g_clientWalkFn = nullptr;
-static bool g_clientWalkClosureValid = false;
-static constexpr const char* kClientWalkClosureGlobal = "_uoWalk_clientClosure";
+} // namespace
 
-static void ClearClientWalkClosure(lua_State* L)
-{
-    g_clientWalkClosureValid = false;
-    if (!L)
-        return;
+namespace Engine::Lua {
 
-    __try {
-        lua_pushnil(L);
-        lua_setglobal(L, kClientWalkClosureGlobal);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("ClearClientWalkClosure: exception while clearing closure global");
-    }
-}
-
-static void LogWalkBindingState(lua_State* L, const char* stage)
-{
-    if (!L)
-        return;
-
-    int walkType = LUA_TNONE;
-    const void* walkPtr = nullptr;
-    int bindType = LUA_TNONE;
-    const void* bindPtr = nullptr;
-
-    __try {
-        int top = lua_gettop(L);
-        lua_getglobal(L, "walk");
-        walkType = lua_type(L, -1);
-        if (walkType == LUA_TFUNCTION) {
-            walkPtr = lua_topointer(L, -1);
-        }
-        lua_pop(L, 1);
-
-        lua_getglobal(L, "bindWalk");
-        bindType = lua_type(L, -1);
-        if (bindType == LUA_TFUNCTION) {
-            bindPtr = lua_topointer(L, -1);
-        }
-        lua_pop(L, 1);
-        lua_settop(L, top);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("LogWalkBindingState: exception while inspecting globals");
-    }
-
-    char buf[256];
-    sprintf_s(buf, sizeof(buf), "%s: walk=%s%p bindWalk=%s%p",
-        stage ? stage : "WalkBindingState",
-        (walkType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, walkType),
-        walkPtr,
-        (bindType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, bindType),
-        bindPtr);
-    WriteRawLog(buf);
-}
-
-static void CaptureClientWalkBinding(lua_State* L, const char* reason)
-{
-    if (!L)
-        return;
-
-    if (g_clientWalkFn || g_clientWalkClosureValid) {
-        if (reason && reason[0] != '\0') {
-            char info[192];
-            sprintf_s(info, sizeof(info),
-                "CaptureClientWalkBinding(%s): handler already cached (C=%p closure=%d)",
-                reason,
-                reinterpret_cast<void*>(g_clientWalkFn),
-                g_clientWalkClosureValid ? 1 : 0);
-            WriteRawLog(info);
-        }
-        return;
-    }
-
-    int topBefore = 0;
-    __try {
-        topBefore = lua_gettop(L);
-        lua_getglobal(L, "walk");
-        if (lua_type(L, -1) == LUA_TFUNCTION) {
-            const void* walkPtr = lua_topointer(L, -1);
-            lua_CFunction cfn = lua_tocfunction(L, -1);
-            if (cfn && cfn != reinterpret_cast<lua_CFunction>(&Lua_Walk)) {
-                g_clientWalkFn = cfn;
-                ClearClientWalkClosure(L);
-                char info[224];
-                sprintf_s(info, sizeof(info),
-                    "CaptureClientWalkBinding(%s): captured C handler ptr=%p",
-                    reason ? reason : "<null>",
-                    reinterpret_cast<void*>(cfn));
-                WriteRawLog(info);
-            } else if (!cfn) {
-                ClearClientWalkClosure(L);
-                lua_pushvalue(L, -1);
-                lua_setglobal(L, kClientWalkClosureGlobal);
-                g_clientWalkClosureValid = true;
-                char info[256];
-                sprintf_s(info, sizeof(info),
-                    "CaptureClientWalkBinding(%s): captured Lua closure ptr=%p",
-                    reason ? reason : "<null>",
-                    walkPtr);
-                WriteRawLog(info);
-            } else {
-                char info[224];
-                sprintf_s(info, sizeof(info),
-                    "CaptureClientWalkBinding(%s): walk global already bound to helper (ptr=%p)",
-                    reason ? reason : "<null>",
-                    walkPtr);
-                WriteRawLog(info);
-            }
-        } else {
-            char info[160];
-            sprintf_s(info, sizeof(info),
-                "CaptureClientWalkBinding(%s): global walk missing or type=%s",
-                reason ? reason : "<null>",
-                lua_typename(L, lua_type(L, -1)));
-            WriteRawLog(info);
-            lua_pop(L, 1);
-        }
-        lua_settop(L, topBefore);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("CaptureClientWalkBinding: exception during inspection");
-        __try {
-            if (L)
-                lua_settop(L, topBefore);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-        }
-    }
-}
-
-static bool RegisterFunctionSafe(lua_State* L, lua_CFunction fn, const char* name)
-{
-    __try {
-        lua_pushcfunction(L, fn);
-        lua_setglobal(L, name);
-        char buf[160];
-        sprintf_s(buf, sizeof(buf), "RegisterFunctionSafe: set global '%s' to %p", name ? name : "<null>", reinterpret_cast<void*>(fn));
-        WriteRawLog(buf);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        char buf[128];
-        sprintf_s(buf, sizeof(buf), "Exception registering Lua function '%s'", name ? name : "<null>");
-        WriteRawLog(buf);
+bool InitLuaBridge() {
+    if (!ResolveRegisterFunction())
         return false;
-    }
-}
-
-static bool RegisterViaClient(lua_State* L, lua_CFunction fn, const char* name)
-{
-    if (!fn || !name)
-        return false;
-
-    if (!g_clientRegister && !g_origRegister)
-        return false;
-
-    void* context = g_clientContext;
-    const GlobalStateInfo* info = Engine::Info();
-    void* candidateCtx = info ? info->scriptContext : nullptr;
-    if ((!context || (candidateCtx && context != candidateCtx))) {
-        context = candidateCtx;
-        g_clientContext = context;
-        if (context) {
-            char buf[128];
-            sprintf_s(buf, sizeof(buf), "RegisterViaClient: refreshed script context %p", context);
-            WriteRawLog(buf);
-        }
-    }
-
-    if (!context) {
-        WriteRawLog("RegisterViaClient: script context unavailable");
-        return false;
-    }
-
-    ClientRegisterFn target = g_origRegister ? g_origRegister : g_clientRegister;
-    if (!target)
-        return false;
-
-    bool success = false;
-    __try {
-        int rc = target(context, reinterpret_cast<void*>(fn), name);
-        success = (rc != 0);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        char buf[160];
-        sprintf_s(buf, sizeof(buf), "Client register threw for '%s'", name ? name : "<null>");
-        WriteRawLog(buf);
-        success = false;
-    }
-
-    char buf[200];
-    sprintf_s(buf, sizeof(buf), "RegisterViaClient('%s') ctx=%p fn=%p => %s (Lua_Walk=%p)",
-        name ? name : "<null>", context, fn, success ? "ok" : "fail", reinterpret_cast<void*>(&Lua_Walk));
-    WriteRawLog(buf);
-
-    if (!success && L) {
-        WriteRawLog("RegisterViaClient: client helper failed, using direct Lua registration");
-        success = RegisterFunctionSafe(L, fn, name);
-    }
-
-    return success;
-}
-
-static void ForceWalkBinding(lua_State* L, const char* reason)
-{
-    if (!L)
-        return;
-
-    InterlockedExchange(&g_pendingRegistration, 0);
-
-    const void* desiredPtr = reinterpret_cast<const void*>(Lua_Walk);
-    const char* tag = reason ? reason : "EnsureWalkBinding";
-
-    char stateBuf[160];
-    sprintf_s(stateBuf, sizeof(stateBuf), "%s pre-bind", tag);
-    LogWalkBindingState(L, stateBuf);
-
-    char buf[224];
-    sprintf_s(buf, sizeof(buf),
-        "%s: skipping walk rebinding (Lua_Walk=%p ctx=%p)",
-        tag,
-        desiredPtr,
-        g_clientContext);
-    WriteRawLog(buf);
-
-    sprintf_s(stateBuf, sizeof(stateBuf), "%s post-bind", tag);
-    LogWalkBindingState(L, stateBuf);
-}
-
-static bool ResolveRegisterFunction()
-{
-    if (g_registerResolved && g_origRegister)
-        return true;
-
-    void* addr = Engine::FindRegisterLuaFunction();
-    if (!addr) {
-        WriteRawLog("ResolveRegisterFunction: unable to find client register helper");
-        return false;
-    }
-
-    g_registerTarget = addr;
-    char buf[128];
-    sprintf_s(buf, sizeof(buf), "ResolveRegisterFunction: register helper = %p", addr);
-    WriteRawLog(buf);
-
-    if (!g_origRegister) {
-        MH_STATUS init = MH_Initialize();
-        if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED) {
-            WriteRawLog("ResolveRegisterFunction: MH_Initialize failed; hook disabled");
-            return false;
-        }
-        if (MH_CreateHook(addr, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegister)) != MH_OK ||
-            MH_EnableHook(addr) != MH_OK) {
-            g_origRegister = nullptr;
-            WriteRawLog("ResolveRegisterFunction: MH_CreateHook/MH_EnableHook failed; hook disabled");
-            return false;
-        }
-        WriteRawLog("ResolveRegisterFunction: register hook installed for context capture");
-    }
-
-    g_clientRegister = g_origRegister;
-    g_registerResolved = true;
+    ScheduleWalkBinding();
     return true;
 }
 
-static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
-{
-    auto ensureContextSlot = [](void* context, bool* isNew) -> ObservedContext* {
-        if (!context) {
-            if (isNew) {
-                *isNew = false;
-            }
-            return nullptr;
-        }
-        for (size_t i = 0; i < kMaxObservedContexts; ++i) {
-            if (g_observedContexts[i].ctx == context) {
-                if (isNew) {
-                    *isNew = false;
-                }
-                return &g_observedContexts[i];
-            }
-        }
-        for (size_t i = 0; i < kMaxObservedContexts; ++i) {
-            if (!g_observedContexts[i].ctx) {
-                g_observedContexts[i].ctx = context;
-                g_observedContexts[i].flags = 0;
-                if (isNew) {
-                    *isNew = true;
-                }
-                return &g_observedContexts[i];
-            }
-        }
-        if (isNew) {
-            *isNew = false;
-        }
-        return nullptr;
-    };
-
-    auto containsWalk = [](const char* str) -> bool {
-        if (!str) {
-            return false;
-        }
-        const char* p = str;
-        while (*p) {
-            if (std::tolower(static_cast<unsigned char>(*p)) == 'w') {
-                if (std::tolower(static_cast<unsigned char>(p[1])) == 'a' &&
-                    std::tolower(static_cast<unsigned char>(p[2])) == 'l' &&
-                    std::tolower(static_cast<unsigned char>(p[3])) == 'k') {
-                    return true;
-                }
-            }
-            ++p;
-        }
-        return false;
-    };
-
-    char buf[192];
-    sprintf_s(buf, sizeof(buf), "Hook_Register ctx=%p func=%p name=%s", ctx, func, name ? name : "<null>");
-    WriteRawLog(buf);
-
-    if (ctx && ctx != g_clientContext) {
-        g_clientContext = ctx;
-        Engine::RequestWalkRegistration();
-        InterlockedExchange(&g_pendingRegistration, 1);
+void ShutdownLuaBridge() {
+    if (g_registerTarget) {
+        MH_DisableHook(g_registerTarget);
+        MH_RemoveHook(g_registerTarget);
+        g_registerTarget = nullptr;
     }
+    g_origRegister = nullptr;
+    g_clientRegister = nullptr;
+    g_registerResolved.store(false, std::memory_order_release);
 
-    bool isNewCtx = false;
-    ObservedContext* slot = ensureContextSlot(ctx, &isNewCtx);
-    if (isNewCtx) {
-        char info[160];
-        sprintf_s(info, sizeof(info), "Observed new script context %p (name=%s func=%p)",
-            ctx, name ? name : "<null>", func);
-        WriteRawLog(info);
-        Engine::RequestWalkRegistration();
-        InterlockedExchange(&g_pendingRegistration, 1);
-    }
-
-    unsigned flag = 0;
-    if (name) {
-        if (_stricmp(name, "walk") == 0 || containsWalk(name)) {
-            flag |= kLogWalk;
-        } else if (_stricmp(name, "bindWalk") == 0) {
-            flag |= kLogBindWalk;
-        }
-    }
-
-    if (slot && flag) {
-        slot->flags |= flag;
-        char info[256];
-        sprintf_s(info, sizeof(info), "Context %p registering %s -> func=%p (flags=0x%X)",
-            ctx, name ? name : "<null>", func, slot->flags);
-        WriteRawLog(info);
-        Engine::RequestWalkRegistration();
-        InterlockedExchange(&g_pendingRegistration, 1);
-    }
-
-    uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
-    void* walkPtr = reinterpret_cast<void*>(walkInt);
-
-    if (name) {
-        if (_stricmp(name, "walk") == 0 && func && func != walkPtr) {
-            char info[192];
-            sprintf_s(info, sizeof(info),
-                "CaptureClientWalkBinding: observed walk registration ctx=%p func=%p",
-                ctx,
-                func);
-            WriteRawLog(info);
-        } else if (_stricmp(name, "bindWalk") == 0) {
-            char info[192];
-            sprintf_s(info, sizeof(info),
-                "CaptureClientWalkBinding: observed bindWalk registration ctx=%p func=%p",
-                ctx,
-                func);
-            WriteRawLog(info);
-        }
-    }
-
-    if (name && _stricmp(name, "walk") == 0 && func && func != walkPtr) {
-        g_clientWalkFn = reinterpret_cast<lua_CFunction>(func);
-        ClearClientWalkClosure(static_cast<lua_State*>(Engine::LuaState()));
-        char info[160];
-        sprintf_s(info, sizeof(info), "Captured client walk function %p", func);
-        WriteRawLog(info);
-    }
-
-    int rc = g_clientRegister ? g_clientRegister(ctx, func, name) : 0;
-
-    if (name) {
-        if (_stricmp(name, "walk") == 0 && func && func != walkPtr) {
-            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-                CaptureClientWalkBinding(L, "Hook_Register post-walk");
-            }
-        } else if (_stricmp(name, "bindWalk") == 0) {
-            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-                CaptureClientWalkBinding(L, "Hook_Register bindWalk");
-            }
-        }
-    }
-
-    uintptr_t bindInt = reinterpret_cast<uintptr_t>(&Lua_BindWalk);
-    void* bindPtr = reinterpret_cast<void*>(bindInt);
-    if (name && ctx) {
-        if (_stricmp(name, "walk") == 0 && func == walkPtr) {
-            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-                if (RegisterFunctionSafe(L, Lua_Walk, "walk")) {
-                    LogWalkBindingState(L, "Hook_Register post-walk");
-                }
-            }
-        } else if (_stricmp(name, "bindWalk") == 0 && func == bindPtr) {
-            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-                if (RegisterFunctionSafe(L, Lua_BindWalk, "bindWalk")) {
-                    LogWalkBindingState(L, "Hook_Register post-bindWalk");
-                }
-            }
-        }
-    }
-
-    FlushPendingRegistration();
-
-    return rc;
+    std::lock_guard<std::mutex> lock(g_bindingMutex);
+    g_bindings.clear();
+    g_bindingRegistryRef = LUA_NOREF;
+    g_debugHookInstalled = false;
+    g_globalsDumped = false;
+    g_mainLuaState.store(nullptr, std::memory_order_release);
+    g_mainLuaPlusState.store(nullptr, std::memory_order_release);
+    g_panicInstalled.store(false, std::memory_order_release);
+    g_loggedStateNormalization.store(false, std::memory_order_release);
+    g_luaStateGetCState = nullptr;
+    g_luaStateAtPanic = nullptr;
+    g_debugHookFailed.store(false, std::memory_order_release);
+    g_debugHookInfoFailed.store(false, std::memory_order_release);
 }
 
-static int __cdecl Lua_DummyPrint(lua_State*)
-{
-    WriteRawLog("[Lua] DummyPrint() was invoked!");
+void RegisterOurLuaFunctions() {
+    ScheduleWalkBinding();
+}
+
+void UpdateEngineContext(void* context) {
+    g_engineContext = context;
+    char buf[160];
+    sprintf_s(buf, sizeof(buf), "[LuaProbe] engine-context=%p", context);
+    WriteRawLog(buf);
+    ScheduleWalkBinding();
+}
+
+void EnsureWalkBinding(const char* /*reason*/) {
+    ScheduleWalkBinding();
+}
+
+void ScheduleWalkBinding() {
+    bool expected = false;
+    if (!g_registrationQueued.compare_exchange_strong(expected, true))
+        return;
+
+    ScheduleLuaTask("InstallInstrumentation", [](lua_State* L) {
+        g_registrationQueued.store(false, std::memory_order_release);
+        InstallInstrumentation(L);
+    });
+}
+
+void ProcessLuaQueue() {
+    lua_State* L = ResolveLuaState();
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    ProcessPendingLuaTasks(L);
+}
+
+} // namespace Engine::Lua
+
+namespace {
+
+void EnsureScriptThread(DWORD tid, lua_State* L) {
+    if (!tid)
+        return;
+
+    void* plusCandidate = reinterpret_cast<void*>(L);
+    if (plusCandidate && LooksLikeLuaPlusState(plusCandidate)) {
+        g_mainLuaPlusState.store(plusCandidate, std::memory_order_release);
+    }
+
+    if (auto* normalized = NormalizeLuaStatePointer(L)) {
+        L = normalized;
+    }
+
+    DWORD expected = 0;
+    if (g_scriptThreadId.compare_exchange_strong(expected, tid)) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "[LuaQ] tid=%lu script-thread-discovered L=%p", tid, L);
+        WriteRawLog(buf);
+    }
+
+    if (g_scriptThreadId.load(std::memory_order_acquire) == tid && L) {
+        lua_State* prev = g_mainLuaState.exchange(L, std::memory_order_acq_rel);
+        if (prev != L) {
+            char buf[160];
+            sprintf_s(buf, sizeof(buf), "[LuaQ] tid=%lu main-state-updated L=%p (prev=%p)", tid, L, prev);
+            WriteRawLog(buf);
+        }
+        if (!g_processingLuaQueue) {
+            bool hasPending = false;
+            {
+                std::lock_guard<std::mutex> lock(g_taskMutex);
+                hasPending = !g_taskQueue.empty();
+            }
+            if (hasPending) {
+                ProcessPendingLuaTasks(L);
+            }
+        }
+    }
+}
+
+lua_State* ResolveLuaState() {
+    if (auto* state = g_mainLuaState.load(std::memory_order_acquire))
+        return state;
+    void* raw = Engine::LuaState();
+    if (!raw)
+        return nullptr;
+
+    if (LooksLikeLuaPlusState(raw)) {
+        g_mainLuaPlusState.store(raw, std::memory_order_release);
+    }
+
+    lua_State* normalized = NormalizeLuaStatePointer(static_cast<lua_State*>(raw));
+    if (!normalized)
+        normalized = static_cast<lua_State*>(raw);
+
+    g_mainLuaState.store(normalized, std::memory_order_release);
+    return normalized;
+}
+
+ModuleBounds GetLuaPlusModuleBounds() {
+    static ModuleBounds cached{};
+    static bool cachedReady = false;
+
+    if (cachedReady && cached.valid)
+        return cached;
+
+    HMODULE mod = GetModuleHandleA("luaplus_1100.dll");
+    if (!mod) {
+        return ModuleBounds{};
+    }
+
+    MODULEINFO info{};
+    if (!GetModuleInformation(GetCurrentProcess(), mod, &info, sizeof(info))) {
+        return ModuleBounds{};
+    }
+
+    cached.base = reinterpret_cast<uintptr_t>(info.lpBaseOfDll);
+    cached.size = info.SizeOfImage;
+    cached.valid = true;
+    cachedReady = true;
+    return cached;
+}
+
+bool LooksLikeLuaPlusState(void* candidate) {
+    if (!candidate)
+        return false;
+
+    ModuleBounds bounds = GetLuaPlusModuleBounds();
+    if (!bounds.valid)
+        return false;
+
+    uintptr_t vtbl = 0;
+    __try {
+        vtbl = *reinterpret_cast<uintptr_t*>(candidate);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return vtbl >= bounds.base && vtbl < (bounds.base + bounds.size);
+}
+
+LuaStateGetCStateFn ResolveLuaPlusGetCState() {
+    if (!g_luaStateGetCState) {
+        HMODULE mod = GetModuleHandleA("luaplus_1100.dll");
+        if (mod) {
+            g_luaStateGetCState = reinterpret_cast<LuaStateGetCStateFn>(
+                GetProcAddress(mod, "?GetCState@LuaState@LuaPlus@@QAEPAUlua_State@@XZ"));
+        }
+    }
+    return g_luaStateGetCState;
+}
+
+LuaStateAtPanicFn ResolveLuaPlusAtPanic() {
+    if (!g_luaStateAtPanic) {
+        HMODULE mod = GetModuleHandleA("luaplus_1100.dll");
+        if (mod) {
+            g_luaStateAtPanic = reinterpret_cast<LuaStateAtPanicFn>(
+                GetProcAddress(mod, "?AtPanic@LuaState@LuaPlus@@QAEP6AHPAUlua_State@@@ZP6AH0@Z@Z"));
+        }
+    }
+    return g_luaStateAtPanic;
+}
+
+lua_State* NormalizeLuaStatePointer(lua_State* candidate) {
+    if (!candidate)
+        return nullptr;
+
+    void* raw = reinterpret_cast<void*>(candidate);
+    if (!LooksLikeLuaPlusState(raw))
+        return candidate;
+
+    auto getCState = ResolveLuaPlusGetCState();
+    if (!getCState)
+        return candidate;
+
+    lua_State* actual = nullptr;
+    __try {
+        actual = getCState(raw);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        actual = nullptr;
+    }
+
+    if (actual && actual != candidate) {
+        bool expected = false;
+        if (g_loggedStateNormalization.compare_exchange_strong(expected, true)) {
+            char buf[196];
+            sprintf_s(buf, sizeof(buf),
+                      "[LuaProbe] normalized lua state raw=%p c=%p",
+                      raw,
+                      actual);
+            WriteRawLog(buf);
+        }
+        return actual;
+    }
+
+    return actual ? actual : candidate;
+}
+
+void LogLuaQueuePost(const char* name, lua_State* L, DWORD fromTid) {
+    char buf[192];
+    sprintf_s(buf, sizeof(buf),
+              "[LuaQ] post fn=%s L=%p from=tid=%lu",
+              name ? name : "<null>", L, fromTid);
+    WriteRawLog(buf);
+}
+
+void LogLuaQueueDrain(lua_State* L, DWORD tid, const char* outcome, const char* detail) {
+    char buf[208];
+    sprintf_s(buf, sizeof(buf),
+              "[LuaQ] drain outcome=%s tid=%lu L=%p%s%s",
+              outcome ? outcome : "?",
+              tid,
+              L,
+              detail ? " detail=" : "",
+              detail ? detail : "");
+    WriteRawLog(buf);
+}
+
+void LogLuaRunResult(const char* name, DWORD tid, const char* status, const char* detail) {
+    char buf[256];
+    sprintf_s(buf, sizeof(buf),
+              "[LuaQ] run fn=%s on=tid=%lu %s%s%s",
+              name ? name : "<null>",
+              tid,
+              status ? status : "?",
+              detail ? "=" : "",
+              detail ? detail : "");
+    WriteRawLog(buf);
+}
+
+void MaybeLogQueueDrain(lua_State* L, DWORD tid, const char* detail) {
+    DWORD now = GetTickCount();
+    DWORD last = g_lastQueueLogTick.load(std::memory_order_relaxed);
+    if (now - last < kQueueDrainLogCooldownMs)
+        return;
+    if (g_lastQueueLogTick.compare_exchange_strong(last, now, std::memory_order_acq_rel)) {
+        LogLuaQueueDrain(L, tid, "idle", detail);
+    }
+}
+
+const char* FormatCppExceptionDetail(const char* tag, const char* value) {
+    if (!value || !*value)
+        value = "unknown";
+
+    if (tag && *tag) {
+        sprintf_s(g_cppExceptionDetail, sizeof(g_cppExceptionDetail), "%s=%s", tag, value);
+    } else {
+        sprintf_s(g_cppExceptionDetail, sizeof(g_cppExceptionDetail), "%s", value);
+    }
+
+    return g_cppExceptionDetail;
+}
+
+bool RunLuaTaskWithGuards(lua_State* L, std::function<void(lua_State*)>& fn, const char** outDetail) noexcept {
+    struct Runner {
+        static bool Execute(lua_State* state, std::function<void(lua_State*)>* func, const char** outDetail) noexcept {
+            bool ok = false;
+            const char* localDetail = nullptr;
+            __try {
+                (*func)(state);
+                ok = true;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                DWORD code = GetExceptionCode();
+                static thread_local char sehDetail[64];
+                sprintf_s(sehDetail, sizeof(sehDetail), "seh=0x%08lX", code);
+                localDetail = sehDetail;
+            }
+
+            if (!ok && outDetail) {
+                *outDetail = localDetail;
+            }
+            return ok;
+        }
+    };
+
+    return Runner::Execute(L, &fn, outDetail);
+}
+
+void ProcessPendingLuaTasks(lua_State* L) {
+    DWORD tid = GetCurrentThreadId();
+    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+    if (!scriptTid || tid != scriptTid) {
+        MaybeLogQueueDrain(L, tid, "non-script-thread");
+        return;
+    }
+
+    if (!L)
+        L = ResolveLuaState();
+
+    if (g_processingLuaQueue)
+        return;
+
+    std::deque<LuaTask> local;
+    {
+        std::lock_guard<std::mutex> lock(g_taskMutex);
+        if (g_taskQueue.empty()) {
+            MaybeLogQueueDrain(L, tid, "empty");
+            return;
+        }
+        local.swap(g_taskQueue);
+    }
+
+    g_processingLuaQueue = true;
+
+    if (!g_queueLoggedDuringInit.exchange(true, std::memory_order_acq_rel)) {
+        LogLuaQueueDrain(L, tid, "start");
+    }
+
+    for (auto& task : local) {
+        LogLuaRunResult(task.name.c_str(), tid, "start");
+        if (!L) {
+            LogLuaRunResult(task.name.c_str(), tid, "err", "lua_state=null");
+            continue;
+        }
+
+        auto fn = std::move(task.fn);
+        bool success = false;
+        const char* detail = nullptr;
+        try {
+            success = RunLuaTaskWithGuards(L, fn, &detail);
+        } catch (const std::exception& ex) {
+            detail = FormatCppExceptionDetail("cxx", ex.what());
+            success = false;
+        } catch (...) {
+            detail = FormatCppExceptionDetail("cxx", "unknown");
+            success = false;
+        }
+
+        if (success) {
+            LogLuaRunResult(task.name.c_str(), tid, "ok");
+        } else {
+            if (!detail) {
+                detail = "unknown";
+            }
+            LogLuaRunResult(task.name.c_str(), tid, "err", detail);
+            // Requeue the task for a later attempt.
+            ScheduleLuaTask(task.name.c_str(), std::move(fn));
+        }
+    }
+
+    g_processingLuaQueue = false;
+}
+
+void ScheduleLuaTask(const char* name, std::function<void(lua_State*)> fn) {
+    DWORD fromTid = GetCurrentThreadId();
+    lua_State* target = ResolveLuaState();
+    {
+        std::lock_guard<std::mutex> lock(g_taskMutex);
+        g_taskQueue.push_back(LuaTask{ name ? name : "<lambda>", std::move(fn) });
+    }
+    LogLuaQueuePost(name ? name : "<lambda>", target, fromTid);
+
+    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+    if (scriptTid != 0 && scriptTid == fromTid && target && !g_processingLuaQueue) {
+        ProcessPendingLuaTasks(target);
+    }
+}
+
+bool ShouldTrackBinding(const char* name) {
+    if (!name)
+        return false;
+    if (_stricmp(name, "walk") == 0)
+        return true;
+    if (_stricmp(name, "bindWalk") == 0)
+        return true;
+    if (_stricmp(name, "fastWalkInfo") == 0)
+        return true;
+    if (_stricmp(name, "movementInfo") == 0)
+        return true;
+    return false;
+}
+
+void ScheduleBindingCapture(const std::string& name) {
+    ScheduleLuaTask("CaptureBinding", [name](lua_State* L) {
+        CaptureBinding(name, L);
+    });
+}
+
+void CaptureTrackedBindings(lua_State* L) {
+    static const char* kTracked[] = { "walk", "bindWalk", "fastWalkInfo", "movementInfo" };
+    for (const char* name : kTracked) {
+        CaptureBinding(name, L);
+    }
+}
+
+void EnsurePanicHandler(lua_State* L) {
+    if (!L)
+        return;
+
+    if (g_panicInstalled.load(std::memory_order_acquire))
+        return;
+
+    bool panicOk = false;
+    bool viaLuaPlus = false;
+    DWORD sehCode = 0;
+
+    void* plusState = g_mainLuaPlusState.load(std::memory_order_acquire);
+    auto atPanic = ResolveLuaPlusAtPanic();
+    if (plusState && atPanic) {
+        __try {
+            atPanic(plusState, LuaPanicHandler);
+            panicOk = true;
+            viaLuaPlus = true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            sehCode = GetExceptionCode();
+            panicOk = false;
+        }
+    }
+
+    if (!panicOk) {
+        __try {
+            lua_atpanic(L, LuaPanicHandler);
+            panicOk = true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            sehCode = GetExceptionCode();
+            panicOk = false;
+        }
+    }
+
+    if (panicOk) {
+        g_panicInstalled.store(true, std::memory_order_release);
+        char buf[160];
+        sprintf_s(buf, sizeof(buf),
+                  "[LuaProbe] panic-installed via=%s",
+                  viaLuaPlus ? "LuaPlus::AtPanic" : "lua_atpanic");
+        WriteRawLog(buf);
+    } else {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf),
+                  "[LuaProbe] panic-install-failed seh=0x%08lX",
+                  sehCode);
+        WriteRawLog(buf);
+    }
+}
+
+int LuaPanicHandler(lua_State* L) {
+    const char* msg = nullptr;
+    if (lua_gettop(L) > 0) {
+        msg = lua_tolstring(L, -1, nullptr);
+    }
+    char buf[256];
+    sprintf_s(buf, sizeof(buf),
+              "[LuaProbe] panic msg=%s",
+              msg ? msg : "<null>");
+    WriteRawLog(buf);
     return 0;
 }
 
-struct ClientWalkCallResult {
-    bool invoked = false;
-    bool callSucceeded = false;
-    bool truthy = false;
-    bool sendObserved = false;
-};
-
-static ClientWalkCallResult InvokeClientWalk(lua_State* L, lua_CFunction fn, int dir, int runValue, bool includeRun, const char* label)
-{
-    ClientWalkCallResult result{};
-    if (!L || !fn)
-        return result;
-
-    int topBefore = 0;
-    __try {
-        topBefore = lua_gettop(L);
-        lua_pushcclosure(L, fn, 0);
+void InstallInstrumentation(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    if (!L) {
+        LogLuaRunResult("InstallInstrumentation", GetCurrentThreadId(), "err", "lua_state=null");
+        return;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("Lua_Walk: exception while pushing client walk handler");
+
+    auto logStep = [](const char* stage) {
+        char buf[192];
+        sprintf_s(buf, sizeof(buf), "[LuaProbe] install step=%s", stage ? stage : "<null>");
+        WriteRawLog(buf);
+    };
+
+    logStep("ensure-panic");
+    EnsurePanicHandler(L);
+    logStep("ensure-panic-done");
+
+    logStep("debug-hook");
+    InstallDebugHook(L);
+    logStep("debug-hook-done");
+
+    logStep("dump-globals");
+    DumpGlobalsOnce(L);
+    logStep("dump-globals-done");
+
+    static bool helpersInstalled = false;
+    if (!helpersInstalled) {
+        logStep("register-helpers");
+        lua_pushcfunction(L, Lua_UOWalk);
+        lua_setglobal(L, kHelperWalkName);
+        lua_pushcfunction(L, Lua_UOWDump);
+        lua_setglobal(L, kHelperDumpName);
+        char buf[160];
+        sprintf_s(buf, sizeof(buf),
+                  "[LuaProbe] helpers-registered walk=%s dump=%s",
+                  kHelperWalkName,
+                  kHelperDumpName);
+        WriteRawLog(buf);
+        helpersInstalled = true;
+        logStep("register-helpers-done");
+    }
+
+    logStep("capture-bindings");
+    CaptureTrackedBindings(L);
+    logStep("capture-bindings-done");
+}
+
+void InstallDebugHook(lua_State* L) {
+    if (!L || g_debugHookInstalled)
+        return;
+
+    auto debugHook = [](lua_State* Lstate, lua_Debug* ar) {
+        if (!Lstate || !ar)
+            return;
+        int infoOk = 0;
+        DWORD seh = 0;
         __try {
-            if (L)
-                lua_settop(L, topBefore);
+            infoOk = lua_getinfo(Lstate, "Sn", ar);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            seh = GetExceptionCode();
+            infoOk = 0;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (infoOk == 0) {
+            if (!g_debugHookInfoFailed.exchange(true, std::memory_order_acq_rel)) {
+                char buf[160];
+                sprintf_s(buf, sizeof(buf),
+                          "[LuaProbe] debug-hook-getinfo-failed seh=0x%08lX",
+                          seh);
+                WriteRawLog(buf);
+            }
+            return;
         }
-        return result;
-    }
-
-    result.invoked = true;
-
-    const void* pushedPtr = lua_topointer(L, -1);
-    if (pushedPtr == reinterpret_cast<const void*>(Lua_Walk)) {
-        WriteRawLog("Lua_Walk: client handler pointer resolved to helper; refusing recursion");
-        lua_settop(L, topBefore);
-        return result;
-    }
-
-    lua_pushnumber(L, dir);
-    if (includeRun)
-        lua_pushnumber(L, runValue);
-    int nargs = includeRun ? 2 : 1;
-
-    Engine::ArmMovementSendWatchdog();
-    int rc = lua_pcall(L, nargs, LUA_MULTRET, 0);
-    bool sendObserved = Engine::DisarmAndCheckMovementSend();
-    result.sendObserved = sendObserved;
-
-    if (rc != LUA_OK) {
-        const char* err = lua_tolstring(L, -1, nullptr);
+        const char* src = ar->short_src ? ar->short_src : "?";
+        int line = ar->currentline;
+        const char* name = ar->name ? ar->name : "?";
+        bool isC = ar->what && ar->what[0] == 'C';
         char buf[256];
-        sprintf_s(buf, sizeof(buf),
-                  "Lua_Walk: client handler '%s' threw (%s)",
-                  label,
-                  err ? err : "<unknown>");
-        WriteRawLog(buf);
-        lua_pop(L, 1);
-        lua_settop(L, topBefore);
-        return result;
-    }
+        DWORD tid = GetCurrentThreadId();
+        if (ar->event == LUA_HOOKCALL) {
+            sprintf_s(buf, sizeof(buf),
+                      "[LUA] tid=%lu CALL src=%s:%d name=%s%s",
+                      tid, src, line, name, isC ? "(C)" : "");
+            WriteRawLog(buf);
+        } else if (ar->event == LUA_HOOKRET || ar->event == LUA_HOOKTAILRET) {
+            sprintf_s(buf, sizeof(buf),
+                      "[LUA] tid=%lu RET src=%s:%d name=%s%s",
+                      tid, src, line, name, isC ? "(C)" : "");
+            WriteRawLog(buf);
+        }
+    };
 
-    result.callSucceeded = true;
-
-    int topAfter = lua_gettop(L);
-    int resultCount = topAfter - topBefore;
-    bool truthy = true;
-    if (resultCount > 0) {
-        truthy = (lua_toboolean(L, topBefore + 1) != 0);
-    }
-    result.truthy = truthy;
-
-    char buf[256];
-    sprintf_s(buf, sizeof(buf),
-              "Lua_Walk -> client handler '%s' completed (results=%d truthy=%d sendObserved=%d)",
-              label,
-              resultCount,
-              truthy ? 1 : 0,
-              sendObserved ? 1 : 0);
-    WriteRawLog(buf);
-
-    lua_settop(L, topBefore);
-    return result;
-}
-
-static ClientWalkCallResult InvokeClientWalkClosure(lua_State* L, int dir, int runValue, bool includeRun, const char* label)
-{
-    ClientWalkCallResult result{};
-    if (!L || !g_clientWalkClosureValid)
-        return result;
-
-    int topBefore = 0;
+    bool installed = false;
+    DWORD seh = 0;
     __try {
-        topBefore = lua_gettop(L);
-        lua_getglobal(L, kClientWalkClosureGlobal);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("Lua_Walk: exception while pushing walk closure");
-        return result;
-    }
-
-    if (lua_type(L, -1) != LUA_TFUNCTION) {
-        char buf[224];
-        sprintf_s(buf, sizeof(buf),
-            "Lua_Walk: stored walk closure missing (type=%s); clearing cache",
-            lua_typename(L, lua_type(L, -1)));
-        WriteRawLog(buf);
-        ClearClientWalkClosure(L);
-        lua_settop(L, topBefore);
-        return result;
+        lua_sethook(L, debugHook, LUA_MASKCALL | LUA_MASKRET, 0);
+        installed = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        seh = GetExceptionCode();
+        installed = false;
     }
 
-    result.invoked = true;
-
-    if (!includeRun)
-        lua_pushnumber(L, dir);
-    else {
-        lua_pushnumber(L, dir);
-        lua_pushnumber(L, runValue);
+    if (!installed) {
+        if (!g_debugHookFailed.exchange(true, std::memory_order_acq_rel)) {
+            char buf[160];
+            sprintf_s(buf, sizeof(buf),
+                      "[LuaProbe] debug-hook-install-failed seh=0x%08lX",
+                      seh);
+            WriteRawLog(buf);
+        }
+        return;
     }
 
-    int nargs = includeRun ? 2 : 1;
-
-    Engine::ArmMovementSendWatchdog();
-    int rc = lua_pcall(L, nargs, LUA_MULTRET, 0);
-    bool sendObserved = Engine::DisarmAndCheckMovementSend();
-    result.sendObserved = sendObserved;
-
-    if (rc != LUA_OK) {
-        const char* err = lua_tolstring(L, -1, nullptr);
-        char buf[256];
-        sprintf_s(buf, sizeof(buf),
-                  "Lua_Walk: walk closure '%s' threw (%s)",
-                  label,
-                  err ? err : "<unknown>");
-        WriteRawLog(buf);
-        lua_pop(L, 1);
-        lua_settop(L, topBefore);
-        return result;
-    }
-
-    result.callSucceeded = true;
-
-    int topAfter = lua_gettop(L);
-    int resultCount = topAfter - topBefore;
-    bool truthy = true;
-    if (resultCount > 0) {
-        truthy = (lua_toboolean(L, topBefore + 1) != 0);
-    }
-    result.truthy = truthy;
-
-    char buf[256];
-    sprintf_s(buf, sizeof(buf),
-              "Lua_Walk -> walk closure '%s' completed (results=%d truthy=%d sendObserved=%d)",
-              label,
-              resultCount,
-              truthy ? 1 : 0,
-              sendObserved ? 1 : 0);
+    g_debugHookInstalled = true;
+    g_debugHookFailed.store(false, std::memory_order_release);
+    g_debugHookInfoFailed.store(false, std::memory_order_release);
+    char buf[128];
+    sprintf_s(buf, sizeof(buf), "[LuaProbe] debug-hook-installed L=%p", L);
     WriteRawLog(buf);
-
-    lua_settop(L, topBefore);
-    return result;
 }
 
-static int __cdecl Lua_Walk(lua_State* L)
-{
-    int dir = 0;
-    int run = 0;
-    if (L) {
-        int top = lua_gettop(L);
-        if (top >= 1)
-            dir = static_cast<int>(lua_tointeger(L, 1));
-        if (top >= 2)
-            run = lua_toboolean(L, 2) ? 1 : 0;
-    }
-    int runValue = run;
-    if (L && lua_gettop(L) >= 2) {
-        if (lua_type(L, 2) == LUA_TNUMBER)
-            runValue = static_cast<int>(lua_tointeger(L, 2));
-        else
-            runValue = lua_toboolean(L, 2) ? 1 : 0;
-    }
-    run = runValue != 0;
+void PushGlobalTable(lua_State* L) {
+#if defined(LUA_RIDX_GLOBALS)
+    lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS);
+#else
+    lua_pushvalue(L, LUA_GLOBALSINDEX);
+#endif
+}
 
-    SOCKET activeSocket = Engine::GetActiveFastWalkSocket();
-   int fastWalkDepth = Engine::FastWalkQueueDepth(activeSocket);
+void DumpGlobalsOnce(lua_State* L) {
+    if (g_globalsDumped || !L)
+        return;
 
-    char buf[192];
+    g_globalsDumped = true;
+    int top = lua_gettop(L);
+    PushGlobalTable(L);
+    int tableIndex = lua_gettop(L);
+    lua_pushnil(L);
+
+    int emitted = 0;
+    std::string line;
+    while (lua_next(L, tableIndex) != 0 && emitted < 64) {
+        const char* key = lua_tolstring(L, -2, nullptr);
+        int type = lua_type(L, -1);
+        const char* typeName = lua_typename(L, type);
+        if (line.size() > 0)
+            line.append(", ");
+        if (key) {
+            line.append(key);
+        } else {
+            line.append("<non-string-key>");
+        }
+        line.push_back(':');
+        line.append(typeName ? typeName : "?");
+        lua_pop(L, 1);
+        ++emitted;
+        if (line.size() > 120) {
+            char buf[200];
+            sprintf_s(buf, sizeof(buf),
+                      "[LuaProbe] globals snapshot chunk=%s",
+                      line.c_str());
+            WriteRawLog(buf);
+            line.clear();
+        }
+    }
+    if (!line.empty()) {
+        char buf[200];
+        sprintf_s(buf, sizeof(buf),
+                  "[LuaProbe] globals snapshot chunk=%s",
+                  line.c_str());
+        WriteRawLog(buf);
+    }
+    lua_settop(L, top);
+}
+
+int EnsureBindingRegistry(lua_State* L) {
+    if (g_bindingRegistryRef != LUA_NOREF)
+        return g_bindingRegistryRef;
+
+    lua_newtable(L);
+    g_bindingRegistryRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    char buf[128];
     sprintf_s(buf, sizeof(buf),
-              "Lua_Walk invoked dir=%d run=%d activeSocket=%p fastWalkDepth=%d clientFn=%p closureValid=%d",
-              dir,
-              runValue,
-              reinterpret_cast<void*>(static_cast<uintptr_t>(activeSocket)),
-              fastWalkDepth,
-              reinterpret_cast<void*>(g_clientWalkFn),
-              g_clientWalkClosureValid ? 1 : 0);
+              "[LuaProbe] registry-table-created ref=%d",
+              g_bindingRegistryRef);
     WriteRawLog(buf);
+    return g_bindingRegistryRef;
+}
 
-    bool clientAttempted = false;
-    bool clientHandled = false;
-    bool missingSend = false;
+void ReleaseExistingBinding(lua_State* L, HandlerBinding& binding) {
+    if (!L)
+        return;
+    if (binding.luaRef != LUA_NOREF && g_bindingRegistryRef != LUA_NOREF) {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, g_bindingRegistryRef);
+        luaL_unref(L, -1, binding.luaRef);
+        lua_pop(L, 1);
+        binding.luaRef = LUA_NOREF;
+    }
+    binding.cfunc = nullptr;
+    binding.type.clear();
+    binding.pointer = nullptr;
+    binding.upvalueCount = 0;
+}
 
-    if (L && g_clientWalkFn) {
-        auto attempt = [&](bool includeRun, const char* label) {
-            ClientWalkCallResult res = InvokeClientWalk(L, g_clientWalkFn, dir, runValue, includeRun, label);
-            if (!res.invoked)
-                return;
-            clientAttempted = true;
-            if (!res.callSucceeded || !res.truthy)
-                return;
-            if (res.sendObserved) {
-                clientHandled = true;
-                WriteRawLog("Lua_Walk -> client handler accepted request");
-                return;
+void LogProbeBinding(const std::string& name, const HandlerBinding& binding) {
+    char buf[256];
+    if (binding.type == "Lua") {
+        sprintf_s(buf, sizeof(buf),
+                  "[LuaProbe] %s: type=Lua ptr=%p ref=%d upvalues=%d",
+                  name.c_str(),
+                  binding.pointer,
+                  binding.luaRef,
+                  binding.upvalueCount);
+    } else if (binding.type == "CFunction") {
+        sprintf_s(buf, sizeof(buf),
+                  "[LuaProbe] %s: type=CFunction ptr=%p",
+                  name.c_str(),
+                  reinterpret_cast<void*>(binding.cfunc));
+    } else {
+        sprintf_s(buf, sizeof(buf),
+                  "[LuaProbe] %s: type=%s",
+                  name.c_str(),
+                  binding.type.c_str());
+    }
+    WriteRawLog(buf);
+}
+
+void CaptureBinding(const std::string& name, lua_State* L) {
+    if (!L) {
+        LogLuaRunResult("CaptureBinding", GetCurrentThreadId(), "err", "lua_state=null");
+        return;
+    }
+
+    lua_getglobal(L, name.c_str());
+    int type = lua_type(L, -1);
+    HandlerBinding newBinding;
+    newBinding.type = lua_typename(L, type);
+    newBinding.pointer = lua_topointer(L, -1);
+
+    if (type == LUA_TFUNCTION) {
+        if (lua_iscfunction(L, -1)) {
+            newBinding.type = "CFunction";
+            newBinding.cfunc = lua_tocfunction(L, -1);
+        } else {
+            newBinding.type = "Lua";
+            newBinding.upvalueCount = 0;
+            int funcIndex = lua_gettop(L);
+            while (lua_getupvalue(L, funcIndex, newBinding.upvalueCount + 1) != nullptr) {
+                ++newBinding.upvalueCount;
+                lua_pop(L, 1);
             }
-            missingSend = true;
-        };
-
-        attempt(false, "dir-only");
-        if (!clientHandled)
-            attempt(true, "dir+run");
-
-        if (clientHandled) {
-            lua_pushboolean(L, 1);
-            return 1;
+            int tableRef = EnsureBindingRegistry(L);
+            lua_rawgeti(L, LUA_REGISTRYINDEX, tableRef);
+            lua_pushvalue(L, funcIndex);
+            newBinding.luaRef = luaL_ref(L, -2);
+            lua_pop(L, 1); // pop registry table
         }
-    } else if (L && !g_clientWalkFn) {
-        if (g_clientWalkClosureValid)
-            WriteRawLog("Lua_Walk: no captured client walk C function; will try Lua closure");
-        else
-            WriteRawLog("Lua_Walk: no captured client walk handler; will use internal sender");
+    } else if (type == LUA_TNIL) {
+        newBinding.type = "nil";
     }
 
-    if (L && !clientHandled && g_clientWalkClosureValid) {
-        auto attemptClosure = [&](bool includeRun, const char* label) {
-            ClientWalkCallResult res = InvokeClientWalkClosure(L, dir, runValue, includeRun, label);
-            if (!res.invoked)
-                return;
-            clientAttempted = true;
-            if (!res.callSucceeded || !res.truthy)
-                return;
-            if (res.sendObserved) {
-                clientHandled = true;
-                WriteRawLog("Lua_Walk -> walk closure accepted request");
-                return;
+    {
+        std::lock_guard<std::mutex> lock(g_bindingMutex);
+        HandlerBinding& slot = g_bindings[name];
+        ReleaseExistingBinding(L, slot);
+        slot = newBinding;
+    }
+
+    LogProbeBinding(name, newBinding);
+    lua_pop(L, 1);
+}
+
+void DumpWalkEnv(lua_State* L, const char* reason) {
+    if (!L)
+        return;
+
+    const char* names[] = { "walk", "bindWalk" };
+    for (const char* name : names) {
+        lua_getglobal(L, name);
+        int type = lua_type(L, -1);
+        const char* typeName = lua_typename(L, type);
+        const void* ptr = lua_topointer(L, -1);
+        int upCount = 0;
+        if (type == LUA_TFUNCTION && !lua_iscfunction(L, -1)) {
+            int funcIndex = lua_gettop(L);
+            while (lua_getupvalue(L, funcIndex, upCount + 1) != nullptr) {
+                ++upCount;
+                lua_pop(L, 1);
             }
-            missingSend = true;
-        };
+        }
+        char buf[256];
+        sprintf_s(buf, sizeof(buf),
+                  "[LuaProbe] %s env type=%s ptr=%p upvalues=%d reason=%s",
+                  name,
+                  typeName ? typeName : "?",
+                  ptr,
+                  upCount,
+                  reason ? reason : "manual");
+        WriteRawLog(buf);
+        lua_pop(L, 1);
+    }
+}
 
-        attemptClosure(false, "dir-only");
-        if (!clientHandled)
-            attemptClosure(true, "dir+run");
+int Lua_UOWDump(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    DumpWalkEnv(L, "uow_dump_walk_env");
+    return 0;
+}
 
-        if (clientHandled) {
-            lua_pushboolean(L, 1);
-            return 1;
+int Lua_UOWalk(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    int argc = lua_gettop(L);
+    if (argc < 1 || !lua_isnumber(L, 1)) {
+        WriteRawLog("[LuaProbe] uow_walk invalid dir parameter");
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    int dir = static_cast<int>(lua_tointeger(L, 1));
+    int run = 0;
+    if (argc >= 2) {
+        if (lua_isnumber(L, 2)) {
+            run = lua_tointeger(L, 2) != 0 ? 1 : 0;
+        } else if (lua_type(L, 2) == LUA_TBOOLEAN) {
+            run = lua_toboolean(L, 2) ? 1 : 0;
+        } else {
+            WriteRawLog("[LuaProbe] uow_walk run parameter ignored (unsupported type)");
+            run = 0;
         }
     }
-
-    if (missingSend) {
-        WriteRawLog("Lua_Walk: client handler returned, but no client 0x02 observed; falling back");
-    } else if (clientAttempted) {
-        WriteRawLog("Lua_Walk: client handler attempts failed; falling back to internal sender");
-    }
-
-    WriteRawLog("Lua_Walk using internal sender");
     bool ok = SendWalk(dir, run);
-    WriteRawLog(ok ? "Lua_Walk -> internal sender succeeded" : "Lua_Walk -> internal sender failed");
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
 
-static int __cdecl Lua_BindWalk(lua_State* L)
-{
-    WriteRawLog("Lua_BindWalk requested");
-    Engine::Lua::EnsureWalkBinding("Lua.BindWalk");
-    return 0;
-}
+bool ResolveRegisterFunction() {
+    if (g_registerResolved.load(std::memory_order_acquire))
+        return true;
 
-static int __cdecl Lua_FastWalkInfo(lua_State* L)
-{
-    uint32_t key = Engine::PeekFastWalkKey();
-    int depth = Engine::FastWalkQueueDepth();
+    void* addr = Engine::FindRegisterLuaFunction();
+    if (!addr) {
+        WriteRawLog("ResolveRegisterFunction: register helper not found");
+        return false;
+    }
+
+    if (MH_Initialize() != MH_OK && MH_Initialize() != MH_ERROR_ALREADY_INITIALIZED) {
+        WriteRawLog("ResolveRegisterFunction: MH_Initialize failed");
+        return false;
+    }
+
+    if (MH_CreateHook(addr, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegister)) != MH_OK ||
+        MH_EnableHook(addr) != MH_OK) {
+        WriteRawLog("ResolveRegisterFunction: hook installation failed");
+        g_origRegister = nullptr;
+        return false;
+    }
+
+    g_registerTarget = addr;
+    g_clientRegister = g_origRegister;
+    g_registerResolved.store(true, std::memory_order_release);
 
     char buf[160];
-    sprintf_s(buf, sizeof(buf), "Lua_FastWalkInfo depth=%d nextKey=%08X", depth, key);
-    WriteRawLog(buf);
-
-    lua_pushnumber(L, static_cast<lua_Number>(depth));
-    if (key != 0) {
-        lua_pushnumber(L, static_cast<lua_Number>(key));
-    } else {
-        lua_pushnil(L);
-    }
-    return 2;
-}
-
-static int __cdecl Lua_MovementInfo(lua_State* L)
-{
-    Engine::MovementDebugStatus status{};
-    const char* reason = nullptr;
-    bool ready = false;
-
-    __try {
-        Engine::GetMovementDebugStatus(status);
-        ready = Engine::MovementReadyWithReason(&reason);
-        status.ready = ready;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("Lua_MovementInfo: exception while capturing status");
-        lua_pushnil(L);
-        return 1;
-    }
-
-    char buf[256];
     sprintf_s(buf, sizeof(buf),
-              "Lua_MovementInfo ready=%d updateHook=%d moveComp=%p candidate=%p pending=%d age=%u dir=%d run=%d depth=%d",
-              status.ready ? 1 : 0,
-              status.updateHookInstalled ? 1 : 0,
-              status.movementComponentPtr,
-              status.movementCandidatePtr,
-              status.pendingMoveActive ? 1 : 0,
-              status.pendingAgeMs,
-              status.pendingDir,
-              status.pendingRun ? 1 : 0,
-              status.fastWalkDepth);
+              "[LuaProbe] register-hook-installed target=%p",
+              addr);
     WriteRawLog(buf);
-
-    lua_createtable(L, 0, 12);
-
-    lua_pushboolean(L, status.ready);
-    lua_setfield(L, -2, "ready");
-
-    lua_pushboolean(L, status.updateHookInstalled);
-    lua_setfield(L, -2, "updateHookInstalled");
-
-    lua_pushboolean(L, status.movementComponentCaptured);
-    lua_setfield(L, -2, "movementComponentCaptured");
-
-    lua_pushboolean(L, status.movementCandidatePending);
-    lua_setfield(L, -2, "movementCandidatePending");
-
-    lua_pushboolean(L, status.pendingMoveActive);
-    lua_setfield(L, -2, "pendingMoveActive");
-
-    lua_pushnumber(L, static_cast<lua_Number>(status.pendingAgeMs));
-    lua_setfield(L, -2, "pendingAgeMs");
-
-    lua_pushnumber(L, static_cast<lua_Number>(status.pendingDir));
-    lua_setfield(L, -2, "pendingDir");
-
-    lua_pushboolean(L, status.pendingRun);
-    lua_setfield(L, -2, "pendingRun");
-
-    lua_pushnumber(L, static_cast<lua_Number>(status.fastWalkDepth));
-    lua_setfield(L, -2, "fastWalkDepth");
-
-    auto pushPointerFields = [&](const char* userdataField, const char* stringField, void* ptr) {
-        if (ptr) {
-            lua_pushlightuserdata(L, ptr);
-            lua_setfield(L, -2, userdataField);
-
-            char ptrBuf[32];
-            sprintf_s(ptrBuf, sizeof(ptrBuf), "0x%p", ptr);
-            lua_pushstring(L, ptrBuf);
-            lua_setfield(L, -2, stringField);
-        } else {
-            lua_pushnil(L);
-            lua_setfield(L, -2, userdataField);
-            lua_pushnil(L);
-            lua_setfield(L, -2, stringField);
-        }
-    };
-
-    pushPointerFields("movementComponentPtr", "movementComponentPtrStr", status.movementComponentPtr);
-    pushPointerFields("movementCandidatePtr", "movementCandidatePtrStr", status.movementCandidatePtr);
-    pushPointerFields("destinationPtr", "destinationPtrStr", status.destinationPtr);
-
-    if (reason && reason[0] != '\0') {
-        lua_pushstring(L, reason);
-        lua_setfield(L, -2, "reason");
-    }
-
-    return 1;
-}
-
-namespace Engine::Lua {
-
-void RegisterOurLuaFunctions()
-{
-    static bool dummyReg = false;
-   static bool walkReg = false;
-    static bool fastInfoReg = false;
-    static bool movementInfoReg = false;
-    static lua_State* lastState = nullptr;
-    static bool lastMovementReady = false;
-
-    ResolveRegisterFunction();
-
-    if (Engine::RefreshLuaStateFromSlot()) {
-        WriteRawLog("Lua state refreshed from global slot; pending re-registration");
-    }
-
-    auto L = static_cast<lua_State*>(Engine::LuaState());
-    if (!L) {
-        char buf[160];
-        auto slotAddr = Engine::GlobalStateSlotAddress();
-        auto slotValue = Engine::GlobalStateSlotValue();
-        sprintf_s(buf, sizeof(buf),
-            "Lua state not available yet (slot=%p value=%p)",
-            reinterpret_cast<void*>(slotAddr),
-            slotValue);
-        WriteRawLog(buf);
-        return;
-    }
-
-    bool movementReady = Engine::MovementReady();
-
-    if (L != lastState || movementReady != lastMovementReady) {
-        dummyReg = false;
-        walkReg = false;
-        fastInfoReg = false;
-        movementInfoReg = false;
-        lastState = L;
-        lastMovementReady = movementReady;
-        ClearClientWalkClosure(L);
-        g_clientWalkFn = nullptr;
-        WriteRawLog("Lua or movement state changed; reset registration flags");
-    }
-
-    if (!dummyReg) {
-        WriteRawLog("Registering DummyPrint Lua function...");
-        bool registered = RegisterViaClient(L, Lua_DummyPrint, "DummyPrint");
-        if (!registered) {
-            char buf[128];
-            sprintf_s(buf, sizeof(buf), "DummyPrint registration using lua_State=%p", static_cast<void*>(L));
-            WriteRawLog(buf);
-            if (RegisterFunctionSafe(L, Lua_DummyPrint, "DummyPrint")) {
-                registered = true;
-            } else {
-                WriteRawLog("Failed to register DummyPrint; postponing remaining registrations");
-                return;
-            }
-        }
-        if (registered) {
-            WriteRawLog("Successfully registered DummyPrint");
-            dummyReg = true;
-        }
-    }
-
-    if (!fastInfoReg) {
-        WriteRawLog("Registering fastWalkInfo Lua function...");
-        if (RegisterViaClient(L, Lua_FastWalkInfo, "fastWalkInfo") ||
-            RegisterFunctionSafe(L, Lua_FastWalkInfo, "fastWalkInfo")) {
-            WriteRawLog("Successfully registered fastWalkInfo");
-            fastInfoReg = true;
-        } else {
-            WriteRawLog("Failed to register fastWalkInfo (will retry)");
-            return;
-        }
-    }
-
-    if (!movementInfoReg) {
-        WriteRawLog("Registering movementInfo Lua function...");
-        if (RegisterViaClient(L, Lua_MovementInfo, "movementInfo") ||
-            RegisterFunctionSafe(L, Lua_MovementInfo, "movementInfo")) {
-            WriteRawLog("Successfully registered movementInfo");
-            movementInfoReg = true;
-        } else {
-            WriteRawLog("Failed to register movementInfo (will retry)");
-            return;
-        }
-    }
-
-    if (!walkReg) {
-        WriteRawLog("Registering walk Lua function...");
-        CaptureClientWalkBinding(L, "pre-register");
-        bool registered = RegisterViaClient(L, Lua_Walk, "walk");
-        if (!registered) {
-            char buf[128];
-            sprintf_s(buf, sizeof(buf), "walk registration using lua_State=%p", static_cast<void*>(L));
-            WriteRawLog(buf);
-            if (RegisterFunctionSafe(L, Lua_Walk, "walk")) {
-                registered = true;
-            } else {
-                WriteRawLog("Failed to register walk; will retry");
-                return;
-            }
-        }
-        if (registered) {
-            WriteRawLog("Successfully registered walk");
-            char buf[160];
-            sprintf_s(buf, sizeof(buf), "walk registration used fn=%p (Lua_Walk=%p)",
-                reinterpret_cast<void*>(Lua_Walk), reinterpret_cast<void*>(&Lua_Walk));
-            WriteRawLog(buf);
-            walkReg = true;
-        }
-    }
-
-    WriteRawLog("Ensuring walk binding via helper registration");
-    ForceWalkBinding(L, "post-register");
-
-    static bool bindReg = false;
-    if (!bindReg) {
-        WriteRawLog("Registering bindWalk Lua function...");
-        if (RegisterViaClient(L, Lua_BindWalk, "bindWalk") || RegisterFunctionSafe(L, Lua_BindWalk, "bindWalk")) {
-            WriteRawLog("Successfully registered bindWalk");
-            bindReg = true;
-        } else {
-            WriteRawLog("Failed to register bindWalk (will retry) ");
-        }
-    }
-
-    WriteRawLog("RegisterOurLuaFunctions completed");
-}
-
-void UpdateEngineContext(void* context)
-{
-    g_engineContext = context;
-    if (context) {
-        char buf[128];
-        sprintf_s(buf, sizeof(buf), "LuaBridge engine context updated: %p", context);
-        WriteRawLog(buf);
-    } else {
-        WriteRawLog("LuaBridge engine context cleared");
-    }
-    Engine::RequestWalkRegistration();
-}
-
-void EnsureWalkBinding(const char* reason)
-{
-    if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-        ForceWalkBinding(L, reason ? reason : "EnsureWalkBinding");
-    }
-}
-
-void ScheduleWalkBinding()
-{
-    InterlockedExchange(&g_pendingRegistration, 1);
-    FlushPendingRegistration();
-}
-
-bool InitLuaBridge()
-{
-    ResolveRegisterFunction();
-    Engine::RequestWalkRegistration();
     return true;
 }
 
-void ShutdownLuaBridge()
-{
-    if (g_registerTarget) {
-        MH_DisableHook(g_registerTarget);
-        MH_RemoveHook(g_registerTarget);
+int __stdcall Hook_Register(void* ctx, void* func, const char* name) {
+    DWORD tid = GetCurrentThreadId();
+    lua_State* L = ResolveLuaState();
+    EnsureScriptThread(tid, L);
+
+    char buf[224];
+    sprintf_s(buf, sizeof(buf),
+              "[LuaReg] name=%s fn=%p ctx=%p on tid=%lu",
+              name ? name : "<null>",
+              func,
+              ctx,
+              tid);
+    WriteRawLog(buf);
+
+    if (ctx && ctx != g_engineContext) {
+        g_engineContext = ctx;
     }
-    g_origRegister = nullptr;
-    g_clientRegister = nullptr;
-    g_registerResolved = false;
-    g_registerTarget = nullptr;
-    g_clientContext = nullptr;
+
+    if (name && ShouldTrackBinding(name)) {
+        ScheduleBindingCapture(name);
+    }
+
+    int rc = g_clientRegister ? g_clientRegister(ctx, func, name) : 0;
+
+    if (name && ShouldTrackBinding(name)) {
+        ScheduleBindingCapture(name);
+    }
+
+    return rc;
 }
 
-} // namespace Engine::Lua
+} // namespace

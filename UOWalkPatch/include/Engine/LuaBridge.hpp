@@ -8,6 +8,7 @@ namespace Engine::Lua {
     void UpdateEngineContext(void* context);
     void EnsureWalkBinding(const char* reason = nullptr);
     void ScheduleWalkBinding();
+    void ProcessLuaQueue();
 }
 
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);

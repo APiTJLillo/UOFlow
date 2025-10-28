@@ -240,24 +240,25 @@ static void TraceOutbound(SOCKET& s, const char* buf, int len)
 
     if (opcode == 0x02) {
         s = SelectFastWalkSocket(s);
-        if (len >= 3) {
-            uint8_t seq = static_cast<uint8_t>(buf[2]);
-            if (!Engine::IsScriptedMovementSendInProgress()) {
-                Engine::RecordMovementSent(seq);
-                Engine::NotifyClientMovementSent();
-            }
+        bool scripted = Engine::IsScriptedMovementSendInProgress();
+        int dir = 0;
+        bool runFlag = false;
+        if (len >= 2) {
+            runFlag = (buf[1] & 0x80) != 0;
+            dir = buf[1] & 0x07;
         }
-        if (len >= 7) {
-            uint32_t key = ExtractFastWalkKey0x2E(buf, len);
-            if (key) {
-                char txBuf[160];
-                sprintf_s(txBuf, sizeof(txBuf),
-                          "FastWalk TX 0x02 via socket=%p key=%08X",
-                          reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
-                          key);
-                WriteRawLog(txBuf);
-                Engine::RecordObservedFastWalkKey(key);
-            }
+        uint8_t seq = (len >= 3) ? static_cast<uint8_t>(buf[2]) : 0;
+        uint32_t key = (len >= 7) ? ExtractFastWalkKey0x2E(buf, len) : 0;
+
+        if (!scripted && seq != 0) {
+            Engine::RecordMovementSent(seq);
+            Engine::NotifyClientMovementSent();
+        }
+        if (key) {
+            Engine::RecordObservedFastWalkKey(key);
+        }
+        if (!scripted && seq != 0) {
+            Engine::TrackMovementTx(seq, dir, runFlag, s, key, "client");
         }
     }
 
@@ -407,7 +408,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
             if (offset > 0)
                 WriteRawLog(payloadBuf);
         }
-        Engine::RecordMovementReject(seq);
+        Engine::RecordMovementReject(seq, status);
         Net::SetPreferredSocket(s);
     }
 

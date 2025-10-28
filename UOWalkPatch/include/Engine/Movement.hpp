@@ -39,7 +39,8 @@ namespace Engine {
     SOCKET ResolveFastWalkSocket(SOCKET socket);
     void RecordMovementSent(uint8_t seq);
     void RecordMovementAck(uint8_t seq, uint8_t status);
-    void RecordMovementReject(uint8_t seq);
+    void RecordMovementReject(uint8_t seq, uint8_t status);
+    void TrackMovementTx(uint8_t seq, int dir, bool run, SOCKET socket, uint32_t key, const char* sender);
     bool IsScriptedMovementSendInProgress();
     bool HaveSentSequence();
     bool HaveAckSequence();
