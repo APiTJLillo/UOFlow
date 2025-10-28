@@ -12,6 +12,19 @@
 #include "LuaPlus.h"
 
 extern "C" LUA_API void lua_pushlightuserdata(lua_State* L, void* p);
+extern "C" LUA_API void lua_pushvalue(lua_State* L, int idx);
+extern "C" LUA_API void lua_pushnumber(lua_State* L, lua_Number n);
+extern "C" LUA_API int lua_pcall(lua_State* L, int nargs, int nresults, int errfunc);
+extern "C" LUA_API void lua_remove(lua_State* L, int idx);
+extern "C" LUA_API const char* lua_tolstring(lua_State* L, int idx, size_t* len);
+
+#ifndef LUA_MULTRET
+#define LUA_MULTRET (-1)
+#endif
+
+#ifndef LUA_OK
+#define LUA_OK 0
+#endif
 
 
 namespace {
@@ -384,39 +397,101 @@ static int __cdecl Lua_Walk(lua_State* L)
         if (top >= 2)
             run = lua_toboolean(L, 2) ? 1 : 0;
     }
-    char buf[128];
-    sprintf_s(buf, sizeof(buf), "Lua_Walk invoked dir=%d run=%d", dir, run);
+    int runValue = run;
+    if (L && lua_gettop(L) >= 2) {
+        if (lua_type(L, 2) == LUA_TNUMBER)
+            runValue = static_cast<int>(lua_tointeger(L, 2));
+        else
+            runValue = lua_toboolean(L, 2) ? 1 : 0;
+    }
+    run = runValue != 0;
+
+    SOCKET activeSocket = Engine::GetActiveFastWalkSocket();
+    int fastWalkDepth = Engine::FastWalkQueueDepth(activeSocket);
+
+    char buf[192];
+    sprintf_s(buf, sizeof(buf),
+              "Lua_Walk invoked dir=%d run=%d activeSocket=%p fastWalkDepth=%d clientFn=%p",
+              dir,
+              runValue,
+              reinterpret_cast<void*>(static_cast<uintptr_t>(activeSocket)),
+              fastWalkDepth,
+              reinterpret_cast<void*>(g_clientWalkFn));
     WriteRawLog(buf);
 
-    if (g_clientWalkFn) {
-        int topBefore = lua_gettop(L);
-        int rc = 0;
-        bool ok = false;
-        __try {
-            rc = g_clientWalkFn(L);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            WriteRawLog("Lua_Walk: exception calling client handler");
-            rc = 0;
-        }
-        if (rc > 0) {
-            int topAfter = lua_gettop(L);
-            int firstResult = topAfter - rc + 1;
-            if (firstResult >= 1 && firstResult <= topAfter) {
-                ok = lua_toboolean(L, firstResult) != 0;
-            }
-        }
-        sprintf_s(buf, sizeof(buf), "Lua_Walk -> client handler %s (rc=%d stackDelta=%d)",
-                  ok ? "succeeded" : "failed",
-                  rc,
-                  lua_gettop(L) - topBefore);
+    if (L) {
+        lua_getglobal(L, "walk");
+        bool haveFn = (lua_type(L, -1) == LUA_TFUNCTION);
+
+        sprintf_s(buf, sizeof(buf),
+                  "Lua_Walk resolved client handler: haveFn=%d",
+                  haveFn ? 1 : 0);
         WriteRawLog(buf);
-        return rc;
+
+        if (haveFn) {
+            int fnIndex = lua_gettop(L);
+            auto invokeClient = [&](bool includeRun, const char* label) -> bool {
+                lua_pushvalue(L, fnIndex); // function copy
+                lua_pushnumber(L, dir);
+                if (includeRun)
+                    lua_pushnumber(L, runValue);
+                int nargs = includeRun ? 2 : 1;
+                int callTopBefore = lua_gettop(L);
+                int resultsStart = callTopBefore - nargs;
+                int rc = lua_pcall(L, nargs, LUA_MULTRET, 0);
+                if (rc != LUA_OK) {
+                    const char* err = lua_tolstring(L, -1, nullptr);
+                    char errBuf[192];
+                    sprintf_s(errBuf, sizeof(errBuf),
+                              "Lua_Walk: client handler '%s' threw (%s)",
+                              label,
+                              err ? err : "<unknown>");
+                    WriteRawLog(errBuf);
+                    lua_pop(L, 1);
+                    lua_settop(L, fnIndex);
+                    return false;
+                }
+
+                int topAfter = lua_gettop(L);
+                int resultCount = topAfter - fnIndex;
+                bool truthy = true;
+                if (resultCount > 0) {
+                    int firstResult = fnIndex + 1;
+                    truthy = (lua_toboolean(L, firstResult) != 0);
+                }
+
+                sprintf_s(buf, sizeof(buf),
+                          "Lua_Walk -> client handler '%s' completed (results=%d truthy=%d)",
+                          label,
+                          resultCount,
+                          truthy ? 1 : 0);
+                WriteRawLog(buf);
+
+                lua_settop(L, fnIndex); // discard results, keep original fn
+
+                if (truthy) {
+                    WriteRawLog("Lua_Walk -> client handler accepted request");
+                    lua_remove(L, fnIndex);
+                    return true;
+                }
+                return false;
+            };
+
+            if (invokeClient(false, "dir-only") || invokeClient(true, "dir+run")) {
+                lua_pushboolean(L, 1);
+                return 1;
+            }
+
+            lua_remove(L, fnIndex);
+            WriteRawLog("Lua_Walk: client handler attempts failed; falling back to internal sender");
+        } else {
+            lua_pop(L, 1);
+        }
     }
 
     WriteRawLog("Lua_Walk using internal sender");
     bool ok = SendWalk(dir, run);
-    WriteRawLog(ok ? "Lua_Walk -> walk enqueued" : "Lua_Walk -> walk failed");
+    WriteRawLog(ok ? "Lua_Walk -> internal sender succeeded" : "Lua_Walk -> internal sender failed");
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
