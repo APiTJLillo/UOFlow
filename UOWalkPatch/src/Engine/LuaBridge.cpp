@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <functional>
 #include <vector>
+#include <array>
 #include <chrono>
 #include <cstdarg>
 #include <sstream>
@@ -42,10 +43,16 @@
 #ifndef LUA_MASKCALL
 #define LUA_MASKCALL (1 << LUA_HOOKCALL)
 #define LUA_MASKRET (1 << LUA_HOOKRET)
+#define LUA_MASKLINE (1 << LUA_HOOKLINE)
+#define LUA_MASKCOUNT (1 << LUA_HOOKCOUNT)
 #endif
 
 #ifndef LUA_IDSIZE
 #define LUA_IDSIZE 60
+#endif
+
+#ifndef LUA_MULTRET
+#define LUA_MULTRET (-1)
 #endif
 
 #ifndef lua_newtable
@@ -67,6 +74,8 @@ typedef struct lua_Debug {
 } lua_Debug;
 
 extern "C" {
+    LUA_API int lua_gettop(lua_State* L);
+    LUA_API void lua_settop(lua_State* L, int idx);
     LUA_API void lua_pushvalue(lua_State* L, int idx);
     LUA_API int lua_isnumber(lua_State* L, int idx);
     LUA_API int lua_isboolean(lua_State* L, int idx);
@@ -78,11 +87,17 @@ extern "C" {
     LUA_API int lua_next(lua_State* L, int idx);
     LUA_API int luaL_ref(lua_State* L, int t);
     LUA_API void luaL_unref(lua_State* L, int t, int ref);
+    LUA_API const char* lua_typename(lua_State* L, int tp);
+    LUA_API int lua_type(lua_State* L, int idx);
     LUA_API lua_CFunction lua_atpanic(lua_State* L, lua_CFunction panicf);
     LUA_API int lua_getstack(lua_State* L, int level, lua_Debug* ar);
     LUA_API int lua_getinfo(lua_State* L, const char* what, lua_Debug* ar);
     typedef void(__cdecl* lua_Hook)(lua_State*, lua_Debug*);
     LUA_API void lua_sethook(lua_State* L, lua_Hook func, int mask, int count);
+    LUA_API lua_Hook lua_gethook(lua_State* L);
+    LUA_API int lua_gethookmask(lua_State* L);
+    LUA_API int luaL_loadstring(lua_State* L, const char* str);
+    LUA_API int lua_pcall(lua_State* L, int nargs, int nresults, int errfunc);
 }
 
 #ifndef LUA_RIDX_GLOBALS
@@ -97,11 +112,15 @@ using LuaStateAtPanicFn = lua_CFunction(__thiscall*)(void*, lua_CFunction);
 
 constexpr DWORD kQueueDrainLogCooldownMs = 1000;
 constexpr DWORD kMaintenanceIntervalMs = 5000;
+constexpr DWORD kProbeThrottleMs = 1000;
 
 enum : uint32_t {
     STATE_FLAG_PANIC_OK      = 1u << 0,
-    STATE_FLAG_DEBUGHOOK_OK  = 1u << 1,
-    STATE_FLAG_HELPERS_BOUND = 1u << 2,
+    STATE_FLAG_PANIC_MISS    = 1u << 1,
+    STATE_FLAG_DEBUG_OK      = 1u << 2,
+    STATE_FLAG_DEBUG_MISS    = 1u << 3,
+    STATE_FLAG_QUARANTINED   = 1u << 4,
+    STATE_FLAG_HELPERS_BOUND = 1u << 5,
 };
 
 struct LuaStateInfo {
@@ -109,9 +128,92 @@ struct LuaStateInfo {
     uint64_t gen = 0;
     uint32_t flags = 0;
     DWORD owner_tid = 0;
+    DWORD last_seen_tid = 0;
     void* script_ctx = nullptr;
     uint64_t last_seen_ts = 0;
+    uint64_t quarantine_until = 0;
+    bool probe_quarantine_logged = false;
+    uint64_t panic_log_gen = 0;
+    int panic_log_status = -1;
+    uint64_t debug_log_gen = 0;
+    int debug_log_status = -1;
+    uint32_t hook_call_count = 0;
+    uint32_t hook_ret_count = 0;
+    uint32_t hook_line_count = 0;
 };
+
+static void PopulateHookCounters(LuaStateInfo& info);
+static void ResetHookStats();
+
+struct HookStatsEntry {
+    std::atomic<lua_State*> state{ nullptr };
+    std::atomic<uint32_t> call{ 0 };
+    std::atomic<uint32_t> ret{ 0 };
+    std::atomic<uint32_t> line{ 0 };
+};
+
+static std::array<HookStatsEntry, 32> g_hookStats{};
+
+static HookStatsEntry* LookupHookStats(lua_State* L) {
+    if (!L)
+        return nullptr;
+    for (auto& entry : g_hookStats) {
+        if (entry.state.load(std::memory_order_acquire) == L)
+            return &entry;
+    }
+    return nullptr;
+}
+
+static HookStatsEntry* AcquireHookStats(lua_State* L) {
+    if (!L)
+        return nullptr;
+    if (auto* existing = LookupHookStats(L))
+        return existing;
+    for (auto& entry : g_hookStats) {
+        lua_State* expected = nullptr;
+        if (entry.state.compare_exchange_strong(expected, L, std::memory_order_acq_rel)) {
+            entry.call.store(0, std::memory_order_relaxed);
+            entry.ret.store(0, std::memory_order_relaxed);
+            entry.line.store(0, std::memory_order_relaxed);
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+static void ReleaseHookStats(lua_State* L) {
+    if (!L)
+        return;
+    if (auto* entry = LookupHookStats(L)) {
+        entry->state.store(nullptr, std::memory_order_release);
+        entry->call.store(0, std::memory_order_relaxed);
+        entry->ret.store(0, std::memory_order_relaxed);
+        entry->line.store(0, std::memory_order_relaxed);
+    }
+}
+
+static void PopulateHookCounters(LuaStateInfo& info) {
+    if (!info.L)
+        return;
+    if (auto* entry = LookupHookStats(info.L)) {
+        info.hook_call_count = entry->call.load(std::memory_order_relaxed);
+        info.hook_ret_count = entry->ret.load(std::memory_order_relaxed);
+        info.hook_line_count = entry->line.load(std::memory_order_relaxed);
+    } else {
+        info.hook_call_count = 0;
+        info.hook_ret_count = 0;
+        info.hook_line_count = 0;
+    }
+}
+
+static void ResetHookStats() {
+    for (auto& entry : g_hookStats) {
+        entry.state.store(nullptr, std::memory_order_release);
+        entry.call.store(0, std::memory_order_relaxed);
+        entry.ret.store(0, std::memory_order_relaxed);
+        entry.line.store(0, std::memory_order_relaxed);
+    }
+}
 
 class LuaStateRegistry {
 public:
@@ -119,7 +221,7 @@ public:
         states_.reserve(32);
     }
 
-    bool AddOrUpdate(lua_State* L, void* scriptCtx, DWORD ownerTid, uint64_t generation, LuaStateInfo* outInfo = nullptr) {
+    bool AddOrUpdate(lua_State* L, void* scriptCtx, DWORD tid, uint64_t generation, LuaStateInfo* outInfo = nullptr) {
         if (!L)
             return false;
         const uint64_t now = GetTickCount64();
@@ -131,7 +233,8 @@ public:
             info.L = L;
             info.gen = generation;
             info.script_ctx = scriptCtx;
-            info.owner_tid = ownerTid;
+            info.owner_tid = tid;
+            info.last_seen_tid = tid;
             info.flags = 0;
             info.last_seen_ts = now;
             it = states_.emplace(L, info).first;
@@ -139,12 +242,17 @@ public:
             LuaStateInfo& info = it->second;
             if (scriptCtx)
                 info.script_ctx = scriptCtx;
-            if (ownerTid)
-                info.owner_tid = ownerTid;
+            if (tid) {
+                if (info.owner_tid == 0)
+                    info.owner_tid = tid;
+                info.last_seen_tid = tid;
+            }
             info.last_seen_ts = now;
         }
-        if (outInfo)
+        if (outInfo) {
             *outInfo = it->second;
+            PopulateHookCounters(*outInfo);
+        }
         return isNew;
     }
 
@@ -155,6 +263,7 @@ public:
             return false;
         if (outInfo)
             *outInfo = it->second;
+        ReleaseHookStats(L);
         states_.erase(it);
         return true;
     }
@@ -170,6 +279,20 @@ public:
         if (it == states_.end())
             return false;
         outInfo = it->second;
+        PopulateHookCounters(outInfo);
+        return true;
+    }
+
+    bool Update(lua_State* L, const std::function<void(LuaStateInfo&)>& fn, LuaStateInfo* outInfo = nullptr) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = states_.find(L);
+        if (it == states_.end())
+            return false;
+        fn(it->second);
+        if (outInfo) {
+            *outInfo = it->second;
+            PopulateHookCounters(*outInfo);
+        }
         return true;
     }
 
@@ -177,8 +300,11 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<LuaStateInfo> out;
         out.reserve(states_.size());
-        for (const auto& kv : states_)
-            out.push_back(kv.second);
+        for (const auto& kv : states_) {
+            LuaStateInfo info = kv.second;
+            PopulateHookCounters(info);
+            out.push_back(info);
+        }
         return out;
     }
 
@@ -204,6 +330,7 @@ public:
     void Reset() {
         std::lock_guard<std::mutex> lock(mutex_);
         states_.clear();
+        ResetHookStats();
     }
 
 private:
@@ -256,6 +383,7 @@ static constexpr const char* kHelperWalkName = "uow_walk";
 static constexpr const char* kHelperDumpName = "uow_dump_walk_env";
 static constexpr const char* kHelperInspectName = "uow_lua_inspect";
 static constexpr const char* kHelperRebindName = "uow_lua_rebind_all";
+static constexpr const char* kHelperSelfTestName = "uow_selftest";
 
 // Forward declarations
 static void ProcessPendingLuaTasks(lua_State* L);
@@ -264,13 +392,13 @@ static void MaybeRunMaintenance();
 static void RequestBindForState(const LuaStateInfo& info, const char* reason, bool force);
 static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const char* reason);
 static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& info, uint64_t generation, bool force);
-static bool EnsurePanicHandler(lua_State* L, const LuaStateInfo& info, uint64_t generation);
-static void InstallDebugHook(lua_State* L);
+static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info);
 static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn, uint64_t generation);
 static void DumpWalkEnv(lua_State* L, const char* reason);
 static int Lua_UOWalk(lua_State* L);
 static int Lua_UOWDump(lua_State* L);
 static int Lua_UOWInspect(lua_State* L);
+static int Lua_UOWSelfTest(lua_State* L);
 static int Lua_UOWRebindAll(lua_State* L);
 static void ForceRebindAll(const char* reason);
 static bool ResolveRegisterFunction();
@@ -323,35 +451,257 @@ static const char* FormatCppExceptionDetail(const char* tag, const char* value) 
 }
 
 static std::string DescribeFlags(uint32_t flags) {
+    std::vector<std::string> parts;
+    if (flags & STATE_FLAG_PANIC_OK) {
+        parts.emplace_back("PANIC_OK");
+    } else if (flags & STATE_FLAG_PANIC_MISS) {
+        parts.emplace_back("PANIC_MISS");
+    } else {
+        parts.emplace_back("PANIC_UNKNOWN");
+    }
+
+    if (flags & STATE_FLAG_DEBUG_OK) {
+        parts.emplace_back("DEBUG_OK");
+    } else if (flags & STATE_FLAG_DEBUG_MISS) {
+        parts.emplace_back("DEBUG_MISS");
+    } else {
+        parts.emplace_back("DEBUG_UNKNOWN");
+    }
+
+    if (flags & STATE_FLAG_QUARANTINED)
+        parts.emplace_back("QUARANTINED");
+
+    if (flags & STATE_FLAG_HELPERS_BOUND) {
+        parts.emplace_back("HELPERS");
+    } else {
+        parts.emplace_back("HELPERS_MISS");
+    }
+
     std::string out;
-    if (flags & STATE_FLAG_PANIC_OK)
-        out += "PANIC_OK";
-    else
-        out += "PANIC_MISS";
-    out += '|';
-    if (flags & STATE_FLAG_DEBUGHOOK_OK)
-        out += "DEBUG_OK";
-    else
-        out += "DEBUG_MISS";
-    out += '|';
-    if (flags & STATE_FLAG_HELPERS_BOUND)
-        out += "HELPERS";
-    else
-        out += "HELPERS_MISS";
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i)
+            out.push_back('|');
+        out += parts[i];
+    }
     return out;
 }
 
-static bool ProbeLuaState(lua_State* L) {
+extern "C" int __cdecl UOW_PanicThunk(lua_State* L) {
+    const char* topType = "<unset>";
+    __try {
+        int top = lua_gettop(L);
+        if (top > 0) {
+            int type = lua_type(L, -1);
+            const char* name = lua_typename(L, type);
+            topType = name ? name : "<null>";
+        } else {
+            topType = "<empty>";
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        topType = "<seh>";
+    }
+    LogLuaBind("panic-handler-fired L=%p top_type=%s", L, topType);
+    return 0;
+}
+
+extern "C" void __cdecl UOW_DebugHook(lua_State* L, lua_Debug* ar) {
+    if (!L || !ar)
+        return;
+    HookStatsEntry* entry = LookupHookStats(L);
+    if (!entry)
+        entry = AcquireHookStats(L);
+    if (!entry)
+        return;
+
+    switch (ar->event) {
+    case LUA_HOOKCALL:
+        entry->call.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case LUA_HOOKRET:
+    case LUA_HOOKTAILRET:
+        entry->ret.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case LUA_HOOKLINE:
+        entry->line.fetch_add(1, std::memory_order_relaxed);
+        break;
+    default:
+        break;
+    }
+}
+
+static bool SafeLuaProbeStack(lua_State* L, int* outTop = nullptr, DWORD* outSeh = nullptr) noexcept {
     if (!L)
         return false;
-    bool ok = false;
     __try {
-        lua_gettop(L);
-        ok = true;
+        int top = lua_gettop(L);
+        if (outTop)
+            *outTop = top;
+        lua_settop(L, top);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        ok = false;
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
     }
-    return ok;
+}
+
+static bool SafeLuaSetTop(lua_State* L, int idx, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_settop(L, idx);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaAtPanic(lua_State* L, lua_CFunction fn, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_atpanic(L, fn);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaQueryPanic(lua_State* L, lua_CFunction* outPrev, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_CFunction prev = lua_atpanic(L, nullptr);
+        if (outPrev)
+            *outPrev = prev;
+        lua_atpanic(L, prev);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outPrev)
+            *outPrev = nullptr;
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaSetHook(lua_State* L, lua_Hook hook, int mask, int count, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_sethook(L, hook, mask, count);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaGetHook(lua_State* L, lua_Hook* outHook, int* outMask, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        if (outHook)
+            *outHook = lua_gethook(L);
+        if (outMask)
+            *outMask = lua_gethookmask(L);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outHook)
+            *outHook = nullptr;
+        if (outMask)
+            *outMask = 0;
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaDoString(lua_State* L, const char* chunk, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !chunk)
+        return false;
+    __try {
+        int rc = luaL_loadstring(L, chunk);
+        if (rc == 0)
+            rc = lua_pcall(L, 0, LUA_MULTRET, 0);
+        if (outSeh)
+            *outSeh = 0;
+        return rc == 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool ProbeLua(lua_State* L) {
+    if (!L)
+        return false;
+
+    const uint64_t now = GetTickCount64();
+    LuaStateInfo info{};
+    bool haveInfo = g_stateRegistry.GetInfo(L, info);
+
+    if (haveInfo && (info.flags & STATE_FLAG_QUARANTINED)) {
+        if (now < info.quarantine_until) {
+            return false;
+        }
+        g_stateRegistry.Update(L, [&](LuaStateInfo& state) {
+            state.flags &= ~STATE_FLAG_QUARANTINED;
+            state.quarantine_until = 0;
+            state.probe_quarantine_logged = false;
+        }, &info);
+    }
+
+    DWORD probeSeh = 0;
+    bool ok = SafeLuaProbeStack(L, nullptr, &probeSeh);
+
+    if (ok) {
+        if (haveInfo && (info.flags & STATE_FLAG_QUARANTINED)) {
+            g_stateRegistry.Update(L, [&](LuaStateInfo& state) {
+                state.flags &= ~STATE_FLAG_QUARANTINED;
+                state.quarantine_until = 0;
+                state.probe_quarantine_logged = false;
+            });
+        }
+        return true;
+    }
+
+    if (haveInfo) {
+        bool shouldLog = false;
+        g_stateRegistry.Update(L, [&](LuaStateInfo& state) {
+            state.flags |= STATE_FLAG_QUARANTINED;
+            state.quarantine_until = now + kProbeThrottleMs;
+            if (!state.probe_quarantine_logged) {
+                state.probe_quarantine_logged = true;
+                shouldLog = true;
+            }
+        });
+        if (shouldLog) {
+            LogLuaState("probe-failed L=%p tid=%lu quarantined", L, GetCurrentThreadId());
+        }
+    } else {
+        LogLuaState("probe-failed L=%p tid=%lu quarantined", L, GetCurrentThreadId());
+    }
+
+    return false;
 }
 
 static bool AcquireBindingSlot(lua_State* L) {
@@ -448,7 +798,7 @@ static lua_State* NormalizeLuaStatePointer(lua_State* candidate) {
         actual = tryGetCState(raw);
     }
 
-    if (actual && ProbeLuaState(actual)) {
+    if (actual && ProbeLua(actual)) {
         g_mainLuaPlusState.store(raw, std::memory_order_release);
         if (actual != candidate) {
             LogLuaProbe("normalized lua state raw=%p c=%p", raw, actual);
@@ -456,7 +806,7 @@ static lua_State* NormalizeLuaStatePointer(lua_State* candidate) {
         return actual;
     }
 
-    if (ProbeLuaState(candidate))
+    if (ProbeLua(candidate))
         return candidate;
 
     return nullptr;
@@ -633,6 +983,55 @@ static void PostToLuaThread(lua_State* L, const char* name, std::function<void(l
     }
 }
 
+static bool IsOwnerThread(const LuaStateInfo& info) {
+    if (!info.L)
+        return false;
+    DWORD owner = info.owner_tid ? info.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
+    if (!owner)
+        return false;
+    return owner == GetCurrentThreadId();
+}
+
+static bool IsOwnerThread(lua_State* L) {
+    if (!L)
+        return false;
+    LuaStateInfo info{};
+    if (!g_stateRegistry.GetInfo(L, info))
+        return false;
+    return IsOwnerThread(info);
+}
+
+static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::function<void()> fn) {
+    if (!L || !fn)
+        return;
+
+    LuaStateInfo info{};
+    bool haveInfo = g_stateRegistry.GetInfo(L, info);
+    DWORD owner = 0;
+    if (haveInfo) {
+        owner = info.owner_tid ? info.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
+    } else {
+        owner = g_scriptThreadId.load(std::memory_order_acquire);
+    }
+
+    DWORD from = GetCurrentThreadId();
+    const char* name = taskName ? taskName : "<owner>";
+
+    if (owner && owner == from && haveInfo) {
+        fn();
+        return;
+    }
+
+    Log::Logf("[Bind] posted-to-owner L=%p from=%lu -> owner=%lu task=%s", L, from, owner, name);
+    PostToLuaThread(L, name, [fn = std::move(fn)](lua_State*) {
+        fn();
+    });
+}
+
+static void PostToOwner(lua_State* L, std::function<void()> fn) {
+    PostToOwnerWithTask(L, "<owner>", std::move(fn));
+}
+
 static void MaybeRunMaintenance() {
     uint64_t now = GetTickCount64();
     uint64_t last = g_lastMaintenanceTick.load(std::memory_order_relaxed);
@@ -655,97 +1054,97 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         return;
     uint64_t generation = g_generation.load(std::memory_order_acquire);
     DWORD owner = info.owner_tid ? info.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
-    std::string name = std::string("BindHelpers:") + (reason ? reason : "unknown");
     if (owner && owner == GetCurrentThreadId()) {
         BindHelpersTask(info.L, generation, force, reason ? reason : "immediate");
     } else {
-        PostToLuaThread(info.L, name.c_str(), [generation, force, reasonStr = std::string(reason ? reason : "queue")](lua_State* state) {
-            BindHelpersTask(state, generation, force, reasonStr.c_str());
+        std::string reasonCopy = reason ? reason : "queue";
+        PostToOwnerWithTask(info.L, "helpers", [target = info.L, generation, force, reasonCopy]() {
+            BindHelpersTask(target, generation, force, reasonCopy.c_str());
         });
     }
 }
 
-static bool EnsurePanicHandler(lua_State* L, const LuaStateInfo& info, uint64_t generation) {
-    if (!L)
-        return false;
-
-    lua_CFunction prev = nullptr;
-    DWORD sehCode = 0;
-    bool ok = false;
-
-    auto atPanic = ResolveLuaPlusAtPanic();
-    if (info.script_ctx && LooksLikeLuaPlusState(info.script_ctx) && atPanic) {
-        __try {
-            prev = atPanic(info.script_ctx, Lua_UOWDump);
-            ok = true;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            sehCode = GetExceptionCode();
-            ok = false;
-        }
-    }
-
-    if (!ok) {
-        __try {
-            prev = lua_atpanic(L, Lua_UOWDump);
-            ok = true;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            sehCode = GetExceptionCode();
-            ok = false;
-        }
-    }
-
-    if (ok) {
-        LogLuaBind("ok name=panic-handler L=%p ctx=%p prev=%p gen=%llu", L, info.script_ctx, prev, generation);
-        g_stateRegistry.MarkFlags(L, STATE_FLAG_PANIC_OK, 0, generation, false);
-    } else {
-        LogLuaBind("fail name=panic-handler L=%p ctx=%p reason=seh=0x%08lX", L, info.script_ctx, sehCode);
-    }
-    return ok;
-}
-
-static void InstallDebugHook(lua_State* L) {
+static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
     if (!L)
         return;
 
-    auto debugHook = [](lua_State* Lstate, lua_Debug* ar) {
-        if (!Lstate || !ar)
-            return;
-        int infoOk = 0;
-        DWORD seh = 0;
-        __try {
-            infoOk = lua_getinfo(Lstate, "Sn", ar);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            seh = GetExceptionCode();
-            infoOk = 0;
-        }
-        if (infoOk == 0)
-            return;
-        const char* src = ar->short_src ? ar->short_src : "?";
-        int line = ar->currentline;
-        const char* name = ar->name ? ar->name : "?";
-        bool isC = ar->what && ar->what[0] == 'C';
-        DWORD tid = GetCurrentThreadId();
-        if (ar->event == LUA_HOOKCALL) {
-            LogLuaProbe("tid=%lu CALL src=%s:%d name=%s%s", tid, src, line, name, isC ? "(C)" : "");
-        } else if (ar->event == LUA_HOOKRET || ar->event == LUA_HOOKTAILRET) {
-            LogLuaProbe("tid=%lu RET src=%s:%d name=%s%s", tid, src, line, name, isC ? "(C)" : "");
-        }
-    };
-
-    bool installed = false;
-    DWORD seh = 0;
-    __try {
-        lua_sethook(L, debugHook, LUA_MASKCALL | LUA_MASKRET, 0);
-        installed = true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        seh = GetExceptionCode();
-        installed = false;
+    if (!IsOwnerThread(info)) {
+        PostToOwnerWithTask(L, "panic&debug", [L]() {
+            LuaStateInfo refreshed{};
+            if (g_stateRegistry.GetInfo(L, refreshed))
+                InstallPanicAndDebug(L, refreshed);
+        });
+        return;
     }
 
-    if (installed) {
-        LogLuaBind("ok name=debug-hook L=%p", L);
-    } else {
-        LogLuaBind("fail name=debug-hook L=%p reason=seh=0x%08lX", L, seh);
+    lua_State* mainState = g_mainLuaState.load(std::memory_order_acquire);
+    if (mainState && mainState != L)
+        return;
+
+    if ((info.flags & STATE_FLAG_PANIC_OK) && (info.flags & STATE_FLAG_DEBUG_OK) &&
+        info.panic_log_gen == info.gen && info.debug_log_gen == info.gen) {
+        return;
+    }
+
+    if (!ProbeLua(L))
+        return;
+
+    DWORD panicSeh = 0;
+    bool panicOk = SafeLuaAtPanic(L, UOW_PanicThunk, &panicSeh);
+
+    DWORD debugSeh = 0;
+    bool debugOk = SafeLuaSetHook(L, UOW_DebugHook, LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE, 0, &debugSeh);
+
+    if (debugOk)
+        AcquireHookStats(L);
+    else
+        ReleaseHookStats(L);
+
+    bool logPanic = false;
+    bool logDebug = false;
+    g_stateRegistry.Update(L, [&](LuaStateInfo& state) {
+        if (panicOk) {
+            state.flags |= STATE_FLAG_PANIC_OK;
+            state.flags &= ~STATE_FLAG_PANIC_MISS;
+        } else {
+            state.flags |= STATE_FLAG_PANIC_MISS;
+            state.flags &= ~STATE_FLAG_PANIC_OK;
+        }
+
+        if (debugOk) {
+            state.flags |= STATE_FLAG_DEBUG_OK;
+            state.flags &= ~STATE_FLAG_DEBUG_MISS;
+        } else {
+            state.flags |= STATE_FLAG_DEBUG_MISS;
+            state.flags &= ~STATE_FLAG_DEBUG_OK;
+        }
+
+        if (state.panic_log_gen != state.gen || state.panic_log_status != (panicOk ? 1 : 0)) {
+            state.panic_log_gen = state.gen;
+            state.panic_log_status = panicOk ? 1 : 0;
+            logPanic = true;
+        }
+        if (state.debug_log_gen != state.gen || state.debug_log_status != (debugOk ? 1 : 0)) {
+            state.debug_log_gen = state.gen;
+            state.debug_log_status = debugOk ? 1 : 0;
+            logDebug = true;
+        }
+    }, &info);
+
+    if (logPanic) {
+        if (panicOk) {
+            LogLuaBind("ok name=panic-handler L=%p", L);
+        } else {
+            LogLuaBind("fail name=panic-handler L=%p reason=seh=0x%08lX", L, panicSeh);
+        }
+    }
+
+    if (logDebug) {
+        if (debugOk) {
+            LogLuaBind("ok name=debug-hook L=%p", L);
+        } else {
+            LogLuaBind("fail name=debug-hook L=%p reason=seh=0x%08lX", L, debugSeh);
+        }
     }
 }
 
@@ -782,35 +1181,38 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
     return registered;
 }
 
-static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& info, uint64_t generation, bool force) {
+static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, uint64_t generation, bool force) {
     if (!L)
         return false;
 
+    LuaStateInfo info = originalInfo;
+
+    if (!IsOwnerThread(info))
+        return false;
+
+    if (!ProbeLua(L))
+        return false;
+
+    g_stateRegistry.GetInfo(L, info);
+
     bool ok = true;
-
-    if (force || !(info.flags & STATE_FLAG_PANIC_OK)) {
-        if (!EnsurePanicHandler(L, info, generation))
-            ok = false;
-    }
-
-    if (force || !(info.flags & STATE_FLAG_DEBUGHOOK_OK)) {
-        InstallDebugHook(L);
-        g_stateRegistry.MarkFlags(L, STATE_FLAG_DEBUGHOOK_OK, 0, generation, false);
-    }
-
     bool helpersBound = (info.flags & STATE_FLAG_HELPERS_BOUND) && info.gen == generation;
     if (force || !helpersBound) {
         bool walkOk = RegisterHelper(L, info, kHelperWalkName, Lua_UOWalk, generation);
         bool dumpOk = RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation);
         bool inspectOk = RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation);
         bool rebindOk = RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation);
-        bool allOk = walkOk && dumpOk && inspectOk && rebindOk;
-        if (allOk)
+        bool selfTestOk = RegisterHelper(L, info, kHelperSelfTestName, Lua_UOWSelfTest, generation);
+        bool allOk = walkOk && dumpOk && inspectOk && rebindOk && selfTestOk;
+        if (allOk) {
             g_stateRegistry.MarkFlags(L, STATE_FLAG_HELPERS_BOUND, 0, generation, true);
-        else
+        } else {
             ok = false;
+        }
+        g_stateRegistry.GetInfo(L, info);
     }
 
+    InstallPanicAndDebug(L, info);
     return ok;
 }
 
@@ -824,8 +1226,24 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
         return;
     }
 
-    if (!force && (info.flags & STATE_FLAG_HELPERS_BOUND) && info.gen == generation)
+    if (!IsOwnerThread(info)) {
+        std::string reasonCopy = reason ? reason : "unknown";
+        PostToOwnerWithTask(L, "helpers", [L, generation, force, reasonCopy]() {
+            BindHelpersTask(L, generation, force, reasonCopy.c_str());
+        });
         return;
+    }
+
+    uint64_t now = GetTickCount64();
+    if ((info.flags & STATE_FLAG_QUARANTINED) && now < info.quarantine_until) {
+        LogLuaState("bind-skip L=%p reason=quarantined", L);
+        return;
+    }
+
+    if (!force && (info.flags & STATE_FLAG_HELPERS_BOUND) && info.gen == generation) {
+        InstallPanicAndDebug(L, info);
+        return;
+    }
 
     if (!AcquireBindingSlot(L)) {
         LogLuaState("bind-skip L=%p reason=in-progress", L);
@@ -923,13 +1341,17 @@ static int Lua_UOWInspect(lua_State* L) {
     if (have) {
         oss << " ctx=" << info.script_ctx
             << " owner=" << info.owner_tid
+            << " last_tid=" << info.last_seen_tid
             << " gen=" << info.gen
-            << " flags=" << DescribeFlags(info.flags);
+            << " flags=" << DescribeFlags(info.flags)
+            << " counters=call:" << info.hook_call_count
+            << "|ret:" << info.hook_ret_count
+            << "|line:" << info.hook_line_count;
     } else {
         oss << " ctx=<unknown>";
     }
 
-    const char* helpers[] = { kHelperWalkName, kHelperDumpName, kHelperInspectName, kHelperRebindName };
+    const char* helpers[] = { kHelperWalkName, kHelperDumpName, kHelperInspectName, kHelperRebindName, kHelperSelfTestName };
     constexpr size_t helperCount = sizeof(helpers) / sizeof(helpers[0]);
     oss << " helpers=";
     for (size_t i = 0; i < helperCount; ++i) {
@@ -946,15 +1368,107 @@ static int Lua_UOWInspect(lua_State* L) {
 
     auto snapshot = g_stateRegistry.Snapshot();
     for (const auto& entry : snapshot) {
-        LogLuaState("entry L=%p ctx=%p tid=%lu gen=%llu flags=%s last_seen=%llu",
+        LogLuaState("entry L=%p ctx=%p owner=%lu last_tid=%lu gen=%llu flags=%s last_seen=%llu counters=%u/%u/%u",
                     entry.L,
                     entry.script_ctx,
                     entry.owner_tid,
+                    entry.last_seen_tid,
                     entry.gen,
                     DescribeFlags(entry.flags).c_str(),
-                    entry.last_seen_ts);
+                    entry.last_seen_ts,
+                    entry.hook_call_count,
+                    entry.hook_ret_count,
+                    entry.hook_line_count);
     }
 
+    lua_pushstring(L, summary.c_str());
+    return 1;
+}
+
+static int Lua_UOWSelfTest(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+
+    LuaStateInfo info{};
+    if (!g_stateRegistry.GetInfo(L, info)) {
+        lua_pushstring(L, "state-missing");
+        return 1;
+    }
+
+    if (!IsOwnerThread(info)) {
+        lua_pushstring(L, "wrong-thread");
+        return 1;
+    }
+
+    if (!ProbeLua(L)) {
+        lua_pushstring(L, "probe-failed");
+        return 1;
+    }
+
+    bool panicOk = false;
+    bool debugOk = false;
+    bool runOk = false;
+    DWORD panicSeh = 0;
+    DWORD debugSeh = 0;
+    DWORD runSeh = 0;
+
+    lua_CFunction prevPanic = nullptr;
+    if (SafeLuaQueryPanic(L, &prevPanic, &panicSeh)) {
+        panicOk = (prevPanic == UOW_PanicThunk);
+    } else {
+        panicOk = false;
+    }
+
+    lua_Hook hook = nullptr;
+    int hookMask = 0;
+    if (SafeLuaGetHook(L, &hook, &hookMask, &debugSeh)) {
+        debugOk = (hook == UOW_DebugHook) &&
+                  ((hookMask & (LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE)) == (LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE));
+    } else {
+        debugOk = false;
+    }
+
+    int top = 0;
+    SafeLuaProbeStack(L, &top, nullptr);
+    DWORD dostringSeh = 0;
+    if (SafeLuaDoString(L, "return 1+1", &dostringSeh)) {
+        int newTop = lua_gettop(L);
+        if (newTop > top && lua_isnumber(L, -1) && lua_tointeger(L, -1) == 2) {
+            runOk = true;
+        }
+    } else if (dostringSeh) {
+        runSeh = dostringSeh;
+    }
+    DWORD restoreSeh = 0;
+    if (!SafeLuaSetTop(L, top, &restoreSeh) && restoreSeh && !runSeh)
+        runSeh = restoreSeh;
+
+    Log::Logf("[SelfTest] L=%p panic=%s debug=%s run=%s",
+              L,
+              panicOk ? "ok" : "fail",
+              debugOk ? "ok" : "fail",
+              runOk ? "ok" : "fail");
+
+    std::ostringstream oss;
+    oss << "panic=" << (panicOk ? "ok" : "fail");
+    if (!panicOk && panicSeh) {
+        char buf[16];
+        sprintf_s(buf, sizeof(buf), "0x%08lX", panicSeh);
+        oss << "(seh=" << buf << ")";
+    }
+    oss << " debug=" << (debugOk ? "ok" : "fail");
+    if (!debugOk && debugSeh) {
+        char buf[16];
+        sprintf_s(buf, sizeof(buf), "0x%08lX", debugSeh);
+        oss << "(seh=" << buf << ")";
+    }
+    oss << " run=" << (runOk ? "ok" : "fail");
+    if (!runOk && runSeh) {
+        char buf[16];
+        sprintf_s(buf, sizeof(buf), "0x%08lX", runSeh);
+        oss << "(seh=" << buf << ")";
+    }
+
+    std::string summary = oss.str();
     lua_pushstring(L, summary.c_str());
     return 1;
 }
@@ -1001,10 +1515,10 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name) {
     lua_State* resolved = ResolveLuaState();
     if (ctx) {
         fromCtx = NormalizeLuaStatePointer(reinterpret_cast<lua_State*>(ctx));
-        if (!ProbeLuaState(fromCtx))
+        if (!ProbeLua(fromCtx))
             fromCtx = nullptr;
     }
-    if (!ProbeLuaState(resolved))
+    if (!ProbeLua(resolved))
         resolved = nullptr;
 
     lua_State* L = resolved ? resolved : fromCtx;
@@ -1146,5 +1660,7 @@ void OnStateRemoved(lua_State* L, const char* reason) {
         LogLuaState("removed L=%p ctx=%p tid=%lu reason=%s", L, info.script_ctx, info.owner_tid, reason ? reason : "unknown");
     }
 }
+
+
 
 } // namespace Engine::Lua
