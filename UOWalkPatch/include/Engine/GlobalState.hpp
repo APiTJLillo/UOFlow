@@ -26,5 +26,6 @@ namespace Engine {
     uintptr_t GlobalStateSlotAddress();
     GlobalStateInfo* GlobalStateSlotValue();
     bool RefreshLuaStateFromSlot();
+    std::uint32_t GlobalStateCookie();
     void* FindRegisterLuaFunction();
 }

@@ -231,6 +231,10 @@ void LuaStateRegistry::CombineInfo(LuaStateInfo& into, const LuaStateInfo& from)
     if (from.last_tid)
         into.last_tid = from.last_tid;
     into.gen = std::max(into.gen, from.gen);
+    if (!into.expected_global && from.expected_global)
+        into.expected_global = from.expected_global;
+    if (from.gc_gen > into.gc_gen)
+        into.gc_gen = from.gc_gen;
     into.flags |= from.flags;
 
     if (into.next_probe_ms == 0 || (from.next_probe_ms != 0 && from.next_probe_ms < into.next_probe_ms))

@@ -81,6 +81,7 @@ add_library(UOWalkPatchDLL SHARED
     src/Engine/GlobalState.cpp
     src/Engine/Movement.cpp
     src/Engine/LuaBridge.cpp
+    src/Engine/lua_safe.cpp
     src/Engine/LuaStateRegistry.cpp
 )
 

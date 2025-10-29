@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <dbghelp.h>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include "Core/Logging.hpp"
@@ -22,6 +23,11 @@ static LONG g_once = 0;
 static PVOID g_vehHandle = nullptr;
 static bool g_luaStateCaptured = false;
 static GlobalStateInfo* g_lastValidatedInfo = nullptr;
+static std::atomic<std::uint32_t> g_globalStateCookie{0};
+
+namespace Lua {
+    void OnGlobalStateValidated(const GlobalStateInfo* info, std::uint32_t cookie);
+}
 
 // Forward declarations
 static void* FindGlobalStateInfo();
@@ -428,6 +434,8 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
             g_luaState = candidate->luaState;
             g_luaStateCaptured = true;
             g_lastValidatedInfo = candidate;
+            std::uint32_t cookie = g_globalStateCookie.fetch_add(1, std::memory_order_acq_rel) + 1;
+            Lua::OnGlobalStateValidated(candidate, cookie);
 
             Net::InitSendBuilder(candidate);
 
@@ -504,8 +512,14 @@ static DWORD WINAPI WaitForLua(LPVOID) {
     while (!g_luaStateCaptured && !g_stopScan) {
         GlobalStateInfo* info = (GlobalStateInfo*)FindGlobalStateInfo();
         if (info && info->luaState) {
-            g_globalStateInfo = info;
-            g_luaState = info->luaState;
+            GlobalStateInfo* active = ValidateGlobalState(info);
+            if (!active)
+                active = info;
+
+            g_globalStateInfo = active;
+            g_luaState = active ? active->luaState : nullptr;
+            if (g_luaState)
+                g_luaStateCaptured = true;
 
             char buffer[128];
             sprintf_s(buffer, sizeof(buffer), "Scanner found Lua State @ %p", g_luaState);
@@ -514,7 +528,7 @@ static DWORD WINAPI WaitForLua(LPVOID) {
             // Queue Lua helper registration for the next safe point
             RequestWalkRegistration();
             Engine::Lua::OnStateObserved(static_cast<lua_State*>(g_luaState),
-                                         info ? info->scriptContext : nullptr);
+                                         active ? active->scriptContext : nullptr);
 
             return 0;
         }
@@ -557,10 +571,13 @@ void ReportLuaState(void* L) {
     g_luaStateCaptured = true;
     char buffer[128];
     sprintf_s(buffer, sizeof(buffer), "Captured Lua state @ %p", L);
-    WriteRawLog(buffer);
+   WriteRawLog(buffer);
 
     g_globalStateInfo = (GlobalStateInfo*)FindOwnerOfLuaState(L);
     if (g_globalStateInfo) {
+        GlobalStateInfo* validated = ValidateGlobalState(g_globalStateInfo);
+        if (validated)
+            g_globalStateInfo = validated;
         DumpMemory("GlobalStateInfo", g_globalStateInfo, 0x40);
         if (g_scanThread) {
             WaitForSingleObject(g_scanThread, INFINITE);
@@ -611,5 +628,8 @@ bool RefreshLuaStateFromSlot()
     return changed;
 }
 
-} // namespace Engine
+std::uint32_t GlobalStateCookie() {
+    return g_globalStateCookie.load(std::memory_order_acquire);
+}
 
+} // namespace Engine

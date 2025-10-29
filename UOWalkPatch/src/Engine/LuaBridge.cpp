@@ -28,6 +28,7 @@
 #include "Engine/LuaBridge.hpp"
 #include "Engine/LuaStateRegistry.hpp"
 #include "Engine/Movement.hpp"
+#include "Engine/lua_safe.h"
 
 #include "LuaPlus.h"
 
@@ -225,6 +226,12 @@ static std::atomic<uint64_t> g_lastCanonicalReadyTick{0};
 static std::atomic<uint64_t> g_lastDebugDeferLogTick{0};
 static std::atomic<uint64_t> g_lastSentinelStackLogTick{0};
 static std::atomic<uint64_t> g_lastImplausibleTopLogTick{0};
+static std::atomic<uint32_t> g_guardFailCanon{0};
+static std::atomic<uint32_t> g_guardFailOwner{0};
+static std::atomic<uint32_t> g_guardFailRead{0};
+static std::atomic<uint32_t> g_guardFailSeh{0};
+static std::atomic<uint32_t> g_guardFailPlausible{0};
+static std::atomic<uint64_t> g_guardFailLastLogTick{0};
 static std::mutex g_debugInstallMutex;
 static std::unordered_set<lua_State*> g_debugInstallInFlight;
 struct DebugInstallRetryInfo {
@@ -244,8 +251,63 @@ static bool IsLuaStackTopPlausible(int top) noexcept {
     return top >= 0 && top <= kMaxReasonableLuaTop;
 }
 
+static void NoteGuardFailure(Engine::Lua::LuaGuardFailure reason) {
+    using Engine::Lua::LuaGuardFailure;
+    if (reason == LuaGuardFailure::None)
+        return;
+
+    switch (reason) {
+    case LuaGuardFailure::CanonMismatch:
+    case LuaGuardFailure::GenerationMismatch:
+        g_guardFailCanon.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case LuaGuardFailure::OwnerMismatch:
+        g_guardFailOwner.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case LuaGuardFailure::ReadCheckFailed:
+        g_guardFailRead.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case LuaGuardFailure::Seh:
+        g_guardFailSeh.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case LuaGuardFailure::ImplausibleTop:
+        g_guardFailPlausible.fetch_add(1, std::memory_order_relaxed);
+        break;
+    default:
+        break;
+    }
+
+    uint64_t now = GetTickCount64();
+    uint64_t last = g_guardFailLastLogTick.load(std::memory_order_acquire);
+    if (now - last < 5000)
+        return;
+    if (!g_guardFailLastLogTick.compare_exchange_strong(last, now, std::memory_order_acq_rel, std::memory_order_acquire))
+        return;
+
+    uint32_t canon = g_guardFailCanon.exchange(0, std::memory_order_acq_rel);
+    uint32_t owner = g_guardFailOwner.exchange(0, std::memory_order_acq_rel);
+    uint32_t read = g_guardFailRead.exchange(0, std::memory_order_acq_rel);
+    uint32_t seh = g_guardFailSeh.exchange(0, std::memory_order_acq_rel);
+    uint32_t plaus = g_guardFailPlausible.exchange(0, std::memory_order_acq_rel);
+
+    if (canon || owner || read || seh || plaus) {
+        LogLuaBind("lua-guard summary canon=%u owner=%u read=%u seh=%u plausible=%u",
+                   canon,
+                   owner,
+                   read,
+                   seh,
+                   plaus);
+    }
+}
+
 static void LogLuaStateSnapshot(lua_State* L) {
     if (!L)
+        return;
+
+    LuaStateInfo snapshot{};
+    if (!g_stateRegistry.GetByPointer(L, snapshot))
+        return;
+    if (!Engine::Lua::ValidateLuaStateShallow(L, snapshot.expected_global))
         return;
 
     __try {
@@ -3234,6 +3296,7 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
         return;
 
     LuaStackGuard stackGuard(L);
+    g_stateRegistry.UpdateByPointer(L, [](LuaStateInfo&) {}, &info);
 
     if (!(info.flags & STATE_FLAG_VALID))
         return;
@@ -3270,12 +3333,6 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
         return;
     }
 
-    if (!ProbeLua(L)) {
-        LogLuaBind("hooks-install skip Lc=%p reason=probe-failed", L);
-        ScheduleDebugInstallRetry(L);
-        return;
-    }
-
     const char* stabilityReason = nullptr;
     if (!IsStateStableForInstall(info, L, &stabilityReason)) {
         MaybeLogInstallDefer(L, stabilityReason);
@@ -3285,6 +3342,22 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
         ScheduleDebugInstallRetry(L);
         return;
     }
+
+    if (!safe_probe_stack_roundtrip(L, info)) {
+        NoteGuardFailure(Engine::Lua::GetLastLuaGuardFailure());
+        LogLuaBind("hooks-install skip-unstable Lc=%p reason=probe-failed", L);
+        ScheduleDebugInstallRetry(L);
+        return;
+    }
+
+    auto topRes = safe_lua_gettop(L, info);
+    if (!topRes.ok) {
+        NoteGuardFailure(Engine::Lua::GetLastLuaGuardFailure());
+        LogLuaBind("hooks-install skip-unstable Lc=%p reason=top-unavailable", L);
+        ScheduleDebugInstallRetry(L);
+        return;
+    }
+    LogLuaBind("lua-top op=gettop top=%d", topRes.top);
 
     DWORD panicSeh = 0;
     bool panicChanged = false;
@@ -4113,6 +4186,51 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name) {
 } // namespace
 
 namespace Engine::Lua {
+
+lua_State* GetCanonicalStateRelaxed() noexcept {
+    return g_canonicalState.load(std::memory_order_acquire);
+}
+
+DWORD GetScriptThreadIdHint() noexcept {
+    return g_scriptThreadId.load(std::memory_order_acquire);
+}
+
+void OnGlobalStateValidated(const GlobalStateInfo* info, std::uint32_t cookie) {
+    if (!info || !info->luaState || cookie == 0)
+        return;
+
+    lua_State* raw = static_cast<lua_State*>(info->luaState);
+    lua_State* canonical = NormalizeLuaStatePointer(raw);
+    if (!canonical)
+        canonical = raw;
+    if (!canonical)
+        return;
+
+    uint64_t gen = g_generation.load(std::memory_order_acquire);
+    auto updater = [&](LuaStateInfo& state) {
+        state.expected_global = reinterpret_cast<uintptr_t>(info);
+        state.gc_gen = cookie;
+        state.flags |= STATE_FLAG_VALID;
+        if (!state.L_canonical)
+            state.L_canonical = canonical;
+    };
+
+    auto ensureAndUpdate = [&](lua_State* target) {
+        if (!target)
+            return;
+        if (!g_stateRegistry.UpdateByPointer(target, updater)) {
+            bool isNew = false;
+            g_stateRegistry.EnsureForPointer(target, info->scriptContext, 0, gen, isNew);
+            g_stateRegistry.UpdateByPointer(target, updater);
+        }
+    };
+
+    ensureAndUpdate(canonical);
+    if (raw != canonical)
+        ensureAndUpdate(raw);
+
+    g_canonicalState.store(canonical, std::memory_order_release);
+}
 
 bool InitLuaBridge() {
     g_stateRegistry.Reset();

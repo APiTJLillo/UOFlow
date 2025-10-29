@@ -21,9 +21,11 @@ struct LuaStateInfo {
     lua_State* L_reported = nullptr;
     void* ctx_reported = nullptr;
     lua_State* L_canonical = nullptr;
+    uintptr_t expected_global = 0;
     DWORD owner_tid = 0;
     DWORD last_tid = 0;
     uint64_t gen = 0;
+    uint32_t gc_gen = 0;
     uint32_t flags = 0;
     uint64_t next_probe_ms = 0;
     uint32_t probe_failures = 0;
