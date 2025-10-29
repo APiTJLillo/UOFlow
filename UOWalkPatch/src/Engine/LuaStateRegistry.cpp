@@ -249,10 +249,25 @@ void LuaStateRegistry::CombineInfo(LuaStateInfo& into, const LuaStateInfo& from)
     if (from.panic_status_gen > into.panic_status_gen) {
         into.panic_status_gen = from.panic_status_gen;
         into.panic_status = from.panic_status;
+        into.panic_prev = from.panic_prev;
     }
     if (from.debug_status_gen > into.debug_status_gen) {
         into.debug_status_gen = from.debug_status_gen;
         into.debug_status = from.debug_status;
+        into.debug_prev = from.debug_prev;
+        into.debug_prev_mask = from.debug_prev_mask;
+        into.debug_prev_count = from.debug_prev_count;
+        into.debug_prev_valid = from.debug_prev_valid;
+    }
+    if (from.debug_mode_gen > into.debug_mode_gen) {
+        into.debug_mode_gen = from.debug_mode_gen;
+        into.debug_mode = from.debug_mode;
+        into.debug_mask = from.debug_mask;
+        into.debug_count = from.debug_count;
+    }
+    if (from.gc_sentinel_gen > into.gc_sentinel_gen) {
+        into.gc_sentinel_gen = from.gc_sentinel_gen;
+        into.gc_sentinel_ref = from.gc_sentinel_ref;
     }
 }
 

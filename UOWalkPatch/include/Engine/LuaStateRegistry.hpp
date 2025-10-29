@@ -10,6 +10,10 @@
 #include <vector>
 
 struct lua_State;
+struct lua_Debug;
+
+using lua_CFunction = int(__cdecl*)(lua_State*);
+using lua_Hook = void(__cdecl*)(lua_State*, lua_Debug*);
 
 namespace Engine::Lua {
 
@@ -31,8 +35,21 @@ struct LuaStateInfo {
 
     int panic_status = -1;
     uint64_t panic_status_gen = 0;
+    lua_CFunction panic_prev = nullptr;
+
     int debug_status = -1;
     uint64_t debug_status_gen = 0;
+    uint32_t debug_mode = 0;
+    uint64_t debug_mode_gen = 0;
+    uint32_t debug_mask = 0;
+    uint32_t debug_count = 0;
+    lua_Hook debug_prev = nullptr;
+    int debug_prev_mask = 0;
+    int debug_prev_count = 0;
+    int debug_prev_valid = 0;
+
+    int gc_sentinel_ref = -1;
+    uint64_t gc_sentinel_gen = 0;
 };
 
 class LuaStateRegistry {

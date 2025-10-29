@@ -15,6 +15,7 @@
 #include <array>
 #include <chrono>
 #include <cstdarg>
+#include <climits>
 #include <sstream>
 
 #include <minhook.h>
@@ -80,10 +81,20 @@ extern "C" {
     LUA_API int lua_gettop(lua_State* L);
     LUA_API void lua_settop(lua_State* L, int idx);
     LUA_API void lua_pushvalue(lua_State* L, int idx);
+    LUA_API void lua_pushnil(lua_State* L);
+    LUA_API void lua_pushstring(lua_State* L, const char* s);
+    LUA_API void lua_pushcclosure(lua_State* L, lua_CFunction fn, int n);
+    LUA_API void lua_pushboolean(lua_State* L, int b);
+    LUA_API void lua_pushinteger(lua_State* L, lua_Integer n);
+    LUA_API void lua_pushlightuserdata(lua_State* L, void* p);
     LUA_API int lua_isnumber(lua_State* L, int idx);
     LUA_API int lua_isboolean(lua_State* L, int idx);
+    LUA_API int lua_isstring(lua_State* L, int idx);
     LUA_API int lua_iscfunction(lua_State* L, int idx);
     LUA_API lua_CFunction lua_tocfunction(lua_State* L, int idx);
+    LUA_API lua_Integer lua_tointeger(lua_State* L, int idx);
+    LUA_API lua_Number lua_tonumber(lua_State* L, int idx);
+    LUA_API void* lua_touserdata(lua_State* L, int idx);
     LUA_API const char* lua_tolstring(lua_State* L, int idx, size_t* len);
     LUA_API const char* lua_tostring(lua_State* L, int idx);
     LUA_API const char* lua_getupvalue(lua_State* L, int funcindex, int n);
@@ -96,15 +107,28 @@ extern "C" {
     LUA_API int lua_getstack(lua_State* L, int level, lua_Debug* ar);
     LUA_API int lua_getinfo(lua_State* L, const char* what, lua_Debug* ar);
     typedef void(__cdecl* lua_Hook)(lua_State*, lua_Debug*);
+    LUA_API void lua_setfield(lua_State* L, int idx, const char* k);
     LUA_API void lua_sethook(lua_State* L, lua_Hook func, int mask, int count);
     LUA_API lua_Hook lua_gethook(lua_State* L);
     LUA_API int lua_gethookmask(lua_State* L);
+    LUA_API int lua_gethookcount(lua_State* L);
+    LUA_API void lua_rawget(lua_State* L, int idx);
+    LUA_API void lua_rawset(lua_State* L, int idx);
+    LUA_API void* lua_newuserdata(lua_State* L, size_t size);
+    LUA_API int lua_setmetatable(lua_State* L, int objindex);
+    LUA_API int luaL_newmetatable(lua_State* L, const char* tname);
+    LUA_API void luaL_getmetatable(lua_State* L, const char* tname);
+    LUA_API void lua_settable(lua_State* L, int idx);
     LUA_API int luaL_loadstring(lua_State* L, const char* str);
     LUA_API int lua_pcall(lua_State* L, int nargs, int nresults, int errfunc);
 }
 
 #ifndef LUA_RIDX_GLOBALS
 #define LUA_RIDX_GLOBALS 2
+#endif
+
+#ifndef LUA_REGISTRYINDEX
+#define LUA_REGISTRYINDEX (-10000)
 #endif
 
 namespace {
@@ -178,6 +202,8 @@ static constexpr const char* kHelperDumpName = "uow_dump_walk_env";
 static constexpr const char* kHelperInspectName = "uow_lua_inspect";
 static constexpr const char* kHelperRebindName = "uow_lua_rebind_all";
 static constexpr const char* kHelperSelfTestName = "uow_selftest";
+static constexpr const char* kHelperDebugName = "uow_debug";
+static constexpr const char* kHelperDebugStatusName = "uow_debug_status";
 
 // Forward declarations
 static void ProcessPendingLuaTasks(lua_State* L);
@@ -194,11 +220,21 @@ static int Lua_UOWDump(lua_State* L);
 static int Lua_UOWInspect(lua_State* L);
 static int Lua_UOWSelfTest(lua_State* L);
 static int Lua_UOWRebindAll(lua_State* L);
+static int Lua_UOWDebug(lua_State* L);
+static int Lua_UOWDebugStatus(lua_State* L);
+static int __cdecl HookSentinelGC(lua_State* L);
 static void ForceRebindAll(const char* reason);
 static bool ResolveRegisterFunction();
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static bool ProbeLua(lua_State* L);
 static lua_State* NormalizeLuaStatePointer(lua_State* candidate);
+static bool IsOwnerThread(const LuaStateInfo& info);
+static bool IsOwnerThread(lua_State* L);
+static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::function<void()> fn);
+static bool PushHookSentinelKey(lua_State* L, DWORD* outSeh = nullptr);
+static bool EnsureSentinelMetatable(lua_State* L, DWORD* outSeh) noexcept;
+static bool EnsureHookSentinel(lua_State* L, LuaStateInfo& info, bool* created, DWORD* outSeh) noexcept;
+static bool ClearHookSentinel(lua_State* L, DWORD* outSeh) noexcept;
 
 static void AppendPointer(std::string& dest, const void* ptr) {
     char buffer[32];
@@ -225,7 +261,11 @@ static std::string JoinStrings(const std::vector<std::string>& chunks, const cha
 
 static bool SafeLuaProbeStack(lua_State* L, int* outTop, DWORD* outSeh) noexcept;
 static bool SafeLuaSetTop(lua_State* L, int idx, DWORD* outSeh) noexcept;
+static bool SafeLuaGetStack(lua_State* L, int level, lua_Debug* ar, DWORD* outSeh = nullptr) noexcept;
+static bool SafeLuaGetInfo(lua_State* L, const char* what, lua_Debug* ar, DWORD* outSeh = nullptr) noexcept;
 static bool SafeLuaGetGlobalType(lua_State* L, const char* name, int* outType, const char** outTypeName, DWORD* outSeh) noexcept;
+static bool TryInstallPanicHook(lua_State* L, lua_CFunction* outPrev, DWORD* outSeh = nullptr) noexcept;
+static bool ClearHookSentinel(lua_State* L, DWORD* outSeh) noexcept;
 
 static void SanitizeIntoBuffer(const char* data, size_t len, char* dest, size_t destSize, size_t maxLen = 48) {
     if (!dest || destSize == 0)
@@ -375,6 +415,141 @@ static void LogLuaProbe(const char* fmt, ...) {
     vsprintf_s(payload, sizeof(payload), fmt, args);
     va_end(args);
     Log::Logf("[LuaProbe] %s", payload);
+}
+
+static void LogLuaPanic(const char* fmt, ...) {
+    char payload[512];
+    va_list args;
+    va_start(args, fmt);
+    vsprintf_s(payload, sizeof(payload), fmt, args);
+    va_end(args);
+    Log::Logf("[LuaPanic] %s", payload);
+}
+
+static void LogLuaDbg(const char* fmt, ...) {
+    char payload[512];
+    va_list args;
+    va_start(args, fmt);
+    vsprintf_s(payload, sizeof(payload), fmt, args);
+    va_end(args);
+    Log::Logf("[LuaDbg] %s", payload);
+}
+
+enum : uint32_t {
+    DEBUG_MODE_OFF = 0,
+    DEBUG_MODE_CALLS = 1,
+    DEBUG_MODE_TRACE = 2,
+    DEBUG_MODE_CUSTOM = 3,
+};
+
+struct DebugConfigRequest {
+    uint32_t mode = DEBUG_MODE_OFF;
+    uint32_t mask = 0;
+    uint32_t count = 0;
+    bool explicitMask = false;
+    bool explicitCount = false;
+};
+
+struct DebugConfigResult {
+    bool applied = false;
+    bool enabled = false;
+    uint32_t mode = DEBUG_MODE_OFF;
+    uint32_t mask = 0;
+    uint32_t count = 0;
+    DWORD seh = 0;
+    std::string error;
+};
+
+struct HookSentinel {
+    lua_State* state = nullptr;
+};
+
+struct TokenBucket {
+    double tokens = 0.0;
+    uint64_t lastTickMs = 0;
+};
+
+class LuaStackGuard {
+public:
+    explicit LuaStackGuard(lua_State* L) noexcept : L_(L), top_(0), valid_(false) {
+        if (!L_)
+            return;
+        __try {
+            top_ = lua_gettop(L_);
+            valid_ = true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            valid_ = false;
+        }
+    }
+
+    ~LuaStackGuard() {
+        if (!L_ || !valid_)
+            return;
+        __try {
+            lua_settop(L_, top_);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
+
+private:
+    lua_State* L_;
+    int top_;
+    bool valid_;
+};
+
+static constexpr double kDebugTokenRatePerSec = 200.0;
+static constexpr double kDebugTokenCapacity = 200.0;
+
+static std::mutex g_debugBucketMutex;
+static std::unordered_map<DWORD, TokenBucket> g_debugBuckets;
+
+static const char* DebugModeToString(uint32_t mode) {
+    switch (mode) {
+    case DEBUG_MODE_CALLS:
+        return "calls";
+    case DEBUG_MODE_TRACE:
+        return "trace";
+    case DEBUG_MODE_CUSTOM:
+        return "on";
+    case DEBUG_MODE_OFF:
+    default:
+        return "off";
+    }
+}
+
+static uint32_t DebugModeFromString(const char* modeStr) {
+    if (!modeStr)
+        return DEBUG_MODE_OFF;
+    if (_stricmp(modeStr, "off") == 0)
+        return DEBUG_MODE_OFF;
+    if (_stricmp(modeStr, "calls") == 0)
+        return DEBUG_MODE_CALLS;
+    if (_stricmp(modeStr, "trace") == 0)
+        return DEBUG_MODE_TRACE;
+    if (_stricmp(modeStr, "on") == 0)
+        return DEBUG_MODE_CUSTOM;
+    if (_stricmp(modeStr, "enable") == 0)
+        return DEBUG_MODE_CUSTOM;
+    return DEBUG_MODE_OFF;
+}
+
+static bool ConsumeDebugToken() {
+    DWORD tid = GetCurrentThreadId();
+    uint64_t now = GetTickCount64();
+    std::lock_guard<std::mutex> lock(g_debugBucketMutex);
+    TokenBucket& bucket = g_debugBuckets[tid];
+    if (bucket.lastTickMs == 0)
+        bucket.lastTickMs = now;
+    double elapsedSec = static_cast<double>(now - bucket.lastTickMs) / 1000.0;
+    if (elapsedSec < 0.0)
+        elapsedSec = 0.0;
+    bucket.tokens = std::min(kDebugTokenCapacity, bucket.tokens + elapsedSec * kDebugTokenRatePerSec);
+    bucket.lastTickMs = now;
+    if (bucket.tokens >= 1.0) {
+        bucket.tokens -= 1.0;
+        return true;
+    }
+    return false;
 }
 
 static const char* FormatCppExceptionDetail(const char* tag, const char* value) {
@@ -741,20 +916,77 @@ static bool TryBuildInspectSummary(lua_State* target, const LuaStateInfo& info, 
 }
 
 extern "C" int __cdecl UOW_PanicThunk(lua_State* L) {
-    const char* topType = "<unset>";
+    DWORD tid = GetCurrentThreadId();
+    LuaStateInfo info{};
+    g_stateRegistry.GetByPointer(L, info);
+    DWORD owner = info.owner_tid ? info.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
+    uint32_t gen = static_cast<uint32_t>(info.gen & 0xFFFFFFFFu);
+
+    int top = 0;
+    char errBuf[128]{};
     __try {
-        int top = lua_gettop(L);
+        top = lua_gettop(L);
         if (top > 0) {
-            int type = lua_type(L, -1);
-            const char* name = lua_typename(L, type);
-            topType = name ? name : "<null>";
+            size_t errLen = 0;
+            const char* err = lua_tolstring(L, -1, &errLen);
+            SanitizeIntoBuffer(err, errLen, errBuf, sizeof(errBuf));
         } else {
-            topType = "<empty>";
+            strncpy_s(errBuf, "<empty>", _TRUNCATE);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        topType = "<seh>";
+        strncpy_s(errBuf, "<seh>", _TRUNCATE);
     }
-    LogLuaBind("panic-handler-fired L=%p top_type=%s", L, topType);
+
+    char frameSummary[512]{};
+    for (int level = 0; level < 8; ++level) {
+        lua_Debug ar{};
+        if (!SafeLuaGetStack(L, level, &ar, nullptr))
+            break;
+        if (!SafeLuaGetInfo(L, "Sln", &ar, nullptr))
+            break;
+        const char* funcName = ar.name ? ar.name : (ar.what ? ar.what : "?");
+        char srcBuf[96]{};
+        size_t srcLen = ar.short_src ? strnlen_s(ar.short_src, sizeof(ar.short_src)) : 0;
+        SanitizeIntoBuffer(ar.short_src, srcLen, srcBuf, sizeof(srcBuf));
+        char funcBuf[96]{};
+        size_t funcLen = funcName ? strnlen_s(funcName, 256) : 0;
+        SanitizeIntoBuffer(funcName, funcLen, funcBuf, sizeof(funcBuf));
+        char frameBuf[192];
+        sprintf_s(frameBuf, sizeof(frameBuf), "%s:%d %s",
+                  srcBuf,
+                  ar.currentline,
+                  funcBuf);
+        if (frameSummary[0] != '\0') {
+            strncat_s(frameSummary, sizeof(frameSummary), "; ", _TRUNCATE);
+        }
+        strncat_s(frameSummary, sizeof(frameSummary), frameBuf, _TRUNCATE);
+    }
+
+    if (frameSummary[0] == '\0') {
+        strncpy_s(frameSummary, "<no-stack>", _TRUNCATE);
+    }
+    LogLuaPanic("Lc=%p err=%s top=%d tid=%lu owner=%lu gen=%u frames=%s",
+                L,
+                errBuf,
+                top,
+                tid,
+                owner,
+                gen,
+                frameSummary);
+
+    lua_CFunction prev = info.panic_prev;
+    if (prev && prev != UOW_PanicThunk) {
+        int result = 0;
+        bool prevOk = false;
+        __try {
+            result = prev(L);
+            prevOk = true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            LogLuaPanic("prev-handler-seh Lc=%p seh=0x%08lX", L, GetExceptionCode());
+        }
+        if (prevOk)
+            return result;
+    }
     return 0;
 }
 
@@ -762,20 +994,44 @@ extern "C" void __cdecl UOW_DebugHook(lua_State* L, lua_Debug* ar) {
     if (!L || !ar)
         return;
 
+    const char* eventName = "UNKNOWN";
     switch (ar->event) {
     case LUA_HOOKCALL:
+        eventName = "CALL";
         g_stateRegistry.IncrementHookCounters(L, 1u, 0u, 0u);
         break;
     case LUA_HOOKRET:
+        eventName = "RET";
+        g_stateRegistry.IncrementHookCounters(L, 0u, 1u, 0u);
+        break;
     case LUA_HOOKTAILRET:
+        eventName = "TAILRET";
         g_stateRegistry.IncrementHookCounters(L, 0u, 1u, 0u);
         break;
     case LUA_HOOKLINE:
+        eventName = "LINE";
         g_stateRegistry.IncrementHookCounters(L, 0u, 0u, 1u);
         break;
     default:
         break;
     }
+
+    if (!ConsumeDebugToken())
+        return;
+
+    lua_Debug detail = *ar;
+    SafeLuaGetInfo(L, "Sln", &detail, nullptr);
+    const char* funcName = detail.name ? detail.name : (detail.what ? detail.what : "[anon]");
+    char srcBuf[96]{};
+    SanitizeIntoBuffer(detail.short_src, std::strlen(detail.short_src), srcBuf, sizeof(srcBuf));
+    char funcBuf[96]{};
+    SanitizeIntoBuffer(funcName, std::strlen(funcName), funcBuf, sizeof(funcBuf));
+
+    LogLuaDbg("ev=%s src=%s:%d func=%s",
+              eventName,
+              srcBuf,
+              detail.currentline,
+              funcBuf);
 }
 
 static bool SafeLuaProbeStack(lua_State* L, int* outTop, DWORD* outSeh) noexcept {
@@ -805,6 +1061,196 @@ static bool SafeLuaSetTop(lua_State* L, int idx, DWORD* outSeh) noexcept {
             *outSeh = 0;
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaPushString(lua_State* L, const char* str, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !str)
+        return false;
+    __try {
+        lua_pushstring(L, str);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaPushNil(lua_State* L, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_pushnil(L);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaPushCClosure(lua_State* L, lua_CFunction fn, int n, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !fn)
+        return false;
+    __try {
+        lua_pushcclosure(L, fn, n);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaSetTable(lua_State* L, int idx, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_settable(L, idx);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaPushValue(lua_State* L, int idx, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_pushvalue(L, idx);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaRawGet(lua_State* L, int idx, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_rawget(L, idx);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaRawSet(lua_State* L, int idx, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_rawset(L, idx);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaNewUserdata(lua_State* L, size_t size, void** outPtr, DWORD* outSeh = nullptr) noexcept {
+    if (!L || size == 0)
+        return false;
+    __try {
+        void* ptr = lua_newuserdata(L, size);
+        if (outPtr)
+            *outPtr = ptr;
+        if (outSeh)
+            *outSeh = 0;
+        return ptr != nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outPtr)
+            *outPtr = nullptr;
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaSetMetatable(lua_State* L, int idx, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_setmetatable(L, idx);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaType(lua_State* L, int idx, int* outType, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !outType)
+        return false;
+    __try {
+        *outType = lua_type(L, idx);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *outType = LUA_TNONE;
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaToUserdata(lua_State* L, int idx, void** outPtr, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !outPtr)
+        return false;
+    __try {
+        *outPtr = lua_touserdata(L, idx);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *outPtr = nullptr;
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaLNewMetatable(lua_State* L, const char* tname, int* outCreated, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !tname)
+        return false;
+    __try {
+        int created = luaL_newmetatable(L, tname);
+        if (outCreated)
+            *outCreated = created;
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outCreated)
+            *outCreated = 0;
         if (outSeh)
             *outSeh = GetExceptionCode();
         return false;
@@ -854,6 +1300,55 @@ static bool SafeLuaSetHook(lua_State* L, lua_Hook hook, int mask, int count, DWO
         if (outSeh)
             *outSeh = 0;
         return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool TryInstallPanicHook(lua_State* L, lua_CFunction* outPrev, DWORD* outSeh) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_CFunction previous = lua_atpanic(L, UOW_PanicThunk);
+        if (outPrev)
+            *outPrev = previous;
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outPrev)
+            *outPrev = nullptr;
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaGetStack(lua_State* L, int level, lua_Debug* ar, DWORD* outSeh) noexcept {
+    if (!L || !ar)
+        return false;
+    __try {
+        int rc = lua_getstack(L, level, ar);
+        if (outSeh)
+            *outSeh = 0;
+        return rc != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaGetInfo(lua_State* L, const char* what, lua_Debug* ar, DWORD* outSeh) noexcept {
+    if (!L || !ar || !what)
+        return false;
+    __try {
+        int rc = lua_getinfo(L, what, ar);
+        if (outSeh)
+            *outSeh = 0;
+        return rc != 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         if (outSeh)
             *outSeh = GetExceptionCode();
@@ -937,6 +1432,618 @@ static bool AcquireBindingSlot(lua_State* L) {
 static void ReleaseBindingSlot(lua_State* L) {
     std::lock_guard<std::mutex> lock(g_bindingMutex);
     g_bindingInFlight.erase(L);
+}
+
+static bool PushHookSentinelKey(lua_State* L, DWORD* outSeh) {
+    if (!L)
+        return false;
+    char buffer[64];
+    sprintf_s(buffer, sizeof(buffer), "uow.gc.%p", L);
+    return SafeLuaPushString(L, buffer, outSeh);
+}
+
+static bool EnsureSentinelMetatable(lua_State* L, DWORD* outSeh) noexcept {
+    if (!L)
+        return false;
+
+    LuaStackGuard stackGuard(L);
+    DWORD seh = 0;
+    int created = 0;
+    if (!SafeLuaLNewMetatable(L, "uow.hooks.sentinel", &created, &seh)) {
+        LogLuaBind("sentinel-fail stage=metatable-create L=%p seh=0x%08lX", L, seh);
+        if (outSeh)
+            *outSeh = seh;
+        return false;
+    }
+
+    if (created) {
+        if (!SafeLuaPushString(L, "__gc", &seh)) {
+            LogLuaBind("sentinel-fail stage=push-gc-key L=%p seh=0x%08lX", L, seh);
+            if (outSeh)
+                *outSeh = seh;
+            return false;
+        }
+        if (!SafeLuaPushCClosure(L, HookSentinelGC, 0, &seh)) {
+            LogLuaBind("sentinel-fail stage=push-gc-func L=%p seh=0x%08lX", L, seh);
+            if (outSeh)
+                *outSeh = seh;
+            return false;
+        }
+        if (!SafeLuaSetTable(L, -3, &seh)) {
+            LogLuaBind("sentinel-fail stage=set-gc-entry L=%p seh=0x%08lX", L, seh);
+            if (outSeh)
+                *outSeh = seh;
+            return false;
+        }
+        if (!SafeLuaPushString(L, "__metatable", &seh)) {
+            LogLuaBind("sentinel-fail stage=push-metatable-key L=%p seh=0x%08lX", L, seh);
+            if (outSeh)
+                *outSeh = seh;
+            return false;
+        }
+        if (!SafeLuaPushString(L, "uow.hooks", &seh)) {
+            LogLuaBind("sentinel-fail stage=push-metatable-value L=%p seh=0x%08lX", L, seh);
+            if (outSeh)
+                *outSeh = seh;
+            return false;
+        }
+        if (!SafeLuaSetTable(L, -3, &seh)) {
+            LogLuaBind("sentinel-fail stage=set-metatable-entry L=%p seh=0x%08lX", L, seh);
+            if (outSeh)
+                *outSeh = seh;
+            return false;
+        }
+    }
+
+    if (!SafeLuaSetTop(L, -2, &seh)) {
+        LogLuaBind("sentinel-fail stage=restore-metatable-stack L=%p seh=0x%08lX", L, seh);
+        if (outSeh)
+            *outSeh = seh;
+        return false;
+    }
+    if (outSeh)
+        *outSeh = 0;
+    return true;
+}
+
+static bool EnsureHookSentinel(lua_State* L, LuaStateInfo& info, bool* created, DWORD* outSeh) noexcept {
+    if (!L)
+        return false;
+
+    LuaStackGuard stackGuard(L);
+    DWORD seh = 0;
+    if (!EnsureSentinelMetatable(L, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        return false;
+    }
+
+    if (!PushHookSentinelKey(L, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=push-key-check L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+    if (!SafeLuaRawGet(L, LUA_REGISTRYINDEX, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=rawget-check L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+
+    int topType = LUA_TNONE;
+    if (!SafeLuaType(L, -1, &topType, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=type-check L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+
+    bool exists = (topType == LUA_TUSERDATA);
+    if (!SafeLuaSetTop(L, -2, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=restore-check-stack L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+    if (exists) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    }
+
+    void* payloadPtr = nullptr;
+    if (!SafeLuaNewUserdata(L, sizeof(HookSentinel), &payloadPtr, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=newuserdata L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+    HookSentinel* payload = reinterpret_cast<HookSentinel*>(payloadPtr);
+    if (payload)
+        payload->state = L;
+
+    if (!SafeLuaPushString(L, "uow.hooks.sentinel", &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=push-meta-key L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+    if (!SafeLuaRawGet(L, LUA_REGISTRYINDEX, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=rawget-meta L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+
+    int metaType = LUA_TNONE;
+    if (!SafeLuaType(L, -1, &metaType, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=meta-type L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+    if (metaType == LUA_TTABLE) {
+        if (!SafeLuaSetMetatable(L, -2, &seh)) {
+            if (created)
+                *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=set-metatable L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+    } else {
+        if (!SafeLuaSetTop(L, -2, &seh)) {
+            if (created)
+                *created = false;
+            if (outSeh)
+                *outSeh = seh;
+            LogLuaBind("sentinel-fail stage=pop-nonmeta L=%p seh=0x%08lX", L, seh);
+            return false;
+        }
+    }
+
+    if (!PushHookSentinelKey(L, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=push-key-store L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+    if (!SafeLuaPushValue(L, -2, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=push-userdata-copy L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+    if (!SafeLuaRawSet(L, LUA_REGISTRYINDEX, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=rawset-store L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+
+    if (!SafeLuaSetTop(L, -2, &seh)) {
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = seh;
+        LogLuaBind("sentinel-fail stage=restore-final L=%p seh=0x%08lX", L, seh);
+        return false;
+    }
+    if (created)
+        *created = true;
+    if (outSeh)
+        *outSeh = 0;
+    return true;
+}
+
+static bool ClearHookSentinel(lua_State* L, DWORD* outSeh) noexcept {
+    if (!L)
+        return false;
+
+    LuaStackGuard stackGuard(L);
+    DWORD seh = 0;
+    if (!PushHookSentinelKey(L, &seh)) {
+        LogLuaBind("sentinel-fail stage=clear-push-key L=%p seh=0x%08lX", L, seh);
+        if (outSeh)
+            *outSeh = seh;
+        return false;
+    }
+    if (!SafeLuaRawGet(L, LUA_REGISTRYINDEX, &seh)) {
+        LogLuaBind("sentinel-fail stage=clear-rawget L=%p seh=0x%08lX", L, seh);
+        if (outSeh)
+            *outSeh = seh;
+        return false;
+    }
+
+    int type = LUA_TNONE;
+    if (!SafeLuaType(L, -1, &type, &seh)) {
+        LogLuaBind("sentinel-fail stage=clear-type L=%p seh=0x%08lX", L, seh);
+        if (outSeh)
+            *outSeh = seh;
+        return false;
+    }
+    bool exists = (type != LUA_TNIL);
+    if (!SafeLuaSetTop(L, -2, &seh)) {
+        LogLuaBind("sentinel-fail stage=clear-restore-check L=%p seh=0x%08lX", L, seh);
+        if (outSeh)
+            *outSeh = seh;
+        return false;
+    }
+
+    if (exists) {
+        if (!PushHookSentinelKey(L, &seh)) {
+            LogLuaBind("sentinel-fail stage=clear-push-key2 L=%p seh=0x%08lX", L, seh);
+            if (outSeh)
+                *outSeh = seh;
+            return false;
+        }
+        if (!SafeLuaPushNil(L, &seh)) {
+            LogLuaBind("sentinel-fail stage=clear-push-nil L=%p seh=0x%08lX", L, seh);
+            if (outSeh)
+                *outSeh = seh;
+            return false;
+        }
+        if (!SafeLuaRawSet(L, LUA_REGISTRYINDEX, &seh)) {
+            LogLuaBind("sentinel-fail stage=clear-rawset L=%p seh=0x%08lX", L, seh);
+            if (outSeh)
+                *outSeh = seh;
+            return false;
+        }
+    }
+
+    if (outSeh)
+        *outSeh = 0;
+    return true;
+}
+
+static bool EnsurePanicHookOnOwner(lua_State* L, LuaStateInfo& info, bool* changed, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+
+    bool needInstall = (info.panic_status != 1);
+    lua_CFunction current = nullptr;
+    DWORD querySeh = 0;
+    if (!needInstall) {
+        if (SafeLuaQueryPanic(L, &current, &querySeh)) {
+            needInstall = (current != UOW_PanicThunk);
+        } else if (querySeh != 0) {
+            needInstall = true;
+        }
+    }
+
+    if (!needInstall) {
+        if (changed)
+            *changed = false;
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    }
+
+    DWORD panicSeh = 0;
+    lua_CFunction previous = nullptr;
+    bool installed = TryInstallPanicHook(L, &previous, &panicSeh);
+
+    if (!installed) {
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            state.panic_status = 0;
+            state.panic_status_gen = state.gen;
+            state.panic_prev = nullptr;
+            state.flags |= STATE_FLAG_PANIC_MISS;
+            state.flags &= ~STATE_FLAG_PANIC_OK;
+        }, &info);
+        if (changed)
+            *changed = false;
+        if (outSeh)
+            *outSeh = panicSeh;
+        return false;
+    }
+
+    g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+        state.panic_prev = previous;
+        state.panic_status = 1;
+        state.panic_status_gen = state.gen;
+        state.flags |= STATE_FLAG_PANIC_OK;
+        state.flags &= ~STATE_FLAG_PANIC_MISS;
+    }, &info);
+
+    if (changed)
+        *changed = true;
+    if (outSeh)
+        *outSeh = 0;
+    return true;
+}
+
+static void CleanupHooksOnOwner(lua_State* L, const char* reason, bool releaseEntry) {
+    if (!L)
+        return;
+
+    LuaStackGuard stackGuard(L);
+
+    LuaStateInfo info{};
+
+    bool haveInfo = g_stateRegistry.GetByPointer(L, info);
+
+    if (haveInfo && info.debug_status == 1) {
+        lua_Hook restore = info.debug_prev_valid ? info.debug_prev : nullptr;
+        int restoreMask = info.debug_prev_valid ? info.debug_prev_mask : 0;
+        int restoreCount = info.debug_prev_valid ? info.debug_prev_count : 0;
+        SafeLuaSetHook(L, restore, restoreMask, restoreCount, nullptr);
+    } else {
+        SafeLuaSetHook(L, nullptr, 0, 0, nullptr);
+    }
+
+    if (haveInfo && info.panic_status == 1) {
+        lua_CFunction restorePanic = info.panic_prev;
+        SafeLuaAtPanic(L, restorePanic, nullptr);
+    }
+
+    ClearHookSentinel(L, nullptr);
+
+    if (haveInfo) {
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            state.debug_status = 0;
+            state.debug_status_gen = state.gen;
+            state.debug_mode = DEBUG_MODE_OFF;
+            state.debug_mode_gen = state.gen;
+            state.debug_mask = 0;
+            state.debug_count = 0;
+            state.debug_prev = nullptr;
+            state.debug_prev_mask = 0;
+            state.debug_prev_count = 0;
+            state.debug_prev_valid = 0;
+            state.panic_status = 0;
+            state.panic_status_gen = state.gen;
+            state.panic_prev = nullptr;
+            state.flags &= ~STATE_FLAG_PANIC_OK;
+            state.flags &= ~STATE_FLAG_DEBUG_OK;
+            state.gc_sentinel_ref = -1;
+            state.gc_sentinel_gen = state.gen;
+        }, &info);
+    }
+
+    LogLuaBind("hooks-uninstall Lc=%p reason=%s", L, reason ? reason : "unknown");
+
+    if (releaseEntry)
+        g_stateRegistry.RemoveByPointer(L, nullptr);
+}
+
+static void CleanupHooks(lua_State* L, const char* reason, bool releaseEntry) {
+    if (!L)
+        return;
+
+    LuaStateInfo info{};
+    bool haveInfo = g_stateRegistry.GetByPointer(L, info);
+    if (haveInfo && !IsOwnerThread(info)) {
+        std::string reasonCopy = reason ? reason : "cleanup";
+        PostToOwnerWithTask(L, "hooks-cleanup", [state = L, reasonCopy = std::move(reasonCopy), releaseEntry]() {
+            CleanupHooksOnOwner(state, reasonCopy.c_str(), releaseEntry);
+        });
+        return;
+    }
+
+    CleanupHooksOnOwner(L, reason, releaseEntry);
+}
+
+static int __cdecl HookSentinelGC(lua_State* L) {
+    lua_State* target = nullptr;
+    __try {
+        HookSentinel* payload = reinterpret_cast<HookSentinel*>(lua_touserdata(L, 1));
+        target = payload ? payload->state : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        target = nullptr;
+    }
+    if (!target)
+        target = L;
+    CleanupHooks(target, "gc", true);
+    return 0;
+}
+
+static bool ApplyDebugConfigOnOwner(lua_State* L, LuaStateInfo& info, const DebugConfigRequest& req, DebugConfigResult& result) {
+    if (!L)
+        return false;
+
+    if (!(info.flags & STATE_FLAG_VALID)) {
+        result.error = "state-invalid";
+        result.enabled = (info.debug_status == 1);
+        return false;
+    }
+
+    uint32_t mode = req.mode;
+    uint32_t mask = req.mask;
+    uint32_t count = req.count;
+
+    switch (mode) {
+    case DEBUG_MODE_CALLS:
+        mask = LUA_MASKCALL | LUA_MASKRET;
+        count = 0;
+        break;
+    case DEBUG_MODE_TRACE:
+        mask = LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE;
+        count = 0;
+        break;
+    case DEBUG_MODE_CUSTOM:
+        if (!req.explicitMask) {
+            mask = info.debug_mask ? info.debug_mask : (LUA_MASKCALL | LUA_MASKRET);
+        }
+        if (!req.explicitCount) {
+            count = info.debug_count;
+        }
+        break;
+    case DEBUG_MODE_OFF:
+    default:
+        mask = 0;
+        count = 0;
+        mode = DEBUG_MODE_OFF;
+        break;
+    }
+
+    int hookMask = static_cast<int>(mask);
+    int hookCount = 0;
+    if (count > 0) {
+        hookCount = static_cast<int>(std::min<uint32_t>(count, static_cast<uint32_t>(INT_MAX)));
+        hookMask |= LUA_MASKCOUNT;
+    }
+
+    bool enabling = (hookMask != 0);
+    bool currentlyEnabled = (info.debug_status == 1);
+    bool configChanged = currentlyEnabled != enabling ||
+                         info.debug_mask != static_cast<uint32_t>(hookMask) ||
+                         info.debug_count != static_cast<uint32_t>(hookCount) ||
+                         info.debug_mode != mode;
+    result.enabled = currentlyEnabled;
+
+    if (!configChanged) {
+        result.applied = false;
+        result.mode = info.debug_mode;
+        result.mask = info.debug_mask;
+        result.count = info.debug_count;
+        return true;
+    }
+
+    if (enabling) {
+        InstallPanicAndDebug(L, info);
+        lua_Hook prevHook = nullptr;
+        int prevMask = 0;
+        int prevCount = 0;
+        if (info.debug_status != 1) {
+            SafeLuaGetHook(L, &prevHook, &prevMask, nullptr);
+            prevCount = lua_gethookcount(L);
+        } else {
+            prevHook = info.debug_prev;
+            prevMask = info.debug_prev_mask;
+            prevCount = info.debug_prev_count;
+        }
+
+        DWORD setSeh = 0;
+        if (!SafeLuaSetHook(L, UOW_DebugHook, hookMask, hookCount, &setSeh)) {
+            result.error = "sethook-failed";
+            result.seh = setSeh;
+            return false;
+        }
+
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            if (state.debug_status != 1) {
+                state.debug_prev = prevHook;
+                state.debug_prev_mask = prevMask;
+                state.debug_prev_count = prevCount;
+                state.debug_prev_valid = 1;
+            }
+            state.debug_status = 1;
+            state.debug_status_gen = state.gen;
+            state.debug_mode = mode;
+            state.debug_mode_gen = state.gen;
+            state.debug_mask = static_cast<uint32_t>(hookMask);
+            state.debug_count = static_cast<uint32_t>(hookCount);
+            state.flags |= STATE_FLAG_DEBUG_OK;
+            state.flags &= ~STATE_FLAG_DEBUG_MISS;
+        }, &info);
+
+        result.applied = true;
+        result.enabled = true;
+        result.mode = mode;
+        result.mask = static_cast<uint32_t>(hookMask);
+        result.count = static_cast<uint32_t>(hookCount);
+        return true;
+    }
+
+    lua_Hook restoreHook = nullptr;
+    int restoreMask = 0;
+    int restoreCount = 0;
+    if (info.debug_prev_valid) {
+        restoreHook = info.debug_prev;
+        restoreMask = info.debug_prev_mask;
+        restoreCount = info.debug_prev_count;
+    }
+
+    DWORD setSeh = 0;
+    if (!SafeLuaSetHook(L, restoreHook, restoreMask, restoreCount, &setSeh)) {
+        result.error = "restore-failed";
+        result.seh = setSeh;
+        return false;
+    }
+
+    g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+        state.debug_status = 0;
+        state.debug_status_gen = state.gen;
+        state.debug_mode = DEBUG_MODE_OFF;
+        state.debug_mode_gen = state.gen;
+        state.debug_mask = 0;
+        state.debug_count = 0;
+        state.flags &= ~STATE_FLAG_DEBUG_OK;
+    }, &info);
+
+    result.applied = currentlyEnabled;
+    result.enabled = false;
+    result.mode = DEBUG_MODE_OFF;
+    result.mask = 0;
+    result.count = 0;
+    return true;
+}
+
+static void PushDebugResultTable(lua_State* L,
+                                 const char* status,
+                                 bool enabled,
+                                 uint32_t mode,
+                                 uint32_t mask,
+                                 uint32_t count,
+                                 bool applied,
+                                 bool scheduled) {
+    lua_newtable(L);
+
+    lua_pushstring(L, "status");
+    lua_pushstring(L, status ? status : (enabled ? "on" : "off"));
+    lua_settable(L, -3);
+
+    lua_pushstring(L, "enabled");
+    lua_pushboolean(L, enabled ? 1 : 0);
+    lua_settable(L, -3);
+
+    lua_pushstring(L, "mode");
+    lua_pushstring(L, DebugModeToString(mode));
+    lua_settable(L, -3);
+
+    lua_pushstring(L, "mask");
+    lua_pushinteger(L, static_cast<lua_Integer>(mask));
+    lua_settable(L, -3);
+
+    lua_pushstring(L, "count");
+    lua_pushinteger(L, static_cast<lua_Integer>(count));
+    lua_settable(L, -3);
+
+    lua_pushstring(L, "applied");
+    lua_pushboolean(L, applied ? 1 : 0);
+    lua_settable(L, -3);
+
+    lua_pushstring(L, "scheduled");
+    lua_pushboolean(L, scheduled ? 1 : 0);
+    lua_settable(L, -3);
 }
 
 static ModuleBounds GetLuaPlusModuleBounds() {
@@ -1320,6 +2427,11 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
     if (!L)
         return;
 
+    LuaStackGuard stackGuard(L);
+
+    if (!(info.flags & STATE_FLAG_VALID))
+        return;
+
     if (!IsOwnerThread(info)) {
         PostToOwnerWithTask(L, "panic&debug", [L]() {
             LuaStateInfo refreshed{};
@@ -1329,66 +2441,68 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
         return;
     }
 
-    lua_State* mainState = g_mainLuaState.load(std::memory_order_acquire);
-    if (mainState && mainState != L)
-        return;
-
     if (!ProbeLua(L))
         return;
 
     DWORD panicSeh = 0;
-    bool panicOk = SafeLuaAtPanic(L, UOW_PanicThunk, &panicSeh);
+    bool panicChanged = false;
+    bool panicOk = EnsurePanicHookOnOwner(L, info, &panicChanged, &panicSeh);
 
-    DWORD debugSeh = 0;
-    bool debugOk = SafeLuaSetHook(L, UOW_DebugHook, LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE, 0, &debugSeh);
-
-    bool logPanic = false;
-    bool logDebug = false;
-    g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-        if (panicOk) {
-            state.flags |= STATE_FLAG_PANIC_OK;
-            state.flags &= ~STATE_FLAG_PANIC_MISS;
+    bool sentinelCreated = false;
+    DWORD sentinelSeh = 0;
+    bool sentinelOk = true;
+    bool sentinelAttempted = true;
+    if (info.gc_sentinel_ref == -2 && info.gc_sentinel_gen == info.gen) {
+        sentinelOk = false;
+        sentinelAttempted = false;
+        sentinelSeh = 0;
+    } else {
+        sentinelOk = EnsureHookSentinel(L, info, &sentinelCreated, &sentinelSeh);
+        if (sentinelOk) {
+            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+                state.gc_sentinel_ref = 1;
+                state.gc_sentinel_gen = state.gen;
+            }, &info);
         } else {
-            state.flags |= STATE_FLAG_PANIC_MISS;
-            state.flags &= ~STATE_FLAG_PANIC_OK;
-        }
-
-        if (debugOk) {
-            state.flags |= STATE_FLAG_DEBUG_OK;
-            state.flags &= ~STATE_FLAG_DEBUG_MISS;
-        } else {
-            state.flags |= STATE_FLAG_DEBUG_MISS;
-            state.flags &= ~STATE_FLAG_DEBUG_OK;
-        }
-
-        int panicStatus = panicOk ? 1 : 0;
-        if (state.panic_status_gen != state.gen || state.panic_status != panicStatus) {
-            state.panic_status_gen = state.gen;
-            state.panic_status = panicStatus;
-            logPanic = true;
-        }
-        int debugStatus = debugOk ? 1 : 0;
-        if (state.debug_status_gen != state.gen || state.debug_status != debugStatus) {
-            state.debug_status_gen = state.gen;
-            state.debug_status = debugStatus;
-            logDebug = true;
-        }
-        info = state;
-    }, &info);
-
-    if (logPanic) {
-        if (panicOk) {
-            LogLuaBind("ok name=panic-handler L=%p", L);
-        } else {
-            LogLuaBind("fail name=panic-handler L=%p reason=seh=0x%08lX", L, panicSeh);
+            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+                state.gc_sentinel_ref = -2;
+                state.gc_sentinel_gen = state.gen;
+            }, &info);
         }
     }
 
-    if (logDebug) {
-        if (debugOk) {
-            LogLuaBind("ok name=debug-hook L=%p", L);
+    bool shouldLog = sentinelCreated || panicChanged;
+    if (!panicOk && panicSeh != 0)
+        shouldLog = true;
+    if (!sentinelOk && sentinelAttempted && sentinelSeh != 0)
+        shouldLog = true;
+
+    if (shouldLog) {
+        LuaStateInfo latest{};
+        if (!g_stateRegistry.GetByPointer(L, latest))
+            latest = info;
+        const char* debugState = (latest.debug_status == 1) ? "on" : "off";
+        if (!sentinelAttempted) {
+            LogLuaBind("hooks-install Lc=%p panic=%s debug=%s sentinel=skip",
+                       L,
+                       panicOk ? "ok" : "fail",
+                       debugState);
+        } else if (!sentinelOk && sentinelSeh) {
+            LogLuaBind("hooks-install Lc=%p panic=%s debug=%s sentinel=fail seh=0x%08lX",
+                       L,
+                       panicOk ? "ok" : "fail",
+                       debugState,
+                       sentinelSeh);
+        } else if (!panicOk && panicSeh) {
+            LogLuaBind("hooks-install Lc=%p panic=fail debug=%s seh=0x%08lX",
+                       L,
+                       debugState,
+                       panicSeh);
         } else {
-            LogLuaBind("fail name=debug-hook L=%p reason=seh=0x%08lX", L, debugSeh);
+            LogLuaBind("hooks-install Lc=%p panic=%s debug=%s",
+                       L,
+                       panicOk ? "ok" : "fail",
+                       debugState);
         }
     }
 }
@@ -1448,7 +2562,9 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
         bool inspectOk = RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation);
         bool rebindOk = RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation);
         bool selfTestOk = RegisterHelper(L, info, kHelperSelfTestName, Lua_UOWSelfTest, generation);
-        bool allOk = walkOk && dumpOk && inspectOk && rebindOk && selfTestOk;
+        bool debugCfgOk = RegisterHelper(L, info, kHelperDebugName, Lua_UOWDebug, generation);
+        bool debugStatusOk = RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOWDebugStatus, generation);
+        bool allOk = walkOk && dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk;
         if (allOk) {
             g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
                 state.flags |= STATE_FLAG_HELPERS_BOUND;
@@ -1657,94 +2773,327 @@ static int Lua_UOWInspect(lua_State* L) {
     return finalize(true);
 }
 
+static bool IsValidDebugModeString(const char* mode) {
+    if (!mode)
+        return false;
+    return _stricmp(mode, "off") == 0 ||
+           _stricmp(mode, "on") == 0 ||
+           _stricmp(mode, "trace") == 0 ||
+           _stricmp(mode, "calls") == 0;
+}
+
+static int Lua_UOWDebug(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    LuaStateInfo info = EnsureHelperState(L, kHelperDebugName, &ready, &coalesced, nullptr);
+
+    int argc = lua_gettop(L);
+    if (argc < 1 || !lua_isstring(L, 1)) {
+        lua_pushstring(L, "invalid-mode");
+        return 1;
+    }
+
+    size_t modeLen = 0;
+    const char* modeText = lua_tolstring(L, 1, &modeLen);
+    if (!IsValidDebugModeString(modeText)) {
+        lua_pushstring(L, "invalid-mode");
+        return 1;
+    }
+
+    DebugConfigRequest req{};
+    req.mode = DebugModeFromString(modeText);
+
+    if (argc >= 2 && lua_type(L, 2) != LUA_TNIL) {
+        if (!lua_isnumber(L, 2)) {
+            lua_pushstring(L, "invalid-mask");
+            return 1;
+        }
+        lua_Integer maskVal = lua_tointeger(L, 2);
+        if (maskVal < 0)
+            maskVal = 0;
+        req.mask = static_cast<uint32_t>(maskVal);
+        req.explicitMask = true;
+    }
+
+    if (argc >= 3 && lua_type(L, 3) != LUA_TNIL) {
+        if (!lua_isnumber(L, 3)) {
+            lua_pushstring(L, "invalid-count");
+            return 1;
+        }
+        lua_Integer countVal = lua_tointeger(L, 3);
+        if (countVal < 0)
+            countVal = 0;
+        req.count = static_cast<uint32_t>(std::min<lua_Integer>(countVal, static_cast<lua_Integer>(INT_MAX)));
+        req.explicitCount = true;
+    }
+
+    lua_State* target = info.L_canonical ? info.L_canonical : L;
+    LuaStateInfo targetInfo{};
+    if (!g_stateRegistry.GetByPointer(target, targetInfo))
+        targetInfo = info;
+
+    if (!(targetInfo.flags & STATE_FLAG_VALID)) {
+        PushDebugResultTable(L,
+                             "invalid",
+                             targetInfo.debug_status == 1,
+                             targetInfo.debug_mode,
+                             targetInfo.debug_mask,
+                             targetInfo.debug_count,
+                             false,
+                             false);
+        return 1;
+    }
+
+    if (!IsOwnerThread(targetInfo)) {
+        DebugConfigRequest taskReq = req;
+        PostToOwnerWithTask(target, "debug-config", [target, taskReq]() {
+            LuaStateInfo current{};
+            if (!g_stateRegistry.GetByPointer(target, current))
+                return;
+            DebugConfigResult taskResult{};
+            if (ApplyDebugConfigOnOwner(target, current, taskReq, taskResult)) {
+                if (taskResult.applied) {
+                    if (taskResult.enabled) {
+                        LogLuaDbg("enabled Lc=%p mask=0x%x count=%u mode=%s",
+                                  target,
+                                  taskResult.mask,
+                                  taskResult.count,
+                                  DebugModeToString(taskResult.mode));
+                    } else {
+                        LogLuaDbg("disabled Lc=%p", target);
+                    }
+                }
+            } else if (!taskResult.error.empty()) {
+                if (taskResult.seh) {
+                    LogLuaDbg("enable-failed Lc=%p err=%s seh=0x%08lX",
+                              target,
+                              taskResult.error.c_str(),
+                              taskResult.seh);
+                } else {
+                    LogLuaDbg("enable-failed Lc=%p err=%s",
+                              target,
+                              taskResult.error.c_str());
+                }
+            }
+        });
+        PushDebugResultTable(L,
+                             "scheduled",
+                             targetInfo.debug_status == 1,
+                             targetInfo.debug_mode,
+                             targetInfo.debug_mask,
+                             targetInfo.debug_count,
+                             false,
+                             true);
+        return 1;
+    }
+
+    DebugConfigResult result{};
+    if (!ApplyDebugConfigOnOwner(target, targetInfo, req, result)) {
+        std::string message = result.error.empty() ? "error" : result.error;
+        if (result.seh) {
+            char buf[16];
+            sprintf_s(buf, sizeof(buf), "0x%08lX", result.seh);
+            message.append(" seh=");
+            message.append(buf);
+        }
+        lua_pushstring(L, message.c_str());
+        return 1;
+    }
+
+    if (result.applied) {
+        if (result.enabled) {
+            LogLuaDbg("enabled Lc=%p mask=0x%x count=%u mode=%s",
+                      target,
+                      result.mask,
+                      result.count,
+                      DebugModeToString(result.mode));
+        } else {
+            LogLuaDbg("disabled Lc=%p", target);
+        }
+    }
+
+    PushDebugResultTable(L,
+                         result.enabled ? "on" : "off",
+                         result.enabled,
+                         result.mode,
+                         result.mask,
+                         result.count,
+                         result.applied,
+                         false);
+    return 1;
+}
+
+static int Lua_UOWDebugStatus(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    LuaStateInfo info = EnsureHelperState(L, kHelperDebugStatusName, &ready, &coalesced, nullptr);
+
+    lua_State* target = info.L_canonical ? info.L_canonical : L;
+    LuaStateInfo targetInfo{};
+    if (!g_stateRegistry.GetByPointer(target, targetInfo))
+        targetInfo = info;
+
+    const bool enabled = (targetInfo.debug_status == 1);
+    PushDebugResultTable(L,
+                         enabled ? "on" : "off",
+                         enabled,
+                         targetInfo.debug_mode,
+                         targetInfo.debug_mask,
+                         targetInfo.debug_count,
+                         false,
+                         false);
+    return 1;
+}
+
 static int Lua_UOWSelfTest(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
     bool coalesced = false;
-    EnsureHelperState(L, kHelperSelfTestName, &ready, &coalesced, nullptr);
+    LuaStateInfo info = EnsureHelperState(L, kHelperSelfTestName, &ready, &coalesced, nullptr);
 
-    LuaStateInfo info{};
-    if (!g_stateRegistry.GetByPointer(L, info)) {
-        lua_pushstring(L, "state-missing");
-        return 1;
-    }
+    if (!info.L_canonical)
+        info.L_canonical = L;
 
-    if (!IsOwnerThread(info)) {
-        lua_pushstring(L, "wrong-thread");
-        return 1;
-    }
+    lua_State* canonical = info.L_canonical ? info.L_canonical : L;
 
-    if (!ProbeLua(L)) {
-        lua_pushstring(L, "probe-failed");
-        return 1;
-    }
+    LuaStateInfo stateInfo{};
+    if (!g_stateRegistry.GetByPointer(canonical, stateInfo))
+        stateInfo = info;
 
     bool panicOk = false;
     bool debugOk = false;
-    bool runOk = false;
-    DWORD panicSeh = 0;
-    DWORD debugSeh = 0;
-    DWORD runSeh = 0;
+    bool eventsOk = false;
+    std::string failure;
 
-    lua_CFunction prevPanic = nullptr;
-    if (SafeLuaQueryPanic(L, &prevPanic, &panicSeh)) {
-        panicOk = (prevPanic == UOW_PanicThunk);
+    if (!IsOwnerThread(stateInfo)) {
+        failure = "wrong-thread";
+        LogLuaState("selftest abort wrong-thread L=%p owner=%lu current=%lu",
+                    canonical,
+                    stateInfo.owner_tid,
+                    GetCurrentThreadId());
+    } else if (!ProbeLua(L)) {
+        failure = "probe-failed";
+        LogLuaState("selftest abort probe-failed L=%p", canonical);
     } else {
-        panicOk = false;
-    }
+        InstallPanicAndDebug(canonical, stateInfo);
+        g_stateRegistry.GetByPointer(canonical, stateInfo);
 
-    lua_Hook hook = nullptr;
-    int hookMask = 0;
-    if (SafeLuaGetHook(L, &hook, &hookMask, &debugSeh)) {
-        debugOk = (hook == UOW_DebugHook) &&
-                  ((hookMask & (LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE)) == (LUA_MASKCALL | LUA_MASKRET | LUA_MASKLINE));
-    } else {
-        debugOk = false;
-    }
-
-    int top = 0;
-    SafeLuaProbeStack(L, &top, nullptr);
-    DWORD dostringSeh = 0;
-    if (SafeLuaDoString(L, "return 1+1", &dostringSeh)) {
-        int newTop = lua_gettop(L);
-        if (newTop > top && lua_isnumber(L, -1) && lua_tointeger(L, -1) == 2) {
-            runOk = true;
+        DWORD panicSeh = 0;
+        lua_CFunction panicPtr = nullptr;
+        if (SafeLuaQueryPanic(L, &panicPtr, &panicSeh)) {
+            panicOk = (panicPtr == UOW_PanicThunk);
+            if (!panicOk) {
+                if (failure.empty())
+                    failure = "panic-mismatch";
+                LogLuaState("selftest panic mismatch L=%p got=%p expected=%p",
+                            canonical,
+                            panicPtr,
+                            UOW_PanicThunk);
+            }
+        } else {
+            if (failure.empty())
+                failure = "panic-query-failed";
+            LogLuaState("selftest panic query failed L=%p seh=0x%08lX", canonical, panicSeh);
         }
-    } else if (dostringSeh) {
-        runSeh = dostringSeh;
-    }
-    DWORD restoreSeh = 0;
-    if (!SafeLuaSetTop(L, top, &restoreSeh) && restoreSeh && !runSeh)
-        runSeh = restoreSeh;
 
-    Log::Logf("[SelfTest] L=%p panic=%s debug=%s run=%s",
-              L,
-              panicOk ? "ok" : "fail",
-              debugOk ? "ok" : "fail",
-              runOk ? "ok" : "fail");
+        bool prevEnabled = (stateInfo.debug_status == 1);
+        uint32_t prevMode = stateInfo.debug_mode;
+        uint32_t prevMask = stateInfo.debug_mask;
+        uint32_t prevCount = stateInfo.debug_count;
 
-    std::ostringstream oss;
-    oss << "panic=" << (panicOk ? "ok" : "fail");
-    if (!panicOk && panicSeh) {
-        char buf[16];
-        sprintf_s(buf, sizeof(buf), "0x%08lX", panicSeh);
-        oss << "(seh=" << buf << ")";
-    }
-    oss << " debug=" << (debugOk ? "ok" : "fail");
-    if (!debugOk && debugSeh) {
-        char buf[16];
-        sprintf_s(buf, sizeof(buf), "0x%08lX", debugSeh);
-        oss << "(seh=" << buf << ")";
-    }
-    oss << " run=" << (runOk ? "ok" : "fail");
-    if (!runOk && runSeh) {
-        char buf[16];
-        sprintf_s(buf, sizeof(buf), "0x%08lX", runSeh);
-        oss << "(seh=" << buf << ")";
+        auto restoreConfig = [&]() {
+            LuaStateInfo restoreInfo{};
+            if (!g_stateRegistry.GetByPointer(canonical, restoreInfo))
+                restoreInfo = stateInfo;
+            DebugConfigRequest restoreReq{};
+            if (prevEnabled) {
+                restoreReq.mode = DEBUG_MODE_CUSTOM;
+                restoreReq.mask = prevMask;
+                restoreReq.count = prevCount;
+                restoreReq.explicitMask = true;
+                restoreReq.explicitCount = true;
+            } else {
+                restoreReq.mode = DEBUG_MODE_OFF;
+            }
+            DebugConfigResult restoreRes{};
+            ApplyDebugConfigOnOwner(canonical, restoreInfo, restoreReq, restoreRes);
+        };
+
+        DebugConfigRequest enableReq{};
+        enableReq.mode = DEBUG_MODE_CALLS;
+        DebugConfigResult enableRes{};
+        if (ApplyDebugConfigOnOwner(canonical, stateInfo, enableReq, enableRes)) {
+            debugOk = (stateInfo.debug_status == 1);
+            if (!debugOk && failure.empty())
+                failure = "debug-enable-failed";
+            if (!debugOk) {
+                LogLuaState("selftest debug hook inactive L=%p", canonical);
+            }
+        } else {
+            if (failure.empty())
+                failure = enableRes.error.empty() ? "debug-enable-failed" : enableRes.error;
+            LogLuaState("selftest debug enable failed L=%p err=%s seh=0x%08lX",
+                        canonical,
+                        enableRes.error.empty() ? "<unknown>" : enableRes.error.c_str(),
+                        enableRes.seh);
+        }
+
+        uint64_t beforeEvents = stateInfo.hook_call_count +
+                                stateInfo.hook_ret_count +
+                                stateInfo.hook_line_count;
+
+        int topBefore = lua_gettop(canonical);
+        DWORD runSeh = 0;
+        if (!SafeLuaDoString(canonical, "local function f() return 1 end; return f()", &runSeh)) {
+            if (failure.empty())
+                failure = "chunk-failed";
+            LogLuaState("selftest chunk failed L=%p seh=0x%08lX", canonical, runSeh);
+        } else {
+            int newTop = lua_gettop(canonical);
+            if (!(newTop > topBefore && lua_isnumber(canonical, -1) && lua_tointeger(canonical, -1) == 1)) {
+                if (failure.empty())
+                    failure = "chunk-result-invalid";
+                LogLuaState("selftest chunk result invalid L=%p", canonical);
+            }
+        }
+        SafeLuaSetTop(canonical, topBefore, nullptr);
+
+        LuaStateInfo afterRun{};
+        if (!g_stateRegistry.GetByPointer(canonical, afterRun))
+            afterRun = stateInfo;
+        uint64_t afterEvents = afterRun.hook_call_count +
+                               afterRun.hook_ret_count +
+                               afterRun.hook_line_count;
+        eventsOk = (afterEvents > beforeEvents);
+        if (!eventsOk) {
+            LogLuaState("selftest no debug events L=%p before=%llu after=%llu",
+                        canonical,
+                        static_cast<unsigned long long>(beforeEvents),
+                        static_cast<unsigned long long>(afterEvents));
+            if (failure.empty())
+                failure = "no-events";
+        }
+
+        restoreConfig();
     }
 
-    std::string summary = oss.str();
-    lua_pushstring(L, summary.c_str());
+    lua_newtable(L);
+    lua_pushstring(L, "panic");
+    lua_pushboolean(L, panicOk ? 1 : 0);
+    lua_settable(L, -3);
+    lua_pushstring(L, "debug_installed");
+    lua_pushboolean(L, debugOk ? 1 : 0);
+    lua_settable(L, -3);
+    lua_pushstring(L, "events_emitted");
+    lua_pushboolean(L, eventsOk ? 1 : 0);
+    lua_settable(L, -3);
+    if (!failure.empty()) {
+        lua_pushstring(L, "error");
+        lua_pushstring(L, failure.c_str());
+        lua_settable(L, -3);
+    }
     return 1;
 }
 
@@ -1954,6 +3303,7 @@ void OnStateRemoved(lua_State* L, const char* reason) {
 
 
 } // namespace Engine::Lua
+
 
 
 
