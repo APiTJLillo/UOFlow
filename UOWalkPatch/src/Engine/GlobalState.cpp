@@ -513,6 +513,8 @@ static DWORD WINAPI WaitForLua(LPVOID) {
 
             // Queue Lua helper registration for the next safe point
             RequestWalkRegistration();
+            Engine::Lua::OnStateObserved(static_cast<lua_State*>(g_luaState),
+                                         info ? info->scriptContext : nullptr);
 
             return 0;
         }
@@ -569,6 +571,8 @@ void ReportLuaState(void* L) {
 
     // The Lua VM was recreated; request re-registration of helpers
     RequestWalkRegistration();
+    Engine::Lua::OnStateObserved(static_cast<lua_State*>(L),
+                                 g_globalStateInfo ? g_globalStateInfo->scriptContext : nullptr);
 }
 
 void* LuaState() {
@@ -601,6 +605,8 @@ bool RefreshLuaStateFromSlot()
             "Refreshing Lua state from slot: info=%p lua=%p", slotVal, slotVal->luaState);
         WriteRawLog(buffer);
         ValidateGlobalState(slotVal);
+        Engine::Lua::OnStateObserved(static_cast<lua_State*>(slotVal->luaState),
+                                     slotVal->scriptContext);
     }
     return changed;
 }
