@@ -108,6 +108,7 @@ extern "C" {
     LUA_API int lua_getinfo(lua_State* L, const char* what, lua_Debug* ar);
     typedef void(__cdecl* lua_Hook)(lua_State*, lua_Debug*);
     LUA_API void lua_setfield(lua_State* L, int idx, const char* k);
+    LUA_API void lua_insert(lua_State* L, int idx);
     LUA_API void lua_sethook(lua_State* L, lua_Hook func, int mask, int count);
     LUA_API lua_Hook lua_gethook(lua_State* L);
     LUA_API int lua_gethookmask(lua_State* L);
@@ -204,6 +205,7 @@ static constexpr const char* kHelperRebindName = "uow_lua_rebind_all";
 static constexpr const char* kHelperSelfTestName = "uow_selftest";
 static constexpr const char* kHelperDebugName = "uow_debug";
 static constexpr const char* kHelperDebugStatusName = "uow_debug_status";
+static char g_hookSentinelKey = 0;
 
 // Forward declarations
 static void ProcessPendingLuaTasks(lua_State* L);
@@ -231,7 +233,6 @@ static lua_State* NormalizeLuaStatePointer(lua_State* candidate);
 static bool IsOwnerThread(const LuaStateInfo& info);
 static bool IsOwnerThread(lua_State* L);
 static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::function<void()> fn);
-static bool PushHookSentinelKey(lua_State* L, DWORD* outSeh = nullptr);
 static bool EnsureSentinelMetatable(lua_State* L, DWORD* outSeh) noexcept;
 static bool EnsureHookSentinel(lua_State* L, LuaStateInfo& info, bool* created, DWORD* outSeh) noexcept;
 static bool ClearHookSentinel(lua_State* L, DWORD* outSeh) noexcept;
@@ -1112,6 +1113,21 @@ static bool SafeLuaPushCClosure(lua_State* L, lua_CFunction fn, int n, DWORD* ou
     }
 }
 
+static bool SafeLuaPushLightUserdata(lua_State* L, const void* ptr, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !ptr)
+        return false;
+    __try {
+        lua_pushlightuserdata(L, const_cast<void*>(ptr));
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
 static bool SafeLuaSetTable(lua_State* L, int idx, DWORD* outSeh = nullptr) noexcept {
     if (!L)
         return false;
@@ -1132,6 +1148,21 @@ static bool SafeLuaPushValue(lua_State* L, int idx, DWORD* outSeh = nullptr) noe
         return false;
     __try {
         lua_pushvalue(L, idx);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaInsert(lua_State* L, int idx, DWORD* outSeh = nullptr) noexcept {
+    if (!L)
+        return false;
+    __try {
+        lua_insert(L, idx);
         if (outSeh)
             *outSeh = 0;
         return true;
@@ -1170,6 +1201,32 @@ static bool SafeLuaRawSet(lua_State* L, int idx, DWORD* outSeh = nullptr) noexce
             *outSeh = GetExceptionCode();
         return false;
     }
+}
+
+static bool SafeLuaRawGetP(lua_State* L, int idx, const void* key, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !key)
+        return false;
+    if (!SafeLuaPushLightUserdata(L, key, outSeh))
+        return false;
+    if (!SafeLuaRawGet(L, idx, outSeh))
+        return false;
+    if (outSeh)
+        *outSeh = 0;
+    return true;
+}
+
+static bool SafeLuaRawSetP(lua_State* L, int idx, const void* key, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !key)
+        return false;
+    if (!SafeLuaPushLightUserdata(L, key, outSeh))
+        return false;
+    if (!SafeLuaInsert(L, -2, outSeh))
+        return false;
+    if (!SafeLuaRawSet(L, idx, outSeh))
+        return false;
+    if (outSeh)
+        *outSeh = 0;
+    return true;
 }
 
 static bool SafeLuaNewUserdata(lua_State* L, size_t size, void** outPtr, DWORD* outSeh = nullptr) noexcept {
@@ -1434,14 +1491,6 @@ static void ReleaseBindingSlot(lua_State* L) {
     g_bindingInFlight.erase(L);
 }
 
-static bool PushHookSentinelKey(lua_State* L, DWORD* outSeh) {
-    if (!L)
-        return false;
-    char buffer[64];
-    sprintf_s(buffer, sizeof(buffer), "uow.gc.%p", L);
-    return SafeLuaPushString(L, buffer, outSeh);
-}
-
 static bool EnsureSentinelMetatable(lua_State* L, DWORD* outSeh) noexcept {
     if (!L)
         return false;
@@ -1520,15 +1569,7 @@ static bool EnsureHookSentinel(lua_State* L, LuaStateInfo& info, bool* created, 
         return false;
     }
 
-    if (!PushHookSentinelKey(L, &seh)) {
-        if (created)
-            *created = false;
-        if (outSeh)
-            *outSeh = seh;
-        LogLuaBind("sentinel-fail stage=push-key-check L=%p seh=0x%08lX", L, seh);
-        return false;
-    }
-    if (!SafeLuaRawGet(L, LUA_REGISTRYINDEX, &seh)) {
+    if (!SafeLuaRawGetP(L, LUA_REGISTRYINDEX, &g_hookSentinelKey, &seh)) {
         if (created)
             *created = false;
         if (outSeh)
@@ -1574,7 +1615,7 @@ static bool EnsureHookSentinel(lua_State* L, LuaStateInfo& info, bool* created, 
         return false;
     }
     HookSentinel* payload = reinterpret_cast<HookSentinel*>(payloadPtr);
-    if (payload)
+  	if (payload)
         payload->state = L;
 
     if (!SafeLuaPushString(L, "uow.hooks.sentinel", &seh)) {
@@ -1607,11 +1648,11 @@ static bool EnsureHookSentinel(lua_State* L, LuaStateInfo& info, bool* created, 
         if (!SafeLuaSetMetatable(L, -2, &seh)) {
             if (created)
                 *created = false;
-        if (outSeh)
-            *outSeh = seh;
-        LogLuaBind("sentinel-fail stage=set-metatable L=%p seh=0x%08lX", L, seh);
-        return false;
-    }
+            if (outSeh)
+                *outSeh = seh;
+            LogLuaBind("sentinel-fail stage=set-metatable L=%p seh=0x%08lX", L, seh);
+            return false;
+        }
     } else {
         if (!SafeLuaSetTop(L, -2, &seh)) {
             if (created)
@@ -1623,28 +1664,20 @@ static bool EnsureHookSentinel(lua_State* L, LuaStateInfo& info, bool* created, 
         }
     }
 
-    if (!PushHookSentinelKey(L, &seh)) {
+    if (!SafeLuaPushValue(L, -1, &seh)) {
         if (created)
             *created = false;
         if (outSeh)
             *outSeh = seh;
-        LogLuaBind("sentinel-fail stage=push-key-store L=%p seh=0x%08lX", L, seh);
+        LogLuaBind("sentinel-fail stage=dup-userdata L=%p seh=0x%08lX", L, seh);
         return false;
     }
-    if (!SafeLuaPushValue(L, -2, &seh)) {
+    if (!SafeLuaRawSetP(L, LUA_REGISTRYINDEX, &g_hookSentinelKey, &seh)) {
         if (created)
             *created = false;
         if (outSeh)
             *outSeh = seh;
-        LogLuaBind("sentinel-fail stage=push-userdata-copy L=%p seh=0x%08lX", L, seh);
-        return false;
-    }
-    if (!SafeLuaRawSet(L, LUA_REGISTRYINDEX, &seh)) {
-        if (created)
-            *created = false;
-        if (outSeh)
-            *outSeh = seh;
-        LogLuaBind("sentinel-fail stage=rawset-store L=%p seh=0x%08lX", L, seh);
+        LogLuaBind("sentinel-fail stage=rawsetp-store L=%p seh=0x%08lX", L, seh);
         return false;
     }
 
@@ -1663,19 +1696,38 @@ static bool EnsureHookSentinel(lua_State* L, LuaStateInfo& info, bool* created, 
     return true;
 }
 
+static bool EnsureHookSentinelGuarded(lua_State* L, LuaStateInfo& info, bool* created, DWORD* outSeh) noexcept {
+    DWORD localSeh = 0;
+#if defined(_MSC_VER)
+    __try {
+        bool ok = EnsureHookSentinel(L, info, created, &localSeh);
+        if (outSeh)
+            *outSeh = localSeh;
+        return ok;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DWORD code = GetExceptionCode();
+        if (created)
+            *created = false;
+        if (outSeh)
+            *outSeh = code;
+        LogLuaBind("sentinel-fail stage=seh-handler L=%p seh=0x%08lX", L, code);
+        return false;
+    }
+#else
+    bool ok = EnsureHookSentinel(L, info, created, &localSeh);
+    if (outSeh)
+        *outSeh = localSeh;
+    return ok;
+#endif
+}
+
 static bool ClearHookSentinel(lua_State* L, DWORD* outSeh) noexcept {
     if (!L)
         return false;
 
     LuaStackGuard stackGuard(L);
     DWORD seh = 0;
-    if (!PushHookSentinelKey(L, &seh)) {
-        LogLuaBind("sentinel-fail stage=clear-push-key L=%p seh=0x%08lX", L, seh);
-        if (outSeh)
-            *outSeh = seh;
-        return false;
-    }
-    if (!SafeLuaRawGet(L, LUA_REGISTRYINDEX, &seh)) {
+    if (!SafeLuaRawGetP(L, LUA_REGISTRYINDEX, &g_hookSentinelKey, &seh)) {
         LogLuaBind("sentinel-fail stage=clear-rawget L=%p seh=0x%08lX", L, seh);
         if (outSeh)
             *outSeh = seh;
@@ -1698,20 +1750,14 @@ static bool ClearHookSentinel(lua_State* L, DWORD* outSeh) noexcept {
     }
 
     if (exists) {
-        if (!PushHookSentinelKey(L, &seh)) {
-            LogLuaBind("sentinel-fail stage=clear-push-key2 L=%p seh=0x%08lX", L, seh);
-            if (outSeh)
-                *outSeh = seh;
-            return false;
-        }
         if (!SafeLuaPushNil(L, &seh)) {
             LogLuaBind("sentinel-fail stage=clear-push-nil L=%p seh=0x%08lX", L, seh);
             if (outSeh)
                 *outSeh = seh;
             return false;
         }
-        if (!SafeLuaRawSet(L, LUA_REGISTRYINDEX, &seh)) {
-            LogLuaBind("sentinel-fail stage=clear-rawset L=%p seh=0x%08lX", L, seh);
+        if (!SafeLuaRawSetP(L, LUA_REGISTRYINDEX, &g_hookSentinelKey, &seh)) {
+            LogLuaBind("sentinel-fail stage=clear-rawsetp L=%p seh=0x%08lX", L, seh);
             if (outSeh)
                 *outSeh = seh;
             return false;
@@ -2457,7 +2503,7 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
         sentinelAttempted = false;
         sentinelSeh = 0;
     } else {
-        sentinelOk = EnsureHookSentinel(L, info, &sentinelCreated, &sentinelSeh);
+        sentinelOk = EnsureHookSentinelGuarded(L, info, &sentinelCreated, &sentinelSeh);
         if (sentinelOk) {
             g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
                 state.gc_sentinel_ref = 1;
