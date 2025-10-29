@@ -876,6 +876,7 @@ static bool DebugInstrumentationEnabled() {
 // Forward declarations
 static void ProcessPendingLuaTasks(lua_State* L);
 static void PostToLuaThread(lua_State* L, const char* name, std::function<void(lua_State*)> fn);
+static void MaybeAdoptOwnerThread(lua_State* L, LuaStateInfo& info);
 static void MaybeRunMaintenance();
 static void RequestBindForState(const LuaStateInfo& info, const char* reason, bool force);
 static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const char* reason);
@@ -2999,6 +3000,8 @@ static void CleanupHooks(lua_State* L, const char* reason, bool releaseEntry) {
 
     LuaStateInfo info{};
     bool haveInfo = g_stateRegistry.GetByPointer(L, info);
+    if (haveInfo)
+        MaybeAdoptOwnerThread(L, info);
     if (haveInfo && !IsOwnerThread(info)) {
         std::string reasonCopy = reason ? reason : "cleanup";
         PostToOwnerWithTask(L, "hooks-cleanup", [state = L, reasonCopy = std::move(reasonCopy), releaseEntry]() {
@@ -3017,6 +3020,8 @@ static int __cdecl HookSentinelGC(lua_State* L) {
 static bool ApplyDebugConfigOnOwner(lua_State* L, LuaStateInfo& info, const DebugConfigRequest& req, DebugConfigResult& result) {
     if (!L)
         return false;
+
+    MaybeAdoptOwnerThread(L, info);
 
     if (!(info.flags & STATE_FLAG_VALID)) {
         result.error = "state-invalid";
@@ -3464,9 +3469,44 @@ static void PostToLuaThread(lua_State* L, const char* name, std::function<void(l
     }
 }
 
+static void MaybeAdoptOwnerThread(lua_State* L, LuaStateInfo& info) {
+    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+    if (!scriptTid)
+        return;
+    if (info.owner_tid == scriptTid)
+        return;
+
+    auto tryUpdate = [&](lua_State* pointer, const char* source) -> bool {
+        if (!pointer)
+            return false;
+        DWORD previous = info.owner_tid;
+        bool updated = g_stateRegistry.UpdateByPointer(pointer, [&](LuaStateInfo& state) {
+            state.owner_tid = scriptTid;
+            state.last_tid = scriptTid;
+        }, &info);
+        if (updated && previous != info.owner_tid) {
+            LogLuaState("owner-adopt L=%p old=%lu new=%lu source=%s",
+                        pointer,
+                        previous,
+                        info.owner_tid,
+                        source ? source : "unknown");
+        }
+        return updated;
+    };
+
+    if (tryUpdate(info.L_canonical, "canonical"))
+        return;
+    if (tryUpdate(L, "direct"))
+        return;
+    tryUpdate(info.L_reported, "reported");
+}
+
 static bool IsOwnerThread(const LuaStateInfo& info) {
-    DWORD owner = info.owner_tid ? info.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
-    return owner != 0 && owner == GetCurrentThreadId();
+    DWORD current = GetCurrentThreadId();
+    if (info.owner_tid != 0 && info.owner_tid == current)
+        return true;
+    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+    return scriptTid != 0 && scriptTid == current;
 }
 
 static bool IsOwnerThread(lua_State* L) {
@@ -3484,6 +3524,9 @@ static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::functio
 
     LuaStateInfo info{};
     bool haveInfo = g_stateRegistry.GetByPointer(L, info);
+    if (haveInfo)
+        MaybeAdoptOwnerThread(L, info);
+
     DWORD owner = 0;
     if (haveInfo) {
         owner = info.owner_tid ? info.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
@@ -3588,6 +3631,8 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
 
     if (!(info.flags & STATE_FLAG_VALID))
         return;
+
+    MaybeAdoptOwnerThread(L, info);
 
     if (!IsOwnerThread(info)) {
         PostToOwnerWithTask(L, "panic&debug", [L]() {
@@ -3858,6 +3903,8 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
 
     LuaStateInfo info = originalInfo;
 
+    MaybeAdoptOwnerThread(L, info);
+
     if (!IsOwnerThread(info)) {
         LogLuaBind("bind-helpers wrong-thread L=%p owner=%lu current=%lu",
                    L,
@@ -3908,6 +3955,8 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
         LogLuaState("bind-skip Lc=%p reason=state-missing action=%s", L, reason ? reason : "unknown");
         return;
     }
+
+    MaybeAdoptOwnerThread(L, info);
 
     if (!IsOwnerThread(info)) {
         std::string reasonCopy = reason ? reason : "unknown";
@@ -4172,6 +4221,8 @@ static int Lua_UOWDebug(lua_State* L) {
         return 1;
     }
 
+    MaybeAdoptOwnerThread(target, targetInfo);
+
     if (!IsOwnerThread(targetInfo)) {
         DebugConfigRequest taskReq = req;
         PostToOwnerWithTask(target, "debug-config", [target, taskReq]() {
@@ -4280,6 +4331,8 @@ static int Lua_UOWSelfTest(lua_State* L) {
     LuaStateInfo stateInfo{};
     if (!g_stateRegistry.GetByPointer(canonical, stateInfo))
         stateInfo = info;
+
+    MaybeAdoptOwnerThread(canonical, stateInfo);
 
     bool panicOk = false;
     bool debugOk = false;
