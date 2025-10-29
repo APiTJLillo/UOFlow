@@ -210,6 +210,131 @@ static constexpr const char* kHelperDebugName = "uow_debug";
 static constexpr const char* kHelperDebugStatusName = "uow_debug_status";
 static char g_hookSentinelKey = 0;
 
+static void LogLuaBind(const char* fmt, ...);
+static bool DebugInstrumentationEnabled();
+
+static std::atomic<uint64_t> g_lastContextMutationTick{0};
+static std::atomic<uint64_t> g_lastDestabilizedTick{0};
+static std::atomic<uint64_t> g_lastCanonicalReadyTick{0};
+static std::atomic<uint64_t> g_lastDebugDeferLogTick{0};
+static std::mutex g_debugInstallMutex;
+static std::unordered_set<lua_State*> g_debugInstallInFlight;
+static constexpr DWORD kDebugInstallStableWindowMs = 500;
+
+static uint64_t GetDebugTickNow() {
+    return GetTickCount64();
+}
+
+static void NoteDestabilization(uint64_t tick) {
+    g_lastDestabilizedTick.store(tick, std::memory_order_release);
+}
+
+static void NoteDestabilization() {
+    NoteDestabilization(GetDebugTickNow());
+}
+
+static void NoteContextMutation() {
+    uint64_t now = GetDebugTickNow();
+    g_lastContextMutationTick.store(now, std::memory_order_release);
+    NoteDestabilization(now);
+}
+
+static bool DebugInstallEnvEnabled() {
+    static int cached = -1;
+    static bool enabled = false;
+    if (cached < 0) {
+        DWORD len = GetEnvironmentVariableA("UOW_DEBUG_INSTALL", nullptr, 0);
+        if (len == 0) {
+            enabled = false;
+        } else {
+            std::string value(len, '\0');
+            DWORD written = GetEnvironmentVariableA("UOW_DEBUG_INSTALL", value.data(), len);
+            char ch = (written > 0) ? value[0] : '0';
+            if (ch == '0' || ch == 'n' || ch == 'N' || ch == 'f' || ch == 'F') {
+                enabled = false;
+            } else {
+                enabled = true;
+            }
+        }
+        cached = 1;
+    }
+    return enabled;
+}
+
+static void MaybeLogInstallDefer(lua_State* L, const char* reason) {
+    uint64_t now = GetDebugTickNow();
+    uint64_t last = g_lastDebugDeferLogTick.load(std::memory_order_acquire);
+    if (now - last < 250)
+        return;
+    if (g_lastDebugDeferLogTick.compare_exchange_strong(last, now, std::memory_order_acq_rel, std::memory_order_acquire)) {
+        LogLuaBind("hooks-install deferred Lc=%p reason=%s", L, reason ? reason : "unknown");
+    }
+}
+
+class DebugInstallGuard {
+public:
+    explicit DebugInstallGuard(lua_State* state) : state_(state), acquired_(false) {
+        if (!state_)
+            return;
+        std::lock_guard<std::mutex> lock(g_debugInstallMutex);
+        auto inserted = g_debugInstallInFlight.insert(state_);
+        acquired_ = inserted.second;
+    }
+
+    ~DebugInstallGuard() {
+        if (!acquired_ || !state_)
+            return;
+        std::lock_guard<std::mutex> lock(g_debugInstallMutex);
+        g_debugInstallInFlight.erase(state_);
+    }
+
+    bool acquired() const noexcept { return acquired_; }
+
+private:
+    lua_State* state_;
+    bool acquired_;
+};
+
+static bool IsStateStableForInstall(const LuaStateInfo& info, lua_State* L, const char** outReason = nullptr) {
+    if (!L || !(info.flags & STATE_FLAG_VALID) || !info.L_canonical) {
+        if (outReason)
+            *outReason = "no-canonical";
+        return false;
+    }
+    lua_State* canonical = g_canonicalState.load(std::memory_order_acquire);
+    if (!canonical || canonical != info.L_canonical) {
+        if (outReason)
+            *outReason = "canonical-mismatch";
+        return false;
+    }
+    uint64_t readyTick = g_lastCanonicalReadyTick.load(std::memory_order_acquire);
+    if (!readyTick) {
+        if (outReason)
+            *outReason = "no-ready-tick";
+        return false;
+    }
+    uint64_t destabilized = g_lastDestabilizedTick.load(std::memory_order_acquire);
+    uint64_t now = GetDebugTickNow();
+    if (readyTick < destabilized) {
+        if (outReason)
+            *outReason = "destabilized";
+        return false;
+    }
+    if (now - destabilized < kDebugInstallStableWindowMs) {
+        if (outReason)
+            *outReason = "grace";
+        return false;
+    }
+    if (!Engine::MovementReady()) {
+        if (outReason)
+            *outReason = "movement-pending";
+        return false;
+    }
+    if (outReason)
+        *outReason = nullptr;
+    return true;
+}
+
 static bool DebugInstrumentationEnabled() {
     static int cached = -1;
     static bool enabled = false;
@@ -629,11 +754,18 @@ static bool EnsureCanonicalLocked(LuaStateInfo& state, uint64_t now, const char*
         state.flags &= ~STATE_FLAG_QUARANTINED;
         state.probe_failures = 0;
         state.next_probe_ms = now;
+        uint64_t readyTick = g_lastCanonicalReadyTick.load(std::memory_order_acquire);
+        uint64_t destabilized = g_lastDestabilizedTick.load(std::memory_order_acquire);
+        if (!readyTick || readyTick <= destabilized) {
+            g_lastCanonicalReadyTick.store(now, std::memory_order_release);
+        }
         return true;
     }
 
-    if (state.next_probe_ms && now < state.next_probe_ms)
+    if (state.next_probe_ms && now < state.next_probe_ms) {
+        NoteDestabilization(now);
         return false;
+    }
 
     auto markSuccess = [&](lua_State* canonical, const char* mode) {
         state.L_canonical = canonical;
@@ -641,6 +773,7 @@ static bool EnsureCanonicalLocked(LuaStateInfo& state, uint64_t now, const char*
         state.flags &= ~STATE_FLAG_QUARANTINED;
         state.probe_failures = 0;
         state.next_probe_ms = now;
+        g_lastCanonicalReadyTick.store(now, std::memory_order_release);
         if (mode)
             LogLuaState("probe-ok %s Lc=%p source=%s", mode, canonical, tag);
         else
@@ -674,6 +807,7 @@ static bool EnsureCanonicalLocked(LuaStateInfo& state, uint64_t now, const char*
     if (backoff > kProbeMaxBackoffMs)
         backoff = kProbeMaxBackoffMs;
     state.next_probe_ms = now + backoff;
+    NoteDestabilization(now);
     return false;
 }
 
@@ -2436,9 +2570,19 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
     if (!ProbeLua(L))
         return;
 
+    const char* stabilityReason = nullptr;
+    if (!IsStateStableForInstall(info, L, &stabilityReason)) {
+        MaybeLogInstallDefer(L, stabilityReason);
+        return;
+    }
+
     DWORD panicSeh = 0;
-  	bool panicChanged = false;
+    bool panicChanged = false;
     bool panicOk = EnsurePanicHookOnOwner(L, info, &panicChanged, &panicSeh);
+
+    const bool debugEnabled = DebugInstrumentationEnabled();
+    const bool installEnv = DebugInstallEnvEnabled();
+    const bool allowDebug = debugEnabled && installEnv;
 
     bool sentinelCreated = false;
     DWORD sentinelSeh = 0;
@@ -2446,12 +2590,11 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
     bool sentinelAttempted = false;
     bool sentinelSkip = false;
 
-    const bool debugEnabled = DebugInstrumentationEnabled();
     const bool sentinelPrevFailed = (info.gc_sentinel_ref == -2 && info.gc_sentinel_gen == info.gen);
     const bool sentinelInstalled = (info.gc_sentinel_ref == 1 && info.gc_sentinel_gen == info.gen);
     lua_State* canonical = g_canonicalState.load(std::memory_order_acquire);
 
-    if (!debugEnabled) {
+    if (!allowDebug) {
         sentinelSkip = true;
     } else if (sentinelInstalled) {
         sentinelOk = true;
@@ -2463,18 +2606,23 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
     } else if (!(canonical && canonical == L)) {
         sentinelSkip = true;
     } else {
-        sentinelAttempted = true;
-        sentinelOk = EnsureHookSentinelGuarded(L, info, &sentinelCreated, &sentinelSeh);
-        if (sentinelOk) {
-            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-                state.gc_sentinel_ref = 1;
-                state.gc_sentinel_gen = state.gen;
-            }, &info);
+        DebugInstallGuard guard(L);
+        if (!guard.acquired()) {
+            sentinelSkip = true;
         } else {
-            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-                state.gc_sentinel_ref = -2;
-                state.gc_sentinel_gen = state.gen;
-            }, &info);
+            sentinelAttempted = true;
+            sentinelOk = EnsureHookSentinelGuarded(L, info, &sentinelCreated, &sentinelSeh);
+            if (sentinelOk) {
+                g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+                    state.gc_sentinel_ref = 1;
+                    state.gc_sentinel_gen = state.gen;
+                }, &info);
+            } else {
+                g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+                    state.gc_sentinel_ref = -2;
+                    state.gc_sentinel_gen = state.gen;
+                }, &info);
+            }
         }
     }
 
@@ -3166,6 +3314,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name) {
 
     if (ctx && ctx != g_engineContext.load(std::memory_order_acquire)) {
         g_engineContext.store(ctx, std::memory_order_release);
+        NoteContextMutation();
     }
     if (ctx)
         g_latestScriptCtx.store(ctx, std::memory_order_release);
@@ -3231,6 +3380,7 @@ void ShutdownLuaBridge() {
     g_scriptThreadId.store(0, std::memory_order_release);
     g_engineContext.store(nullptr, std::memory_order_release);
     g_latestScriptCtx.store(nullptr, std::memory_order_release);
+    NoteContextMutation();
 }
 
 void RegisterOurLuaFunctions() {
@@ -3239,6 +3389,7 @@ void RegisterOurLuaFunctions() {
 
 void UpdateEngineContext(void* context) {
     g_engineContext.store(context, std::memory_order_release);
+    NoteContextMutation();
     LogLuaProbe("engine-context=%p", context);
     ScheduleWalkBinding();
 }
@@ -3308,6 +3459,7 @@ void OnStateRemoved(lua_State* L, const char* reason) {
         lua_State* canonical = g_canonicalState.load(std::memory_order_acquire);
         if (canonical && (canonical == info.L_canonical || canonical == L))
             g_canonicalState.store(nullptr, std::memory_order_release);
+        NoteDestabilization();
     }
 }
 
