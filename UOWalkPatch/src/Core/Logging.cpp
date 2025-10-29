@@ -2,6 +2,7 @@
 #include <psapi.h>
 #include <cstdio>
 #include <cstdarg>
+#include <vector>
 
 namespace Log {
 namespace {
@@ -176,12 +177,24 @@ void LogLoadedModules() {
 }
 
 void Logf(const char* fmt, ...) {
-    char buf[256];
+    if (!fmt)
+        return;
+
     va_list args;
     va_start(args, fmt);
-    vsprintf_s(buf, sizeof(buf), fmt, args);
+    int needed = _vscprintf(fmt, args);
     va_end(args);
-    WriteRawLog(buf);
+    if (needed < 0)
+        return;
+
+    std::vector<char> buffer(static_cast<size_t>(needed) + 1, '\0');
+    va_start(args, fmt);
+    int written = vsnprintf_s(buffer.data(), buffer.size(), _TRUNCATE, fmt, args);
+    va_end(args);
+    if (written < 0)
+        buffer.back() = '\0';
+
+    WriteRawLog(buffer.data());
 }
 
 } // namespace Log

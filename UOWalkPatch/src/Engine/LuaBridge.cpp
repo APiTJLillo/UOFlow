@@ -6,6 +6,7 @@
 #include <string>
 #include <deque>
 #include <mutex>
+#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
@@ -205,7 +206,140 @@ static void AppendPointer(std::string& dest, const void* ptr) {
     dest.append(buffer);
 }
 
+static std::string JoinStrings(const std::vector<std::string>& chunks, const char* separator = ",") {
+    std::string out;
+    if (chunks.empty())
+        return out;
+    size_t total = 0;
+    for (const auto& chunk : chunks)
+        total += chunk.size();
+    total += (chunks.size() - 1) * std::strlen(separator);
+    out.reserve(total);
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        if (i)
+            out.append(separator);
+        out.append(chunks[i]);
+    }
+    return out;
+}
+
+static bool SafeLuaProbeStack(lua_State* L, int* outTop, DWORD* outSeh) noexcept;
+static bool SafeLuaSetTop(lua_State* L, int idx, DWORD* outSeh) noexcept;
 static bool SafeLuaGetGlobalType(lua_State* L, const char* name, int* outType, const char** outTypeName, DWORD* outSeh) noexcept;
+
+static void SanitizeIntoBuffer(const char* data, size_t len, char* dest, size_t destSize, size_t maxLen = 48) {
+    if (!dest || destSize == 0)
+        return;
+    if (!data) {
+        strncpy_s(dest, destSize, "<null>", _TRUNCATE);
+        return;
+    }
+    size_t writeLimit = destSize > 0 ? destSize - 1 : 0;
+    if (writeLimit == 0)
+        return;
+    size_t limit = std::min(len, std::min(maxLen, writeLimit));
+    size_t i = 0;
+    for (; i < limit; ++i) {
+        unsigned char ch = static_cast<unsigned char>(data[i]);
+        dest[i] = (ch < 0x20 || ch >= 0x7Fu) ? '?' : static_cast<char>(ch);
+    }
+    if (len > limit && (writeLimit - i) >= 3) {
+        dest[i++] = '.';
+        dest[i++] = '.';
+        dest[i++] = '.';
+    }
+    dest[i] = '\0';
+}
+
+struct PackageLoadedSnapshot {
+    bool packageValid = false;
+    bool loadedValid = false;
+    char packageType[16]{};
+    char loadedType[16]{};
+    size_t keyCount = 0;
+    bool truncated = false;
+    char keys[16][49]{};
+};
+
+static bool SafeSnapshotPackageLoaded(lua_State* L, PackageLoadedSnapshot& out, DWORD* outSeh) noexcept {
+    if (!L)
+        return false;
+    std::memset(&out, 0, sizeof(out));
+    __try {
+        int top = lua_gettop(L);
+        lua_getglobal(L, "package");
+        int packageType = lua_type(L, -1);
+        const char* packageTypeName = lua_typename(L, packageType);
+        strncpy_s(out.packageType, packageTypeName ? packageTypeName : "<unknown>", _TRUNCATE);
+        out.packageValid = (packageType != LUA_TNONE);
+        if (packageType == LUA_TTABLE) {
+            lua_getfield(L, -1, "loaded");
+            int loadedType = lua_type(L, -1);
+            const char* loadedTypeName = lua_typename(L, loadedType);
+            strncpy_s(out.loadedType, loadedTypeName ? loadedTypeName : "<unknown>", _TRUNCATE);
+            out.loadedValid = (loadedType == LUA_TTABLE);
+            if (out.loadedValid) {
+                const size_t kLimit = 16;
+                lua_pushnil(L);
+                while (lua_next(L, -2) != 0) {
+                    if (out.keyCount < kLimit) {
+                        int keyType = lua_type(L, -2);
+                        if (keyType == LUA_TSTRING) {
+                            size_t textLen = 0;
+                            const char* keyStr = lua_tolstring(L, -2, &textLen);
+                            SanitizeIntoBuffer(keyStr, textLen, out.keys[out.keyCount], sizeof(out.keys[out.keyCount]));
+                        } else {
+                            const char* keyTypeName = lua_typename(L, keyType);
+                            strncpy_s(out.keys[out.keyCount], keyTypeName ? keyTypeName : "<unknown>", _TRUNCATE);
+                        }
+                        ++out.keyCount;
+                        lua_pop(L, 1);
+                    } else {
+                        out.truncated = true;
+                        lua_pop(L, 1); // pop value
+                        lua_pop(L, 1); // pop key
+                        break;
+                    }
+                }
+            }
+            lua_pop(L, 1); // loaded
+        }
+        lua_pop(L, 1); // package
+        lua_settop(L, top);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeHasDebugTraceback(lua_State* L, bool& outIsTable, bool& outHasTraceback, DWORD* outSeh) noexcept {
+    if (!L)
+        return false;
+    __try {
+        int top = lua_gettop(L);
+        lua_getglobal(L, "debug");
+        int debugType = lua_type(L, -1);
+        outIsTable = (debugType == LUA_TTABLE);
+        outHasTraceback = false;
+        if (outIsTable) {
+            lua_getfield(L, -1, "traceback");
+            outHasTraceback = (lua_type(L, -1) == LUA_TFUNCTION);
+            lua_pop(L, 1);
+        }
+        lua_settop(L, top);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
 
 static void LogLuaQ(const char* fmt, ...) {
     char payload[512];
@@ -458,71 +592,152 @@ static bool TryBuildInspectSummary(lua_State* target, const LuaStateInfo& info, 
         return false;
 
     outSummary.clear();
-    lua_State* canonical = info.L_canonical ? info.L_canonical : target;
-    outSummary.reserve(256);
-    outSummary.append("Lc=");
-    AppendPointer(outSummary, canonical);
-    outSummary.append(" (Lr=");
-    AppendPointer(outSummary, info.L_reported);
-    outSummary.append(" ctx=");
-    AppendPointer(outSummary, info.ctx_reported);
-    outSummary.push_back(')');
-    outSummary.append(" owner=");
-    outSummary.append(std::to_string(info.owner_tid));
-    outSummary.append(" last=");
-    outSummary.append(std::to_string(info.last_tid));
-    outSummary.append(" gen=");
-    outSummary.append(std::to_string(info.gen));
-    outSummary.append(" flags=");
-    outSummary.append(DescribeFlags(info.flags));
-    outSummary.append(" counters=");
-    outSummary.append(std::to_string(info.hook_call_count));
-    outSummary.push_back('/');
-    outSummary.append(std::to_string(info.hook_ret_count));
-    outSummary.push_back('/');
-    outSummary.append(std::to_string(info.hook_line_count));
-    if (info.flags & STATE_FLAG_QUARANTINED) {
-        uint64_t now = GetTickCount64();
-        uint64_t wait = (info.next_probe_ms > now) ? (info.next_probe_ms - now) : 0;
-        outSummary.append(" backoff=");
-        outSummary.append(std::to_string(wait));
-        outSummary.append("ms");
+
+    int originalTop = 0;
+    DWORD probeSeh = 0;
+    if (!SafeLuaProbeStack(target, &originalTop, &probeSeh)) {
+        if (outSeh)
+            *outSeh = probeSeh;
+        return false;
     }
 
-    std::string helperSummary = " helpers=";
-    DWORD sehCode = 0;
+    DWORD firstSeh = 0;
     bool ok = true;
+    std::vector<std::string> helperEntries;
+    helperEntries.reserve(5);
+
     const char* helpers[] = { kHelperWalkName, kHelperDumpName, kHelperInspectName, kHelperRebindName, kHelperSelfTestName };
     constexpr size_t helperCount = sizeof(helpers) / sizeof(helpers[0]);
     for (size_t i = 0; i < helperCount; ++i) {
-        if (i)
-            helperSummary.push_back(',');
-        helperSummary.append(helpers[i]);
-        helperSummary.push_back(':');
         int type = LUA_TNONE;
         const char* typeName = nullptr;
         DWORD helperSeh = 0;
         if (SafeLuaGetGlobalType(target, helpers[i], &type, &typeName, &helperSeh)) {
-            helperSummary.append(typeName ? typeName : "<unknown>");
+            std::string entry(helpers[i]);
+            entry.push_back(':');
+            entry.append(typeName ? typeName : "<unknown>");
+            helperEntries.emplace_back(std::move(entry));
         } else {
-            if (ok)
-                ok = false;
-            if (sehCode == 0)
-                sehCode = helperSeh;
-            helperSummary.append("seh");
-            if (helperSeh) {
-                char buf[16];
-                sprintf_s(buf, sizeof(buf), "(0x%08lX)", helperSeh);
-                helperSummary.append(buf);
-            }
+            if (firstSeh == 0)
+                firstSeh = helperSeh;
+            ok = false;
+            break;
         }
     }
 
-    outSummary += helperSummary;
+    int debugType = LUA_TNONE;
+    const char* debugTypeName = nullptr;
+    bool debugHasTraceback = false;
+    if (ok) {
+        DWORD debugSeh = 0;
+        if (SafeLuaGetGlobalType(target, "debug", &debugType, &debugTypeName, &debugSeh)) {
+            if (debugType == LUA_TTABLE) {
+                bool isTable = false;
+                DWORD tracebackSeh = 0;
+                if (!SafeHasDebugTraceback(target, isTable, debugHasTraceback, &tracebackSeh)) {
+                    if (firstSeh == 0)
+                        firstSeh = tracebackSeh;
+                    ok = false;
+                }
+            }
+        } else {
+            if (firstSeh == 0)
+                firstSeh = debugSeh;
+            ok = false;
+        }
+    }
 
+    PackageLoadedSnapshot pkg{};
+    if (ok) {
+        DWORD pkgSeh = 0;
+        if (!SafeSnapshotPackageLoaded(target, pkg, &pkgSeh)) {
+            if (firstSeh == 0)
+                firstSeh = pkgSeh;
+            ok = false;
+        }
+    }
+
+    if (!ok) {
+        if (outSeh)
+            *outSeh = firstSeh ? firstSeh : probeSeh;
+        return false;
+    }
+
+    std::string debugInfo = "debug=";
+    debugInfo.append(debugTypeName ? debugTypeName : "<unknown>");
+    if (debugType == LUA_TTABLE)
+        debugInfo.append(debugHasTraceback ? "(traceback)" : "(no-traceback)");
+
+    std::string packageInfo = "package=";
+    packageInfo.append(pkg.packageType[0] ? pkg.packageType : "<unknown>");
+    packageInfo.append(" loaded=");
+    packageInfo.append(pkg.loadedType[0] ? pkg.loadedType : "<unknown>");
+    if (pkg.loadedValid) {
+        std::vector<std::string> keys;
+        keys.reserve(pkg.keyCount);
+        for (size_t i = 0; i < pkg.keyCount; ++i) {
+            keys.emplace_back(pkg.keys[i][0] ? pkg.keys[i] : "<unknown>");
+        }
+        packageInfo.append(" keys=[");
+        if (!keys.empty())
+            packageInfo.append(JoinStrings(keys, ", "));
+        if (pkg.truncated) {
+            if (!keys.empty())
+                packageInfo.append(", ");
+            packageInfo.append("...");
+        }
+        packageInfo.push_back(']');
+    }
+
+    std::string summary;
+    summary.reserve(256);
+    lua_State* canonical = info.L_canonical ? info.L_canonical : target;
+    summary.append("Lc=");
+    AppendPointer(summary, canonical);
+    summary.append(" (Lr=");
+    AppendPointer(summary, info.L_reported);
+    summary.append(" ctx=");
+    AppendPointer(summary, info.ctx_reported);
+    summary.push_back(')');
+    summary.append(" owner=");
+    summary.append(std::to_string(info.owner_tid));
+    summary.append(" last=");
+    summary.append(std::to_string(info.last_tid));
+    summary.append(" gen=");
+    summary.append(std::to_string(info.gen));
+    summary.append(" flags=");
+    summary.append(DescribeFlags(info.flags));
+    summary.append(" counters=");
+    summary.append(std::to_string(info.hook_call_count));
+    summary.push_back('/');
+    summary.append(std::to_string(info.hook_ret_count));
+    summary.push_back('/');
+    summary.append(std::to_string(info.hook_line_count));
+    if (info.flags & STATE_FLAG_QUARANTINED) {
+        uint64_t now = GetTickCount64();
+        uint64_t wait = (info.next_probe_ms > now) ? (info.next_probe_ms - now) : 0;
+        summary.append(" backoff=");
+        summary.append(std::to_string(wait));
+        summary.append("ms");
+    }
+    summary.append(" top=");
+    summary.append(std::to_string(originalTop));
+
+    summary.append(" helpers=");
+    if (!helperEntries.empty())
+        summary.append(JoinStrings(helperEntries, ", "));
+    else
+        summary.append("<none>");
+
+    summary.push_back(' ');
+    summary.append(debugInfo);
+    summary.push_back(' ');
+    summary.append(packageInfo);
+
+    outSummary = std::move(summary);
     if (outSeh)
-        *outSeh = sehCode;
-    return ok;
+        *outSeh = 0;
+    return true;
 }
 
 extern "C" int __cdecl UOW_PanicThunk(lua_State* L) {
@@ -563,7 +778,7 @@ extern "C" void __cdecl UOW_DebugHook(lua_State* L, lua_Debug* ar) {
     }
 }
 
-static bool SafeLuaProbeStack(lua_State* L, int* outTop = nullptr, DWORD* outSeh = nullptr) noexcept {
+static bool SafeLuaProbeStack(lua_State* L, int* outTop, DWORD* outSeh) noexcept {
     if (!L)
         return false;
     __try {
@@ -581,7 +796,7 @@ static bool SafeLuaProbeStack(lua_State* L, int* outTop = nullptr, DWORD* outSeh
     }
 }
 
-static bool SafeLuaSetTop(lua_State* L, int idx, DWORD* outSeh = nullptr) noexcept {
+static bool SafeLuaSetTop(lua_State* L, int idx, DWORD* outSeh) noexcept {
     if (!L)
         return false;
     __try {
@@ -646,7 +861,7 @@ static bool SafeLuaSetHook(lua_State* L, lua_Hook hook, int mask, int count, DWO
     }
 }
 
-static bool SafeLuaGetGlobalType(lua_State* L, const char* name, int* outType = nullptr, const char** outTypeName = nullptr, DWORD* outSeh = nullptr) noexcept {
+static bool SafeLuaGetGlobalType(lua_State* L, const char* name, int* outType, const char** outTypeName, DWORD* outSeh) noexcept {
     if (!L || !name)
         return false;
     __try {
@@ -1380,25 +1595,40 @@ static int Lua_UOWalk(lua_State* L) {
 
 static int Lua_UOWInspect(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
+    int callerTop = 0;
+    bool callerTopValid = SafeLuaProbeStack(L, &callerTop, nullptr);
     bool ready = false;
     bool coalesced = false;
     LuaStateInfo info = EnsureHelperState(L, kHelperInspectName, &ready, &coalesced, nullptr);
+
+    auto finalize = [&](bool ok) -> int {
+        if (callerTopValid) {
+            DWORD restoreSeh = 0;
+            if (!SafeLuaSetTop(L, callerTop, &restoreSeh)) {
+                LogLuaState("inspect restore-seh L=%p code=0x%08lX", L, restoreSeh);
+                ok = false;
+            }
+        }
+        lua_pushboolean(L, ok ? 1 : 0);
+        return 1;
+    };
+
     if (!ready || !info.L_canonical) {
         LogLuaState("inspect abort L=%p reason=no-canonical ready=%d flags=0x%08X",
                     L,
                     ready ? 1 : 0,
                     info.flags);
-        lua_pushstring(L, "no-canonical");
-        return 1;
+        return finalize(false);
     }
 
     lua_State* target = info.L_canonical ? info.L_canonical : L;
     std::string summary;
     DWORD seh = 0;
-    if (!TryBuildInspectSummary(target, info, summary, &seh)) {
+    bool summaryOk = TryBuildInspectSummary(target, info, summary, &seh);
+
+    if (!summaryOk) {
         LogLuaState("inspect-seh Lc=%p code=0x%08lX", target, seh);
-        lua_pushstring(L, "inspect-seh");
-        return 1;
+        return finalize(false);
     }
 
     LogLuaState("inspect %s", summary.c_str());
@@ -1416,7 +1646,7 @@ static int Lua_UOWInspect(lua_State* L) {
                     entry.ctx_reported,
                     entry.owner_tid,
                     entry.last_tid,
-                    entry.gen,
+                    static_cast<unsigned long long>(entry.gen),
                     DescribeFlags(entry.flags).c_str(),
                     entry.hook_call_count,
                     entry.hook_ret_count,
@@ -1424,8 +1654,7 @@ static int Lua_UOWInspect(lua_State* L) {
                     extra.c_str());
     }
 
-    lua_pushstring(L, summary.c_str());
-    return 1;
+    return finalize(true);
 }
 
 static int Lua_UOWSelfTest(lua_State* L) {
