@@ -9,6 +9,7 @@
 #include "Core/Logging.hpp"
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
+#include "Core/SafeMem.h"
 #include "Net/PacketTrace.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/GlobalState.hpp"
@@ -29,6 +30,8 @@ namespace Net {
 using SendPacket_t = void(__thiscall*)(void* netMgr, const void* pkt, int len);
 using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 
+constexpr DWORD kEndpointScanCooldownMs = 2500;
+constexpr DWORD kEngineUnstableLogCooldownMs = 2000;
 static GlobalStateInfo* g_state = nullptr;
 static SendPacket_t g_sendPacket = nullptr;
 static void* g_sendPacketTarget = nullptr;
@@ -54,6 +57,12 @@ static void* g_lastNetCfgBase = nullptr;
 static SIZE_T g_lastNetCfgRegionSize = 0;
 static void* g_lastEngineCtxScanPtr = nullptr;
 static DWORD g_lastEngineCtxScanTick = 0;
+static DWORD g_lastEndpointScanFailTick = 0;
+static void* g_lastEndpointScanPtr = nullptr;
+static DWORD g_lastEndpointThrottleLogTick = 0;
+static bool g_loggedEngineUnstable = false;
+static DWORD g_lastEngineUnstableLogTick = 0;
+static DWORD g_lastBuilderScanTick = 0;
 
 using VirtualProtect_t = BOOL(WINAPI*)(LPVOID, SIZE_T, DWORD, PDWORD);
 static VirtualProtect_t g_origVirtualProtect = nullptr;
@@ -145,15 +154,36 @@ static void UpdateTrackedRegionCache(const MEMORY_BASIC_INFORMATION& mbi)
     g_lastNetCfgRegionSize = mbi.RegionSize;
 }
 
-static bool SafeCopy(void* dst, const void* src, size_t bytes)
+static bool IsEngineStableForScanning()
 {
-    __try {
-        memcpy(dst, src, bytes);
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
+    Engine::Lua::StartupStatus status{};
+    Engine::Lua::GetStartupStatus(status);
+
+    if (!status.engineContextDiscovered || !status.luaStateDiscovered || !status.helpersInstalled)
+    {
+        DWORD now = GetTickCount();
+        if (!g_loggedEngineUnstable || (DWORD)(now - g_lastEngineUnstableLogTick) >= kEngineUnstableLogCooldownMs)
+        {
+            char buf[192];
+            sprintf_s(buf, sizeof(buf),
+                      "SendBuilder scan deferred: engineContext=%d luaState=%d helpers=%d",
+                      status.engineContextDiscovered ? 1 : 0,
+                      status.luaStateDiscovered ? 1 : 0,
+                      status.helpersInstalled ? 1 : 0);
+            WriteRawLog(buf);
+            g_loggedEngineUnstable = true;
+            g_lastEngineUnstableLogTick = now;
+        }
         return false;
     }
+
+    g_loggedEngineUnstable = false;
+    return true;
+}
+
+static bool SafeCopy(void* dst, const void* src, size_t bytes)
+{
+    return SafeMem::SafeReadBytes(src, dst, bytes);
 }
 
 static HMODULE GetGameModule()
@@ -164,24 +194,7 @@ static HMODULE GetGameModule()
 
 static bool IsExecutableCodeAddress(void* addr)
 {
-    if (!addr)
-        return false;
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (!VirtualQuery(addr, &mbi, sizeof(mbi)))
-        return false;
-    if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD))
-        return false;
-    DWORD protect = mbi.Protect & 0xFF;
-    switch (protect)
-    {
-    case PAGE_EXECUTE:
-    case PAGE_EXECUTE_READ:
-    case PAGE_EXECUTE_READWRITE:
-    case PAGE_EXECUTE_WRITECOPY:
-        return true;
-    default:
-        return false;
-    }
+    return SafeMem::IsProbablyCodePtr(addr);
 }
 
 static bool IsGameVtableAddress(void* addr)
@@ -381,14 +394,25 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     if (!manager || g_builderScanned)
         return false;
 
+    if (!IsEngineStableForScanning())
+        return false;
+
+    constexpr size_t kScanLimit = 0x200;
     DWORD now = GetTickCount();
+    if (g_lastBuilderScanTick != 0 &&
+        (DWORD)(now - g_lastBuilderScanTick) < kEndpointScanCooldownMs)
+        return false;
+
     if (manager == g_lastManagerScanPtr && (DWORD)(now - g_lastManagerScanTick) < 1000)
         return false;
 
+    if (!SafeMem::IsReadable(manager, kScanLimit + sizeof(void*)))
+        return false;
+
+    g_lastBuilderScanTick = now;
     g_lastManagerScanPtr = manager;
     g_lastManagerScanTick = now;
 
-    const size_t kScanLimit = 0x200;
     char startBuf[160];
     sprintf_s(startBuf, sizeof(startBuf),
               "DiscoverEndpoint: scan begin manager=%p window=0x%zx",
@@ -490,6 +514,7 @@ static bool TryDiscoverEndpointFromManager(void* manager)
             WriteRawLog(buf);
             CaptureSendContext(candidate, "DiscoverEndpoint");
             WriteRawLog("DiscoverEndpoint: endpoint hook established via manager scan");
+            g_lastBuilderScanTick = GetTickCount();
             return true;
         }
     }
@@ -532,6 +557,7 @@ static bool TryDiscoverEndpointFromManager(void* manager)
         WriteRawLog(reason);
     }
 
+    g_lastBuilderScanTick = GetTickCount();
     return false;
 }
 
@@ -679,38 +705,80 @@ static void* __fastcall Hook_SendBuilder(void* thisPtr, void* /*unused*/, void* 
 static bool ScanEndpointVTable(void* endpoint)
 {
     void** vtbl = nullptr;
-    if (!SafeCopy(&vtbl, endpoint, sizeof(vtbl)) || !vtbl) {
+    if (!SafeMem::SafeRead(endpoint, vtbl) || !vtbl) {
         char msg[160];
         sprintf_s(msg, sizeof(msg), "ScanEndpointVTable: endpoint=%p vtbl unreadable", endpoint);
         WriteRawLog(msg);
         return false;
     }
 
-    void* entries[32]{};
-    if (!SafeCopy(entries, vtbl, sizeof(entries))) {
-        char msg[160];
-        sprintf_s(msg, sizeof(msg), "ScanEndpointVTable: vtbl=%p entries unreadable", vtbl);
+    void* const* vtblEntries = vtbl;
+    int firstEightCount = 0;
+    int firstEightMisses = 0;
+    int matchedIndex = -1;
+    void* matchedFn = nullptr;
+
+    __try
+    {
+        for (int i = 0; i < 32; ++i)
+        {
+            void* fn = nullptr;
+            bool readable = SafeMem::SafeRead(vtblEntries + i, fn);
+            if (!readable)
+            {
+                Logf("endpoint vtbl[%02X] unreadable (vtbl=%p)", i, vtbl);
+                if (i < 8)
+                {
+                    ++firstEightCount;
+                    ++firstEightMisses;
+                }
+                continue;
+            }
+
+            Logf("endpoint vtbl[%02X] = %p", i, fn);
+
+            bool probableCode = fn && SafeMem::IsProbablyCodePtr(fn);
+            if (i < 8)
+            {
+                ++firstEightCount;
+                if (!probableCode)
+                    ++firstEightMisses;
+            }
+
+            if (!probableCode)
+                continue;
+
+            if (!g_sendBuilderHooked && !matchedFn && FunctionCallsSendPacket(fn))
+            {
+                matchedIndex = i;
+                matchedFn = fn;
+                if (i >= 7)
+                    break;
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        char msg[192];
+        sprintf_s(msg, sizeof(msg),
+                  "ScanEndpointVTable: exception code=%08lX endpoint=%p vtbl=%p",
+                  GetExceptionCode(),
+                  endpoint,
+                  vtbl);
         WriteRawLog(msg);
         return false;
     }
 
-    int matchedIndex = -1;
-    void* matchedFn = nullptr;
-
-    for (int i = 0; i < 32; ++i)
+    if (firstEightCount >= 8 && firstEightMisses >= 6)
     {
-        void* fn = entries[i];
-        Logf("endpoint vtbl[%02X] = %p", i, fn);
-        if (!fn)
-            continue;
-        if (!IsExecutableCodeAddress(fn))
-            continue;
-
-        if (!g_sendBuilderHooked && FunctionCallsSendPacket(fn)) {
-            matchedIndex = i;
-            matchedFn = fn;
-            break;
-        }
+        char msg[192];
+        sprintf_s(msg, sizeof(msg),
+                  "ScanEndpointVTable: rejecting endpoint=%p vtbl=%p first8 misses=%d",
+                  endpoint,
+                  vtbl,
+                  firstEightMisses);
+        WriteRawLog(msg);
+        return false;
     }
 
     if (!matchedFn) {
@@ -752,8 +820,45 @@ static void TryHookSendBuilder(void* endpoint)
     if (g_builderScanned || !endpoint)
         return;
 
+    if (!IsEngineStableForScanning())
+        return;
+
+    DWORD now = GetTickCount();
+    if (endpoint == g_lastEndpointScanPtr)
+    {
+        if (g_lastEndpointScanFailTick != 0 &&
+            (DWORD)(now - g_lastEndpointScanFailTick) < kEndpointScanCooldownMs)
+        {
+            if ((DWORD)(now - g_lastEndpointThrottleLogTick) >= kEndpointScanCooldownMs)
+            {
+                char buf[176];
+                sprintf_s(buf, sizeof(buf),
+                          "TryHookSendBuilder: throttling vtbl scan endpoint=%p lastFail=%lu",
+                          endpoint,
+                          static_cast<unsigned long>(g_lastEndpointScanFailTick));
+                WriteRawLog(buf);
+                g_lastEndpointThrottleLogTick = now;
+            }
+            return;
+        }
+    }
+    else
+    {
+        g_lastEndpointScanPtr = endpoint;
+        g_lastEndpointScanFailTick = 0;
+        g_lastEndpointThrottleLogTick = 0;
+    }
+
     if (ScanEndpointVTable(endpoint))
+    {
         g_builderScanned = true;
+        g_lastEndpointScanFailTick = 0;
+        g_lastEndpointThrottleLogTick = 0;
+    }
+    else
+    {
+        g_lastEndpointScanFailTick = now;
+    }
 }
 
 static BOOL WINAPI Hook_VirtualProtect(LPVOID lpAddress, SIZE_T dwSize, DWORD flNewProtect, PDWORD lpflOldProtect)
@@ -1853,6 +1958,12 @@ bool InitSendBuilder(GlobalStateInfo* state)
             memset(g_lastNetCfgSnapshot, 0, sizeof(g_lastNetCfgSnapshot));
             g_lastLoggedManager = nullptr;
             g_lastLoggedEndpoint = nullptr;
+            g_lastEndpointScanFailTick = 0;
+            g_lastEndpointScanPtr = nullptr;
+            g_lastEndpointThrottleLogTick = 0;
+            g_loggedEngineUnstable = false;
+            g_lastEngineUnstableLogTick = 0;
+            g_lastBuilderScanTick = 0;
         }
     }
 
@@ -1923,6 +2034,12 @@ void ShutdownSendBuilder()
     g_state = nullptr;
     g_lastManagerScanPtr = nullptr;
     g_lastManagerScanTick = 0;
+    g_lastEndpointScanFailTick = 0;
+    g_lastEndpointScanPtr = nullptr;
+    g_lastEndpointThrottleLogTick = 0;
+    g_loggedEngineUnstable = false;
+    g_lastEngineUnstableLogTick = 0;
+    g_lastBuilderScanTick = 0;
 }
 
 bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint)

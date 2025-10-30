@@ -1,5 +1,6 @@
 #include "Core/Logging.hpp"
 #include "Core/Config.hpp"
+#include "Core/EarlyTrace.hpp"
 
 #include <psapi.h>
 #include <cstdio>
@@ -11,6 +12,8 @@
 #include <atomic>
 #include <algorithm>
 #include <cstdlib>
+#include <exception>
+#include <typeinfo>
 #include <corecrt_startup.h>
 #include <crtdbg.h>
 
@@ -30,6 +33,7 @@ BOOL   g_logAnnounced = FALSE;
 HMODULE g_hModule = NULL;
 std::atomic<int> g_minLevel{static_cast<int>(Level::Info)};
 PVOID g_securityHandlerHandle = nullptr;
+std::terminate_handler g_prevTerminate = nullptr;
 
 const char* LevelToString(Level level) {
     switch (level) {
@@ -131,6 +135,7 @@ bool OpenLogFileInternal(const std::string& path) {
 }
 
 void ConfigureLogging(HMODULE self) {
+    Core::EarlyTrace::Write("ConfigureLogging begin");
     char modulePath[MAX_PATH] = "";
     std::string baseDir;
     DWORD len = GetModuleFileNameA(self, modulePath, MAX_PATH);
@@ -142,7 +147,7 @@ void ConfigureLogging(HMODULE self) {
         else
             baseDir.clear();
     }
-
+    Core::EarlyTrace::Write("ConfigureLogging after path resolve");
     Level level = Level::Info;
     if (auto envLevel = Core::Config::TryGetEnv("UOWALK_LOG_LEVEL"))
         level = ParseLevelString(*envLevel, level);
@@ -176,14 +181,12 @@ void ConfigureLogging(HMODULE self) {
     if (g_logFile != INVALID_HANDLE_VALUE) {
         SetFilePointer(g_logFile, 0, nullptr, FILE_END);
     }
+    Core::EarlyTrace::Write("ConfigureLogging end");
 }
 
 void SetupConsole() {
     if (!GetConsoleWindow()) {
         if (AllocConsole()) {
-            FILE* dummy;
-            freopen_s(&dummy, "CONOUT$", "w", stdout);
-            freopen_s(&dummy, "CONOUT$", "w", stderr);
             SetConsoleTitleA("UOWalkPatch console");
         }
     }
@@ -252,6 +255,49 @@ LONG CALLBACK VectoredSecurityHandler(PEXCEPTION_POINTERS info) {
 
     return EXCEPTION_CONTINUE_SEARCH;
 }
+
+void LogCurrentException(const char* context) {
+    if (!context)
+        context = "[CRT]";
+    auto ex = std::current_exception();
+    if (!ex) {
+        char msg[192];
+        sprintf_s(msg, sizeof(msg), "%s: terminate invoked without active exception", context);
+        WriteRawLog(msg);
+        return;
+    }
+    try {
+        std::rethrow_exception(ex);
+    } catch (const std::exception& e) {
+        const char* typeName = typeid(e).name();
+        const char* whatText = e.what() ? e.what() : "";
+        char msg[320];
+        sprintf_s(msg,
+                  sizeof(msg),
+                  "%s: uncaught std::exception type=%s what=\"%s\"",
+                  context,
+                  typeName ? typeName : "<unknown>",
+                  whatText);
+        WriteRawLog(msg);
+    } catch (...) {
+        char msg[192];
+        sprintf_s(msg, sizeof(msg), "%s: uncaught non-std exception", context);
+        WriteRawLog(msg);
+    }
+}
+
+[[noreturn]] void TerminateHandler() {
+    LogCurrentException("[CRT][terminate]");
+    auto prev = g_prevTerminate;
+    g_prevTerminate = nullptr;
+    if (prev) {
+        prev();
+    } else {
+        abort();
+    }
+    abort(); // Fallback; should not reach.
+}
+
 bool ShouldWrite(Level level) {
     return static_cast<int>(level) >= g_minLevel.load(std::memory_order_acquire);
 }
@@ -259,20 +305,30 @@ bool ShouldWrite(Level level) {
 } // namespace
 
 void Init(HMODULE self) {
+    Core::EarlyTrace::Write("Log::Init start");
     g_hModule = self;
     g_logFile = INVALID_HANDLE_VALUE;
     g_logPath[0] = '\0';
     g_logAnnounced = FALSE;
+    Core::EarlyTrace::Write("Log::Init before ConfigureLogging");
     ConfigureLogging(self);
+    Core::EarlyTrace::Write("Log::Init after ConfigureLogging");
     SetupConsole();
+    Core::EarlyTrace::Write("Log::Init after SetupConsole");
     _set_invalid_parameter_handler(LogInvalidParameterHandler);
     _set_thread_local_invalid_parameter_handler(LogInvalidParameterHandler);
+    g_prevTerminate = std::set_terminate(TerminateHandler);
+
     if (!g_securityHandlerHandle)
         g_securityHandlerHandle = AddVectoredExceptionHandler(1, VectoredSecurityHandler);
     LogMessage(Level::Info, Category::Core, "logging initialized");
 }
 
 void Shutdown() {
+    if (g_prevTerminate) {
+        std::set_terminate(g_prevTerminate);
+        g_prevTerminate = nullptr;
+    }
     if (g_securityHandlerHandle) {
         RemoveVectoredExceptionHandler(g_securityHandlerHandle);
         g_securityHandlerHandle = nullptr;
@@ -293,8 +349,18 @@ void WriteRawLog(const char* message) {
     OutputDebugStringA("\n");
 
     if (GetConsoleWindow()) {
-        printf("[%lu] %s\n", GetCurrentThreadId(), message);
-        fflush(stdout);
+        HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (console && console != INVALID_HANDLE_VALUE) {
+            char consoleBuffer[4096];
+            int len = sprintf_s(consoleBuffer, sizeof(consoleBuffer),
+                                "[%lu] %s\r\n",
+                                GetCurrentThreadId(),
+                                message);
+            if (len > 0) {
+                DWORD written = 0;
+                WriteConsoleA(console, consoleBuffer, static_cast<DWORD>(len), &written, nullptr);
+            }
+        }
     }
 
     if (g_logFile == INVALID_HANDLE_VALUE && g_logPath[0] != '\0')

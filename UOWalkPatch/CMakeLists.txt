@@ -76,8 +76,10 @@ add_library(UOWalkPatchDLL SHARED
     src/Core/Startup.cpp
     src/Core/PatternScan.cpp
     src/Core/Utils.cpp
+    src/Core/EarlyTrace.cpp
     src/Core/MinHookHelpers.cpp
     src/Core/CrashHandler.cpp
+    src/Core/SafeMem.cpp
     src/Net/PacketTrace.cpp
     src/Net/SendBuilder.cpp
     src/Engine/GlobalState.cpp
@@ -154,6 +156,7 @@ target_link_options(UOWalkPatchDLL PRIVATE
         /OPT:NOREF
         /OPT:NOICF
         /NODEFAULTLIB:msvcrt.lib
+        /MAP
     >
     $<$<CONFIG:Release>:
         /SUBSYSTEM:WINDOWS
@@ -165,6 +168,7 @@ target_link_options(UOWalkPatchDLL PRIVATE
         /OPT:REF
         /OPT:ICF
         /NODEFAULTLIB:msvcrt.lib
+        /MAP
     >
 )
 

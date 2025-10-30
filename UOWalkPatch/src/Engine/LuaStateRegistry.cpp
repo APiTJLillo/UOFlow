@@ -11,7 +11,7 @@ std::pair<LuaStateInfo, bool> LuaStateRegistry::AddOrUpdate(lua_State* reported,
     if (!reported)
         return {LuaStateInfo{}, false};
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     auto [entry, inserted] = EnsureEntry(reported, ctx, tid, gen);
     return {entry ? entry->info : LuaStateInfo{}, inserted};
 }
@@ -21,7 +21,7 @@ LuaStateInfo LuaStateRegistry::EnsureForPointer(lua_State* pointer, void* ctxHin
     if (!pointer)
         return {};
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     Entry* entry = FindByPointer(pointer);
     const uint64_t now = GetTickCount64();
     if (entry) {
@@ -60,7 +60,7 @@ LuaStateRegistry::MergeResult LuaStateRegistry::MergeByCanonical(lua_State* repo
     if (!canonical)
         return result;
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     Entry* source = FindByKey(reported, ctx);
     if (!source)
         return result;
@@ -106,7 +106,7 @@ bool LuaStateRegistry::GetByPointer(lua_State* pointer, LuaStateInfo& out) const
     if (!pointer)
         return false;
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     const Entry* entry = FindByPointer(pointer);
     if (!entry)
         return false;
@@ -118,7 +118,7 @@ bool LuaStateRegistry::UpdateByPointer(lua_State* pointer, const std::function<v
     if (!pointer)
         return false;
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     Entry* entry = FindByPointer(pointer);
     if (!entry)
         return false;
@@ -133,7 +133,7 @@ bool LuaStateRegistry::RemoveByPointer(lua_State* pointer, LuaStateInfo* outInfo
     if (!pointer)
         return false;
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     for (auto it = entries_.begin(); it != entries_.end(); ++it) {
         if (MatchesPointer(*it, pointer)) {
             if (outInfo)
@@ -149,7 +149,7 @@ void LuaStateRegistry::IncrementHookCounters(lua_State* canonical, uint32_t call
     if (!canonical)
         return;
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     Entry* entry = FindByPointer(canonical);
     if (!entry)
         return;
@@ -160,7 +160,7 @@ void LuaStateRegistry::IncrementHookCounters(lua_State* canonical, uint32_t call
 }
 
 void LuaStateRegistry::ClearFlagsAll(uint32_t mask) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     for (auto& entry : entries_) {
         if (mask & STATE_FLAG_HELPERS_INSTALLED)
             entry.info.helper_installed_tick_ms = 0;
@@ -169,7 +169,7 @@ void LuaStateRegistry::ClearFlagsAll(uint32_t mask) {
 }
 
 std::vector<LuaStateInfo> LuaStateRegistry::Snapshot() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::vector<LuaStateInfo> out;
     out.reserve(entries_.size());
     for (const auto& entry : entries_)
@@ -178,7 +178,7 @@ std::vector<LuaStateInfo> LuaStateRegistry::Snapshot() const {
 }
 
 void LuaStateRegistry::Reset() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     entries_.clear();
 }
 

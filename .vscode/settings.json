@@ -1,6 +1,7 @@
 {
     "cmake.sourceDirectory": "/home/tj/Games/ultima-online/drive_c/Program Files (x86)/Electronic Arts/Ultima Online Enhanced/UserInterface/UOFlow/UOWalkPatch",
     "files.associations": {
-        "istream": "cpp"
+        "istream": "cpp",
+        "xstring": "cpp"
     }
 }

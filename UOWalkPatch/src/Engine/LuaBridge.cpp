@@ -21,11 +21,13 @@
 #include <fstream>
 #include <intrin.h>
 #include <thread>
+#include <system_error>
 #include <limits>
 
 #include <minhook.h>
 
 #include "Core/Config.hpp"
+#include "Core/EarlyTrace.hpp"
 #include "Core/Logging.hpp"
 #include "Core/Startup.hpp"
 #include "Engine/GlobalState.hpp"
@@ -302,7 +304,21 @@ static void LoadHelperRetryPolicy() {
 }
 
 static const HelperRetryPolicy& GetHelperRetryPolicy() {
-    std::call_once(g_helperRetryPolicyOnce, LoadHelperRetryPolicy);
+    Core::EarlyTrace::Write("LuaBridge::GetHelperRetryPolicy call_once begin");
+    try {
+        std::call_once(g_helperRetryPolicyOnce, LoadHelperRetryPolicy);
+        Core::EarlyTrace::Write("LuaBridge::GetHelperRetryPolicy call_once success");
+    } catch (const std::system_error& e) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "LuaBridge::GetHelperRetryPolicy call_once threw code=%d category=%s what=%s",
+                  e.code().value(),
+                  e.code().category().name(),
+                  e.what());
+        Core::EarlyTrace::Write(buf);
+        throw;
+    }
     return g_helperRetryPolicy;
 }
 

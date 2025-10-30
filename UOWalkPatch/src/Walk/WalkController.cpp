@@ -6,9 +6,11 @@
 #include <atomic>
 #include <cmath>
 #include <mutex>
+#include <system_error>
 #include <string>
 
 #include "Core/Config.hpp"
+#include "Core/EarlyTrace.hpp"
 #include "Core/Logging.hpp"
 
 namespace Walk::Controller {
@@ -128,7 +130,21 @@ void LoadConfig() {
 }
 
 void EnsureConfigLoaded() {
-    std::call_once(g_configOnce, LoadConfig);
+    Core::EarlyTrace::Write("Walk::EnsureConfigLoaded call_once begin");
+    try {
+        std::call_once(g_configOnce, LoadConfig);
+        Core::EarlyTrace::Write("Walk::EnsureConfigLoaded call_once success");
+    } catch (const std::system_error& e) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "Walk::Controller::EnsureConfigLoaded call_once threw code=%d category=%s what=%s",
+                  e.code().value(),
+                  e.code().category().name(),
+                  e.what());
+        Core::EarlyTrace::Write(buf);
+        throw;
+    }
 }
 
 bool HasArrived(float currentX, float currentZ, float targetX, float targetZ) {

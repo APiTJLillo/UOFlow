@@ -168,6 +168,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <DelayLoadDLLs>luaplus_1100.dll</DelayLoadDLLs>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
       <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
+      <GenerateMapFile>true</GenerateMapFile>
       <IgnoreSpecificDefaultLibraries>msvcrt.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <ImportLibrary>C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/lib/Debug/UOWalkPatchDLL.lib</ImportLibrary>
@@ -265,6 +266,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <DelayLoadDLLs>luaplus_1100.dll</DelayLoadDLLs>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <GenerateMapFile>true</GenerateMapFile>
       <IgnoreSpecificDefaultLibraries>msvcrt.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <ImportLibrary>C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/lib/Release/UOWalkPatchDLL.lib</ImportLibrary>
@@ -531,8 +533,10 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\Startup.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\PatternScan.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\Utils.cpp" />
+    <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\EarlyTrace.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\MinHookHelpers.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\CrashHandler.cpp" />
+    <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\SafeMem.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Net\PacketTrace.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Net\SendBuilder.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\GlobalState.cpp" />

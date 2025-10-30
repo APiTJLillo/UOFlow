@@ -2,6 +2,8 @@
 #include <dbghelp.h>
 #include <cstdio>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace {
 struct MappedFile {
@@ -72,6 +74,15 @@ int main(int argc, char** argv) {
     auto* exceptionStream = static_cast<MINIDUMP_EXCEPTION_STREAM*>(stream);
     const MINIDUMP_EXCEPTION& ex = exceptionStream->ExceptionRecord;
     const uint8_t* dumpBase = static_cast<const uint8_t*>(mf.view);
+    MINIDUMP_DIRECTORY* moduleDir = nullptr;
+    void* moduleStream = nullptr;
+    ULONG moduleStreamSize = 0;
+    MINIDUMP_MODULE_LIST* moduleList = nullptr;
+    if (MiniDumpReadDumpStream(mf.view, ModuleListStream, &moduleDir, &moduleStream, &moduleStreamSize)) {
+        moduleList = static_cast<MINIDUMP_MODULE_LIST*>(moduleStream);
+    } else {
+        printf("MiniDumpReadDumpStream(ModuleListStream) failed (%lu)\n", GetLastError());
+    }
     const CONTEXT* ctxPtr = reinterpret_cast<const CONTEXT*>(dumpBase + exceptionStream->ThreadContext.Rva);
     if (!ctxPtr) {
         printf("Failed to locate CONTEXT block in dump\n");
@@ -108,40 +119,142 @@ int main(int argc, char** argv) {
     void* memStream = nullptr;
     ULONG memStreamSize = 0;
     MINIDUMP_MEMORY64_LIST* mem64 = nullptr;
+    MINIDUMP_MEMORY_LIST* mem32 = nullptr;
     if (MiniDumpReadDumpStream(mf.view, Memory64ListStream, &memDir, &memStream, &memStreamSize)) {
         mem64 = static_cast<MINIDUMP_MEMORY64_LIST*>(memStream);
+    } else if (MiniDumpReadDumpStream(mf.view, MemoryListStream, &memDir, &memStream, &memStreamSize)) {
+        mem32 = static_cast<MINIDUMP_MEMORY_LIST*>(memStream);
     } else {
-        printf("MiniDump lacks Memory64ListStream (%lu)\n", GetLastError());
+        printf("MiniDump lacks Memory64ListStream/MemoryListStream (%lu)\n", GetLastError());
     }
 
     auto readDumpMemory = [&](uintptr_t address, size_t length) -> const uint8_t* {
-        if (!mem64)
-            return nullptr;
-        ULONG64 currentRva = mem64->BaseRva;
-        for (ULONG64 i = 0; i < mem64->NumberOfMemoryRanges; ++i) {
-            const auto& desc = mem64->MemoryRanges[i];
-            ULONG64 start = desc.StartOfMemoryRange;
-            ULONG64 end = start + desc.DataSize;
-            if (address >= start && (address + length) <= end) {
-                ULONG64 offset = currentRva + (address - start);
-                return dumpBase + offset;
+        if (mem64) {
+            ULONG64 currentRva = mem64->BaseRva;
+            for (ULONG64 i = 0; i < mem64->NumberOfMemoryRanges; ++i) {
+                const auto& desc = mem64->MemoryRanges[i];
+                ULONG64 start = desc.StartOfMemoryRange;
+                ULONG64 end = start + desc.DataSize;
+                if (address >= start && (address + length) <= end) {
+                    ULONG64 offset = currentRva + (address - start);
+                    return dumpBase + offset;
+                }
+                currentRva += desc.DataSize;
             }
-            currentRva += desc.DataSize;
+        } else if (mem32) {
+            for (ULONG i = 0; i < mem32->NumberOfMemoryRanges; ++i) {
+                const auto& desc = mem32->MemoryRanges[i];
+                ULONG64 start = desc.StartOfMemoryRange;
+                ULONG64 end = start + desc.Memory.DataSize;
+                if (address >= start && (address + length) <= end) {
+                    ULONG64 offset = desc.Memory.Rva + (address - start);
+                    return dumpBase + offset;
+                }
+            }
         }
         return nullptr;
     };
 
+    auto dumpRegionIfAvailable = [&](const char* label, uintptr_t address, size_t length) {
+        if (!address)
+            return;
+        if (const uint8_t* bytes = readDumpMemory(address, length)) {
+            DumpBytes(label, bytes, length);
+        } else {
+            printf("Unable to read %s at %p\n", label, reinterpret_cast<void*>(address));
+        }
+    };
+
+    uintptr_t moduleBase = 0;
+    ULONG64 moduleSize = 0;
+    std::wstring modulePath;
+    if (moduleList) {
+        for (ULONG32 i = 0; i < moduleList->NumberOfModules; ++i) {
+            const auto& mod = moduleList->Modules[i];
+            ULONG64 start = mod.BaseOfImage;
+            ULONG64 end = start + mod.SizeOfImage;
+            if (exceptionAddr >= start && exceptionAddr < end) {
+                moduleBase = static_cast<uintptr_t>(start);
+                moduleSize = mod.SizeOfImage;
+                auto* name = reinterpret_cast<MINIDUMP_STRING*>(const_cast<uint8_t*>(dumpBase) + mod.ModuleNameRva);
+                modulePath.assign(name->Buffer, name->Length / sizeof(wchar_t));
+                break;
+            }
+        }
+    }
+
+    if (moduleBase) {
+        printf("Faulting module: base=0x%p size=0x%llX path=%S\n",
+               reinterpret_cast<void*>(moduleBase),
+               static_cast<unsigned long long>(moduleSize),
+               modulePath.c_str());
+        if (!modulePath.empty()) {
+            SymLoadModuleExW(GetCurrentProcess(),
+                             nullptr,
+                             modulePath.c_str(),
+                             nullptr,
+                             static_cast<DWORD64>(moduleBase),
+                             static_cast<DWORD>(moduleSize),
+                             nullptr,
+                             0);
+        }
+    }
+
     if (eip) {
-        if (const uint8_t* bytes = readDumpMemory(eip, 0x40)) {
-            DumpBytes("Code bytes near EIP", bytes, 0x40);
+        if (const uint8_t* bytes = readDumpMemory(eip, 0x80)) {
+            DumpBytes("Code bytes near EIP", bytes, 0x80);
         } else {
             printf("Unable to read code bytes near EIP\n");
         }
     }
 
     if (esp) {
-        if (const uint8_t* bytes = readDumpMemory(esp, 0x40)) {
-            DumpBytes("Stack (ESP)", bytes, 0x40);
+        constexpr size_t kStackDumpLen = 0x200;
+        if (const uint8_t* bytes = readDumpMemory(esp, kStackDumpLen)) {
+            DumpBytes("Stack (ESP)", bytes, kStackDumpLen);
+            if (moduleBase && moduleSize) {
+                printf("Stack pointers into faulting module:\n");
+                std::vector<uintptr_t> seen;
+                for (size_t offset = 0; offset + sizeof(uint32_t) <= kStackDumpLen; offset += sizeof(uint32_t)) {
+                    uintptr_t value = *reinterpret_cast<const uint32_t*>(bytes + offset);
+                    if (value >= moduleBase && value < moduleBase + moduleSize) {
+                        DWORD64 displacement = 0;
+                        char symbolBuffer[sizeof(SYMBOL_INFO) + 256] = {};
+                        auto* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBuffer);
+                        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                        symbol->MaxNameLen = 255;
+                        if (SymFromAddr(GetCurrentProcess(), value, &displacement, symbol)) {
+                            printf("  [ESP+0x%02zX] %p -> %s + 0x%llX\n",
+                                   offset,
+                                   reinterpret_cast<void*>(value),
+                                   symbol->Name,
+                                   static_cast<unsigned long long>(displacement));
+                        } else {
+                            printf("  [ESP+0x%02zX] %p (symbol lookup failed %lu)\n",
+                                   offset,
+                                   reinterpret_cast<void*>(value),
+                                   GetLastError());
+                        }
+                        seen.push_back(value);
+                    }
+                }
+                if (!seen.empty()) {
+                    printf("Approximate call stack (module frames):\n");
+                    for (uintptr_t addr : seen) {
+                        DWORD64 displacement = 0;
+                        char symbolBuffer[sizeof(SYMBOL_INFO) + 256] = {};
+                        auto* symbol = reinterpret_cast<SYMBOL_INFO*>(symbolBuffer);
+                        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                        symbol->MaxNameLen = 255;
+                        if (SymFromAddr(GetCurrentProcess(), addr, &displacement, symbol)) {
+                            printf("  %p -> %s + 0x%llX\n",
+                                   reinterpret_cast<void*>(addr),
+                                   symbol->Name,
+                                   static_cast<unsigned long long>(displacement));
+                        }
+                    }
+                }
+            }
         } else {
             printf("Unable to read stack at ESP\n");
         }
@@ -154,6 +267,9 @@ int main(int argc, char** argv) {
             printf("Unable to read memory at fault address\n");
         }
     }
+
+    dumpRegionIfAvailable("Object at EBX", static_cast<uintptr_t>(ctx.Ebx), 0x80);
+    dumpRegionIfAvailable("Object at ESI", static_cast<uintptr_t>(ctx.Esi), 0x40);
 
     if (ctx.Ebp) {
         uintptr_t builderArgAddr = static_cast<uintptr_t>(ctx.Ebp) + sizeof(uintptr_t) * 2;
@@ -170,7 +286,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (mem64) {
+    if (mem64 || mem32) {
         printf("EBP chain:\n");
         uintptr_t frame = static_cast<uintptr_t>(ctx.Ebp);
         for (int i = 0; i < 8 && frame; ++i) {

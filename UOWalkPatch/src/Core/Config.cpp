@@ -6,13 +6,16 @@
 #include <charconv>
 #include <cctype>
 #include <climits>
+#include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <mutex>
 #include <optional>
+#include <system_error>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "Core/EarlyTrace.hpp"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -82,11 +85,15 @@ bool InterpretBool(const std::string& text, bool& outValue) {
 }
 
 void LoadConfig() {
+    Core::EarlyTrace::Write("Config::LoadConfig begin");
     g_state.loaded = true;
 
     char modulePath[MAX_PATH] = {};
     if (GetModuleFileNameA(reinterpret_cast<HMODULE>(&__ImageBase), modulePath, ARRAYSIZE(modulePath)) == 0)
+    {
+        Core::EarlyTrace::Write("Config::LoadConfig failed to get module path");
         return;
+    }
 
     std::string basePath(modulePath);
     size_t slash = basePath.find_last_of("\\/");
@@ -96,7 +103,10 @@ void LoadConfig() {
         basePath.clear();
 
     if (basePath.empty())
+    {
+        Core::EarlyTrace::Write("Config::LoadConfig base path empty");
         return;
+    }
 
     std::vector<std::string> searchDirs;
     std::string current = basePath;
@@ -116,31 +126,106 @@ void LoadConfig() {
     }
 
     const char* candidates[] = {"uowalkpatch.cfg", "uowalkpatch.ini"};
+
+    auto readFileText = [](const std::string& path, std::string& outText) -> bool {
+        HANDLE file = CreateFileA(path.c_str(),
+                                  GENERIC_READ,
+                                  FILE_SHARE_READ,
+                                  nullptr,
+                                  OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL,
+                                  nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+            return false;
+
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > 1 * 1024 * 1024) {
+            CloseHandle(file);
+            return false;
+        }
+
+        outText.resize(static_cast<size_t>(size.QuadPart));
+        DWORD bytesRead = 0;
+        if (!outText.empty()) {
+            if (!ReadFile(file, outText.data(), static_cast<DWORD>(outText.size()), &bytesRead, nullptr)) {
+                CloseHandle(file);
+                outText.clear();
+                return false;
+            }
+            outText.resize(bytesRead);
+        } else {
+            outText.clear();
+        }
+
+        CloseHandle(file);
+        return true;
+    };
+
     for (auto dirIt = searchDirs.rbegin(); dirIt != searchDirs.rend(); ++dirIt) {
         for (const char* name : candidates) {
             std::string fullPath = *dirIt + name;
-            std::ifstream stream(fullPath);
-            if (!stream.is_open())
+            std::string contents;
+            if (!readFileText(fullPath, contents))
                 continue;
 
             g_state.sourcePath = fullPath;
-            std::string line;
-            while (std::getline(stream, line)) {
+            Core::EarlyTrace::Write("Config::LoadConfig loaded file");
+            Core::EarlyTrace::Write("Config::LoadConfig processing lines begin");
+            size_t cursor = 0;
+            size_t linesProcessed = 0;
+            size_t rawLineNumber = 0;
+            while (cursor < contents.size()) {
+                size_t lineEnd = contents.find_first_of("\r\n", cursor);
+                size_t segmentEnd = (lineEnd == std::string::npos) ? contents.size() : lineEnd;
+                std::string line = contents.substr(cursor, segmentEnd - cursor);
+
+                size_t nextCursor = (lineEnd == std::string::npos)
+                                        ? contents.size()
+                                        : contents.find_first_not_of("\r\n", lineEnd);
+                if (nextCursor == std::string::npos)
+                    nextCursor = contents.size();
+
                 std::string stripped = StripInlineComment(line);
                 std::string cleaned = Trim(stripped);
-                if (cleaned.empty())
+                char traceLine[256];
+                sprintf_s(traceLine, sizeof(traceLine), "Config::LoadConfig raw_line[%zu]=%s",
+                          rawLineNumber, cleaned.c_str());
+                Core::EarlyTrace::Write(traceLine);
+                ++rawLineNumber;
+                if (cleaned.empty()) {
+                    cursor = nextCursor;
                     continue;
+                }
                 size_t eq = cleaned.find('=');
-                if (eq == std::string::npos)
+                if (eq == std::string::npos) {
+                    cursor = nextCursor;
                     continue;
+                }
                 std::string key = Trim(cleaned.substr(0, eq));
                 std::string value = Trim(cleaned.substr(eq + 1));
-                if (key.empty())
+                if (key.empty()) {
+                    cursor = nextCursor;
                     continue;
+                }
                 g_state.values[ToUpperAscii(key)] = value;
+                ++linesProcessed;
+                if (linesProcessed <= 8) {
+                    char lineLog[256];
+                    sprintf_s(lineLog, sizeof(lineLog), "Config::LoadConfig key[%zu]=%s", linesProcessed, key.c_str());
+                    Core::EarlyTrace::Write(lineLog);
+                }
+                cursor = nextCursor;
+            }
+            Core::EarlyTrace::Write("Config::LoadConfig processing lines end");
+            if (!g_state.sourcePath.empty()) {
+                char summary[128];
+                sprintf_s(summary, sizeof(summary), "Config::LoadConfig completed lines=%zu", linesProcessed);
+                Core::EarlyTrace::Write(summary);
+                return;
             }
         }
     }
+    Core::EarlyTrace::Write("Config::LoadConfig no configuration found");
 }
 
 std::optional<std::string> GetEnvVar(const std::string& name) {
@@ -176,7 +261,21 @@ bool StrToInt64(const std::string& text, int64_t& outValue) {
 } // namespace
 
 void EnsureLoaded() {
-    std::call_once(g_loadOnce, LoadConfig);
+    Core::EarlyTrace::Write("Config::EnsureLoaded call_once begin");
+    try {
+        std::call_once(g_loadOnce, LoadConfig);
+        Core::EarlyTrace::Write("Config::EnsureLoaded call_once success");
+    } catch (const std::system_error& e) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "Config::EnsureLoaded call_once threw code=%d category=%s what=%s",
+                  e.code().value(),
+                  e.code().category().name(),
+                  e.what());
+        Core::EarlyTrace::Write(buf);
+        throw;
+    }
 }
 
 std::optional<std::string> TryGetValue(const std::string& key, LookupResult* outMeta) {

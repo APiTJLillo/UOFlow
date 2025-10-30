@@ -137,7 +137,7 @@ private:
 
     std::pair<Entry*, bool> EnsureEntry(lua_State* reported, void* ctx, DWORD tid, uint64_t gen);
 
-    mutable std::mutex mutex_;
+    mutable std::recursive_mutex mutex_;
     std::list<Entry> entries_;
 };
 

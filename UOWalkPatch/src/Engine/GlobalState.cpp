@@ -24,6 +24,8 @@ static PVOID g_vehHandle = nullptr;
 static bool g_luaStateCaptured = false;
 static GlobalStateInfo* g_lastValidatedInfo = nullptr;
 static std::atomic<std::uint32_t> g_globalStateCookie{0};
+static BYTE* g_guardPageBase = nullptr;
+static SIZE_T g_guardPageSize = 0;
 
 namespace Lua {
     void OnGlobalStateValidated(const GlobalStateInfo* info, std::uint32_t cookie);
@@ -452,11 +454,31 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
 
 static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x) {
     if (x->ExceptionRecord->ExceptionCode == STATUS_GUARD_PAGE_VIOLATION &&
-        x->ExceptionRecord->NumberParameters >= 2 &&
-        (void*)x->ExceptionRecord->ExceptionInformation[1] == g_globalStateSlot)
+        x->ExceptionRecord->NumberParameters >= 2)
     {
+        void* faultAddr = reinterpret_cast<void*>(x->ExceptionRecord->ExceptionInformation[1]);
+
+        bool onWatchedPage = false;
+        if (g_guardPageBase && g_guardPageSize)
+        {
+            BYTE* addr = static_cast<BYTE*>(faultAddr);
+            BYTE* base = g_guardPageBase;
+            BYTE* end = base + g_guardPageSize;
+            onWatchedPage = addr >= base && addr < end;
+        }
+        else if (faultAddr == g_globalStateSlot)
+        {
+            onWatchedPage = true;
+        }
+
+        if (!onWatchedPage)
+            return EXCEPTION_CONTINUE_SEARCH;
+
         DWORD oldProtect;
-        VirtualProtect(g_globalStateSlot, sizeof(void*), PAGE_READWRITE, &oldProtect);
+        VirtualProtect(g_guardPageBase ? g_guardPageBase : reinterpret_cast<BYTE*>(g_globalStateSlot),
+                       g_guardPageSize ? g_guardPageSize : sizeof(void*),
+                       PAGE_READWRITE,
+                       &oldProtect);
 
         GlobalStateInfo* info = ReadSlotUnsafe();
         ValidateGlobalState(info);
@@ -480,6 +502,8 @@ static void InstallWriteWatch() {
 
         DWORD oldProtect;
         if (VirtualProtect(page, si.dwPageSize, PAGE_READWRITE | PAGE_GUARD, &oldProtect)) {
+            g_guardPageBase = page;
+            g_guardPageSize = si.dwPageSize;
             g_vehHandle = AddVectoredExceptionHandler(1, VehHandler);
             WriteRawLog("Guard-page write watch installed successfully");
         }
@@ -561,6 +585,8 @@ void ShutdownGlobalStateWatch() {
         RemoveVectoredExceptionHandler(g_vehHandle);
         g_vehHandle = nullptr;
     }
+    g_guardPageBase = nullptr;
+    g_guardPageSize = 0;
 }
 
 void ReportLuaState(void* L) {

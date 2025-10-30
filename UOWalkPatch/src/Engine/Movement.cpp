@@ -13,9 +13,11 @@
 #include <string>
 #include <algorithm>
 #include <vector>
+#include <system_error>
 
 #include "Core/Logging.hpp"
 #include "Core/Config.hpp"
+#include "Core/EarlyTrace.hpp"
 #include "Core/Utils.hpp"
 #include "Core/PatternScan.hpp"
 #include "Net/SendBuilder.hpp"
@@ -718,12 +720,26 @@ static bool IsExecutableProtect(DWORD protect) {
 }
 
 static void LoadMovementConfig() {
-    std::call_once(g_movementConfigOnce, []() {
-        if (auto enabled = Core::Config::TryGetBool("MOVE_SAFE_DUMP"))
-            g_moveSafeDumpEnabled = *enabled;
-        if (auto windowMs = Core::Config::TryGetUInt("FW_ASSOC_WINDOW_MS"))
-            g_fastWalkAssocWindowMs = std::clamp<uint32_t>(static_cast<uint32_t>(*windowMs), 50u, 1000u);
-    });
+    Core::EarlyTrace::Write("Movement::LoadMovementConfig call_once begin");
+    try {
+        std::call_once(g_movementConfigOnce, []() {
+            if (auto enabled = Core::Config::TryGetBool("MOVE_SAFE_DUMP"))
+                g_moveSafeDumpEnabled = *enabled;
+            if (auto windowMs = Core::Config::TryGetUInt("FW_ASSOC_WINDOW_MS"))
+                g_fastWalkAssocWindowMs = std::clamp<uint32_t>(static_cast<uint32_t>(*windowMs), 50u, 1000u);
+        });
+        Core::EarlyTrace::Write("Movement::LoadMovementConfig call_once success");
+    } catch (const std::system_error& e) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "Movement::LoadMovementConfig call_once threw code=%d category=%s what=%s",
+                  e.code().value(),
+                  e.code().category().name(),
+                  e.what());
+        Core::EarlyTrace::Write(buf);
+        throw;
+    }
 }
 
 static void LogMovementVtable(void* thisPtr)
