@@ -55,9 +55,20 @@ namespace Engine {
     // Track inbound FastWalk keys for reconciliation with movement snapshots and timeout checks.
     void RecordInboundFastWalkKey(SOCKET socket, uint32_t key, int depthBefore, int depthAfter, uint64_t tickMs);
     SOCKET ResolveFastWalkSocket(SOCKET socket);
+    void ResyncFastWalk(SOCKET socket, const char* reason, uint32_t maxInflightOverride = 0);
     void RecordMovementSent(uint8_t seq);
     void RecordMovementAck(uint8_t seq, uint8_t status);
     void RecordMovementReject(uint8_t seq, uint8_t status);
+    enum class MovementAckAction : uint8_t { Ignore = 0, Ok, Drop, Resync };
+
+    struct MovementAckResult {
+        MovementAckAction action = MovementAckAction::Ignore;
+        uint8_t expected = 0;
+        uint32_t dropped = 0;
+    };
+
+    MovementAckResult ProcessMovementAck(SOCKET socket, uint8_t seq, uint8_t status);
+
     void TrackMovementTx(uint8_t seq, int dir, bool run, SOCKET socket, uint32_t key, const char* sender);
     bool IsScriptedMovementSendInProgress();
     bool HaveSentSequence();

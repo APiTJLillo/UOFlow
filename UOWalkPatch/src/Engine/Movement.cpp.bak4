@@ -188,7 +188,6 @@ static void ResyncFastWalkLocked(SOCKET socket,
         Walk::Controller::ApplyInflightOverride(maxInflightOverride, kFastWalkResyncInflightCycles);
 
     if (reason) {
-        Walk::Controller::NotifyResync(reason);
         Log::Logf(Log::Level::Info,
                   Log::Category::FastWalk,
                   "[FW] resync reason=%s socket=%p drop=%zu head=%u tail=%u maxInflight_tmp=%u",
@@ -341,7 +340,7 @@ static void AckTrackerRecordSend(SOCKET socket, uint8_t seq, uint64_t tick) {
     if (socket == INVALID_SOCKET)
         return;
 
-    SOCKET canonical = Engine::ResolveFastWalkSocket(socket);
+    SOCKET canonical = ResolveFastWalkSocket(socket);
     std::lock_guard<std::mutex> lock(g_ackMutex);
     AckTracker& tracker = g_ackTrackers[canonical];
     tracker.pending.push_back({seq, tick});
@@ -353,7 +352,7 @@ static AckProcessResult AckTrackerProcessAck(SOCKET socket, uint8_t seq, uint8_t
     AckProcessResult result{};
     if (seq == 0)
         seq = 1;
-    SOCKET canonical = Engine::ResolveFastWalkSocket(socket);
+    SOCKET canonical = ResolveFastWalkSocket(socket);
 
     std::lock_guard<std::mutex> lock(g_ackMutex);
     AckTracker& tracker = g_ackTrackers[canonical];
@@ -1193,8 +1192,6 @@ static void TrackMovementTxInternal(uint8_t seq, int dir, bool run, SOCKET socke
         }
     }
 
-    AckTrackerRecordSend(socket, seq, entry.tick);
-
     if (detailedLog) {
         Log::Logf(Log::Level::Debug,
                   Log::Category::Walk,
@@ -1344,31 +1341,6 @@ void RecordInboundFastWalkKey(SOCKET socket, uint32_t key, int depthBefore, int 
 
     RecordFastWalkKeyLocked(canonical, key, depthBefore, depthAfter, tickMs);
     CheckFastWalkTimeoutsAllLocked(g_lastIndexHead, g_lastIndexTail, tickMs);
-}
-
-void ResyncFastWalk(SOCKET socket, const char* reason, uint32_t maxInflightOverride) {
-    uint64_t now = GetTickCount64();
-    SOCKET canonical = socket;
-    uint32_t headIndex = 0;
-    uint32_t tailIndex = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_fastWalkMutex);
-        canonical = ResolveSocketAliasLocked(socket);
-        if (canonical == INVALID_SOCKET)
-            canonical = socket;
-        headIndex = g_lastIndexHead;
-        tailIndex = g_lastIndexTail;
-        ResyncFastWalkLocked(canonical, headIndex, tailIndex, now, reason, maxInflightOverride);
-    }
-
-    {
-        std::lock_guard<std::mutex> ackLock(g_ackMutex);
-        if (canonical == INVALID_SOCKET) {
-            g_ackTrackers.clear();
-        } else {
-            g_ackTrackers.erase(canonical);
-        }
-    }
 }
 
 static bool MovementReadyInternal(const char** reasonOut)
@@ -1595,44 +1567,27 @@ void SetActiveFastWalkSocket(SOCKET socket) {
 void OnSocketClosed(SOCKET socket) {
     if (socket == INVALID_SOCKET)
         return;
-    SOCKET canonicalSocket = INVALID_SOCKET;
-    {
-        std::lock_guard<std::mutex> lock(g_fastWalkMutex);
-        canonicalSocket = ResolveSocketAliasLocked(socket);
-        g_fastWalkQueues.erase(socket);
-        g_fastWalkExpectedDepth.erase(socket);
-        g_fastWalkKeyHistory.erase(socket);
-        g_socketAliases.erase(socket);
-        for (auto it = g_socketAliases.begin(); it != g_socketAliases.end();) {
-            if (it->second == socket)
-                it = g_socketAliases.erase(it);
-            else
-                ++it;
-        }
-        if (canonicalSocket != INVALID_SOCKET && canonicalSocket != socket) {
-            g_fastWalkQueues.erase(canonicalSocket);
-            g_fastWalkExpectedDepth.erase(canonicalSocket);
-            g_fastWalkKeyHistory.erase(canonicalSocket);
-        }
-        if (ResolveSocketAliasLocked(g_activeFastWalkSocket) == socket)
-            g_activeFastWalkSocket = SelectNextActiveSocketLocked();
-
-        SOCKET active = ResolveSocketAliasLocked(g_activeFastWalkSocket);
-        uint32_t currentDepth = 0;
-        if (active != INVALID_SOCKET) {
-            auto itActive = g_fastWalkQueues.find(active);
-            if (itActive != g_fastWalkQueues.end())
-                currentDepth = static_cast<uint32_t>(itActive->second.size());
-        }
-        g_fwDepth.store(currentDepth, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    g_fastWalkQueues.erase(socket);
+    g_fastWalkExpectedDepth.erase(socket);
+    g_socketAliases.erase(socket);
+    for (auto it = g_socketAliases.begin(); it != g_socketAliases.end();) {
+        if (it->second == socket)
+            it = g_socketAliases.erase(it);
+        else
+            ++it;
     }
+    if (ResolveSocketAliasLocked(g_activeFastWalkSocket) == socket)
+        g_activeFastWalkSocket = SelectNextActiveSocketLocked();
 
-    {
-        std::lock_guard<std::mutex> ackLock(g_ackMutex);
-        g_ackTrackers.erase(socket);
-        if (canonicalSocket != INVALID_SOCKET && canonicalSocket != socket)
-            g_ackTrackers.erase(canonicalSocket);
+    SOCKET active = ResolveSocketAliasLocked(g_activeFastWalkSocket);
+    uint32_t currentDepth = 0;
+    if (active != INVALID_SOCKET) {
+        auto itActive = g_fastWalkQueues.find(active);
+        if (itActive != g_fastWalkQueues.end())
+            currentDepth = static_cast<uint32_t>(itActive->second.size());
     }
+    g_fwDepth.store(currentDepth, std::memory_order_relaxed);
 }
 
 void RecordObservedFastWalkKey(uint32_t key) {
@@ -1647,31 +1602,6 @@ void RecordMovementSent(uint8_t seq)
     g_lastSentSeq.store(seq, std::memory_order_release);
     g_haveSentSeq.store(true, std::memory_order_release);
 }
-
-MovementAckResult ProcessMovementAck(SOCKET socket, uint8_t seq, uint8_t status)
-{
-    uint64_t nowTick = GetTickCount64();
-    AckProcessResult internal = AckTrackerProcessAck(socket, seq, status, nowTick);
-    MovementAckResult result{};
-    result.expected = internal.expected ? internal.expected : static_cast<uint8_t>(seq + 1);
-    result.dropped = internal.dropped;
-    switch (internal.action) {
-    case AckProcessAction::SoftFail:
-        result.action = MovementAckAction::Drop;
-        break;
-    case AckProcessAction::Resync:
-        result.action = MovementAckAction::Resync;
-        break;
-    case AckProcessAction::Ok:
-        result.action = MovementAckAction::Ok;
-        break;
-    default:
-        result.action = MovementAckAction::Ignore;
-        break;
-    }
-    return result;
-}
-
 
 void RecordMovementAck(uint8_t seq, uint8_t status)
 {
@@ -1872,13 +1802,6 @@ void ShutdownMovementHooks() {
         std::lock_guard<std::mutex> lock(g_fastWalkMutex);
         g_fastWalkQueues.clear();
         g_activeFastWalkSocket = INVALID_SOCKET;
-        g_fastWalkKeyHistory.clear();
-        g_fastWalkExpectedDepth.clear();
-        g_socketAliases.clear();
-    }
-    {
-        std::lock_guard<std::mutex> ackLock(g_ackMutex);
-        g_ackTrackers.clear();
     }
     InterlockedExchange(&g_fwOverflowWarned, 0);
     g_trackerCount = 0;

@@ -32,6 +32,15 @@ constexpr uint32_t STATE_FLAG_CANON_READY     = 1u << 11;
 constexpr uint32_t STATE_FLAG_HELPERS_PENDING = 1u << 12;
 constexpr uint32_t STATE_FLAG_HELPERS_INSTALLED = 1u << 13;
 
+enum class HelperInstallStage : uint8_t {
+    WaitingForGlobalState = 0,
+    WaitingForLuaReady    = 1,
+    WaitingForOwnerThread = 2,
+    ReadyToInstall        = 3,
+    Installing            = 4,
+    Installed             = 5,
+};
+
 struct LuaStateInfo {
     lua_State* L_reported = nullptr;
     void* ctx_reported = nullptr;
@@ -82,6 +91,11 @@ struct LuaStateInfo {
     uint64_t helper_next_retry_ms = 0;
     uint64_t helper_last_attempt_ms = 0;
     uint64_t helper_last_mutation_tick_ms = 0;
+    uint64_t helper_state_since_ms = 0;
+    uint64_t helper_owner_deadline_ms = 0;
+    uint8_t helper_state = static_cast<uint8_t>(HelperInstallStage::WaitingForGlobalState);
+    uint8_t helper_failover_count = 0;
+    uint16_t helper_reserved = 0;
 };
 
 class LuaStateRegistry {

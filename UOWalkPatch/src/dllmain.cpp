@@ -6,6 +6,7 @@
 #include "../include/Core/Logging.hpp"
 #include "../include/Core/MinHookHelpers.hpp"
 #include "../include/Core/CrashHandler.hpp"
+#include "../include/Core/Startup.hpp"
 #include "../include/Engine/GlobalState.hpp"
 #include "../include/Engine/Movement.hpp"
 #include "../include/Engine/LuaBridge.hpp"
@@ -113,6 +114,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
                   walkSettings.timeoutMs,
                   walkSettings.debug ? 1 : 0,
                   luaStatus.ownerThreadId);
+        Core::StartupSummary::Initialize(movementHooksOk, packetTraceOk, sendBuilderOk, luaBridgeOk);
         break;
     }
     case DLL_PROCESS_DETACH:

@@ -73,6 +73,7 @@ add_library(UOWalkPatchDLL SHARED
     src/dllmain.cpp
     src/Core/Config.cpp
     src/Core/Logging.cpp
+    src/Core/Startup.cpp
     src/Core/PatternScan.cpp
     src/Core/Utils.cpp
     src/Core/MinHookHelpers.cpp
