@@ -295,6 +295,15 @@ void LuaStateRegistry::CombineInfo(LuaStateInfo& into, const LuaStateInfo& from)
         into.helper_pending_generation = from.helper_pending_generation;
     if (from.helper_installed_tick_ms > into.helper_installed_tick_ms)
         into.helper_installed_tick_ms = from.helper_installed_tick_ms;
+    into.helper_retry_count = std::max(into.helper_retry_count, from.helper_retry_count);
+    if (into.helper_first_attempt_ms == 0 || (from.helper_first_attempt_ms != 0 && from.helper_first_attempt_ms < into.helper_first_attempt_ms))
+        into.helper_first_attempt_ms = from.helper_first_attempt_ms;
+    if (into.helper_next_retry_ms == 0 || (from.helper_next_retry_ms != 0 && from.helper_next_retry_ms < into.helper_next_retry_ms))
+        into.helper_next_retry_ms = from.helper_next_retry_ms;
+    if (from.helper_last_attempt_ms > into.helper_last_attempt_ms)
+        into.helper_last_attempt_ms = from.helper_last_attempt_ms;
+    if (from.helper_last_mutation_tick_ms > into.helper_last_mutation_tick_ms)
+        into.helper_last_mutation_tick_ms = from.helper_last_mutation_tick_ms;
 }
 
 std::pair<LuaStateRegistry::Entry*, bool> LuaStateRegistry::EnsureEntry(lua_State* reported, void* ctx, DWORD tid, uint64_t gen) {

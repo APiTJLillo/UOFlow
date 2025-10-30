@@ -20,6 +20,7 @@
 #include <fstream>
 #include <intrin.h>
 #include <thread>
+#include <limits>
 
 #include <minhook.h>
 
@@ -179,6 +180,7 @@ static void* g_registerTarget = nullptr;
 static std::atomic<bool> g_registerResolved{false};
 static std::atomic<void*> g_engineContext{nullptr};
 static std::atomic<void*> g_latestScriptCtx{nullptr};
+static std::atomic<void*> g_loggedEngineContext{nullptr};
 
 static std::atomic<DWORD> g_scriptThreadId{0};
 static std::atomic<lua_State*> g_mainLuaState{nullptr};
@@ -192,6 +194,18 @@ static std::atomic<uint64_t> g_lastHelperSummaryTick{0};
 static std::atomic<uint32_t> g_helperScheduledCount{0};
 static std::atomic<uint32_t> g_helperInstalledCount{0};
 static std::atomic<uint32_t> g_helperDeferredCount{0};
+static std::atomic<bool> g_helpersInstalledAny{false};
+static std::atomic<DWORD> g_lastHelperOwnerThread{0};
+
+struct HelperRetryPolicy {
+    uint32_t retryMax = 3;
+    uint32_t retryWindowMs = 1500;
+    uint32_t stableWindowMs = 250;
+    uint32_t retryBackoffMs = 150;
+};
+
+static HelperRetryPolicy g_helperRetryPolicy{};
+static std::once_flag g_helperRetryPolicyOnce;
 
 static std::mutex g_taskMutex;
 static std::deque<LuaTask> g_taskQueue;
@@ -211,6 +225,65 @@ static void TrackHelperEvent(std::atomic<uint32_t>& counter) {
     counter.fetch_add(1u, std::memory_order_relaxed);
 }
 
+static bool ParseUint32(const std::string& text, uint32_t& outValue) {
+    if (text.empty())
+        return false;
+    char* end = nullptr;
+    unsigned long parsed = std::strtoul(text.c_str(), &end, 10);
+    if (!end || end == text.c_str())
+        return false;
+    if (*end != '\0')
+        return false;
+    if (parsed > std::numeric_limits<uint32_t>::max())
+        return false;
+    outValue = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+static void LoadHelperRetryPolicy() {
+    HelperRetryPolicy policy{};
+
+    uint32_t value = 0;
+    if (auto envMax = Core::Config::TryGetEnv("LUA_HELPERS_RETRYMAX")) {
+        if (ParseUint32(*envMax, value))
+            policy.retryMax = value;
+    } else if (auto cfgMax = Core::Config::TryGetUInt("lua.helpers.retryMax")) {
+        policy.retryMax = *cfgMax;
+    }
+
+    if (auto envWindow = Core::Config::TryGetEnv("LUA_HELPERS_RETRYWINDOWMS")) {
+        if (ParseUint32(*envWindow, value))
+            policy.retryWindowMs = value;
+    } else if (auto cfgWindow = Core::Config::TryGetUInt("lua.helpers.retryWindowMs")) {
+        policy.retryWindowMs = *cfgWindow;
+    }
+
+    policy.retryMax = std::clamp<uint32_t>(policy.retryMax, 1u, 16u);
+    policy.retryWindowMs = std::clamp<uint32_t>(policy.retryWindowMs, 250u, 8000u);
+
+    const uint32_t derivedStable = std::clamp<uint32_t>(policy.retryWindowMs / 4u, 150u, 1000u);
+    const uint32_t retryDivisor = std::max(policy.retryMax, static_cast<uint32_t>(1));
+    const uint32_t derivedBackoff = std::clamp<uint32_t>(policy.retryWindowMs / retryDivisor, 50u, 500u);
+
+    policy.stableWindowMs = derivedStable;
+    policy.retryBackoffMs = derivedBackoff;
+
+    g_helperRetryPolicy = policy;
+
+    Log::Logf(Log::Level::Debug,
+              Log::Category::Hooks,
+              "helper-retry policy retryMax=%u retryWindowMs=%u stableWindowMs=%u retryBackoffMs=%u",
+              policy.retryMax,
+              policy.retryWindowMs,
+              policy.stableWindowMs,
+              policy.retryBackoffMs);
+}
+
+static const HelperRetryPolicy& GetHelperRetryPolicy() {
+    std::call_once(g_helperRetryPolicyOnce, LoadHelperRetryPolicy);
+    return g_helperRetryPolicy;
+}
+
 static void ClearHelperPending(lua_State* L, uint64_t generation, LuaStateInfo* infoOut = nullptr) {
     if (!L)
         return;
@@ -223,12 +296,16 @@ static void ClearHelperPending(lua_State* L, uint64_t generation, LuaStateInfo* 
     }, infoOut);
 }
 
-static void MaybeEmitHelperSummary(uint64_t now) {
-    uint64_t last = g_lastHelperSummaryTick.load(std::memory_order_relaxed);
-    if (now - last < kBindSummaryIntervalMs)
-        return;
-    if (!g_lastHelperSummaryTick.compare_exchange_strong(last, now, std::memory_order_acq_rel))
-        return;
+static void MaybeEmitHelperSummary(uint64_t now, bool force = false) {
+    if (!force) {
+        uint64_t last = g_lastHelperSummaryTick.load(std::memory_order_relaxed);
+        if (now - last < kBindSummaryIntervalMs)
+            return;
+        if (!g_lastHelperSummaryTick.compare_exchange_strong(last, now, std::memory_order_acq_rel))
+            return;
+    } else {
+        g_lastHelperSummaryTick.store(now, std::memory_order_release);
+    }
 
     uint32_t scheduled = g_helperScheduledCount.exchange(0u, std::memory_order_acq_rel);
     uint32_t installed = g_helperInstalledCount.exchange(0u, std::memory_order_acq_rel);
@@ -3633,31 +3710,29 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
                 }, &current);
             }
             return;
-        }
-        if (current.flags & STATE_FLAG_HELPERS_INSTALLED) {
-            if (now - current.last_bind_log_tick_ms >= kBindLogCooldownMs) {
-                current.last_bind_log_tick_ms = now;
-                LogLuaState("bind-skip Lc=%p reason=installed action=%s",
-                            target,
-                            action);
-                g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
-                    state.last_bind_log_tick_ms = now;
-                }, &current);
-            }
-            return;
-        }
     }
+    if (current.flags & STATE_FLAG_HELPERS_INSTALLED) {
+        if (now - current.last_bind_log_tick_ms >= kBindLogCooldownMs) {
+            current.last_bind_log_tick_ms = now;
+            LogLuaState("bind-skip Lc=%p reason=installed action=%s",
+                        target,
+                        action);
+            g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
+                state.last_bind_log_tick_ms = now;
+            }, &current);
+        }
+        return;
+    }
+}
     bool skipDueToPending = false;
 
     if (!force) {
         g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
             if ((state.flags & STATE_FLAG_HELPERS_PENDING) && state.helper_pending_generation == generation) {
                 skipDueToPending = true;
-                return;
+                if (now - state.helper_pending_tick_ms >= kBindLogCooldownMs)
+                    state.helper_pending_tick_ms = now;
             }
-            state.flags |= STATE_FLAG_HELPERS_PENDING;
-            state.helper_pending_generation = generation;
-            state.helper_pending_tick_ms = now;
         }, &current);
 
         if (skipDueToPending) {
@@ -3669,23 +3744,75 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
             }
             TrackHelperEvent(g_helperDeferredCount);
             MaybeEmitHelperSummary(now);
-            g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
-                state.helper_pending_tick_ms = now;
-            });
             return;
         }
     } else {
-        g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
-            state.flags &= ~STATE_FLAG_HELPERS_PENDING;
-            state.helper_pending_generation = 0;
-            state.helper_pending_tick_ms = 0;
-        }, &current);
-        g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
-            state.flags |= STATE_FLAG_HELPERS_PENDING;
-            state.helper_pending_generation = generation;
-            state.helper_pending_tick_ms = now;
-        }, &current);
+        ClearHelperPending(target, generation, &current);
     }
+
+    const HelperRetryPolicy& retry = GetHelperRetryPolicy();
+    const uint64_t mutationTick = g_lastContextMutationTick.load(std::memory_order_acquire);
+
+    bool allowNow = force;
+    if (!force) {
+        bool canonicalStable = (current.flags & STATE_FLAG_CANON_READY) != 0;
+        if (canonicalStable) {
+            uint64_t readyAge = (current.canonical_ready_tick_ms && now >= current.canonical_ready_tick_ms)
+                                    ? (now - current.canonical_ready_tick_ms)
+                                    : 0;
+            if (readyAge < retry.stableWindowMs)
+                canonicalStable = false;
+        }
+        if (!canonicalStable) {
+            allowNow = false;
+        } else {
+            allowNow = true;
+            if (current.helper_next_retry_ms && now < current.helper_next_retry_ms)
+                allowNow = false;
+            if (allowNow && retry.retryMax > 0 && current.helper_retry_count >= retry.retryMax) {
+                uint64_t sinceFirst = current.helper_first_attempt_ms
+                                          ? (now - current.helper_first_attempt_ms)
+                                          : 0;
+                if (!current.helper_first_attempt_ms || sinceFirst < retry.retryWindowMs)
+                    allowNow = false;
+            }
+            if (!allowNow && mutationTick > current.helper_last_mutation_tick_ms)
+                allowNow = true;
+        }
+    }
+
+    if (!allowNow) {
+        g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
+            if (!state.helper_first_attempt_ms)
+                state.helper_first_attempt_ms = now;
+            if (mutationTick > state.helper_last_mutation_tick_ms) {
+                state.helper_last_mutation_tick_ms = mutationTick;
+                state.helper_retry_count = 0;
+                state.helper_first_attempt_ms = now;
+            }
+            uint64_t minNext = now + retry.retryBackoffMs;
+            if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < minNext)
+                state.helper_next_retry_ms = minNext;
+        }, &current);
+        ClearHelperPending(target, generation, &current);
+        TrackHelperEvent(g_helperDeferredCount);
+        MaybeEmitHelperSummary(now);
+        return;
+    }
+
+    g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
+        state.flags |= STATE_FLAG_HELPERS_PENDING;
+        state.helper_pending_generation = generation;
+        state.helper_pending_tick_ms = now;
+        if (!state.helper_first_attempt_ms)
+            state.helper_first_attempt_ms = now;
+        state.helper_last_attempt_ms = now;
+        state.helper_next_retry_ms = now + retry.retryBackoffMs;
+        if (state.helper_retry_count < std::numeric_limits<uint32_t>::max())
+            ++state.helper_retry_count;
+        if (mutationTick > state.helper_last_mutation_tick_ms)
+            state.helper_last_mutation_tick_ms = mutationTick;
+    }, &current);
 
     TrackHelperEvent(g_helperScheduledCount);
     MaybeEmitHelperSummary(now);
@@ -4089,7 +4216,21 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                     state.flags |= STATE_FLAG_HELPERS_INSTALLED;
                     state.gen = generation;
                     state.helper_installed_tick_ms = installTick;
+                    state.helper_retry_count = 0;
+                    state.helper_first_attempt_ms = 0;
+                    state.helper_next_retry_ms = 0;
+                    state.helper_last_attempt_ms = installTick;
+                    state.helper_last_mutation_tick_ms = g_lastContextMutationTick.load(std::memory_order_acquire);
                 }, &info);
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Hooks,
+                          "helpers installed L=%p owner=%lu gen=%llu thread=%lu",
+                          L,
+                          static_cast<unsigned long>(info.owner_tid),
+                          static_cast<unsigned long long>(generation),
+                          static_cast<unsigned long>(GetCurrentThreadId()));
+                g_helpersInstalledAny.store(true, std::memory_order_release);
+                g_lastHelperOwnerThread.store(static_cast<DWORD>(info.owner_tid), std::memory_order_relaxed);
             } else {
                 ok = false;
             }
@@ -4166,12 +4307,20 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     bool ok = BindHelpersOnThread(L, info, generation, force);
     ReleaseBindingSlot(L);
     ClearHelperPending(L, generation, &info);
+    uint64_t summaryTick = GetTickCount64();
     if (ok) {
         TrackHelperEvent(g_helperInstalledCount);
+        MaybeEmitHelperSummary(summaryTick, true);
     } else {
         TrackHelperEvent(g_helperDeferredCount);
+        const HelperRetryPolicy& retry = GetHelperRetryPolicy();
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            uint64_t next = summaryTick + retry.retryBackoffMs;
+            if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < next)
+                state.helper_next_retry_ms = next;
+        });
+        MaybeEmitHelperSummary(summaryTick);
     }
-    MaybeEmitHelperSummary(GetTickCount64());
     if (!ok) {
         LogLuaState("bind-fail Lc=%p ctx=%p gen=%llu", L, info.ctx_reported, static_cast<unsigned long long>(generation));
     } else {
@@ -4954,6 +5103,14 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name) {
     if (ctx && ctx != g_engineContext.load(std::memory_order_acquire)) {
         g_engineContext.store(ctx, std::memory_order_release);
         NoteContextMutation();
+        void* previousCtx = g_loggedEngineContext.exchange(ctx, std::memory_order_acq_rel);
+        if (ctx != previousCtx) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "engine context discovered ctx=%p thread=%lu",
+                      ctx,
+                      static_cast<unsigned long>(tid));
+        }
     }
     if (ctx)
         g_latestScriptCtx.store(ctx, std::memory_order_release);
@@ -4966,6 +5123,14 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name) {
         LuaStateInfo snapshot = ObserveReportedState(L, ctx, tid, gen, name ? name : "register", &isNew, &ready, &coalesced);
         if (isNew) {
             LogLuaState("observed L=%p ctx=%p tid=%lu gen=%llu source=register", snapshot.L_reported, ctx, tid, gen);
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "lua state discovered Lc=%p Lr=%p ctx=%p owner=%lu gen=%llu",
+                      snapshot.L_canonical,
+                      snapshot.L_reported,
+                      ctx,
+                      static_cast<unsigned long>(tid),
+                      static_cast<unsigned long long>(gen));
         }
         uint64_t registerTick = GetTickCount64();
         lua_State* registerPtr = snapshot.L_canonical ? snapshot.L_canonical : L;
@@ -5045,6 +5210,8 @@ bool InitLuaBridge() {
     g_helperScheduledCount.store(0, std::memory_order_release);
     g_helperInstalledCount.store(0, std::memory_order_release);
     g_helperDeferredCount.store(0, std::memory_order_release);
+    g_helpersInstalledAny.store(false, std::memory_order_release);
+    g_lastHelperOwnerThread.store(0, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(g_taskMutex);
         g_taskQueue.clear();
@@ -5097,9 +5264,24 @@ void RegisterOurLuaFunctions() {
     ScheduleWalkBinding();
 }
 
+void GetStartupStatus(StartupStatus& out) {
+    out.engineContextDiscovered = g_engineContext.load(std::memory_order_acquire) != nullptr;
+    out.luaStateDiscovered = g_canonicalState.load(std::memory_order_acquire) != nullptr;
+    out.helpersInstalled = g_helpersInstalledAny.load(std::memory_order_acquire);
+    out.ownerThreadId = g_lastHelperOwnerThread.load(std::memory_order_relaxed);
+}
+
 void UpdateEngineContext(void* context) {
     g_engineContext.store(context, std::memory_order_release);
     NoteContextMutation();
+    void* previous = g_loggedEngineContext.exchange(context, std::memory_order_acq_rel);
+    if (context && context != previous) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "engine context discovered ctx=%p thread=%lu",
+                  context,
+                  static_cast<unsigned long>(GetCurrentThreadId()));
+    }
     LogLuaProbe("engine-context=%p", context);
     ScheduleWalkBinding();
 }
@@ -5151,6 +5333,14 @@ void OnStateObserved(lua_State* L, void* scriptCtx, std::uint32_t ownerTid) {
     LuaStateInfo snapshot = ObserveReportedState(L, scriptCtx, tid, gen, "external", &isNew, &ready, &coalesced);
     if (isNew) {
         LogLuaState("observed L=%p ctx=%p tid=%lu gen=%llu source=external", snapshot.L_reported, scriptCtx, tid, gen);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "lua state discovered Lc=%p Lr=%p ctx=%p owner=%lu gen=%llu",
+                  snapshot.L_canonical,
+                  snapshot.L_reported,
+                  scriptCtx,
+                  static_cast<unsigned long>(tid),
+                  static_cast<unsigned long long>(gen));
     }
     RequestBindForState(snapshot, "state-observed", false);
 }

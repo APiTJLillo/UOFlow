@@ -14,7 +14,8 @@ namespace Walk::Controller {
 namespace {
 
 struct ControllerConfig {
-    bool enabled = false;
+    bool enabled = true;
+    bool debug = false;
     std::uint32_t maxInflight = 2;
     std::uint32_t stepDelayMs = 280;
     std::uint32_t timeoutMs = 400;
@@ -51,13 +52,20 @@ std::uint32_t GetTickMs() {
 void LoadConfig() {
     ControllerConfig cfg{};
 
-    if (auto envEnable = Core::Config::TryGetEnvBool("WALKCTRL_ENABLE"))
-        cfg.enabled = *envEnable;
-    else if (auto cfgEnable = Core::Config::TryGetBool("WALKCTRL_ENABLE"))
-        cfg.enabled = *cfgEnable;
+    auto readBool = [](const char* envName, const char* cfgKey, bool& outValue) {
+        if (auto envValue = Core::Config::TryGetEnvBool(envName)) {
+            outValue = *envValue;
+            return true;
+        }
+        if (auto cfgValue = Core::Config::TryGetBool(cfgKey)) {
+            outValue = *cfgValue;
+            return true;
+        }
+        return false;
+    };
 
-    auto readUint = [](const char* name, std::uint32_t& outValue) {
-        if (auto envValue = Core::Config::TryGetEnv(name)) {
+    auto readUint = [](const char* envName, const char* cfgKey, std::uint32_t& outValue) {
+        if (auto envValue = Core::Config::TryGetEnv(envName)) {
             try {
                 outValue = static_cast<std::uint32_t>(std::stoul(*envValue));
                 return true;
@@ -65,23 +73,26 @@ void LoadConfig() {
                 return false;
             }
         }
-        if (auto cfgValue = Core::Config::TryGetUInt(name)) {
+        if (auto cfgValue = Core::Config::TryGetUInt(cfgKey)) {
             outValue = *cfgValue;
             return true;
         }
         return false;
     };
 
+    readBool("WALK_ENABLE", "walk.enable", cfg.enabled);
+    readBool("WALK_DEBUG", "walk.debug", cfg.debug);
+
     std::uint32_t value = cfg.maxInflight;
-    if (readUint("WALKCTRL_MAX_INFLIGHT", value))
+    if (readUint("WALK_MAX_INFLIGHT", "walk.maxInflight", value))
         cfg.maxInflight = value;
 
     value = cfg.stepDelayMs;
-    if (readUint("WALKCTRL_STEP_DELAY_MS", value))
+    if (readUint("WALK_STEP_DELAY_MS", "walk.stepDelayMs", value))
         cfg.stepDelayMs = value;
 
     value = cfg.timeoutMs;
-    if (readUint("WALKCTRL_TIMEOUT_MS", value))
+    if (readUint("WALK_TIMEOUT_MS", "walk.timeoutMs", value))
         cfg.timeoutMs = value;
 
     cfg.maxInflight = std::clamp<std::uint32_t>(cfg.maxInflight, 1u, kMaxInflightCap);
@@ -92,11 +103,12 @@ void LoadConfig() {
 
     Log::Logf(Log::Level::Info,
               Log::Category::Walk,
-              "walk-controller config enable=%d maxInflight=%u stepDelayMs=%u timeoutMs=%u",
+              "enable=%d maxInflight=%u stepDelayMs=%u timeoutMs=%u debug=%d",
               cfg.enabled ? 1 : 0,
               cfg.maxInflight,
               cfg.stepDelayMs,
-              cfg.timeoutMs);
+              cfg.timeoutMs,
+              cfg.debug ? 1 : 0);
 }
 
 void EnsureConfigLoaded() {
@@ -152,6 +164,22 @@ void Reset() {
 bool IsEnabled() {
     EnsureConfigLoaded();
     return g_config.enabled;
+}
+
+Settings GetSettings() {
+    EnsureConfigLoaded();
+    Settings settings{};
+    settings.enabled = g_config.enabled;
+    settings.maxInflight = g_config.maxInflight;
+    settings.stepDelayMs = g_config.stepDelayMs;
+    settings.timeoutMs = g_config.timeoutMs;
+    settings.debug = g_config.debug;
+    return settings;
+}
+
+bool DebugEnabled() {
+    EnsureConfigLoaded();
+    return g_config.debug;
 }
 
 bool RequestTarget(float x, float y, float z, bool run) {
@@ -267,7 +295,7 @@ void OnMovementSnapshot(const Engine::MovementSnapshot& snapshot,
     if (sent) {
         ++g_state.inflight;
         g_state.lastProgressTick = tickMs;
-        if (Log::IsEnabled(Log::Category::Walk, Log::Level::Debug)) {
+        if (DebugEnabled() && Log::IsEnabled(Log::Category::Walk, Log::Level::Debug)) {
             Log::Logf(Log::Level::Debug,
                       Log::Category::Walk,
                       "walk-controller step dir=%d run=%d inflight=%u pos=(%.2f,%.2f) target=(%.2f,%.2f)",
@@ -279,7 +307,7 @@ void OnMovementSnapshot(const Engine::MovementSnapshot& snapshot,
                       g_state.targetX,
                       g_state.targetZ);
         }
-    } else if (tickMs - g_state.lastLogTick > kLogCooldownMs) {
+    } else if (tickMs - g_state.lastLogTick > kLogCooldownMs && DebugEnabled()) {
         g_state.lastLogTick = tickMs;
         Log::Logf(Log::Level::Debug,
                   Log::Category::Walk,

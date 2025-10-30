@@ -77,6 +77,11 @@ struct LuaStateInfo {
     uint64_t last_bind_log_tick_ms = 0;
     uint64_t helper_pending_generation = 0;
     uint64_t helper_installed_tick_ms = 0;
+    uint32_t helper_retry_count = 0;
+    uint64_t helper_first_attempt_ms = 0;
+    uint64_t helper_next_retry_ms = 0;
+    uint64_t helper_last_attempt_ms = 0;
+    uint64_t helper_last_mutation_tick_ms = 0;
 };
 
 class LuaStateRegistry {

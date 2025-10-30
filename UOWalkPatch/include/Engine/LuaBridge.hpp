@@ -12,6 +12,15 @@ namespace Engine::Lua {
     void ProcessLuaQueue();
     void OnStateObserved(lua_State* L, void* scriptCtx, std::uint32_t ownerTid = 0);
     void OnStateRemoved(lua_State* L, const char* reason);
+
+    struct StartupStatus {
+        bool engineContextDiscovered = false;
+        bool luaStateDiscovered = false;
+        bool helpersInstalled = false;
+        std::uint32_t ownerThreadId = 0;
+    };
+
+    void GetStartupStatus(StartupStatus& out);
 }
 
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);

@@ -33,6 +33,14 @@ namespace Engine {
         float posZ = 0.0f;
     };
 
+    struct FastWalkCounters {
+        uint64_t keysInbound = 0;
+        uint64_t keysOutbound = 0;
+        uint32_t depth = 0;
+        uint64_t resyncs = 0;
+        uint64_t misses = 0;
+    };
+
     void PushFastWalkKey(SOCKET socket, uint32_t key);
     uint32_t PopFastWalkKey();
     uint32_t PopFastWalkKey(SOCKET socket);
@@ -59,6 +67,8 @@ namespace Engine {
     void NotifyClientMovementSent();
     void ArmMovementSendWatchdog();
     bool DisarmAndCheckMovementSend(uint32_t timeoutMs = 100);
+    void GetFastWalkCounters(FastWalkCounters& out);
+    uint64_t GetWalkStepsSent();
 
     bool MovementReady();
     bool MovementReadyWithReason(const char** reasonOut);

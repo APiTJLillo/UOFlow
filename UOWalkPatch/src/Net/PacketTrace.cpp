@@ -11,6 +11,7 @@
 #include "Net/PacketTrace.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/Movement.hpp"
+#include "Walk/WalkController.hpp"
 
 namespace {
 
@@ -50,21 +51,18 @@ static bool EvaluateFastWalkGate(const char* buf, int len, bool& suppressOut, in
 
 static void LogFastWalkGateDecision(const char* action, SOCKET s, int depth)
 {
+    if (!Walk::Controller::DebugEnabled())
+        return;
+
     static volatile LONG budget = 16;
     if (budget > 0 && InterlockedDecrement(&budget) >= 0) {
-        Logf("FastWalk gate %s opcode=0x2E socket=%p depth=%d reserve=%d",
-             action,
-             reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
-             depth,
-             kFastWalkReserveDepth);
-        char buf[160];
-        sprintf_s(buf, sizeof(buf),
-                  "FastWalk gate %s: opcode=0x2E socket=%p depth=%d reserve=%d",
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::FastWalk,
+                  "FastWalk gate %s opcode=0x2E socket=%p depth=%d reserve=%d",
                   action,
                   reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
                   depth,
                   kFastWalkReserveDepth);
-        WriteRawLog(buf);
     }
 }
 
@@ -72,23 +70,19 @@ static void LogInboundFastWalkKey(const char* source, SOCKET socket, uint32_t ke
 {
     Engine::RecordInboundFastWalkKey(socket, key, depthBefore, depthAfter, tickMs);
 
+    if (!Walk::Controller::DebugEnabled())
+        return;
+
     static volatile LONG budget = 48;
     if (budget > 0 && InterlockedDecrement(&budget) >= 0) {
-        Logf("FastWalk inbound %s socket=%p key=%08X depth=%d->%d",
-             source,
-             reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
-             key,
-             depthBefore,
-             depthAfter);
-        char buf[192];
-        sprintf_s(buf, sizeof(buf),
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::FastWalk,
                   "FastWalk inbound %s socket=%p key=%08X depth=%d->%d",
                   source,
                   reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
                   key,
                   depthBefore,
                   depthAfter);
-        WriteRawLog(buf);
     }
 }
 
@@ -135,15 +129,20 @@ static uint32_t ExtractFastWalkKey0x2E(const char* buf, int len)
 
 static void LogFastWalkReceipt(SOCKET socket, const char* source, uint32_t key)
 {
+    if (!Walk::Controller::DebugEnabled())
+        return;
+
     static volatile LONG s_budget = 32;
     if (!source)
         source = "?";
     if (s_budget > 0 && InterlockedDecrement(&s_budget) >= 0) {
-        Logf("FastWalk key received via %s socket=%p key=%08X depth=%d",
-             source,
-             reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
-             key,
-             Engine::FastWalkQueueDepth(socket));
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::FastWalk,
+                  "FastWalk key received via %s socket=%p key=%08X depth=%d",
+                  source,
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+                  key,
+                  Engine::FastWalkQueueDepth(socket));
     }
 }
 
@@ -163,13 +162,15 @@ static bool HandleFastWalkKey(SOCKET socket, uint32_t key, const char* source)
     Engine::PushFastWalkKey(socket, key);
     LogFastWalkReceipt(socket, source, key);
 
-    char msg[128];
-    sprintf_s(msg, sizeof(msg), "FastWalk(%s) socket=%p key=%08X depth=%d",
-              source ? source : "?",
-              reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
-              key,
-              Engine::FastWalkQueueDepth(socket));
-    WriteRawLog(msg);
+    if (Walk::Controller::DebugEnabled()) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::FastWalk,
+                  "FastWalk(%s) socket=%p key=%08X depth=%d",
+                  source ? source : "?",
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+                  key,
+                  Engine::FastWalkQueueDepth(socket));
+    }
     return true;
 }
 

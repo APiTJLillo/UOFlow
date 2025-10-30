@@ -110,12 +110,12 @@
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR="Debug";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;SAFE_LUA_API_GUARD=1;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR="Debug";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR=\"Debug\";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;SAFE_LUA_API_GUARD=1;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR=\"Debug\";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>C:\Users\dukey\Source\UOFlow\UOWalkPatch\src;C:\Users\dukey\Source\UOFlow\UOWalkPatch\include;C:\Users\dukey\Source\UOFlow\UOWalkPatch\external\luaplus\include;C:\Users\dukey\Source\UOFlow\UOWalkPatch\external\minhook\src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
@@ -207,12 +207,12 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR="Release";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SAFE_LUA_API_GUARD=1;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR="Release";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR=\"Release\";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SAFE_LUA_API_GUARD=1;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR=\"Release\";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>C:\Users\dukey\Source\UOFlow\UOWalkPatch\src;C:\Users\dukey\Source\UOFlow\UOWalkPatch\include;C:\Users\dukey\Source\UOFlow\UOWalkPatch\external\luaplus\include;C:\Users\dukey\Source\UOFlow\UOWalkPatch\external\minhook\src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
@@ -304,12 +304,12 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR="MinSizeRel";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SAFE_LUA_API_GUARD=1;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR="MinSizeRel";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR=\"MinSizeRel\";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SAFE_LUA_API_GUARD=1;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR=\"MinSizeRel\";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>C:\Users\dukey\Source\UOFlow\UOWalkPatch\src;C:\Users\dukey\Source\UOFlow\UOWalkPatch\include;C:\Users\dukey\Source\UOFlow\UOWalkPatch\external\luaplus\include;C:\Users\dukey\Source\UOFlow\UOWalkPatch\external\minhook\src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
@@ -398,12 +398,12 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <TreatWChar_tAsBuiltInType></TreatWChar_tAsBuiltInType>
       <UseFullPaths>false</UseFullPaths>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR="RelWithDebInfo";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SAFE_LUA_API_GUARD=1;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR="RelWithDebInfo";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR=\"RelWithDebInfo\";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;SAFE_LUA_API_GUARD=1;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS;NOMINMAX;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;CMAKE_INTDIR=\"RelWithDebInfo\";UOWalkPatchDLL_EXPORTS</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>C:\Users\dukey\Source\UOFlow\UOWalkPatch\src;C:\Users\dukey\Source\UOFlow\UOWalkPatch\include;C:\Users\dukey\Source\UOFlow\UOWalkPatch\external\luaplus\include;C:\Users\dukey\Source\UOFlow\UOWalkPatch\external\minhook\src\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
@@ -526,6 +526,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\dllmain.cpp" />
+    <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\Config.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\Logging.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\PatternScan.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\Utils.cpp" />
@@ -538,6 +539,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\LuaBridge.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\lua_safe.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\LuaStateRegistry.cpp" />
+    <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Walk\WalkController.cpp" />
   </ItemGroup>
   <ItemGroup />
   <ItemGroup>
