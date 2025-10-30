@@ -17,6 +17,21 @@ using lua_Hook = void(__cdecl*)(lua_State*, lua_Debug*);
 
 namespace Engine::Lua {
 
+constexpr uint32_t STATE_FLAG_HELPERS         = 1u << 0;
+constexpr uint32_t STATE_FLAG_QUARANTINED     = 1u << 1;
+constexpr uint32_t STATE_FLAG_VALID           = 1u << 2;
+constexpr uint32_t STATE_FLAG_HELPERS_BOUND   = 1u << 3;
+constexpr uint32_t STATE_FLAG_PANIC_OK        = 1u << 4;
+constexpr uint32_t STATE_FLAG_PANIC_MISS      = 1u << 5;
+constexpr uint32_t STATE_FLAG_DEBUG_OK        = 1u << 6;
+constexpr uint32_t STATE_FLAG_DEBUG_MISS      = 1u << 7;
+constexpr uint32_t STATE_FLAG_SLOT_READY      = 1u << 8;
+constexpr uint32_t STATE_FLAG_REG_STABLE      = 1u << 9;
+constexpr uint32_t STATE_FLAG_OWNER_READY     = 1u << 10;
+constexpr uint32_t STATE_FLAG_CANON_READY     = 1u << 11;
+constexpr uint32_t STATE_FLAG_HELPERS_PENDING = 1u << 12;
+constexpr uint32_t STATE_FLAG_HELPERS_INSTALLED = 1u << 13;
+
 struct LuaStateInfo {
     lua_State* L_reported = nullptr;
     void* ctx_reported = nullptr;
@@ -52,6 +67,16 @@ struct LuaStateInfo {
 
     int gc_sentinel_ref = -1;
     uint64_t gc_sentinel_gen = 0;
+
+    uint64_t slot_ready_tick_ms = 0;
+    uint64_t register_last_tick_ms = 0;
+    uint64_t register_quiet_tick_ms = 0;
+    uint64_t owner_ready_tick_ms = 0;
+    uint64_t canonical_ready_tick_ms = 0;
+    uint64_t helper_pending_tick_ms = 0;
+    uint64_t last_bind_log_tick_ms = 0;
+    uint64_t helper_pending_generation = 0;
+    uint64_t helper_installed_tick_ms = 0;
 };
 
 class LuaStateRegistry {

@@ -1,0 +1,292 @@
+#include "Walk/WalkController.hpp"
+
+#include <windows.h>
+
+#include <algorithm>
+#include <cmath>
+#include <mutex>
+#include <string>
+
+#include "Core/Config.hpp"
+#include "Core/Logging.hpp"
+
+namespace Walk::Controller {
+namespace {
+
+struct ControllerConfig {
+    bool enabled = false;
+    std::uint32_t maxInflight = 2;
+    std::uint32_t stepDelayMs = 280;
+    std::uint32_t timeoutMs = 400;
+};
+
+struct ControllerState {
+    bool active = false;
+    bool run = false;
+    float targetX = 0.0f;
+    float targetY = 0.0f;
+    float targetZ = 0.0f;
+    float currentX = 0.0f;
+    float currentZ = 0.0f;
+    std::uint32_t inflight = 0;
+    std::uint32_t lastHead = 0;
+    std::uint32_t lastStepTick = 0;
+    std::uint32_t lastProgressTick = 0;
+    std::uint32_t lastLogTick = 0;
+};
+
+constexpr float kArrivalThreshold = 0.4f;
+constexpr std::uint32_t kLogCooldownMs = 1500;
+constexpr std::uint32_t kMaxInflightCap = 4;
+
+ControllerConfig g_config{};
+std::once_flag g_configOnce;
+std::mutex g_stateMutex;
+ControllerState g_state{};
+
+std::uint32_t GetTickMs() {
+    return GetTickCount();
+}
+
+void LoadConfig() {
+    ControllerConfig cfg{};
+
+    if (auto envEnable = Core::Config::TryGetEnvBool("WALKCTRL_ENABLE"))
+        cfg.enabled = *envEnable;
+    else if (auto cfgEnable = Core::Config::TryGetBool("WALKCTRL_ENABLE"))
+        cfg.enabled = *cfgEnable;
+
+    auto readUint = [](const char* name, std::uint32_t& outValue) {
+        if (auto envValue = Core::Config::TryGetEnv(name)) {
+            try {
+                outValue = static_cast<std::uint32_t>(std::stoul(*envValue));
+                return true;
+            } catch (...) {
+                return false;
+            }
+        }
+        if (auto cfgValue = Core::Config::TryGetUInt(name)) {
+            outValue = *cfgValue;
+            return true;
+        }
+        return false;
+    };
+
+    std::uint32_t value = cfg.maxInflight;
+    if (readUint("WALKCTRL_MAX_INFLIGHT", value))
+        cfg.maxInflight = value;
+
+    value = cfg.stepDelayMs;
+    if (readUint("WALKCTRL_STEP_DELAY_MS", value))
+        cfg.stepDelayMs = value;
+
+    value = cfg.timeoutMs;
+    if (readUint("WALKCTRL_TIMEOUT_MS", value))
+        cfg.timeoutMs = value;
+
+    cfg.maxInflight = std::clamp<std::uint32_t>(cfg.maxInflight, 1u, kMaxInflightCap);
+    cfg.stepDelayMs = std::clamp<std::uint32_t>(cfg.stepDelayMs, 150u, 1000u);
+    cfg.timeoutMs = std::clamp<std::uint32_t>(cfg.timeoutMs, 200u, 2000u);
+
+    g_config = cfg;
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Walk,
+              "walk-controller config enable=%d maxInflight=%u stepDelayMs=%u timeoutMs=%u",
+              cfg.enabled ? 1 : 0,
+              cfg.maxInflight,
+              cfg.stepDelayMs,
+              cfg.timeoutMs);
+}
+
+void EnsureConfigLoaded() {
+    std::call_once(g_configOnce, LoadConfig);
+}
+
+bool HasArrived(float currentX, float currentZ, float targetX, float targetZ) {
+    return std::fabs(currentX - targetX) < kArrivalThreshold &&
+           std::fabs(currentZ - targetZ) < kArrivalThreshold;
+}
+
+int DetermineDirection(float currentX, float currentZ, float targetX, float targetZ) {
+    constexpr int kDirCount = 8;
+    constexpr int kStepDx[kDirCount] = {0, 1, 1, 1, 0, -1, -1, -1};
+    constexpr int kStepDz[kDirCount] = {-1, -1, 0, 1, 1, 1, 0, -1};
+
+    const float dx = targetX - currentX;
+    const float dz = targetZ - currentZ;
+    const float threshold = kArrivalThreshold;
+
+    int stepX = 0;
+    if (dx > threshold)
+        stepX = 1;
+    else if (dx < -threshold)
+        stepX = -1;
+
+    int stepZ = 0;
+    if (dz > threshold)
+        stepZ = 1;
+    else if (dz < -threshold)
+        stepZ = -1;
+
+    if (stepX == 0 && stepZ == 0)
+        return -1;
+
+    for (int dir = 0; dir < kDirCount; ++dir) {
+        if (kStepDx[dir] == stepX && kStepDz[dir] == stepZ)
+            return dir;
+    }
+
+    if (std::fabs(dx) >= std::fabs(dz))
+        return (dx > 0) ? 2 : 6;
+    return (dz > 0) ? 4 : 0;
+}
+
+} // namespace
+
+void Reset() {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    g_state = ControllerState{};
+}
+
+bool IsEnabled() {
+    EnsureConfigLoaded();
+    return g_config.enabled;
+}
+
+bool RequestTarget(float x, float y, float z, bool run) {
+    if (!IsEnabled())
+        return false;
+    if (!Engine::MovementReady())
+        return false;
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    g_state = ControllerState{};
+    g_state.active = true;
+    g_state.run = run;
+    g_state.targetX = x;
+    g_state.targetY = y;
+    g_state.targetZ = z;
+    g_state.lastProgressTick = GetTickMs();
+
+    Engine::MovementSnapshot snapshot{};
+    if (Engine::GetLastMovementSnapshot(snapshot)) {
+        g_state.currentX = snapshot.posX;
+        g_state.currentZ = snapshot.posZ;
+        g_state.lastHead = snapshot.head;
+    }
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Walk,
+              "walk-controller start target=(%.2f,%.2f,%.2f) run=%d",
+              x,
+              y,
+              z,
+              run ? 1 : 0);
+    return true;
+}
+
+void Cancel() {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    if (!g_state.active)
+        return;
+    g_state.active = false;
+    g_state.inflight = 0;
+}
+
+void OnMovementSnapshot(const Engine::MovementSnapshot& snapshot,
+                        bool headChanged,
+                        std::uint32_t tickMs) {
+    if (!IsEnabled()) {
+        Reset();
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    if (!g_state.active)
+        return;
+
+    g_state.currentX = snapshot.posX;
+    g_state.currentZ = snapshot.posZ;
+
+    if (headChanged) {
+        if (g_state.inflight > 0)
+            --g_state.inflight;
+        g_state.lastHead = snapshot.head;
+        g_state.lastProgressTick = tickMs;
+    }
+
+    if (HasArrived(g_state.currentX, g_state.currentZ, g_state.targetX, g_state.targetZ)) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Walk,
+                  "walk-controller arrived pos=(%.2f,%.2f)",
+                  g_state.currentX,
+                  g_state.currentZ);
+        g_state = ControllerState{};
+        return;
+    }
+
+    if (g_state.inflight > 0) {
+        const std::uint32_t elapsed = tickMs - g_state.lastProgressTick;
+        if (elapsed > g_config.timeoutMs) {
+            if (tickMs - g_state.lastLogTick > kLogCooldownMs) {
+                g_state.lastLogTick = tickMs;
+                Log::Logf(Log::Level::Warn,
+                          Log::Category::Walk,
+                          "walk-controller timeout inflight=%u head=%u pos=(%.2f,%.2f) target=(%.2f,%.2f)",
+                          g_state.inflight,
+                          snapshot.head,
+                          g_state.currentX,
+                          g_state.currentZ,
+                          g_state.targetX,
+                          g_state.targetZ);
+            }
+            g_state.inflight = 0;
+            g_state.lastProgressTick = tickMs;
+        }
+    }
+
+    if (g_state.inflight >= g_config.maxInflight)
+        return;
+
+    if (tickMs - g_state.lastStepTick < g_config.stepDelayMs)
+        return;
+
+    if (!Engine::MovementReady())
+        return;
+
+    int dir = DetermineDirection(g_state.currentX, g_state.currentZ, g_state.targetX, g_state.targetZ);
+    if (dir < 0) {
+        g_state.active = false;
+        g_state.inflight = 0;
+        return;
+    }
+
+    const bool sent = SendWalk(dir, g_state.run ? 1 : 0);
+    g_state.lastStepTick = tickMs;
+    if (sent) {
+        ++g_state.inflight;
+        g_state.lastProgressTick = tickMs;
+        if (Log::IsEnabled(Log::Category::Walk, Log::Level::Debug)) {
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Walk,
+                      "walk-controller step dir=%d run=%d inflight=%u pos=(%.2f,%.2f) target=(%.2f,%.2f)",
+                      dir,
+                      g_state.run ? 1 : 0,
+                      g_state.inflight,
+                      g_state.currentX,
+                      g_state.currentZ,
+                      g_state.targetX,
+                      g_state.targetZ);
+        }
+    } else if (tickMs - g_state.lastLogTick > kLogCooldownMs) {
+        g_state.lastLogTick = tickMs;
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Walk,
+                  "walk-controller step-failed dir=%d run=%d",
+                  dir,
+                  g_state.run ? 1 : 0);
+    }
+}
+
+} // namespace Walk::Controller

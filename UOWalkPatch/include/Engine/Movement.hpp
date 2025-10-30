@@ -25,6 +25,14 @@ namespace Engine {
         int fastWalkDepth;
     };
 
+    struct MovementSnapshot {
+        uint32_t head = 0;
+        uint32_t tail = 0;
+        uint32_t stateFlags = 0;
+        float posX = 0.0f;
+        float posZ = 0.0f;
+    };
+
     void PushFastWalkKey(SOCKET socket, uint32_t key);
     uint32_t PopFastWalkKey();
     uint32_t PopFastWalkKey(SOCKET socket);
@@ -36,6 +44,8 @@ namespace Engine {
     void SetActiveFastWalkSocket(SOCKET socket);
     void OnSocketClosed(SOCKET socket);
     void RecordObservedFastWalkKey(uint32_t key);
+    // Track inbound FastWalk keys for reconciliation with movement snapshots and timeout checks.
+    void RecordInboundFastWalkKey(SOCKET socket, uint32_t key, int depthBefore, int depthAfter, uint64_t tickMs);
     SOCKET ResolveFastWalkSocket(SOCKET socket);
     void RecordMovementSent(uint8_t seq);
     void RecordMovementAck(uint8_t seq, uint8_t status);
@@ -53,6 +63,7 @@ namespace Engine {
     bool MovementReady();
     bool MovementReadyWithReason(const char** reasonOut);
     void GetMovementDebugStatus(MovementDebugStatus& out);
+    bool GetLastMovementSnapshot(MovementSnapshot& outSnapshot);
     void RequestWalkRegistration();
 }
 

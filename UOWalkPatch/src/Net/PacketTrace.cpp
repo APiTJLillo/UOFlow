@@ -68,11 +68,12 @@ static void LogFastWalkGateDecision(const char* action, SOCKET s, int depth)
     }
 }
 
-static void LogInboundFastWalkKey(const char* source, SOCKET socket, uint32_t key, int depthBefore)
+static void LogInboundFastWalkKey(const char* source, SOCKET socket, uint32_t key, int depthBefore, int depthAfter, uint64_t tickMs)
 {
+    Engine::RecordInboundFastWalkKey(socket, key, depthBefore, depthAfter, tickMs);
+
     static volatile LONG budget = 48;
     if (budget > 0 && InterlockedDecrement(&budget) >= 0) {
-        int depthAfter = Engine::FastWalkQueueDepth(socket);
         Logf("FastWalk inbound %s socket=%p key=%08X depth=%d->%d",
              source,
              reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
@@ -177,6 +178,18 @@ static bool ScanFastWalkPayload(SOCKET socket, const char* source, const uint8_t
     if (!data || len < 4)
         return false;
 
+    auto recordInbound = [&](uint32_t key) -> bool {
+        if (!key)
+            return false;
+        int depthBefore = Engine::FastWalkQueueDepth(socket);
+        if (!HandleFastWalkKey(socket, key, source))
+            return false;
+        uint64_t tickNow = GetTickCount64();
+        int depthAfter = Engine::FastWalkQueueDepth(socket);
+        LogInboundFastWalkKey(source, socket, key, depthBefore, depthAfter, tickNow);
+        return true;
+    };
+
     // Pattern 1: embedded movement packet (0x02 [flags] [seq] key)
     for (size_t i = 0; i + 7 <= len; ++i) {
         if (data[i] == 0x02 && (data[i + 1] & 0x80)) {
@@ -184,18 +197,18 @@ static bool ScanFastWalkPayload(SOCKET socket, const char* source, const uint8_t
                            (static_cast<uint32_t>(data[i + 4]) << 16) |
                            (static_cast<uint32_t>(data[i + 5]) << 8) |
                            static_cast<uint32_t>(data[i + 6]);
-            if (HandleFastWalkKey(socket, key, source))
+            if (recordInbound(key))
                 return true;
         }
     }
 
     // Pattern 2: big-endian key scan (high byte 0x01)
     for (size_t i = 0; i + 4 <= len; ++i) {
-        uint32_t key = (static_cast<uint32_t>(data[i]) << 24) |
-                       (static_cast<uint32_t>(data[i + 1]) << 16) |
-                       (static_cast<uint32_t>(data[i + 2]) << 8) |
-                       static_cast<uint32_t>(data[i + 3]);
-        if ((key & 0xFF000000u) == 0x01000000u && HandleFastWalkKey(socket, key, source))
+        uint32_t keyBe = (static_cast<uint32_t>(data[i]) << 24) |
+                         (static_cast<uint32_t>(data[i + 1]) << 16) |
+                         (static_cast<uint32_t>(data[i + 2]) << 8) |
+                         static_cast<uint32_t>(data[i + 3]);
+        if ((keyBe & 0xFF000000u) == 0x01000000u && recordInbound(keyBe))
             return true;
 
         // Pattern 3: little-endian scan
@@ -203,7 +216,7 @@ static bool ScanFastWalkPayload(SOCKET socket, const char* source, const uint8_t
                          (static_cast<uint32_t>(data[i + 1]) << 8) |
                          (static_cast<uint32_t>(data[i + 2]) << 16) |
                          (static_cast<uint32_t>(data[i + 3]) << 24);
-        if ((keyLe & 0xFF000000u) == 0x01000000u && HandleFastWalkKey(socket, keyLe, source))
+        if ((keyLe & 0xFF000000u) == 0x01000000u && recordInbound(keyLe))
             return true;
     }
 
@@ -301,7 +314,9 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
         int depthBefore = Engine::FastWalkQueueDepth(effectiveSocket);
         bool accepted = HandleFastWalkKey(effectiveSocket, key, "0x2E");
         if (accepted) {
-            LogInboundFastWalkKey("0x2E", effectiveSocket, key, depthBefore);
+            uint64_t tickNow = GetTickCount64();
+            int depthAfter = Engine::FastWalkQueueDepth(effectiveSocket);
+            LogInboundFastWalkKey("0x2E", effectiveSocket, key, depthBefore, depthAfter, tickNow);
         } else if (shouldLogTraces) {
             if (key == 0) {
                 Logf("FastWalk 0x2E packet ignored len=%d", len);
@@ -312,7 +327,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
     } else if ((opcode == 0x7B || opcode == 0x73) && len > 1) {
         const uint8_t* payload = reinterpret_cast<const uint8_t*>(buf + 1);
         size_t payloadLen = static_cast<size_t>(len - 1);
-        ScanFastWalkPayload(s, opcode == 0x7B ? "0x7B" : "0x73", payload, payloadLen);
+        ScanFastWalkPayload(effectiveSocket, opcode == 0x7B ? "0x7B" : "0x73", payload, payloadLen);
     }
 
     Net::PollSendBuilder();
@@ -423,7 +438,9 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
         int depthBefore = Engine::FastWalkQueueDepth(effectiveSocket);
         bool accepted = HandleFastWalkKey(effectiveSocket, key, "0xB8");
         if (accepted) {
-            LogInboundFastWalkKey("0xB8", effectiveSocket, key, depthBefore);
+            uint64_t tickNowB8 = GetTickCount64();
+            int depthAfterB8 = Engine::FastWalkQueueDepth(effectiveSocket);
+            LogInboundFastWalkKey("0xB8", effectiveSocket, key, depthBefore, depthAfterB8, tickNowB8);
         } else if (shouldLogTraces) {
             if (key == 0) {
                 Logf("FastWalk 0xB8 packet ignored len=%d", len);
@@ -444,8 +461,11 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
             {
                 uint32_t key = ntohl(*(uint32_t*)p);
                 int depthBefore = Engine::FastWalkQueueDepth(effectiveSocket);
-                if (HandleFastWalkKey(effectiveSocket, key, "0xBF:01"))
-                    LogInboundFastWalkKey("0xBF:01", effectiveSocket, key, depthBefore);
+                if (HandleFastWalkKey(effectiveSocket, key, "0xBF:01")) {
+                    uint64_t tickNowBF01 = GetTickCount64();
+                    int depthAfterBF01 = Engine::FastWalkQueueDepth(effectiveSocket);
+                    LogInboundFastWalkKey("0xBF:01", effectiveSocket, key, depthBefore, depthAfterBF01, tickNowBF01);
+                }
                 p += 4;
             }
         }
@@ -453,8 +473,11 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
         {
             uint32_t key = ntohl(*(uint32_t*)(payload + 1));
             int depthBefore = Engine::FastWalkQueueDepth(effectiveSocket);
-            if (HandleFastWalkKey(effectiveSocket, key, "0xBF:02"))
-                LogInboundFastWalkKey("0xBF:02", effectiveSocket, key, depthBefore);
+            if (HandleFastWalkKey(effectiveSocket, key, "0xBF:02")) {
+                uint64_t tickNowBF02 = GetTickCount64();
+                int depthAfterBF02 = Engine::FastWalkQueueDepth(effectiveSocket);
+                LogInboundFastWalkKey("0xBF:02", effectiveSocket, key, depthBefore, depthAfterBF02, tickNowBF02);
+            }
         }
     }
 }
@@ -714,6 +737,5 @@ void SetPreferredSocket(SOCKET s)
 {
     UpdatePreferredSocket(s);
 }
-
 
 } // namespace Net

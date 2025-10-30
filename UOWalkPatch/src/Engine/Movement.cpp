@@ -11,13 +11,17 @@
 #include <mutex>
 #include <unordered_map>
 #include <string>
+#include <algorithm>
+#include <vector>
 
 #include "Core/Logging.hpp"
+#include "Core/Config.hpp"
 #include "Core/Utils.hpp"
 #include "Core/PatternScan.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
+#include "Walk/WalkController.hpp"
 
 // Move variable definition to global scope
 extern volatile LONG g_needWalkReg;
@@ -25,6 +29,10 @@ extern volatile LONG g_needWalkReg;
 namespace {
 
 struct Vec3 { int16_t x, y; int8_t z; };
+
+static bool g_moveSafeDumpEnabled = false;
+static uint32_t g_fastWalkAssocWindowMs = 250;
+static std::once_flag g_movementConfigOnce;
 
 static void* g_moveComp = nullptr; // movement component instance
 static void* g_moveCandidate = nullptr;
@@ -38,8 +46,179 @@ static thread_local int g_updateDepth = 0;
 static constexpr size_t kFastWalkQueueCapacity = 64;
 static std::mutex g_fastWalkMutex;
 static std::unordered_map<SOCKET, std::deque<uint32_t>> g_fastWalkQueues;
+struct FastWalkKeyRecord {
+    uint32_t key = 0;
+    uint64_t tickMs = 0;
+    int depthBefore = 0;
+    int depthAfter = 0;
+    bool consumed = false;
+    bool warned = false;
+};
+static std::unordered_map<SOCKET, std::deque<FastWalkKeyRecord>> g_fastWalkKeyHistory;
 static std::unordered_map<SOCKET, SOCKET> g_socketAliases;
+static constexpr uint32_t kFastWalkWarningWindowMs = 500;
+static constexpr uint64_t kFastWalkHistoryTtlMs = 2000;
+static constexpr size_t kFastWalkHistoryLimit = 32;
 static SOCKET g_activeFastWalkSocket = INVALID_SOCKET;
+
+static SOCKET ResolveSocketAliasLocked(SOCKET socket);
+static SOCKET SelectNextActiveSocketLocked();
+
+static void PruneOldFastWalkKeysLocked(SOCKET socket, uint64_t now) {
+    auto it = g_fastWalkKeyHistory.find(socket);
+    if (it == g_fastWalkKeyHistory.end())
+        return;
+    auto& history = it->second;
+    while (!history.empty() && now - history.front().tickMs > kFastWalkHistoryTtlMs)
+        history.pop_front();
+    if (history.empty())
+        g_fastWalkKeyHistory.erase(it);
+}
+
+static void RecordFastWalkKeyLocked(SOCKET socket, uint32_t key, int depthBefore, int depthAfter, uint64_t tickMs) {
+    FastWalkKeyRecord record{};
+    record.key = key;
+    record.tickMs = tickMs;
+    record.depthBefore = depthBefore;
+    record.depthAfter = depthAfter;
+    auto& history = g_fastWalkKeyHistory[socket];
+    if (history.size() >= kFastWalkHistoryLimit)
+        history.pop_front();
+    history.push_back(record);
+    PruneOldFastWalkKeysLocked(socket, tickMs);
+}
+
+static bool FetchRecentFastWalkKeyLocked(SOCKET socket, uint64_t now, uint32_t windowMs, FastWalkKeyRecord* outRecord) {
+    auto it = g_fastWalkKeyHistory.find(socket);
+    if (it == g_fastWalkKeyHistory.end())
+        return false;
+    const auto& history = it->second;
+    for (auto rit = history.rbegin(); rit != history.rend(); ++rit) {
+        if (rit->consumed)
+            continue;
+        if (now >= rit->tickMs && now - rit->tickMs <= windowMs) {
+            if (outRecord)
+                *outRecord = *rit;
+            return true;
+        }
+        if (now > rit->tickMs && now - rit->tickMs > windowMs)
+            break;
+    }
+    return false;
+}
+
+static void MarkFastWalkKeyConsumedLocked(SOCKET socket, uint32_t key, uint64_t now) {
+    auto it = g_fastWalkKeyHistory.find(socket);
+    if (it == g_fastWalkKeyHistory.end())
+        return;
+    auto& history = it->second;
+    bool matched = false;
+    if (key != 0) {
+        for (auto rit = history.rbegin(); rit != history.rend(); ++rit) {
+            if (rit->key == key) {
+                if (!rit->consumed) {
+                    rit->consumed = true;
+                    rit->warned = false;
+                }
+                matched = true;
+                break;
+            }
+        }
+    }
+    if (!matched) {
+        for (auto& record : history) {
+            if (!record.consumed) {
+                record.consumed = true;
+                record.warned = false;
+                break;
+            }
+        }
+    }
+    PruneOldFastWalkKeysLocked(socket, now);
+}
+
+static void CheckFastWalkTimeoutsLocked(SOCKET socket, uint32_t headIndex, uint32_t tailIndex, uint64_t now) {
+    auto it = g_fastWalkKeyHistory.find(socket);
+    if (it == g_fastWalkKeyHistory.end())
+        return;
+
+    auto& history = it->second;
+    bool emitted = false;
+    uint64_t maxAge = 0;
+    for (auto& record : history) {
+        if (!record.consumed && !record.warned) {
+            uint64_t age = (now >= record.tickMs) ? (now - record.tickMs) : 0;
+            if (age > maxAge)
+                maxAge = age;
+            if (age > kFastWalkWarningWindowMs) {
+                record.warned = true;
+                emitted = true;
+            }
+        }
+    }
+
+    if (emitted) {
+        char keyBuf[64] = {};
+        int offset = 0;
+        size_t count = 0;
+        for (auto rit = history.rbegin(); rit != history.rend() && count < 3; ++rit, ++count) {
+            offset += sprintf_s(keyBuf + offset,
+                                sizeof(keyBuf) - offset,
+                                "%s0x%08X",
+                                count ? "," : "",
+                                rit->key);
+            if (offset < 0 || static_cast<size_t>(offset) >= sizeof(keyBuf))
+                break;
+        }
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::FastWalk,
+                  "FastWalk key delay socket=%p headIdx=%u tailIdx=%u latestAgeMs=%llu recentKeys=[%s]",
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(socket)),
+                  headIndex,
+                  tailIndex,
+                  static_cast<unsigned long long>(maxAge),
+                  (offset > 0) ? keyBuf : "<none>");
+    }
+
+    PruneOldFastWalkKeysLocked(socket, now);
+}
+
+static void CheckFastWalkTimeoutsAllLocked(uint32_t headIndex, uint32_t tailIndex, uint64_t now) {
+    if (g_fastWalkKeyHistory.empty())
+        return;
+    std::vector<SOCKET> sockets;
+    sockets.reserve(g_fastWalkKeyHistory.size());
+    for (const auto& entry : g_fastWalkKeyHistory)
+        sockets.push_back(entry.first);
+    for (SOCKET socket : sockets)
+        CheckFastWalkTimeoutsLocked(socket, headIndex, tailIndex, now);
+}
+
+static bool TryAssociateFastWalkWithMovement(uint32_t headIndex,
+                                             uint32_t tailIndex,
+                                             uint64_t now,
+                                             bool consumeKey,
+                                             SOCKET* outSocket,
+                                             FastWalkKeyRecord* outRecord) {
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    SOCKET socket = ResolveSocketAliasLocked(g_activeFastWalkSocket);
+    if (socket == INVALID_SOCKET)
+        socket = SelectNextActiveSocketLocked();
+    g_activeFastWalkSocket = socket;
+
+    if (outSocket)
+        *outSocket = socket;
+
+    bool matched = false;
+    if (socket != INVALID_SOCKET && consumeKey && outRecord) {
+        matched = FetchRecentFastWalkKeyLocked(socket, now, g_fastWalkAssocWindowMs, outRecord);
+        if (matched)
+            MarkFastWalkKeyConsumedLocked(socket, outRecord->key, now);
+    }
+
+    CheckFastWalkTimeoutsAllLocked(headIndex, tailIndex, now);
+    return matched;
+}
 static volatile LONG g_fwOverflowWarned = 0;
 static Vec3 g_expectedDest{};
 static volatile LONG g_expectValid = 0;
@@ -293,23 +472,108 @@ static void LogQueueEntry(const char* label, const uint8_t* data, size_t len = k
 static void ProbeFastWalkStorage(const uint8_t* compPtrData);
 static bool CopyMemorySafe(const void* src, void* dst, size_t len);
 
+static bool IsReadableProtect(DWORD protect) {
+    switch (protect & 0xFF) {
+        case PAGE_READONLY:
+        case PAGE_READWRITE:
+        case PAGE_WRITECOPY:
+        case PAGE_EXECUTE_READ:
+        case PAGE_EXECUTE_READWRITE:
+        case PAGE_EXECUTE_WRITECOPY:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool IsExecutableProtect(DWORD protect) {
+    switch (protect & 0xFF) {
+        case PAGE_EXECUTE:
+        case PAGE_EXECUTE_READ:
+        case PAGE_EXECUTE_READWRITE:
+        case PAGE_EXECUTE_WRITECOPY:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void LoadMovementConfig() {
+    std::call_once(g_movementConfigOnce, []() {
+        if (auto enabled = Core::Config::TryGetBool("MOVE_SAFE_DUMP"))
+            g_moveSafeDumpEnabled = *enabled;
+        if (auto windowMs = Core::Config::TryGetUInt("FW_ASSOC_WINDOW_MS"))
+            g_fastWalkAssocWindowMs = std::clamp<uint32_t>(static_cast<uint32_t>(*windowMs), 50u, 1000u);
+    });
+}
+
 static void LogMovementVtable(void* thisPtr)
 {
     if (!thisPtr)
         return;
-    void** vt = *reinterpret_cast<void***>(thisPtr);
+    LoadMovementConfig();
+    if (!g_moveSafeDumpEnabled && !Log::IsEnabled(Log::Category::Movement, Log::Level::Debug))
+        return;
+
+    void** vt = nullptr;
+    __try {
+        vt = *reinterpret_cast<void***>(thisPtr);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Movement,
+                  "Movement vtable pointer unreadable (seh=0x%08lX)",
+                  static_cast<unsigned long>(GetExceptionCode()));
+        return;
+    }
+
     if (!vt || vt == g_loggedVtable)
         return;
 
-    g_loggedVtable = vt;
-    Logf("Movement component vtable snapshot (first 16 entries):");
-    __try {
-        for (int i = 0; i < 16; ++i) {
-            Logf("  vtbl[%02d] = %p", i, vt[i]);
-        }
+    MEMORY_BASIC_INFORMATION tableInfo{};
+    if (VirtualQuery(vt, &tableInfo, sizeof(tableInfo)) != sizeof(tableInfo) || !IsReadableProtect(tableInfo.Protect)) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Movement,
+                  "Movement vtable base unreadable vt=%p protect=0x%08lX",
+                  vt,
+                  static_cast<unsigned long>(tableInfo.Protect));
+        return;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("Movement component vtable logging aborted due to access violation");
+
+    g_loggedVtable = vt;
+    Log::Logf(Log::Level::Debug, Log::Category::Movement, "Movement component vtable snapshot (first 16 entries):");
+
+    for (int i = 0; i < 16; ++i) {
+        void* entry = nullptr;
+        DWORD sehCode = 0;
+        __try {
+            entry = vt[i];
+        }
+        __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+            entry = nullptr;
+        }
+
+        if (sehCode != 0) {
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Movement,
+                      "  vtbl[%02d] = <unreadable> seh=0x%08lX",
+                      i,
+                      static_cast<unsigned long>(sehCode));
+            continue;
+        }
+
+        MEMORY_BASIC_INFORMATION entryInfo{};
+        if (!entry || VirtualQuery(entry, &entryInfo, sizeof(entryInfo)) != sizeof(entryInfo) || !IsExecutableProtect(entryInfo.Protect)) {
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Movement,
+                      "  vtbl[%02d] = %p (skipped protect=0x%08lX)",
+                      i,
+                      entry,
+                      entry ? static_cast<unsigned long>(entryInfo.Protect) : 0UL);
+            continue;
+        }
+
+        Log::Logf(Log::Level::Debug, Log::Category::Movement, "  vtbl[%02d] = %p", i, entry);
     }
 }
 
@@ -819,6 +1083,21 @@ static SOCKET ResolveSocketAliasLocked(SOCKET socket)
 
 namespace Engine {
 
+void RecordInboundFastWalkKey(SOCKET socket, uint32_t key, int depthBefore, int depthAfter, uint64_t tickMs) {
+    if (socket == INVALID_SOCKET || key == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_fastWalkMutex);
+    SOCKET canonical = ResolveSocketAliasLocked(socket);
+    if (canonical == INVALID_SOCKET)
+        canonical = socket;
+    if (socket != canonical && canonical != INVALID_SOCKET)
+        g_socketAliases[socket] = canonical;
+
+    RecordFastWalkKeyLocked(canonical, key, depthBefore, depthAfter, tickMs);
+    CheckFastWalkTimeoutsAllLocked(g_lastIndexHead, g_lastIndexTail, tickMs);
+}
+
 static bool MovementReadyInternal(const char** reasonOut)
 {
     if (!g_updateState) {
@@ -901,6 +1180,10 @@ uint32_t PopFastWalkKey(SOCKET socket) {
               depth,
               reinterpret_cast<void*>(static_cast<uintptr_t>(socket)));
     WriteRawLog(buf);
+
+    uint64_t now = GetTickCount64();
+    MarkFastWalkKeyConsumedLocked(socket, key, now);
+    CheckFastWalkTimeoutsLocked(socket, g_lastIndexHead, g_lastIndexTail, now);
 
     if (it->second.empty()) {
         g_fastWalkQueues.erase(it);
@@ -1144,6 +1427,17 @@ void GetMovementDebugStatus(MovementDebugStatus& out) {
     out.pendingRun = g_pendingRunFlag != 0;
 }
 
+bool GetLastMovementSnapshot(Engine::MovementSnapshot& outSnapshot) {
+    if (!g_moveSnapshotValid)
+        return false;
+    outSnapshot.head = g_lastMoveSnapshot.head;
+    outSnapshot.tail = g_lastMoveSnapshot.tail;
+    outSnapshot.stateFlags = g_lastMoveSnapshot.stateFlags;
+    outSnapshot.posX = g_lastMoveSnapshot.posX;
+    outSnapshot.posZ = g_lastMoveSnapshot.posZ;
+    return true;
+}
+
 void RequestWalkRegistration() {
     InterlockedExchange(&g_needWalkReg, 1);
     Engine::Lua::ScheduleWalkBinding();
@@ -1157,6 +1451,8 @@ SOCKET ResolveFastWalkSocket(SOCKET socket)
 }
 
 bool InitMovementHooks() {
+    LoadMovementConfig();
+    Walk::Controller::Reset();
     ResetMovementSequenceState();
     g_socketAliases.clear();
 
@@ -1191,6 +1487,7 @@ void ShutdownMovementHooks() {
         g_updateState = nullptr;
         g_origUpdate = nullptr;
     }
+    Walk::Controller::Reset();
     g_moveComp = nullptr;
    g_moveCandidate = nullptr;
    g_dest = nullptr;
@@ -1438,6 +1735,13 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
         const uint8_t* headEntryPtr = (0x20 + kQueueEntrySize <= kDestCopySize) ? compPtrData + 0x20 : nullptr;
         const uint8_t* tailEntryPtr = (0x30 + kQueueEntrySize <= kDestCopySize) ? compPtrData + 0x30 : nullptr;
 
+        bool headChanged = hadSnapshot && head != g_lastIndexHead;
+        bool tailChanged = hadSnapshot && tail != g_lastIndexTail;
+        uint64_t now64 = GetTickCount64();
+        FastWalkKeyRecord assocRecord{};
+        SOCKET assocSocket = INVALID_SOCKET;
+        bool haveAssoc = TryAssociateFastWalkWithMovement(head, tail, now64, headChanged, &assocSocket, &assocRecord);
+
         if (!hadSnapshot) {
             if (g_savedIndexBudget > 0) {
                 Logf("Queue indices initial: head=%u (0x%08X %.3f) tail=%u (0x%08X %.3f)",
@@ -1464,16 +1768,48 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
                 g_haveTailEntry = true;
             }
         } else {
-            if (head != g_lastIndexHead && g_savedIndexBudget > 0) {
-                Logf("Queue head changed: prev=%u (0x%08X %.3f) -> %u (0x%08X %.3f)",
-                     g_lastIndexHead, g_lastIndexHead, static_cast<double>(AsFloat(g_lastIndexHead)),
-                     head, head, static_cast<double>(AsFloat(head)));
+            if (headChanged && g_savedIndexBudget > 0) {
+                if (haveAssoc && assocSocket != INVALID_SOCKET) {
+                    uint64_t ageMs = (now64 >= assocRecord.tickMs) ? (now64 - assocRecord.tickMs) : 0;
+                    Log::Logf(Log::Level::Debug,
+                              Log::Category::Movement,
+                              "Queue head changed: prev=%u (0x%08X %.3f) -> %u (0x%08X %.3f) [socket=%p fw.key=0x%08X depth=%d->%d age=%llu ms]",
+                              g_lastIndexHead,
+                              g_lastIndexHead,
+                              static_cast<double>(AsFloat(g_lastIndexHead)),
+                              head,
+                              head,
+                              static_cast<double>(AsFloat(head)),
+                              reinterpret_cast<void*>(static_cast<uintptr_t>(assocSocket)),
+                              assocRecord.key,
+                              assocRecord.depthBefore,
+                              assocRecord.depthAfter,
+                              static_cast<unsigned long long>(ageMs));
+                } else {
+                    Log::Logf(Log::Level::Debug,
+                              Log::Category::Movement,
+                              "Queue head changed: prev=%u (0x%08X %.3f) -> %u (0x%08X %.3f) [socket=%p fw.key=<none> window=%u ms]",
+                              g_lastIndexHead,
+                              g_lastIndexHead,
+                              static_cast<double>(AsFloat(g_lastIndexHead)),
+                              head,
+                              head,
+                              static_cast<double>(AsFloat(head)),
+                              reinterpret_cast<void*>(static_cast<uintptr_t>(assocSocket)),
+                              static_cast<unsigned>(g_fastWalkAssocWindowMs));
+                }
                 --g_savedIndexBudget;
             }
-            if (tail != g_lastIndexTail && g_savedIndexBudget > 0) {
-                Logf("Queue tail changed: prev=%u (0x%08X %.3f) -> %u (0x%08X %.3f)",
-                     g_lastIndexTail, g_lastIndexTail, static_cast<double>(AsFloat(g_lastIndexTail)),
-                     tail, tail, static_cast<double>(AsFloat(tail)));
+            if (tailChanged && g_savedIndexBudget > 0) {
+                Log::Logf(Log::Level::Debug,
+                          Log::Category::Movement,
+                          "Queue tail changed: prev=%u (0x%08X %.3f) -> %u (0x%08X %.3f)",
+                          g_lastIndexTail,
+                          g_lastIndexTail,
+                          static_cast<double>(AsFloat(g_lastIndexTail)),
+                          tail,
+                          tail,
+                          static_cast<double>(AsFloat(tail)));
                 --g_savedIndexBudget;
             }
             if (headEntryPtr) {
@@ -1529,6 +1865,11 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
         g_haveCompPtrSnapshot = true;
         g_lastIndexHead = head;
         g_lastIndexTail = tail;
+
+        Engine::MovementSnapshot controllerSnapshot{};
+        if (Engine::GetLastMovementSnapshot(controllerSnapshot)) {
+            Walk::Controller::OnMovementSnapshot(controllerSnapshot, headChanged, now);
+        }
     }
 
     if (dumpReserved) {
@@ -1687,7 +2028,7 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
 
     --g_updateDepth;
     if (g_updateDepth == 0 && InterlockedExchange(&g_needWalkReg, 0)) {
-        WriteRawLog("H_Update safe point - scheduling Lua helper registration");
+        Log::Logf(Log::Level::Debug, Log::Category::Hooks, "H_Update safe point - scheduling Lua helper registration");
         Engine::Lua::ScheduleWalkBinding();
     }
 
@@ -1824,3 +2165,4 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     WriteRawLog(queuedLocally ? "SendWalk completed" : "SendWalk completed without enqueue");
     return queuedLocally || sendOk;
 }
+

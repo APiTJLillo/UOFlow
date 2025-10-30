@@ -161,8 +161,11 @@ void LuaStateRegistry::IncrementHookCounters(lua_State* canonical, uint32_t call
 
 void LuaStateRegistry::ClearFlagsAll(uint32_t mask) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& entry : entries_)
+    for (auto& entry : entries_) {
+        if (mask & STATE_FLAG_HELPERS_INSTALLED)
+            entry.info.helper_installed_tick_ms = 0;
         entry.info.flags &= ~mask;
+    }
 }
 
 std::vector<LuaStateInfo> LuaStateRegistry::Snapshot() const {
@@ -273,6 +276,25 @@ void LuaStateRegistry::CombineInfo(LuaStateInfo& into, const LuaStateInfo& from)
         into.gc_sentinel_gen = from.gc_sentinel_gen;
         into.gc_sentinel_ref = from.gc_sentinel_ref;
     }
+
+    if (from.slot_ready_tick_ms && (!into.slot_ready_tick_ms || from.slot_ready_tick_ms < into.slot_ready_tick_ms))
+        into.slot_ready_tick_ms = from.slot_ready_tick_ms;
+    if (from.register_last_tick_ms > into.register_last_tick_ms)
+        into.register_last_tick_ms = from.register_last_tick_ms;
+    if (from.register_quiet_tick_ms > into.register_quiet_tick_ms)
+        into.register_quiet_tick_ms = from.register_quiet_tick_ms;
+    if (from.owner_ready_tick_ms && (!into.owner_ready_tick_ms || from.owner_ready_tick_ms < into.owner_ready_tick_ms))
+        into.owner_ready_tick_ms = from.owner_ready_tick_ms;
+    if (from.canonical_ready_tick_ms > into.canonical_ready_tick_ms)
+        into.canonical_ready_tick_ms = from.canonical_ready_tick_ms;
+    if (from.helper_pending_tick_ms > into.helper_pending_tick_ms)
+        into.helper_pending_tick_ms = from.helper_pending_tick_ms;
+    if (from.last_bind_log_tick_ms > into.last_bind_log_tick_ms)
+        into.last_bind_log_tick_ms = from.last_bind_log_tick_ms;
+    if (from.helper_pending_generation > into.helper_pending_generation)
+        into.helper_pending_generation = from.helper_pending_generation;
+    if (from.helper_installed_tick_ms > into.helper_installed_tick_ms)
+        into.helper_installed_tick_ms = from.helper_installed_tick_ms;
 }
 
 std::pair<LuaStateRegistry::Entry*, bool> LuaStateRegistry::EnsureEntry(lua_State* reported, void* ctx, DWORD tid, uint64_t gen) {
