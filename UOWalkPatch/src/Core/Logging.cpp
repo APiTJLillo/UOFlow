@@ -10,6 +10,16 @@
 #include <cstring>
 #include <atomic>
 #include <algorithm>
+#include <cstdlib>
+#include <corecrt_startup.h>
+#include <crtdbg.h>
+
+#ifndef STATUS_STACK_BUFFER_OVERRUN
+#define STATUS_STACK_BUFFER_OVERRUN static_cast<DWORD>(0xC0000409u)
+#endif
+#ifndef STATUS_FAIL_FAST_EXCEPTION
+#define STATUS_FAIL_FAST_EXCEPTION static_cast<DWORD>(0xC0000602u)
+#endif
 
 namespace Log {
 namespace {
@@ -19,6 +29,7 @@ char   g_logPath[MAX_PATH] = {};
 BOOL   g_logAnnounced = FALSE;
 HMODULE g_hModule = NULL;
 std::atomic<int> g_minLevel{static_cast<int>(Level::Info)};
+PVOID g_securityHandlerHandle = nullptr;
 
 const char* LevelToString(Level level) {
     switch (level) {
@@ -178,6 +189,69 @@ void SetupConsole() {
     }
 }
 
+void __cdecl LogInvalidParameterHandler(const wchar_t* expression,
+                                        const wchar_t* function,
+                                        const wchar_t* file,
+                                        unsigned int line,
+                                        uintptr_t) {
+    char buffer[512];
+    const wchar_t* expr = expression ? expression : L"(null)";
+    const wchar_t* func = function ? function : L"(null)";
+    const wchar_t* filename = file ? file : L"(null)";
+    int written = _snprintf_s(buffer,
+                              sizeof(buffer),
+                              _TRUNCATE,
+                              "[CRT][invalid_parameter] expr=%S function=%S file=%S line=%u",
+                              expr,
+                              func,
+                              filename,
+                              line);
+    if (written > 0)
+        WriteRawLog(buffer);
+}
+
+LONG CALLBACK VectoredSecurityHandler(PEXCEPTION_POINTERS info) {
+    if (!info || !info->ExceptionRecord)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code != STATUS_STACK_BUFFER_OVERRUN && code != STATUS_FAIL_FAST_EXCEPTION)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    char header[160];
+    sprintf_s(header,
+              sizeof(header),
+              "[CRT][security_exception] code=0x%08lX flags=0x%08lX addr=%p thread=%lu",
+              static_cast<unsigned long>(code),
+              static_cast<unsigned long>(info->ExceptionRecord->ExceptionFlags),
+              info->ExceptionRecord->ExceptionAddress,
+              GetCurrentThreadId());
+    WriteRawLog(header);
+
+    ULONG_PTR paramCount = info->ExceptionRecord->NumberParameters;
+    if (paramCount > 0) {
+        char details[256];
+        ULONG_PTR first = paramCount > 0 ? info->ExceptionRecord->ExceptionInformation[0] : 0;
+        ULONG_PTR second = paramCount > 1 ? info->ExceptionRecord->ExceptionInformation[1] : 0;
+        sprintf_s(details,
+                  sizeof(details),
+                  "  params={0x%p, 0x%p} count=%lu",
+                  reinterpret_cast<void*>(first),
+                  reinterpret_cast<void*>(second),
+                  static_cast<unsigned long>(paramCount));
+        WriteRawLog(details);
+    }
+
+    void* frames[32] = {};
+    USHORT captured = CaptureStackBackTrace(0, static_cast<USHORT>(_countof(frames)), frames, nullptr);
+    for (USHORT i = 0; i < captured; ++i) {
+        char lineBuf[96];
+        sprintf_s(lineBuf, sizeof(lineBuf), "  frame[%02u]=%p", i, frames[i]);
+        WriteRawLog(lineBuf);
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 bool ShouldWrite(Level level) {
     return static_cast<int>(level) >= g_minLevel.load(std::memory_order_acquire);
 }
@@ -191,10 +265,18 @@ void Init(HMODULE self) {
     g_logAnnounced = FALSE;
     ConfigureLogging(self);
     SetupConsole();
+    _set_invalid_parameter_handler(LogInvalidParameterHandler);
+    _set_thread_local_invalid_parameter_handler(LogInvalidParameterHandler);
+    if (!g_securityHandlerHandle)
+        g_securityHandlerHandle = AddVectoredExceptionHandler(1, VectoredSecurityHandler);
     LogMessage(Level::Info, Category::Core, "logging initialized");
 }
 
 void Shutdown() {
+    if (g_securityHandlerHandle) {
+        RemoveVectoredExceptionHandler(g_securityHandlerHandle);
+        g_securityHandlerHandle = nullptr;
+    }
     if (g_logFile != INVALID_HANDLE_VALUE) {
         WriteRawLog("Closing log file");
         CloseHandle(g_logFile);
@@ -409,3 +491,6 @@ void Logf(const char* fmt, ...) {
 }
 
 } // namespace Log
+
+
+

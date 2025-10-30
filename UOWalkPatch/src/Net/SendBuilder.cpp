@@ -649,7 +649,9 @@ static bool FunctionCallsSendPacket(void* fn)
     return false;
 }
 
-static void* __fastcall Hook_SendBuilder(void* thisPtr, void* builder)
+// Note: second (__fastcall) parameter is required to consume the register slot when
+// detouring a __thiscall target. Do not remove it or the caller stack will misalign.
+static void* __fastcall Hook_SendBuilder(void* thisPtr, void* /*unused*/, void* builder)
 {
     uint8_t* plainPtr = nullptr;
     int len = 0;
@@ -694,8 +696,6 @@ static bool ScanEndpointVTable(void* endpoint)
 
     int matchedIndex = -1;
     void* matchedFn = nullptr;
-    int fallbackIndex = -1;
-    void* fallbackFn = nullptr;
 
     for (int i = 0; i < 32; ++i)
     {
@@ -711,27 +711,11 @@ static bool ScanEndpointVTable(void* endpoint)
             matchedFn = fn;
             break;
         }
-
-        if (fallbackFn == nullptr)
-        {
-            fallbackIndex = i;
-            fallbackFn = fn;
-        }
     }
 
-    if (!matchedFn)
-    {
-        matchedIndex = fallbackIndex;
-        matchedFn = fallbackFn;
-        if (matchedFn)
-        {
-            char info[160];
-            sprintf_s(info, sizeof(info),
-                      "ScanEndpointVTable: using fallback executable entry index=%d fn=%p",
-                      matchedIndex,
-                      matchedFn);
-            WriteRawLog(info);
-        }
+    if (!matchedFn) {
+        WriteRawLog("ScanEndpointVTable: no vtbl entry calling SendPacket; skipping hook");
+        return false;
     }
 
     if (matchedFn && !g_sendBuilderHooked)

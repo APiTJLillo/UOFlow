@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <climits>
 #include <cstdlib>
@@ -160,11 +161,15 @@ bool StrToInt64(const std::string& text, int64_t& outValue) {
     std::string trimmed = Trim(text);
     if (trimmed.empty())
         return false;
-    char* end = nullptr;
-    long long value = std::strtoll(trimmed.c_str(), &end, 10);
-    if (end == trimmed.c_str())
+
+    const char* begin = trimmed.data();
+    const char* end = begin + trimmed.size();
+    int64_t value = 0;
+    auto result = std::from_chars(begin, end, value, 10);
+    if (result.ec != std::errc() || result.ptr != end)
         return false;
-    outValue = static_cast<int64_t>(value);
+
+    outValue = value;
     return true;
 }
 

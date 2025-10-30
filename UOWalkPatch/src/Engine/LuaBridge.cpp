@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdarg>
 #include <climits>
+#include <charconv>
 #include <sstream>
 #include <fstream>
 #include <intrin.h>
@@ -229,15 +230,23 @@ static void TrackHelperEvent(std::atomic<uint32_t>& counter) {
 static bool ParseUint32(const std::string& text, uint32_t& outValue) {
     if (text.empty())
         return false;
-    char* end = nullptr;
-    unsigned long parsed = std::strtoul(text.c_str(), &end, 10);
-    if (!end || end == text.c_str())
+
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    while (begin < end && std::isspace(static_cast<unsigned char>(*begin)))
+        ++begin;
+    while (end > begin && std::isspace(static_cast<unsigned char>(*(end - 1))))
+        --end;
+    if (begin >= end)
         return false;
-    if (*end != '\0')
+
+    uint64_t value = 0;
+    auto result = std::from_chars(begin, end, value, 10);
+    if (result.ec != std::errc() || result.ptr != end)
         return false;
-    if (parsed > std::numeric_limits<uint32_t>::max())
+    if (value > std::numeric_limits<uint32_t>::max())
         return false;
-    outValue = static_cast<uint32_t>(parsed);
+    outValue = static_cast<uint32_t>(value);
     return true;
 }
 
@@ -5232,6 +5241,7 @@ static bool ResolveRegisterFunction() {
     return true;
 }
 
+// Game client exports RegisterLuaFunction with stdcall; keep the hook matched so the stack remains balanced.
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name) {
     DWORD tid = GetCurrentThreadId();
     lua_State* fromCtx = nullptr;
