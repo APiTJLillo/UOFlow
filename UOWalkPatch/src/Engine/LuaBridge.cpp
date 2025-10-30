@@ -35,6 +35,7 @@
 #include "Engine/LuaStateRegistry.hpp"
 #include "Engine/Movement.hpp"
 #include "Walk/WalkController.hpp"
+#include "Net/SendBuilder.hpp"
 #include "Engine/lua_safe.h"
 
 #include "LuaPlus.h"
@@ -208,7 +209,7 @@ struct HelperRetryPolicy {
     uint32_t retryWindowMs = 1500;
     uint32_t stableWindowMs = 250;
     uint32_t retryBackoffMs = 150;
-    uint32_t ownerConfirmMs = 1200;
+    uint32_t ownerConfirmMs = 1000;
 };
 
 static HelperRetryPolicy g_helperRetryPolicy{};
@@ -222,6 +223,27 @@ static std::atomic<DWORD> g_lastQueueLogTick{0};
 
 static std::mutex g_bindingMutex;
 static std::unordered_set<lua_State*> g_bindingInFlight;
+static thread_local bool g_helperInstallActive = false;
+
+static bool TryEnterHelperInstall() noexcept {
+    if (g_helperInstallActive)
+        return false;
+    g_helperInstallActive = true;
+    return true;
+}
+
+static void LeaveHelperInstall(bool engaged) noexcept {
+    if (engaged)
+        g_helperInstallActive = false;
+}
+
+static std::atomic<bool> g_helperPumpStop{false};
+static std::atomic<bool> g_helperPumpRunning{false};
+static std::thread g_helperPumpThread;
+
+static void StartHelperPumpThread();
+static void StopHelperPumpThread();
+static void MaybePumpLuaQueueFromScriptThread(const char* reason);
 
 static LuaStateGetCStateFn g_luaStateGetCState = nullptr;
 static LuaStateAtPanicFn g_luaStateAtPanic = nullptr;
@@ -336,8 +358,6 @@ static const char* HelperStageName(HelperInstallStage stage) {
     switch (stage) {
     case HelperInstallStage::WaitingForGlobalState:
         return "waiting_for_global_state";
-    case HelperInstallStage::WaitingForLuaReady:
-        return "waiting_for_lua_ready";
     case HelperInstallStage::WaitingForOwnerThread:
         return "waiting_for_owner_thread";
     case HelperInstallStage::ReadyToInstall:
@@ -360,16 +380,10 @@ static HelperInstallStage DetermineHelperStage(const LuaStateInfo& state, bool c
         return HelperInstallStage::Installed;
     if ((state.flags & STATE_FLAG_HELPERS_PENDING) != 0 && state.helper_pending_generation == state.gen)
         return HelperInstallStage::Installing;
-    if ((state.flags & STATE_FLAG_SLOT_READY) == 0)
+    if ((state.flags & STATE_FLAG_SLOT_READY) == 0 || !state.L_canonical || (state.flags & STATE_FLAG_REG_STABLE) == 0 || !canonicalReadyFlag)
         return HelperInstallStage::WaitingForGlobalState;
-    if (!state.L_canonical)
-        return HelperInstallStage::WaitingForLuaReady;
-    if ((state.flags & STATE_FLAG_REG_STABLE) == 0)
-        return HelperInstallStage::WaitingForLuaReady;
     if ((state.flags & STATE_FLAG_OWNER_READY) == 0 || state.owner_tid == 0)
         return HelperInstallStage::WaitingForOwnerThread;
-    if (!canonicalReadyFlag)
-        return HelperInstallStage::WaitingForLuaReady;
     return HelperInstallStage::ReadyToInstall;
 }
 
@@ -394,6 +408,14 @@ static void UpdateHelperStage(LuaStateInfo& state, HelperInstallStage nextStage,
               nextName,
               static_cast<unsigned long long>(age),
               reason ? reason : "unknown");
+    if (previous == HelperInstallStage::Installing && nextStage == HelperInstallStage::Installed) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "helpers stage L=%p installing->installed gen=%llu owner=%lu",
+                  logPtr,
+                  static_cast<unsigned long long>(state.gen),
+                  static_cast<unsigned long>(state.owner_tid));
+    }
 }
 
 static lua_CFunction g_origWindowRegisterEventHandler = nullptr;
@@ -413,6 +435,28 @@ static lua_CFunction g_origSetWaypointFacet = nullptr;
 static lua_CFunction g_origResetWaypointFacet = nullptr;
 static lua_CFunction g_origSetWaypointDisplayMode = nullptr;
 static lua_CFunction g_origSetWaypointTypeInfo = nullptr;
+
+struct WaypointFacetLogState {
+    uint64_t lastLogMs = 0;
+    uint64_t lastSuppressMs = 0;
+};
+static std::mutex g_waypointFacetMutex;
+static std::unordered_map<int, WaypointFacetLogState> g_waypointFacetLogState;
+static constexpr uint64_t kWaypointFacetDebounceMs = 1500;
+
+static thread_local bool g_pumpingLuaQueueFromScript = false;
+
+static void MaybePumpLuaQueueFromScriptThread(const char* /*reason*/) {
+    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+    DWORD current = GetCurrentThreadId();
+    if (scriptTid == 0 || scriptTid != current)
+        return;
+    if (g_pumpingLuaQueueFromScript)
+        return;
+    g_pumpingLuaQueueFromScript = true;
+    Engine::Lua::ProcessLuaQueue();
+    g_pumpingLuaQueueFromScript = false;
+}
 
 static std::string DescribeLuaArgs(lua_State* L, int startIndex = 1, bool redactStrings = false) {
     int top = lua_gettop(L);
@@ -600,7 +644,9 @@ static int __cdecl Hook_BroadcastEvent(lua_State* L) {
               static_cast<unsigned long long>(static_cast<std::uint64_t>(eventId)),
               top,
               payload.c_str());
-    return g_origBroadcastEvent ? g_origBroadcastEvent(L) : 0;
+    int rc = g_origBroadcastEvent ? g_origBroadcastEvent(L) : 0;
+    MaybePumpLuaQueueFromScriptThread("broadcast");
+    return rc;
 }
 
 static int __cdecl Hook_TryLogin(lua_State* L) {
@@ -660,7 +706,9 @@ static int __cdecl Hook_CreateWaypoint(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][MAP] UOCreateUserWaypoint args=%s",
               args.c_str());
-    return g_origCreateWaypoint ? g_origCreateWaypoint(L) : 0;
+    int rc = g_origCreateWaypoint ? g_origCreateWaypoint(L) : 0;
+    MaybePumpLuaQueueFromScriptThread("waypoint-create");
+    return rc;
 }
 
 static int __cdecl Hook_DeleteWaypoint(lua_State* L) {
@@ -670,7 +718,9 @@ static int __cdecl Hook_DeleteWaypoint(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][MAP] UODeleteUserWaypoint args=%s",
               args.c_str());
-    return g_origDeleteWaypoint ? g_origDeleteWaypoint(L) : 0;
+    int rc = g_origDeleteWaypoint ? g_origDeleteWaypoint(L) : 0;
+    MaybePumpLuaQueueFromScriptThread("waypoint-delete");
+    return rc;
 }
 
 static int __cdecl Hook_EditWaypoint(lua_State* L) {
@@ -680,18 +730,67 @@ static int __cdecl Hook_EditWaypoint(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][MAP] UOEditUserWaypoint args=%s",
               args.c_str());
-    return g_origEditWaypoint ? g_origEditWaypoint(L) : 0;
+    int rc = g_origEditWaypoint ? g_origEditWaypoint(L) : 0;
+    MaybePumpLuaQueueFromScriptThread("waypoint-edit");
+    return rc;
 }
 
 static int __cdecl Hook_SetWaypointFacet(lua_State* L) {
     LuaStackGuard guard(L);
-    std::string args = DescribeLuaArgs(L);
-    Log::Logf(Log::Level::Info,
-              Log::Category::LuaGuard,
-              "[LUA][MAP] UOSetWaypointMapFacet args=%s",
-              args.c_str());
-    return g_origSetWaypointFacet ? g_origSetWaypointFacet(L) : 0;
+    int facetValue = std::numeric_limits<int>::min();
+    if (lua_gettop(L) >= 1) {
+        if (lua_isnumber(L, 1)) {
+            facetValue = static_cast<int>(lua_tointeger(L, 1));
+        } else if (lua_isstring(L, 1)) {
+            size_t facetLen = 0;
+            const char* facetStr = lua_tolstring(L, 1, &facetLen);
+            if (facetStr) {
+                try {
+                    facetValue = std::stoi(facetStr);
+                } catch (...) {
+                    facetValue = std::numeric_limits<int>::min();
+                }
+            }
+        }
+    }
+
+    uint64_t now = GetTickCount64();
+    bool suppress = false;
+    bool logSuppression = false;
+    {
+        std::lock_guard<std::mutex> lock(g_waypointFacetMutex);
+        WaypointFacetLogState& state = g_waypointFacetLogState[facetValue];
+        if (state.lastLogMs && now - state.lastLogMs < kWaypointFacetDebounceMs) {
+            if (!state.lastSuppressMs || now - state.lastSuppressMs >= kWaypointFacetDebounceMs) {
+                state.lastSuppressMs = now;
+                logSuppression = true;
+            }
+            suppress = true;
+        } else {
+            state.lastLogMs = now;
+            state.lastSuppressMs = 0;
+        }
+    }
+
+    if (suppress) {
+        if (logSuppression) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::LuaGuard,
+                      "UOSetWaypointMapFacet logging suppressed (debounce) facet=%d",
+                      facetValue);
+        }
+    } else {
+        std::string args = DescribeLuaArgs(L);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::LuaGuard,
+                  "[LUA][MAP] UOSetWaypointMapFacet args=%s",
+                  args.c_str());
+    }
+    int rc = g_origSetWaypointFacet ? g_origSetWaypointFacet(L) : 0;
+    MaybePumpLuaQueueFromScriptThread("facet");
+    return rc;
 }
+
 
 static int __cdecl Hook_ResetWaypointFacet(lua_State* L) {
     LuaStackGuard guard(L);
@@ -700,7 +799,9 @@ static int __cdecl Hook_ResetWaypointFacet(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][MAP] UOResetWaypointMapFacet args=%s",
               args.c_str());
-    return g_origResetWaypointFacet ? g_origResetWaypointFacet(L) : 0;
+    int rc = g_origResetWaypointFacet ? g_origResetWaypointFacet(L) : 0;
+    MaybePumpLuaQueueFromScriptThread("facet-reset");
+    return rc;
 }
 
 static int __cdecl Hook_SetWaypointDisplayMode(lua_State* L) {
@@ -710,7 +811,9 @@ static int __cdecl Hook_SetWaypointDisplayMode(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][MAP] UOSetWaypointDisplayMode args=%s",
               args.c_str());
-    return g_origSetWaypointDisplayMode ? g_origSetWaypointDisplayMode(L) : 0;
+    int rc = g_origSetWaypointDisplayMode ? g_origSetWaypointDisplayMode(L) : 0;
+    MaybePumpLuaQueueFromScriptThread("facet-display");
+    return rc;
 }
 
 static int __cdecl Hook_SetWaypointTypeInfo(lua_State* L) {
@@ -720,7 +823,9 @@ static int __cdecl Hook_SetWaypointTypeInfo(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][MAP] UOSetWaypointTypeDisplayInfo args=%s",
               args.c_str());
-    return g_origSetWaypointTypeInfo ? g_origSetWaypointTypeInfo(L) : 0;
+    int rc = g_origSetWaypointTypeInfo ? g_origSetWaypointTypeInfo(L) : 0;
+    MaybePumpLuaQueueFromScriptThread("facet-type");
+    return rc;
 }
 
 static lua_CFunction MaybeWrapLuaFunction(const char* name, lua_CFunction func) {
@@ -4222,6 +4327,47 @@ static void MaybeProcessHelperRetryQueue() {
     }
 }
 
+static void HelperPumpThreadMain() {
+    while (!g_helperPumpStop.load(std::memory_order_acquire)) {
+        MaybeProcessHelperRetryQueue();
+        Net::PollSendBuilder();
+        for (int i = 0; i < 5; ++i) {
+            if (g_helperPumpStop.load(std::memory_order_acquire))
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    g_helperPumpRunning.store(false, std::memory_order_release);
+}
+
+static void StartHelperPumpThread() {
+    bool expected = false;
+    if (!g_helperPumpRunning.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return;
+    g_helperPumpStop.store(false, std::memory_order_release);
+    try {
+        g_helperPumpThread = std::thread([]() {
+            HelperPumpThreadMain();
+        });
+    } catch (...) {
+        g_helperPumpStop.store(true, std::memory_order_release);
+        g_helperPumpRunning.store(false, std::memory_order_release);
+        throw;
+    }
+}
+
+static void StopHelperPumpThread() {
+    g_helperPumpStop.store(true, std::memory_order_release);
+    if (g_helperPumpThread.joinable()) {
+        try {
+            g_helperPumpThread.join();
+        } catch (...) {
+            // Suppress exceptions during shutdown.
+        }
+    }
+    g_helperPumpRunning.store(false, std::memory_order_release);
+}
+
 static void RequestBindForState(const LuaStateInfo& info, const char* reason, bool force) {
     const char* action = reason ? reason : "unspecified";
     LuaStateInfo current = info;
@@ -4281,7 +4427,7 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         lua_State* stageTarget = current.L_canonical ? current.L_canonical : lookupPtr;
         if (stageTarget) {
             g_stateRegistry.UpdateByPointer(stageTarget, [&](LuaStateInfo& state) {
-                UpdateHelperStage(state, HelperInstallStage::WaitingForLuaReady, now, action);
+                UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, action);
                 if (!state.helper_first_attempt_ms)
                     state.helper_first_attempt_ms = now;
                 uint64_t minNext = now + retry.retryBackoffMs;
@@ -4314,26 +4460,32 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
             }, &current);
             ownerReady = (current.flags & STATE_FLAG_OWNER_READY) != 0 && current.owner_tid != 0;
         }
-        if (!ownerReady && current.helper_owner_deadline_ms && now >= current.helper_owner_deadline_ms) {
-            DWORD fallbackTid = g_scriptThreadId.load(std::memory_order_acquire);
+
+        uint64_t deadline = current.helper_owner_deadline_ms;
+        if (!ownerReady && deadline && now >= deadline) {
+            DWORD previousOwner = current.owner_tid;
+            DWORD fallbackTid = previousOwner ? previousOwner : g_scriptThreadId.load(std::memory_order_acquire);
             if (!fallbackTid)
                 fallbackTid = GetCurrentThreadId();
             if (fallbackTid) {
+                uint64_t waitedMs = current.helper_state_since_ms ? (now - current.helper_state_since_ms) : 0;
                 g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
-                    if (state.owner_tid == 0) {
+                    if (state.owner_tid == 0)
                         state.owner_tid = fallbackTid;
-                        state.flags |= STATE_FLAG_OWNER_READY;
-                        state.owner_ready_tick_ms = now;
-                    }
-                    state.helper_owner_deadline_ms = now + retry.ownerConfirmMs;
-                    UpdateHelperStage(state, HelperInstallStage::ReadyToInstall, now, "owner-failover");
+                    state.flags |= STATE_FLAG_OWNER_READY;
+                    state.owner_ready_tick_ms = now;
+                    state.helper_owner_deadline_ms = 0;
+                    if (state.helper_failover_count < std::numeric_limits<uint8_t>::max())
+                        ++state.helper_failover_count;
+                    UpdateHelperStage(state, HelperInstallStage::ReadyToInstall, now, "owner-promoted");
                 }, &current);
-                Log::Logf(Log::Level::Info,
+                Log::Logf(Log::Level::Warn,
                           Log::Category::Hooks,
-                          "helpers gating override L=%p reason=owner-failover retries=%u ageMs=%llu action=%s",
+                          "helpers owner promotion L=%p prev=%lu new=%lu waitedMs=%llu action=%s",
                           target,
-                          static_cast<unsigned>(current.helper_retry_count),
-                          static_cast<unsigned long long>(current.helper_state_since_ms ? (now - current.helper_state_since_ms) : 0),
+                          static_cast<unsigned long>(previousOwner),
+                          static_cast<unsigned long>(current.owner_tid),
+                          static_cast<unsigned long long>(waitedMs),
                           action);
                 bool ready = false;
                 bool coalesced = false;
@@ -4341,11 +4493,12 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
                 canonicalReadyFlag = ready && ((current.flags & STATE_FLAG_CANON_READY) != 0);
                 stage = DetermineHelperStage(current, canonicalReadyFlag);
                 g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
-                    UpdateHelperStage(state, stage, now, "owner-failover-refresh");
+                    UpdateHelperStage(state, stage, now, "owner-promoted-refresh");
                 }, &current);
                 now = GetTickCount64();
             }
         }
+
         ownerReady = (current.flags & STATE_FLAG_OWNER_READY) != 0 && current.owner_tid != 0;
         if (!ownerReady && !force) {
             TrackHelperEvent(g_helperDeferredCount);
@@ -4381,6 +4534,7 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
                 }, &current);
             }
             return;
+        }
     }
     if (current.flags & STATE_FLAG_HELPERS_INSTALLED) {
         if (now - current.last_bind_log_tick_ms >= kBindLogCooldownMs) {
@@ -4399,7 +4553,6 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
                   action);
         return;
     }
-}
     bool skipDueToPending = false;
 
     if (!force) {
@@ -4507,7 +4660,7 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
             uint64_t minNext = now + backoff;
             if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < minNext)
                 state.helper_next_retry_ms = minNext;
-            UpdateHelperStage(state, HelperInstallStage::WaitingForLuaReady, now, "not-ready");
+            UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, "not-ready");
         }, &current);
         ClearHelperPending(target, generation, &current);
         TrackHelperEvent(g_helperDeferredCount);
@@ -4954,17 +5107,18 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
             bool allOk = walkOk && dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk && debugPingOk;
             if (allOk) {
                 uint64_t installTick = GetTickCount64();
-                g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-                    state.flags |= STATE_FLAG_HELPERS_BOUND;
-                    state.flags |= STATE_FLAG_HELPERS_INSTALLED;
-                    state.gen = generation;
-                    state.helper_installed_tick_ms = installTick;
-                    state.helper_retry_count = 0;
-                    state.helper_first_attempt_ms = 0;
-                    state.helper_next_retry_ms = 0;
-                    state.helper_last_attempt_ms = installTick;
-                    state.helper_last_mutation_tick_ms = g_lastContextMutationTick.load(std::memory_order_acquire);
-                }, &info);
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            state.flags |= STATE_FLAG_HELPERS_BOUND;
+            state.flags |= STATE_FLAG_HELPERS_INSTALLED;
+            state.gen = generation;
+            state.helper_installed_tick_ms = installTick;
+            state.helper_retry_count = 0;
+            state.helper_first_attempt_ms = 0;
+            state.helper_next_retry_ms = 0;
+            state.helper_last_attempt_ms = installTick;
+            state.helper_last_mutation_tick_ms = g_lastContextMutationTick.load(std::memory_order_acquire);
+            UpdateHelperStage(state, HelperInstallStage::Installed, installTick, "success");
+        }, &info);
                 Log::Logf(Log::Level::Info,
                           Log::Category::Hooks,
                           "helpers installed L=%p owner=%lu gen=%llu thread=%lu",
@@ -5005,6 +5159,27 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
     }
 
     InstallPanicAndDebug(L, info);
+    return ok;
+}
+
+static bool BindHelpersWithSeh(lua_State* L,
+                               const LuaStateInfo& info,
+                               uint64_t generation,
+                               bool force,
+                               bool& attemptedOut,
+                               DWORD& sehCodeOut) noexcept {
+    bool ok = false;
+    bool attempted = false;
+    DWORD sehCode = 0;
+    __try {
+        attempted = true;
+        ok = BindHelpersOnThread(L, info, generation, force);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        sehCode = GetExceptionCode();
+        ok = false;
+    }
+    attemptedOut = attempted;
+    sehCodeOut = sehCode;
     return ok;
 }
 
@@ -5086,7 +5261,24 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
                 static_cast<unsigned long long>(generation),
                 reason ? reason : "unknown");
 
-    bool ok = BindHelpersOnThread(L, info, generation, force);
+    bool ok = false;
+    bool attempted = false;
+    DWORD sehCode = 0;
+    bool reentrancyBlocked = false;
+    bool guardEngaged = TryEnterHelperInstall();
+
+    if (!guardEngaged) {
+        reentrancyBlocked = true;
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Hooks,
+                  "helpers install reentrancy blocked L=%p owner=%lu",
+                  L,
+                  static_cast<unsigned long>(info.owner_tid));
+    } else {
+        ok = BindHelpersWithSeh(L, info, generation, force, attempted, sehCode);
+    }
+    LeaveHelperInstall(guardEngaged);
+
     ReleaseBindingSlot(L);
     ClearHelperPending(L, generation, &info);
     uint64_t summaryTick = GetTickCount64();
@@ -5102,13 +5294,36 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
                 state.helper_next_retry_ms = next;
         });
         MaybeEmitHelperSummary(summaryTick);
+
+        LuaStateInfo after{};
+        if (!g_stateRegistry.GetByPointer(L, after))
+            after = info;
+        const char* stageName = HelperStageName(static_cast<HelperInstallStage>(after.helper_state));
+        DWORD codeToLog = (reentrancyBlocked || !attempted) ? 0 : sehCode;
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Hooks,
+                  "helpers install failed (will retry) code=0x%08lX stage=%s",
+                  static_cast<unsigned long>(codeToLog),
+                  stageName ? stageName : "unknown");
+        if (sehCode != 0) {
+            LogLuaState("bind-fail Lc=%p ctx=%p gen=%llu seh=0x%08lX",
+                        L,
+                        info.ctx_reported,
+                        static_cast<unsigned long long>(generation),
+                        sehCode);
+        } else {
+            LogLuaState("bind-fail Lc=%p ctx=%p gen=%llu",
+                        L,
+                        info.ctx_reported,
+                        static_cast<unsigned long long>(generation));
+        }
     }
-    if (!ok) {
-        LogLuaState("bind-fail Lc=%p ctx=%p gen=%llu", L, info.ctx_reported, static_cast<unsigned long long>(generation));
-    } else {
+
+    if (ok) {
         LogLuaState("bind-done Lc=%p ctx=%p gen=%llu", L, info.ctx_reported, static_cast<unsigned long long>(generation));
     }
 }
+
 
 static void ForceRebindAll(const char* reason) {
     uint64_t newGen = g_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -5995,7 +6210,30 @@ void OnGlobalStateValidated(const GlobalStateInfo* info, std::uint32_t cookie) {
         ensureAndUpdate(raw);
 
     g_canonicalState.store(canonical, std::memory_order_release);
+
+    if (info->engineContext && canonical) {
+        DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+        LuaStateInfo snapshot{};
+        if (g_stateRegistry.GetByPointer(canonical, snapshot)) {
+            if (scriptTid) {
+                g_stateRegistry.UpdateByPointer(canonical, [&](LuaStateInfo& state) {
+                    if (state.owner_tid == 0) {
+                        state.owner_tid = scriptTid;
+                        state.flags |= STATE_FLAG_OWNER_READY;
+                        state.owner_ready_tick_ms = now;
+                    }
+                }, &snapshot);
+            }
+            if (snapshot.owner_tid == 0 && scriptTid) {
+                snapshot.owner_tid = scriptTid;
+                snapshot.flags |= STATE_FLAG_OWNER_READY;
+                snapshot.owner_ready_tick_ms = now;
+            }
+            RequestBindForState(snapshot, "global-ready", false);
+        }
+    }
 }
+
 
 bool InitLuaBridge() {
     g_stateRegistry.Reset();
@@ -6022,10 +6260,12 @@ bool InitLuaBridge() {
     if (!ResolveRegisterFunction())
         return false;
     ScheduleWalkBinding();
+    StartHelperPumpThread();
     return true;
 }
 
 void ShutdownLuaBridge() {
+    StopHelperPumpThread();
     if (g_registerTarget) {
         MH_DisableHook(g_registerTarget);
         MH_RemoveHook(g_registerTarget);
@@ -6065,6 +6305,18 @@ void GetStartupStatus(StartupStatus& out) {
     out.helpersInstalled = g_helpersInstalledAny.load(std::memory_order_acquire);
     out.ownerThreadId = g_lastHelperOwnerThread.load(std::memory_order_relaxed);
 }
+const char* GetHelperStageSummary() {
+    lua_State* canonical = g_canonicalState.load(std::memory_order_acquire);
+    if (canonical) {
+        LuaStateInfo info{};
+        if (g_stateRegistry.GetByPointer(canonical, info))
+            return HelperStageName(static_cast<HelperInstallStage>(info.helper_state));
+    }
+    if (g_helpersInstalledAny.load(std::memory_order_acquire))
+        return "installed";
+    return "waiting_for_global_state";
+}
+
 
 void UpdateEngineContext(void* context) {
     g_engineContext.store(context, std::memory_order_release);

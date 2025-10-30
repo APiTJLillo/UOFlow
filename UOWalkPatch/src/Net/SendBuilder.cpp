@@ -5,8 +5,10 @@
 #include <cstring>
 #include <limits>
 #include <cstdint>
+#include <unordered_set>
 #include <minhook.h>
 #include "Core/Logging.hpp"
+#include "Core/Startup.hpp"
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
 #include "Core/SafeMem.h"
@@ -63,6 +65,10 @@ static DWORD g_lastEndpointThrottleLogTick = 0;
 static bool g_loggedEngineUnstable = false;
 static DWORD g_lastEngineUnstableLogTick = 0;
 static DWORD g_lastBuilderScanTick = 0;
+static DWORD g_helperWaitStartTick = 0;
+static bool g_helperBypassWarningLogged = false;
+static std::unordered_set<uint64_t> g_vtblSlotCache;
+static std::unordered_set<void*> g_skipWarnedVtables;
 
 using VirtualProtect_t = BOOL(WINAPI*)(LPVOID, SIZE_T, DWORD, PDWORD);
 static VirtualProtect_t g_origVirtualProtect = nullptr;
@@ -158,10 +164,12 @@ static bool IsEngineStableForScanning()
 {
     Engine::Lua::StartupStatus status{};
     Engine::Lua::GetStartupStatus(status);
+    DWORD now = GetTickCount();
 
-    if (!status.engineContextDiscovered || !status.luaStateDiscovered || !status.helpersInstalled)
+    if (!status.engineContextDiscovered || !status.luaStateDiscovered)
     {
-        DWORD now = GetTickCount();
+        g_helperWaitStartTick = 0;
+        g_helperBypassWarningLogged = false;
         if (!g_loggedEngineUnstable || (DWORD)(now - g_lastEngineUnstableLogTick) >= kEngineUnstableLogCooldownMs)
         {
             char buf[192];
@@ -177,8 +185,47 @@ static bool IsEngineStableForScanning()
         return false;
     }
 
+    if (g_helperWaitStartTick == 0)
+        g_helperWaitStartTick = now;
+
+#if defined(UOWALK_NO_HELPERS)
     g_loggedEngineUnstable = false;
     return true;
+#else
+    if (status.helpersInstalled)
+    {
+        g_loggedEngineUnstable = false;
+        g_helperBypassWarningLogged = false;
+        return true;
+    }
+
+    DWORD elapsed = now - g_helperWaitStartTick;
+    if (elapsed >= 2000)
+    {
+        if (!g_helperBypassWarningLogged)
+        {
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Core,
+                      "SendBuilder helper wait exceeded elapsedMs=%lu proceeding without helpers",
+                      static_cast<unsigned long>(elapsed));
+            g_helperBypassWarningLogged = true;
+        }
+        g_loggedEngineUnstable = false;
+        return true;
+    }
+
+    if (!g_loggedEngineUnstable || (DWORD)(now - g_lastEngineUnstableLogTick) >= kEngineUnstableLogCooldownMs)
+    {
+        char buf[224];
+        sprintf_s(buf, sizeof(buf),
+                  "SendBuilder scan deferred: engineContext=1 luaState=1 helpers=0 waitMs=%lu",
+                  static_cast<unsigned long>(2000 - elapsed));
+        WriteRawLog(buf);
+        g_loggedEngineUnstable = true;
+        g_lastEngineUnstableLogTick = now;
+    }
+    return false;
+#endif
 }
 
 static bool SafeCopy(void* dst, const void* src, size_t bytes)
@@ -712,6 +759,9 @@ static bool ScanEndpointVTable(void* endpoint)
         return false;
     }
 
+
+    uintptr_t vtblAddr = reinterpret_cast<uintptr_t>(vtbl);
+    bool anyNewSlot = false;
     void* const* vtblEntries = vtbl;
     int firstEightCount = 0;
     int firstEightMisses = 0;
@@ -722,6 +772,12 @@ static bool ScanEndpointVTable(void* endpoint)
     {
         for (int i = 0; i < 32; ++i)
         {
+            uint64_t slotKey = (static_cast<uint64_t>(vtblAddr) << 8) ^ static_cast<uint64_t>(i & 0xFF);
+            if (!g_vtblSlotCache.insert(slotKey).second)
+                continue;
+
+            anyNewSlot = true;
+
             void* fn = nullptr;
             bool readable = SafeMem::SafeRead(vtblEntries + i, fn);
             if (!readable)
@@ -769,6 +825,9 @@ static bool ScanEndpointVTable(void* endpoint)
         return false;
     }
 
+    if (!anyNewSlot && !matchedFn)
+        return g_sendBuilderHooked;
+
     if (firstEightCount >= 8 && firstEightMisses >= 6)
     {
         char msg[192];
@@ -782,7 +841,8 @@ static bool ScanEndpointVTable(void* endpoint)
     }
 
     if (!matchedFn) {
-        WriteRawLog("ScanEndpointVTable: no vtbl entry calling SendPacket; skipping hook");
+        if (g_skipWarnedVtables.insert(vtbl).second)
+            WriteRawLog("ScanEndpointVTable: no vtbl entry calling SendPacket; skipping hook");
         return false;
     }
 
@@ -793,23 +853,19 @@ static bool ScanEndpointVTable(void* endpoint)
         {
             g_sendBuilderHooked = true;
             g_sendBuilderTarget = matchedFn;
-            char buf[160];
-            sprintf_s(buf, sizeof(buf),
-                      "SendBuilder hook attached index=%d fn=%p via vtbl=%p",
-                      matchedIndex,
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "SendBuilder hook attached entry=%p via vtbl=%p slot=%d",
                       matchedFn,
-                      vtbl);
-            WriteRawLog(buf);
+                      vtbl,
+                      matchedIndex);
+            Core::StartupSummary::NotifySendBuilderReady();
             return true;
         }
         else
         {
             WriteRawLog("ScanEndpointVTable: failed to hook suspected builder");
         }
-    }
-    else if (!matchedFn && !g_sendBuilderHooked)
-    {
-        WriteRawLog("ScanEndpointVTable: no vtbl entry calling SendPacket");
     }
 
     return g_sendBuilderHooked;
@@ -1964,6 +2020,10 @@ bool InitSendBuilder(GlobalStateInfo* state)
             g_loggedEngineUnstable = false;
             g_lastEngineUnstableLogTick = 0;
             g_lastBuilderScanTick = 0;
+            g_helperWaitStartTick = 0;
+            g_helperBypassWarningLogged = false;
+            g_vtblSlotCache.clear();
+            g_skipWarnedVtables.clear();
         }
     }
 
@@ -2040,6 +2100,10 @@ void ShutdownSendBuilder()
     g_loggedEngineUnstable = false;
     g_lastEngineUnstableLogTick = 0;
     g_lastBuilderScanTick = 0;
+    g_helperWaitStartTick = 0;
+    g_helperBypassWarningLogged = false;
+    g_vtblSlotCache.clear();
+    g_skipWarnedVtables.clear();
 }
 
 bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint)
@@ -2123,6 +2187,13 @@ bool IsSendReady()
 {
     return g_sendPacket && (g_sendCtx || g_netMgr);
 }
+
+
+bool IsSendBuilderAttached()
+{
+    return g_sendBuilderHooked;
+}
+
 
 } // namespace Net
 

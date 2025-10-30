@@ -8,4 +8,5 @@ namespace Core::StartupSummary {
     void NotifyHelpersReady();
     void NotifyEngineContextReady();
     void NotifyLuaHeartbeat();
+    void NotifySendBuilderReady();
 }

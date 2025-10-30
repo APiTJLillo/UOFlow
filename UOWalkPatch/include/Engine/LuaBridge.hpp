@@ -21,6 +21,7 @@ namespace Engine::Lua {
     };
 
     void GetStartupStatus(StartupStatus& out);
+    const char* GetHelperStageSummary();
 }
 
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);

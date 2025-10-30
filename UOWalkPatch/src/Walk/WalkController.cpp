@@ -7,6 +7,7 @@
 #include <cmath>
 #include <mutex>
 #include <system_error>
+#include <cstring>
 #include <string>
 
 #include "Core/Config.hpp"
@@ -21,6 +22,8 @@ struct ControllerConfig {
     bool debug = false;
     std::uint32_t maxInflight = 2;
     std::uint32_t stepDelayMs = 280;
+    std::uint32_t stepDelayFloor = 280;
+    std::uint32_t stepDelayCeil = 400;
     std::uint32_t timeoutMs = 400;
 };
 
@@ -42,11 +45,9 @@ struct ControllerState {
 constexpr float kArrivalThreshold = 0.4f;
 constexpr std::uint32_t kLogCooldownMs = 1500;
 constexpr std::uint32_t kMaxInflightCap = 4;
-constexpr std::uint32_t kResyncWindowMs = 5000;
-constexpr std::uint32_t kCleanWindowMs = 10000;
-constexpr std::uint32_t kStepIncreaseMs = 30;
-constexpr std::uint32_t kStepDecreaseMs = 10;
-constexpr std::uint32_t kStepDelayMaxExtraMs = 150;
+constexpr std::uint32_t kDelayIncreaseMs = 30;
+constexpr std::uint32_t kDelayDecayMs = 10;
+constexpr std::uint32_t kDelayCooldownMs = 2000;
 
 ControllerConfig g_config{};
 std::once_flag g_configOnce;
@@ -55,13 +56,29 @@ ControllerState g_state{};
 std::atomic<std::uint32_t> g_inflightOverride{0};
 std::atomic<std::uint32_t> g_inflightOverrideBudget{0};
 std::uint32_t g_tunedStepDelayMs = 0;
-std::uint32_t g_recentResyncCount = 0;
-std::uint32_t g_lastResyncTick = 0;
-std::uint32_t g_lastTuneTick = 0;
+std::uint32_t g_stepDelayFloor = 280;
+std::uint32_t g_stepDelayCeil = 400;
+std::uint32_t g_lastDelayTick = 0;
+std::uint32_t g_lastDecayTick = 0;
 
 std::uint32_t GetTickMs() {
     return GetTickCount();
 }
+
+void UpdateStepDelay(std::uint32_t newValue, const char* reason) {
+    newValue = std::clamp(newValue, g_stepDelayFloor, g_stepDelayCeil);
+    if (newValue == g_tunedStepDelayMs)
+        return;
+    std::uint32_t oldValue = g_tunedStepDelayMs;
+    g_tunedStepDelayMs = newValue;
+    Log::Logf(Log::Level::Info,
+              Log::Category::Walk,
+              "[WALK] tune stepDelayMs %u -> %u reason=%s",
+              oldValue,
+              g_tunedStepDelayMs,
+              reason ? reason : "unknown");
+}
+
 
 void LoadConfig() {
     ControllerConfig cfg{};
@@ -105,26 +122,39 @@ void LoadConfig() {
     if (readUint("WALK_STEP_DELAY_MS", "walk.stepDelayMs", value))
         cfg.stepDelayMs = value;
 
+    value = cfg.stepDelayFloor;
+    if (readUint("WALK_STEP_DELAY_FLOOR", "walk.stepDelayFloor", value))
+        cfg.stepDelayFloor = value;
+
+    value = cfg.stepDelayCeil;
+    if (readUint("WALK_STEP_DELAY_CEIL", "walk.stepDelayCeil", value))
+        cfg.stepDelayCeil = value;
+
     value = cfg.timeoutMs;
     if (readUint("WALK_TIMEOUT_MS", "walk.timeoutMs", value))
         cfg.timeoutMs = value;
 
     cfg.maxInflight = std::clamp<std::uint32_t>(cfg.maxInflight, 1u, kMaxInflightCap);
-    cfg.stepDelayMs = std::clamp<std::uint32_t>(cfg.stepDelayMs, 150u, 1000u);
+    cfg.stepDelayFloor = std::clamp<std::uint32_t>(cfg.stepDelayFloor, 150u, 1000u);
+    cfg.stepDelayCeil = std::clamp<std::uint32_t>(cfg.stepDelayCeil, cfg.stepDelayFloor, 1000u);
+    cfg.stepDelayMs = std::clamp<std::uint32_t>(cfg.stepDelayMs, cfg.stepDelayFloor, cfg.stepDelayCeil);
     cfg.timeoutMs = std::clamp<std::uint32_t>(cfg.timeoutMs, 200u, 2000u);
 
     g_config = cfg;
+    g_stepDelayFloor = cfg.stepDelayFloor;
+    g_stepDelayCeil = cfg.stepDelayCeil;
     g_tunedStepDelayMs = cfg.stepDelayMs;
-    g_recentResyncCount = 0;
-    g_lastResyncTick = 0;
-    g_lastTuneTick = GetTickMs();
+    g_lastDelayTick = 0;
+    g_lastDecayTick = GetTickMs();
 
     Log::Logf(Log::Level::Info,
               Log::Category::Walk,
-              "enable=%d maxInflight=%u stepDelayMs=%u timeoutMs=%u debug=%d",
+              "enable=%d maxInflight=%u stepDelayMs=%u floor=%u ceil=%u timeoutMs=%u debug=%d",
               cfg.enabled ? 1 : 0,
               cfg.maxInflight,
               cfg.stepDelayMs,
+              cfg.stepDelayFloor,
+              cfg.stepDelayCeil,
               cfg.timeoutMs,
               cfg.debug ? 1 : 0);
 }
@@ -189,14 +219,14 @@ int DetermineDirection(float currentX, float currentZ, float targetX, float targ
 } // namespace
 
 void Reset() {
+    EnsureConfigLoaded();
     std::lock_guard<std::mutex> lock(g_stateMutex);
     g_state = ControllerState{};
     g_inflightOverride.store(0, std::memory_order_release);
     g_inflightOverrideBudget.store(0, std::memory_order_release);
-    g_tunedStepDelayMs = g_config.stepDelayMs;
-    g_recentResyncCount = 0;
-    g_lastResyncTick = 0;
-    g_lastTuneTick = GetTickMs();
+    g_tunedStepDelayMs = std::clamp(g_config.stepDelayMs, g_stepDelayFloor, g_stepDelayCeil);
+    g_lastDelayTick = 0;
+    g_lastDecayTick = GetTickMs();
 }
 
 bool IsEnabled() {
@@ -312,25 +342,20 @@ void OnMovementSnapshot(const Engine::MovementSnapshot& snapshot,
         }
     }
 
-    if (g_tunedStepDelayMs > g_config.stepDelayMs && g_lastResyncTick != 0) {
-        if (tickMs - g_lastResyncTick >= kCleanWindowMs) {
-            if (g_lastTuneTick == 0 || tickMs - g_lastTuneTick >= kCleanWindowMs / 2) {
-                std::uint32_t oldDelay = g_tunedStepDelayMs;
-                if (g_tunedStepDelayMs > g_config.stepDelayMs + kStepDecreaseMs)
-                    g_tunedStepDelayMs -= kStepDecreaseMs;
-                else
-                    g_tunedStepDelayMs = g_config.stepDelayMs;
-                g_recentResyncCount = 0;
-                g_lastTuneTick = tickMs;
-                if (g_tunedStepDelayMs != oldDelay) {
-                    Log::Logf(Log::Level::Info,
-                              Log::Category::Walk,
-                              "[WALK] tune stepDelayMs %u -> %u reason=clean",
-                              oldDelay,
-                              g_tunedStepDelayMs);
-                }
+    if (g_tunedStepDelayMs > g_stepDelayFloor) {
+        if (g_lastDelayTick != 0) {
+            std::uint32_t sinceDelay = tickMs - g_lastDelayTick;
+            std::uint32_t sinceDecay = g_lastDecayTick ? (tickMs - g_lastDecayTick) : kDelayCooldownMs;
+            if (sinceDelay >= kDelayCooldownMs && sinceDecay >= kDelayCooldownMs) {
+                std::uint32_t target = (g_tunedStepDelayMs > g_stepDelayFloor + kDelayDecayMs)
+                                           ? g_tunedStepDelayMs - kDelayDecayMs
+                                           : g_stepDelayFloor;
+                UpdateStepDelay(target, "decay");
+                g_lastDecayTick = tickMs;
             }
         }
+    } else {
+        g_lastDecayTick = tickMs;
     }
 
     std::uint32_t effectiveMaxInflight = g_config.maxInflight;
@@ -405,25 +430,16 @@ void NotifyAckSoftFail() {
     g_state.inflight = 0;
 }
 
-void NotifyResync(const char* /*reason*/) {
+void NotifyResync(const char* reason) {
     std::lock_guard<std::mutex> lock(g_stateMutex);
     std::uint32_t nowTick = GetTickMs();
-    if (g_lastResyncTick != 0 && nowTick - g_lastResyncTick > kResyncWindowMs)
-        g_recentResyncCount = 0;
-    ++g_recentResyncCount;
-    g_lastResyncTick = nowTick;
-    std::uint32_t maxDelay = std::min<std::uint32_t>(g_config.stepDelayMs + kStepDelayMaxExtraMs, 1000u);
-    if (g_recentResyncCount >= 2 && g_tunedStepDelayMs < maxDelay) {
-        std::uint32_t oldDelay = g_tunedStepDelayMs;
-        g_tunedStepDelayMs = std::min(maxDelay, g_tunedStepDelayMs + kStepIncreaseMs);
-        g_lastTuneTick = nowTick;
-        if (g_tunedStepDelayMs != oldDelay) {
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Walk,
-                      "[WALK] tune stepDelayMs %u -> %u reason=resync",
-                      oldDelay,
-                      g_tunedStepDelayMs);
-        }
+    if (reason && _stricmp(reason, "delay") == 0) {
+        g_lastDelayTick = nowTick;
+        g_lastDecayTick = nowTick;
+        std::uint32_t target = g_tunedStepDelayMs + kDelayIncreaseMs;
+        if (target > g_stepDelayCeil)
+            target = g_stepDelayCeil;
+        UpdateStepDelay(target, "delay");
     }
 }
 

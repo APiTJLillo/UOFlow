@@ -8,5 +8,6 @@ namespace Net {
     void ShutdownSendBuilder();
     bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint = INVALID_SOCKET);
     bool IsSendReady();
+    bool IsSendBuilderAttached();
     void PollSendBuilder();
 }

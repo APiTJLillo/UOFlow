@@ -34,11 +34,10 @@ constexpr uint32_t STATE_FLAG_HELPERS_INSTALLED = 1u << 13;
 
 enum class HelperInstallStage : uint8_t {
     WaitingForGlobalState = 0,
-    WaitingForLuaReady    = 1,
-    WaitingForOwnerThread = 2,
-    ReadyToInstall        = 3,
-    Installing            = 4,
-    Installed             = 5,
+    WaitingForOwnerThread = 1,
+    ReadyToInstall        = 2,
+    Installing            = 3,
+    Installed             = 4,
 };
 
 struct LuaStateInfo {
