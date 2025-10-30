@@ -24,7 +24,6 @@ static int (WSAAPI* g_real_WSARecv)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, L
 static int (WSAAPI* g_real_WSARecvFrom)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, sockaddr*, LPINT, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) = nullptr;
 static int (WSAAPI* g_real_closesocket)(SOCKET) = nullptr;
-static bool shouldLogTraces = true;
 static volatile LONG g_fastWalkScanMissBudget = 8;
 static SOCKET g_lastSocket = INVALID_SOCKET;
 static SOCKET g_lastLoggedSocket = INVALID_SOCKET;
@@ -32,6 +31,11 @@ static std::atomic<SOCKET> g_preferredSocket{INVALID_SOCKET};
 
 static constexpr int kFastWalkReserveDepth = 2;
 static volatile LONG g_ackPayloadLogBudget = 4;
+
+static bool ShouldTracePackets()
+{
+    return Walk::Controller::DebugEnabled() || Log::IsEnabled(Log::Category::Walk, Log::Level::Debug);
+}
 
 static bool EvaluateFastWalkGate(const char* buf, int len, bool& suppressOut, int& depthOut)
 {
@@ -277,17 +281,26 @@ static void TraceOutbound(SOCKET& s, const char* buf, int len)
     }
 
     NoteSocketActivity(s);
-    if (s != INVALID_SOCKET && s != g_lastLoggedSocket) {
+    const bool traceEnabled = ShouldTracePackets();
+    if (!traceEnabled) {
+        g_lastLoggedSocket = INVALID_SOCKET;
+    } else if (s != INVALID_SOCKET && s != g_lastLoggedSocket) {
         g_lastLoggedSocket = s;
-        char msg[128];
-        sprintf_s(msg, sizeof(msg), "TraceOutbound: socket=%p", reinterpret_cast<void*>(static_cast<uintptr_t>(s)));
-        WriteRawLog(msg);
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Walk,
+                  "TraceOutbound socket=%p",
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(s)));
     }
-    if(shouldLogTraces)
-        Logf("send-family len=%d id=%02X", len, opcode);
-    int dumpLen = len > 64 ? 64 : len;
-    if (dumpLen > 0 && shouldLogTraces)
-        DumpMemory("Outbound packet", (void*)buf, dumpLen);
+    if (traceEnabled) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Walk,
+                  "send-family len=%d id=%02X",
+                  len,
+                  opcode);
+        int dumpLen = len > 64 ? 64 : len;
+        if (dumpLen > 0)
+            DumpMemory("Outbound packet", (void*)buf, dumpLen);
+    }
 
     if (opcode == 0x3C) {
         Engine::SetActiveFastWalkSocket(s);
@@ -304,11 +317,17 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
     SOCKET effectiveSocket = (canonical != INVALID_SOCKET) ? canonical : s;
 
     NoteSocketActivity(s);
-    if(shouldLogTraces)
-        Logf("recv-family len=%d id=%02X", len, opcode);
-    int dumpLen = len > 64 ? 64 : len;
-    if (dumpLen > 0 && shouldLogTraces)
-        DumpMemory("Inbound packet", (void*)buf, dumpLen);
+    const bool traceEnabled = ShouldTracePackets();
+    if (traceEnabled) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Walk,
+                  "recv-family len=%d id=%02X",
+                  len,
+                  opcode);
+        int dumpLen = len > 64 ? 64 : len;
+        if (dumpLen > 0)
+            DumpMemory("Inbound packet", (void*)buf, dumpLen);
+    }
 
     if (opcode == 0x2E && len >= 7) {
         uint32_t key = ExtractFastWalkKey0x2E(buf, len);
@@ -318,7 +337,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
             uint64_t tickNow = GetTickCount64();
             int depthAfter = Engine::FastWalkQueueDepth(effectiveSocket);
             LogInboundFastWalkKey("0x2E", effectiveSocket, key, depthBefore, depthAfter, tickNow);
-        } else if (shouldLogTraces) {
+        } else if (traceEnabled) {
             if (key == 0) {
                 Logf("FastWalk 0x2E packet ignored len=%d", len);
             } else {
@@ -361,8 +380,11 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
                       static_cast<unsigned>(seq),
                       static_cast<unsigned>(status));
         }
-        WriteRawLog(ackBuf);
-        if (g_ackPayloadLogBudget > 0 && InterlockedDecrement(&g_ackPayloadLogBudget) >= 0) {
+        if (traceEnabled || status != 0) {
+            Log::Level level = status == 0 ? Log::Level::Debug : Log::Level::Warn;
+            Log::Logf(level, Log::Category::Walk, "%s", ackBuf);
+        }
+        if (traceEnabled && g_ackPayloadLogBudget > 0 && InterlockedDecrement(&g_ackPayloadLogBudget) >= 0) {
             int dumpLen = (len < 8) ? len : 8;
             char payloadBuf[192];
             int offset = sprintf_s(payloadBuf, sizeof(payloadBuf), "WalkACK bytes:");
@@ -375,7 +397,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
                     break;
             }
             if (offset > 0)
-                WriteRawLog(payloadBuf);
+                Log::Logf(Log::Level::Debug, Log::Category::Walk, "%s", payloadBuf);
         }
         Engine::RecordMovementAck(seq, status);
         Engine::SetActiveFastWalkSocket(s);
@@ -408,8 +430,8 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
                       static_cast<unsigned>(seq),
                       static_cast<unsigned>(expected));
         }
-        WriteRawLog(rejBuf);
-        if (g_ackPayloadLogBudget > 0 && InterlockedDecrement(&g_ackPayloadLogBudget) >= 0) {
+        Log::Logf(Log::Level::Warn, Log::Category::Walk, "%s", rejBuf);
+        if (traceEnabled && g_ackPayloadLogBudget > 0 && InterlockedDecrement(&g_ackPayloadLogBudget) >= 0) {
             int dumpLen = (len < 8) ? len : 8;
             char payloadBuf[192];
             int offset = sprintf_s(payloadBuf, sizeof(payloadBuf), "WalkNACK bytes:");
@@ -422,7 +444,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
                     break;
             }
             if (offset > 0)
-                WriteRawLog(payloadBuf);
+                Log::Logf(Log::Level::Debug, Log::Category::Walk, "%s", payloadBuf);
         }
         Engine::RecordMovementReject(seq, status);
         Net::SetPreferredSocket(s);
@@ -442,7 +464,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
             uint64_t tickNowB8 = GetTickCount64();
             int depthAfterB8 = Engine::FastWalkQueueDepth(effectiveSocket);
             LogInboundFastWalkKey("0xB8", effectiveSocket, key, depthBefore, depthAfterB8, tickNowB8);
-        } else if (shouldLogTraces) {
+        } else if (traceEnabled) {
             if (key == 0) {
                 Logf("FastWalk 0xB8 packet ignored len=%d", len);
             } else {
