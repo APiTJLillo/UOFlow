@@ -5099,7 +5099,14 @@ static void HandleProbeFailure(lua_State* L, LuaStateInfo& info, Engine::Lua::Lu
             if (reason == Engine::Lua::LuaGuardFailure::GenerationMismatch)
                 state.gc_gen = 0;
             UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, "probe-invalid");
-            uint64_t minNext = now + retry.retryBackoffMs;
+            uint64_t penalty = retry.retryBackoffMs;
+            if (reason == Engine::Lua::LuaGuardFailure::Seh) {
+                // Treat hard faults as a reset so we do not immediately force retries.
+                state.helper_retry_count = 0;
+                state.helper_first_attempt_ms = now;
+                penalty = std::max<uint64_t>(retry.retryWindowMs ? retry.retryWindowMs : 2000u, retry.retryBackoffMs << 2);
+            }
+            uint64_t minNext = now + penalty;
             if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < minNext)
                 state.helper_next_retry_ms = minNext;
         }
