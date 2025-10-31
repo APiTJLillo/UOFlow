@@ -266,6 +266,14 @@ static void StartHelperPumpThread();
 static void StopHelperPumpThread();
 static void MaybePumpLuaQueueFromScriptThread(const char* reason);
 
+static void SafeRefreshLuaStateFromSlot() noexcept {
+    __try {
+        Engine::RefreshLuaStateFromSlot();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // no-op
+    }
+}
+
 static LuaStateGetCStateFn g_luaStateGetCState = nullptr;
 static LuaStateAtPanicFn g_luaStateAtPanic = nullptr;
 
@@ -5663,11 +5671,46 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
     }
 
     if (info.ctx_reported && !IsPlausibleContextPointer(info.ctx_reported)) {
+        void* attemptedCtx = info.ctx_reported;
+        void* reboundCtx = attemptedCtx;
+        SafeRefreshLuaStateFromSlot();
+        reboundCtx = g_engineContext.load(std::memory_order_acquire);
+        if (reboundCtx && reboundCtx != attemptedCtx && IsPlausibleContextPointer(reboundCtx)) {
+            DWORD newOwner = GetCurrentThreadId();
+            uint64_t nowTick = GetTickCount64();
+            const HelperRetryPolicy& retry = GetHelperRetryPolicy();
+            const void* jitterToken = L ? L : info.L_reported;
+            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+                state.ctx_reported = reboundCtx;
+                state.owner_tid = newOwner;
+                state.last_tid = newOwner;
+                state.flags |= STATE_FLAG_OWNER_READY;
+                if (state.owner_ready_tick_ms == 0)
+                    state.owner_ready_tick_ms = nowTick;
+                state.helper_passive_since_ms = 0;
+                uint64_t delayMs = HelperRetryDelay(retry, state.helper_retry_count);
+                if (delayMs == 0)
+                    delayMs = retry.debounceMs;
+                delayMs += HelperJitterMs(retry, jitterToken, nowTick);
+                state.helper_next_retry_ms = nowTick + delayMs;
+                UpdateHelperStage(state, HelperInstallStage::ReadyToInstall, nowTick, "ctx-rebind");
+            }, &info);
+            info.ctx_reported = reboundCtx;
+            info.owner_tid = newOwner;
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "helpers rebind ctx  old=%p  new=%p  owner=%u",
+                      attemptedCtx,
+                      reboundCtx,
+                      static_cast<unsigned>(newOwner));
+            return false;
+        }
+
         Log::Logf(Log::Level::Warn,
                   Log::Category::Hooks,
                   "helpers bind abort L=%p reason=ctx-invalid ctx=%p",
                   L,
-                  info.ctx_reported);
+                  attemptedCtx);
         return false;
     }
 

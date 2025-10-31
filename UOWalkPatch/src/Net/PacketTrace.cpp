@@ -470,6 +470,10 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
                   inflightCount,
                   static_cast<unsigned>(expectedSeq),
                   nackAction);
+        if (nackResult.action != Engine::MovementAckAction::Resync &&
+            nackResult.action != Engine::MovementAckAction::Drop) {
+            Engine::NoteAckDrop();
+        }
         Walk::Controller::ApplyInflightOverride(1, 4);
         Walk::Controller::NotifyAckSoftFail();
         Engine::ResyncFastWalk(effectiveSocket, "ack_mismatch", 1);

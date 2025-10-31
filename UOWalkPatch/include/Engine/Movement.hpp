@@ -70,6 +70,7 @@ namespace Engine {
     MovementAckResult ProcessMovementAck(SOCKET socket, uint8_t seq, uint8_t status);
     uint32_t GetAckOkCount();
     uint32_t GetAckDropCount();
+    void NoteAckDrop();
 
     void TrackMovementTx(uint8_t seq, int dir, bool run, SOCKET socket, uint32_t key, const char* sender);
     bool IsScriptedMovementSendInProgress();

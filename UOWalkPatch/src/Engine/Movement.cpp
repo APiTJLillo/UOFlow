@@ -1748,6 +1748,11 @@ uint32_t GetAckOkCount()
     return g_ackOkCount.load(std::memory_order_relaxed);
 }
 
+void NoteAckDrop()
+{
+    g_ackDropCount.fetch_add(1u, std::memory_order_relaxed);
+}
+
 uint32_t GetAckDropCount()
 {
     return g_ackDropCount.load(std::memory_order_relaxed);

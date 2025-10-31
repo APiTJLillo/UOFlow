@@ -737,6 +737,76 @@ static bool CallsSendPacket(uint8_t* fn, size_t maxScan, uintptr_t send) {
     return CallsSendPacket(fn, maxScan, send, nullptr);
 }
 
+static bool ResolveIAT(uintptr_t mem, uintptr_t* out) {
+    if (!mem || !out)
+        return false;
+    *out = 0;
+    uintptr_t slot = 0;
+    if (!SafeMem::SafeRead(reinterpret_cast<const void*>(mem), slot) || !slot)
+        return false;
+    uintptr_t target = 0;
+    if (!SafeMem::SafeRead(reinterpret_cast<const void*>(slot), target) || !target)
+        return false;
+    *out = target;
+    return true;
+}
+
+static bool CallsOrJumpsTo(uint8_t* p, size_t len, uintptr_t send, uintptr_t* atOff, const char** kind) {
+    if (atOff)
+        *atOff = 0;
+    if (kind)
+        *kind = nullptr;
+    if (!p || !send || len < 5)
+        return false;
+
+    uint8_t* origin = p;
+    bool followedTail = false;
+
+    __try {
+        for (int pass = 0; pass < 2 && p; ++pass) {
+            for (size_t i = 0; i + 5 <= len; ++i) {
+                uint8_t op = p[i];
+                if (op == 0xE8 || op == 0xE9) {
+                    int32_t rel = *reinterpret_cast<int32_t*>(p + i + 1);
+                    uintptr_t tgt = reinterpret_cast<uintptr_t>(p + i + 5) + rel;
+                    if (tgt == send) {
+                        if (atOff)
+                            *atOff = reinterpret_cast<uintptr_t>(p + i) - reinterpret_cast<uintptr_t>(origin);
+                        if (kind)
+                            *kind = (op == 0xE8) ? "call" : "jmp";
+                        return true;
+                    }
+                } else if (op == 0xFF && (i + 6) <= len && p[i + 1] == 0x25) {
+                    uintptr_t mem = *reinterpret_cast<uintptr_t*>(p + i + 2);
+                    uintptr_t tgt = 0;
+                    if (ResolveIAT(mem, &tgt) && tgt == send) {
+                        if (atOff)
+                            *atOff = reinterpret_cast<uintptr_t>(p + i) - reinterpret_cast<uintptr_t>(origin);
+                        if (kind)
+                            *kind = "call[IAT]";
+                        return true;
+                    }
+                }
+            }
+
+            if (!followedTail && len >= 5 && p[0] == 0xE9) {
+                int32_t rel = *reinterpret_cast<int32_t*>(p + 1);
+                uintptr_t dest = reinterpret_cast<uintptr_t>(p + 5) + rel;
+                if (!dest || !sp::is_executable_code_ptr(reinterpret_cast<void*>(dest)))
+                    break;
+                p = reinterpret_cast<uint8_t*>(dest);
+                followedTail = true;
+                continue;
+            }
+            break;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return false;
+}
+
 static bool FunctionCallsSendPacket(void* fn)
 {
     return CallsSendPacket(reinterpret_cast<uint8_t*>(fn),
@@ -895,17 +965,21 @@ static bool ScanEndpointVTable(void* endpoint)
 
     bool fallbackMatched = false;
     uint8_t fallbackOffset = 0;
+    const char* fallbackKind = nullptr;
     if (!matchedFn && g_sendPacketTarget) {
         for (uint32_t c = 0; c < execCandidateCount; ++c) {
-            uint8_t offset = 0;
-            if (CallsSendPacket(reinterpret_cast<uint8_t*>(execCandidates[c].fn),
-                                0x80,
-                                reinterpret_cast<uintptr_t>(g_sendPacketTarget),
-                                &offset)) {
+            uintptr_t offset = 0;
+            const char* kind = nullptr;
+            if (CallsOrJumpsTo(reinterpret_cast<uint8_t*>(execCandidates[c].fn),
+                               0x400,
+                               reinterpret_cast<uintptr_t>(g_sendPacketTarget),
+                               &offset,
+                               &kind)) {
                 matchedFn = execCandidates[c].fn;
                 matchedIndex = execCandidates[c].index;
                 fallbackMatched = true;
-                fallbackOffset = offset;
+                fallbackKind = kind;
+                fallbackOffset = static_cast<uint8_t>((offset > 0xFFu) ? 0xFFu : offset);
                 break;
             }
         }
@@ -914,7 +988,6 @@ static bool ScanEndpointVTable(void* endpoint)
     if (!matchedFn) {
         bool firstWarn = g_skipWarnedVtables.insert(vtbl).second;
         if (firstWarn) {
-            WriteRawLog("ScanEndpointVTable: fallback scan found no viable SendPacket target");
             Log::Logf(Log::Level::Warn,
                       Log::Category::Core,
                       "[SB] fallback scan found no call/jmp to SendPacket (send=%p) ; deferring",
@@ -933,11 +1006,13 @@ static bool ScanEndpointVTable(void* endpoint)
             g_sendBuilderHooked = true;
             g_sendBuilderTarget = matchedFn;
             if (fallbackMatched) {
+                const char* kindStr = fallbackKind ? fallbackKind : "call";
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
-                          "[SB] fallback matched vtbl[%02u]=%p via call->SendPacket at +0x%02X ; hook attached",
+                          "[SB] fallback matched vtbl[%02u]=%p via %s->SendPacket at +0x%02X ; hook attached",
                           static_cast<unsigned>(matchedIndex & 0xFF),
                           matchedFn,
+                          kindStr,
                           static_cast<unsigned>(fallbackOffset));
             } else {
                 Log::Logf(Log::Level::Info,
