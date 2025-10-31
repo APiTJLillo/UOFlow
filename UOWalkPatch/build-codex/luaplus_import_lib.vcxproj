@@ -108,7 +108,7 @@
     <CustomBuild Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\build-codex\CMakeFiles\37ffc3717fb01476508cbf9d860cbdd7\luaplus_1100.lib.rule">
       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Generating LuaPlus import library</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">setlocal
-"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\lib.exe" /def:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/luaplus.def" /machine:x86 /out:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/luaplus_1100.lib"
+"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x86\lib.exe" /def:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/luaplus.def" /machine:x86 /out:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/luaplus_1100.lib"
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -121,7 +121,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</LinkObjects>
       <Message Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Generating LuaPlus import library</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">setlocal
-"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\lib.exe" /def:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/luaplus.def" /machine:x86 /out:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/luaplus_1100.lib"
+"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x86\lib.exe" /def:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/luaplus.def" /machine:x86 /out:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/luaplus_1100.lib"
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -134,7 +134,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</LinkObjects>
       <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|Win32'">Generating LuaPlus import library</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|Win32'">setlocal
-"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\lib.exe" /def:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/luaplus.def" /machine:x86 /out:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/luaplus_1100.lib"
+"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x86\lib.exe" /def:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/luaplus.def" /machine:x86 /out:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/luaplus_1100.lib"
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -147,7 +147,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|Win32'">false</LinkObjects>
       <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|Win32'">Generating LuaPlus import library</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|Win32'">setlocal
-"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\lib.exe" /def:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/luaplus.def" /machine:x86 /out:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/luaplus_1100.lib"
+"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x86\lib.exe" /def:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/luaplus.def" /machine:x86 /out:"C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/luaplus_1100.lib"
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone

@@ -1,5 +1,7 @@
 # Build directories
 build/
+build-codex/
+UOWalkPatch/build-codex/
 out/
 debug/
 release/
