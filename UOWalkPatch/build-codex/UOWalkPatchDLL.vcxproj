@@ -529,6 +529,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   <ItemGroup>
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\dllmain.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\Config.cpp" />
+    <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\CoreFlags.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\Logging.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\Startup.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Core\PatternScan.cpp" />

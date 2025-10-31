@@ -701,42 +701,47 @@ static void CaptureNetManager(void* candidate, const char* sourceTag)
     TryDiscoverEndpointFromManager(g_netMgr);
 }
 
-static bool CallsSendPacket(uint8_t* fn, size_t maxScan, uint8_t& outOffset)
-{
-    if (!fn || !g_sendPacketTarget || maxScan < 5)
+static bool CallsSendPacket(uint8_t* fn, size_t maxScan, uintptr_t send, uint8_t* offsetOut) {
+    if (!fn || !send || maxScan < 5)
         return false;
 
-    uintptr_t target = reinterpret_cast<uintptr_t>(g_sendPacketTarget);
     __try {
         for (size_t i = 0; i + 5 <= maxScan; ++i) {
             uint8_t op = fn[i];
             if (op == 0xE8 || op == 0xE9) {
                 int32_t rel = *reinterpret_cast<int32_t*>(fn + i + 1);
-                uintptr_t callTarget = reinterpret_cast<uintptr_t>(fn + i + 5) + rel;
-                if (callTarget == target) {
-                    outOffset = static_cast<uint8_t>(i);
+                uintptr_t tgt = reinterpret_cast<uintptr_t>(fn + i + 5) + rel;
+                if (tgt == send) {
+                    if (offsetOut)
+                        *offsetOut = static_cast<uint8_t>(i);
                     return true;
                 }
             }
             if (op == 0xFF && (i + 6) <= maxScan && fn[i + 1] == 0x25) {
                 uintptr_t ptr = *reinterpret_cast<uintptr_t*>(fn + i + 2);
-                uintptr_t callTarget = *reinterpret_cast<uintptr_t*>(reinterpret_cast<void*>(ptr));
-                if (callTarget == target) {
-                    outOffset = static_cast<uint8_t>(i);
+                uintptr_t tgt = *reinterpret_cast<uintptr_t*>(reinterpret_cast<void*>(ptr));
+                if (tgt == send) {
+                    if (offsetOut)
+                        *offsetOut = static_cast<uint8_t>(i);
                     return true;
                 }
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
+        /* ignore */
     }
     return false;
 }
 
+static bool CallsSendPacket(uint8_t* fn, size_t maxScan, uintptr_t send) {
+    return CallsSendPacket(fn, maxScan, send, nullptr);
+}
+
 static bool FunctionCallsSendPacket(void* fn)
 {
-    uint8_t unusedOffset = 0;
-    return CallsSendPacket(reinterpret_cast<uint8_t*>(fn), 0x80, unusedOffset);
+    return CallsSendPacket(reinterpret_cast<uint8_t*>(fn),
+                           0x80,
+                           reinterpret_cast<uintptr_t>(g_sendPacketTarget));
 }
 
 // Note: second (__fastcall) parameter is required to consume the register slot when
@@ -893,7 +898,10 @@ static bool ScanEndpointVTable(void* endpoint)
     if (!matchedFn && g_sendPacketTarget) {
         for (uint32_t c = 0; c < execCandidateCount; ++c) {
             uint8_t offset = 0;
-            if (CallsSendPacket(reinterpret_cast<uint8_t*>(execCandidates[c].fn), 0x80, offset)) {
+            if (CallsSendPacket(reinterpret_cast<uint8_t*>(execCandidates[c].fn),
+                                0x80,
+                                reinterpret_cast<uintptr_t>(g_sendPacketTarget),
+                                &offset)) {
                 matchedFn = execCandidates[c].fn;
                 matchedIndex = execCandidates[c].index;
                 fallbackMatched = true;

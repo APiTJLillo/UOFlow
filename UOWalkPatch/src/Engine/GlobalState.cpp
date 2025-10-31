@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include "Core/CoreFlags.hpp"
 #include "Core/Logging.hpp"
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
@@ -397,6 +398,7 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
                 candidate->scriptContext,
                 candidate->resourceManager);
             WriteRawLog(buffer);
+            InterlockedExchange(&g_flags.lua_slot_seen, 1);
 
             void* engineCtx = candidate->engineContext;
             void* networkCfg = candidate->networkConfig;
@@ -548,6 +550,7 @@ static DWORD WINAPI WaitForLua(LPVOID) {
             char buffer[128];
             sprintf_s(buffer, sizeof(buffer), "Scanner found Lua State @ %p", g_luaState);
             WriteRawLog(buffer);
+            InterlockedExchange(&g_flags.lua_slot_seen, 1);
 
             // Queue Lua helper registration for the next safe point
             RequestWalkRegistration();

@@ -27,6 +27,7 @@
 #include <minhook.h>
 
 #include "Core/Config.hpp"
+#include "Core/CoreFlags.hpp"
 #include "Core/EarlyTrace.hpp"
 #include "Core/Logging.hpp"
 #include "Core/Startup.hpp"
@@ -254,6 +255,12 @@ static void LeaveHelperInstall(bool engaged) noexcept {
 static std::atomic<bool> g_helperPumpStop{false};
 static std::atomic<bool> g_helperPumpRunning{false};
 static std::thread g_helperPumpThread;
+
+struct HelpersRuntimeState {
+    std::atomic<uint64_t> settle_start_ms{0};
+};
+
+static HelpersRuntimeState g_helpers{};
 
 static void StartHelperPumpThread();
 static void StopHelperPumpThread();
@@ -4639,11 +4646,63 @@ static void MaybeEmitHeartbeat() {
                          ? (now - info.helper_state_since_ms)
                          : 0;
 
-    const char* luaLabel = canonical ? "OK" : "MISS";
+    LONG slotSeen = InterlockedCompareExchange(&g_flags.lua_slot_seen, 0, 0);
+    LONG tracerAttached = InterlockedCompareExchange(&g_flags.lua_tracer_attached, 0, 0);
+    LONG regSeen = InterlockedCompareExchange(&g_flags.lua_reg_seen, 0, 0);
+    bool luaOK = ((slotSeen | tracerAttached | regSeen) != 0);
+    const char* luaLabel = luaOK ? "OK" : "MISS";
     void* engineCtx = g_engineContext.load(std::memory_order_acquire);
-    const char* ctxLabel = engineCtx ? "OK" : "MISS";
+    const bool ctxOK = engineCtx != nullptr;
+    const char* ctxLabel = ctxOK ? "OK" : "MISS";
     Net::SendBuilderStatus sbStatus = Net::GetSendBuilderStatus();
     const char* sbLabel = sbStatus.hooked ? "attached" : (sbStatus.probing ? "probing" : "pending");
+
+    if (ctxOK && luaOK) {
+        uint64_t expected = 0;
+        g_helpers.settle_start_ms.compare_exchange_strong(expected, now, std::memory_order_acq_rel);
+    }
+
+    static bool s_lastLuaOk = false;
+    static bool s_loggedLuaOk = false;
+    if (luaOK && !s_lastLuaOk && !s_loggedLuaOk) {
+        const char* parts[3]{};
+        size_t partCount = 0;
+        if (tracerAttached)
+            parts[partCount++] = "tracer";
+        if (slotSeen)
+            parts[partCount++] = "slot";
+        if (regSeen)
+            parts[partCount++] = "regs";
+
+        char sourceBuf[32] = {};
+        if (partCount == 0) {
+            strcpy_s(sourceBuf, sizeof(sourceBuf), "unknown");
+        } else {
+            size_t offset = 0;
+            for (size_t i = 0; i < partCount && offset < sizeof(sourceBuf); ++i) {
+                if (i != 0 && offset + 1 < sizeof(sourceBuf)) {
+                    sourceBuf[offset++] = '/';
+                }
+                const char* part = parts[i];
+                if (!part)
+                    continue;
+                int written = _snprintf_s(sourceBuf + offset,
+                                          sizeof(sourceBuf) - offset,
+                                          _TRUNCATE,
+                                          "%s",
+                                          part);
+                if (written > 0)
+                    offset += static_cast<size_t>(written);
+            }
+        }
+
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[HB] lua status source=%s (ok)",
+                  sourceBuf);
+        s_loggedLuaOk = true;
+    }
+    s_lastLuaOk = luaOK;
 
     Walk::Controller::Settings walkSettings = Walk::Controller::GetSettings();
     uint32_t inflight = Walk::Controller::GetInflightCount();
@@ -4880,9 +4939,8 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
 
     uint64_t generation = g_generation.load(std::memory_order_acquire);
     now = GetTickCount64();
-    uint64_t settleElapsed = (current.helper_settle_start_ms && now >= current.helper_settle_start_ms)
-                                 ? (now - current.helper_settle_start_ms)
-                                 : 0;
+    uint64_t globalSettleStart = g_helpers.settle_start_ms.load(std::memory_order_acquire);
+    uint64_t settleElapsed = (globalSettleStart && now >= globalSettleStart) ? (now - globalSettleStart) : 0;
     uint64_t attemptElapsed = (current.helper_first_attempt_ms && now >= current.helper_first_attempt_ms)
                                   ? (now - current.helper_first_attempt_ms)
                                   : 0;
@@ -5027,9 +5085,9 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         }
 
         if (!allowNow) {
-            bool gateSettle = gateReason && _stricmp(gateReason, "settle") == 0;
-            bool gateEligible = gateSettle || (gateReason == nullptr);
-            if (gateEligible && settleElapsed >= 2000 && engineCtxSnapshot && jitterToken) {
+            bool stageEligible = (stage == HelperInstallStage::WaitingForGlobalState ||
+                                  stage == HelperInstallStage::ReadyToInstall);
+            if (stageEligible && settleElapsed >= 2000 && engineCtxSnapshot && jitterToken) {
                 if ((current.helper_flags & HELPER_FLAG_SETTLE_PROMOTED) == 0) {
                     allowNow = true;
                     passiveMode = false;
@@ -5082,8 +5140,8 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
             }
             bool allowLog = (state.helper_next_skip_log_ms == 0) || now >= state.helper_next_skip_log_ms;
             if (allowLog) {
-                uint32_t skipJitter = HelperRandomWindow(jitterToken ? jitterToken : target, now, 300u);
-                state.helper_next_skip_log_ms = now + 700u + skipJitter;
+                uint32_t skipJitter = HelperRandomWindow(jitterToken ? jitterToken : target, now, 250u);
+                state.helper_next_skip_log_ms = now + 1000u + skipJitter;
             }
             shouldLogSkip = allowLog;
             UpdateHelperStage(state,
@@ -6671,6 +6729,7 @@ static bool ResolveRegisterFunction() {
 
     g_registerTarget = addr;
     g_clientRegister = g_origRegister;
+    InterlockedExchange(&g_flags.lua_tracer_attached, 1);
     g_registerResolved.store(true, std::memory_order_release);
     char tracerMsg[128];
     sprintf_s(tracerMsg, sizeof(tracerMsg), "[INFO][LUA] RegisterLuaFunction tracer attached at %p", addr);
@@ -6684,6 +6743,7 @@ static int __stdcall RegLua_detour(void* ctx, void* func, const char* name) {
     __try {
         const char* label = name ? name : "<null>";
         DebugRingTryWrite("[LUA][REG] name=\"%s\" fn=%p", label, func);
+        InterlockedExchange(&g_flags.lua_reg_seen, 1);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return RegisterHookImpl(ctx, func, name);
     }

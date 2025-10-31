@@ -72,6 +72,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 add_library(UOWalkPatchDLL SHARED
     src/dllmain.cpp
     src/Core/Config.cpp
+    src/Core/CoreFlags.cpp
     src/Core/Logging.cpp
     src/Core/Startup.cpp
     src/Core/PatternScan.cpp
