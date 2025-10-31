@@ -36,6 +36,9 @@ using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 
 constexpr DWORD kEndpointScanCooldownMs = 2500;
 constexpr DWORD kEngineUnstableLogCooldownMs = 2000;
+constexpr size_t kEndpointScanWindow = 0x800;
+constexpr int kTailFollowMaxDepth = 4;
+constexpr size_t kTailScanWindow = 0x100;
 static GlobalStateInfo* g_state = nullptr;
 static SendPacket_t g_sendPacket = nullptr;
 static void* g_sendPacketTarget = nullptr;
@@ -449,7 +452,7 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     if (!IsEngineStableForScanning())
         return false;
 
-    constexpr size_t kScanLimit = 0x200;
+    constexpr size_t kScanLimit = kEndpointScanWindow;
     DWORD now = GetTickCount();
     if (g_lastBuilderScanTick != 0 &&
         (DWORD)(now - g_lastBuilderScanTick) < kEndpointScanCooldownMs)
@@ -628,7 +631,7 @@ static bool TryDiscoverFromEngineContext()
     g_lastEngineCtxScanPtr = engineCtx;
     g_lastEngineCtxScanTick = now;
 
-    const size_t kScanLimit = 0x200;
+    const size_t kScanLimit = kEndpointScanWindow;
     char startBuf[160];
     sprintf_s(startBuf, sizeof(startBuf),
               "EngineCtx scan begin ctx=%p window=0x%zx",
@@ -783,238 +786,403 @@ static bool TryLoad(const void* p, T& out)
     }
 }
 
-struct SBHit
+static bool IsSendPacketAddress(uint8_t* addr)
 {
-    uint8_t* site = nullptr;
-    const char* form = nullptr;
-    uint32_t offset = 0;
+    if (!addr)
+        return false;
+
+    uint8_t* target = reinterpret_cast<uint8_t*>(g_sendPacketTarget);
+    if (target && addr == target)
+        return true;
+
+    uint8_t* original = reinterpret_cast<uint8_t*>(g_sendPacket);
+    if (original && addr == original)
+        return true;
+
+    return false;
+}
+
+struct TraceHop
+{
+    const char* pattern = nullptr;
+    uint8_t* from = nullptr;
+    uint8_t* to = nullptr;
 };
 
-static uint8_t* FollowTail(uint8_t* p)
+struct TraceResult
 {
-    // Follow up to two tail jumps through rel32 and import jumps
-    for (int depth = 0; depth < 2 && IsExecutablePtr(p); ++depth)
-    {
-        uint8_t op = 0;
-        if (!TryLoad(p, op))
-            break;
+    uint8_t* site = nullptr;
+    uint32_t offset = 0;
+    uint8_t* finalTarget = nullptr;
+    size_t hopCount = 0;
+    TraceHop hops[kTailFollowMaxDepth] = {};
+};
 
-        if (op == 0xE9)
-        {
+static bool HasVisited(uint8_t* addr, uint8_t** visited, size_t count)
+{
+    for (size_t i = 0; i < count; ++i) {
+        if (visited[i] == addr)
+            return true;
+    }
+    return false;
+}
+
+static bool TraceSendPacketFrom(uint8_t* fn,
+                                size_t window,
+                                int depthRemaining,
+                                TraceResult& trace,
+                                uint8_t** visited,
+                                size_t& visitedCount,
+                                bool isRoot);
+
+static bool TraceHandleHop(TraceResult& trace,
+                           const char* pattern,
+                           uint8_t* from,
+                           uint8_t* dest,
+                           bool isRoot,
+                           uint32_t offset,
+                           int depthRemaining,
+                           uint8_t** visited,
+                           size_t& visitedCount)
+{
+    if (!dest || trace.hopCount >= kTailFollowMaxDepth)
+        return false;
+
+    bool siteSet = false;
+    if (isRoot && trace.site == nullptr) {
+        trace.site = from;
+        trace.offset = offset;
+        siteSet = true;
+    }
+
+    trace.hops[trace.hopCount].pattern = pattern;
+    trace.hops[trace.hopCount].from = from;
+    trace.hops[trace.hopCount].to = dest;
+    ++trace.hopCount;
+
+    bool matched = false;
+    if (IsSendPacketAddress(dest)) {
+        trace.finalTarget = dest;
+        matched = true;
+    } else if (depthRemaining > 1 && IsExecutablePtr(dest) && !HasVisited(dest, visited, visitedCount)) {
+        matched = TraceSendPacketFrom(dest,
+                                      kTailScanWindow,
+                                      depthRemaining - 1,
+                                      trace,
+                                      visited,
+                                      visitedCount,
+                                      false);
+    }
+
+    if (!matched) {
+        if (trace.hopCount > 0)
+            --trace.hopCount;
+        if (siteSet) {
+            trace.site = nullptr;
+            trace.offset = 0;
+        }
+    }
+
+    return matched;
+}
+
+static bool TraceSendPacketFrom(uint8_t* fn,
+                                size_t window,
+                                int depthRemaining,
+                                TraceResult& trace,
+                                uint8_t** visited,
+                                size_t& visitedCount,
+                                bool isRoot)
+{
+    if (!fn || depthRemaining <= 0)
+        return false;
+    if (!IsExecutablePtr(fn))
+        return false;
+    if (visitedCount >= kTailFollowMaxDepth)
+        return false;
+    if (HasVisited(fn, visited, visitedCount))
+        return false;
+
+    visited[visitedCount++] = fn;
+    bool matched = false;
+
+    for (size_t i = 0; i < window && !matched; ++i) {
+        size_t remaining = window - i;
+        uint8_t* p = fn + i;
+        uint8_t opcode = 0;
+        if (!TryLoad(p, opcode))
+            continue;
+
+        if (opcode == 0xE8 && remaining >= 5) {
             int32_t rel = 0;
             if (!TryLoad(p + 1, rel))
-                break;
-            p = p + 5 + rel;
+                continue;
+            uint8_t* dest = p + 5 + rel;
+            matched = TraceHandleHop(trace,
+                                     "E8",
+                                     p,
+                                     dest,
+                                     isRoot,
+                                     static_cast<uint32_t>(i),
+                                     depthRemaining,
+                                     visited,
+                                     visitedCount);
             continue;
         }
 
-        if (op == 0xFF)
-        {
-            uint8_t b1 = 0;
-            if (!TryLoad(p + 1, b1))
-                break;
+        if (opcode == 0xE9 && remaining >= 5) {
+            int32_t rel = 0;
+            if (!TryLoad(p + 1, rel))
+                continue;
+            uint8_t* dest = p + 5 + rel;
+            matched = TraceHandleHop(trace,
+                                     "E9",
+                                     p,
+                                     dest,
+                                     isRoot,
+                                     static_cast<uint32_t>(i),
+                                     depthRemaining,
+                                     visited,
+                                     visitedCount);
+            continue;
+        }
+
+        if (opcode == 0xFF && remaining >= 6) {
+            uint8_t modrm = 0;
+            if (!TryLoad(p + 1, modrm))
+                continue;
 #if defined(_M_X64)
-            if (b1 == 0x25)
-            {
+            if (modrm == 0x15) {
                 int32_t disp = 0;
                 if (!TryLoad(p + 2, disp))
-                    break;
+                    goto next_opcode;
                 uint8_t* slotAddr = p + 6 + disp;
-                void* tgt = nullptr;
-                if (!TryLoad(slotAddr, tgt) || !tgt)
-                    break;
-                p = reinterpret_cast<uint8_t*>(tgt);
+                void* slot = nullptr;
+                if (!TryLoad(slotAddr, slot) || !slot)
+                    goto next_opcode;
+                void* target = nullptr;
+                if (!TryLoad(slot, target) || !target)
+                    goto next_opcode;
+                uint8_t* dest = reinterpret_cast<uint8_t*>(target);
+                matched = TraceHandleHop(trace,
+                                         "FF15",
+                                         p,
+                                         dest,
+                                         isRoot,
+                                         static_cast<uint32_t>(i),
+                                         depthRemaining,
+                                         visited,
+                                         visitedCount);
                 continue;
             }
 #else
-            if (b1 == 0x25)
-            {
+            if (modrm == 0x15) {
                 uint32_t absMem = 0;
                 if (!TryLoad(p + 2, absMem))
-                    break;
+                    goto next_opcode;
                 void* slotAddr = reinterpret_cast<void*>(static_cast<uintptr_t>(absMem));
-                void* tgt = nullptr;
-                if (!TryLoad(slotAddr, tgt) || !tgt)
-                    break;
-                p = reinterpret_cast<uint8_t*>(tgt);
+                void* slot = nullptr;
+                if (!TryLoad(slotAddr, slot) || !slot)
+                    goto next_opcode;
+                void* target = nullptr;
+                if (!TryLoad(slot, target) || !target)
+                    goto next_opcode;
+                uint8_t* dest = reinterpret_cast<uint8_t*>(target);
+                matched = TraceHandleHop(trace,
+                                         "FF15",
+                                         p,
+                                         dest,
+                                         isRoot,
+                                         static_cast<uint32_t>(i),
+                                         depthRemaining,
+                                         visited,
+                                         visitedCount);
                 continue;
             }
 #endif
-            // FF E0..E7 jmp reg: cannot resolve statically -> stop
+            if ((modrm & 0xF8) == 0xD0) {
+#if defined(_M_X64)
+                if (i >= 10) {
+                    uint8_t rex = 0;
+                    uint8_t movOp = 0;
+                    if (!TryLoad(p - 10, rex) || (rex & 0xF0) != 0x40)
+                        goto next_opcode;
+                    if (!TryLoad(p - 9, movOp) || (movOp & 0xF8) != 0xB8)
+                        goto next_opcode;
+                    uint64_t imm = 0;
+                    if (!TryLoad(p - 8, imm))
+                        goto next_opcode;
+                    uint8_t* dest = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(imm));
+                    matched = TraceHandleHop(trace,
+                                             "MOV/CALL",
+                                             p - 10,
+                                             dest,
+                                             isRoot,
+                                             static_cast<uint32_t>(i - 10),
+                                             depthRemaining,
+                                             visited,
+                                             visitedCount);
+                    continue;
+                }
+#else
+                if (i >= 5) {
+                    uint8_t movOp = 0;
+                    if (!TryLoad(p - 5, movOp) || (movOp & 0xF8) != 0xB8)
+                        goto next_opcode;
+                    uintptr_t imm = 0;
+                    if (!TryLoad(p - 4, imm))
+                        goto next_opcode;
+                    uint8_t* dest = reinterpret_cast<uint8_t*>(imm);
+                    matched = TraceHandleHop(trace,
+                                             "MOV/CALL",
+                                             p - 5,
+                                             dest,
+                                             isRoot,
+                                             static_cast<uint32_t>(i - 5),
+                                             depthRemaining,
+                                             visited,
+                                             visitedCount);
+                    continue;
+                }
+#endif
+            }
+
+            if ((modrm & 0xF8) == 0xE0) {
+#if defined(_M_X64)
+                if (i >= 10) {
+                    uint8_t rex = 0;
+                    uint8_t movOp = 0;
+                    if (!TryLoad(p - 10, rex) || (rex & 0xF0) != 0x40)
+                        goto next_opcode;
+                    if (!TryLoad(p - 9, movOp) || (movOp & 0xF8) != 0xB8)
+                        goto next_opcode;
+                    uint64_t imm = 0;
+                    if (!TryLoad(p - 8, imm))
+                        goto next_opcode;
+                    uint8_t* dest = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(imm));
+                    matched = TraceHandleHop(trace,
+                                             "MOV/JMP",
+                                             p - 10,
+                                             dest,
+                                             isRoot,
+                                             static_cast<uint32_t>(i - 10),
+                                             depthRemaining,
+                                             visited,
+                                             visitedCount);
+                    continue;
+                }
+#else
+                if (i >= 5) {
+                    uint8_t movOp = 0;
+                    if (!TryLoad(p - 5, movOp) || (movOp & 0xF8) != 0xB8)
+                        goto next_opcode;
+                    uintptr_t imm = 0;
+                    if (!TryLoad(p - 4, imm))
+                        goto next_opcode;
+                    uint8_t* dest = reinterpret_cast<uint8_t*>(imm);
+                    matched = TraceHandleHop(trace,
+                                             "MOV/JMP",
+                                             p - 5,
+                                             dest,
+                                             isRoot,
+                                             static_cast<uint32_t>(i - 5),
+                                             depthRemaining,
+                                             visited,
+                                             visitedCount);
+                    continue;
+                }
+#endif
+            }
+
+#if defined(_M_X64)
+            if (modrm == 0x25) {
+                int32_t disp = 0;
+                if (!TryLoad(p + 2, disp))
+                    goto next_opcode;
+                uint8_t* slotAddr = p + 6 + disp;
+                void* target = nullptr;
+                if (!TryLoad(slotAddr, target) || !target)
+                    goto next_opcode;
+                uint8_t* dest = reinterpret_cast<uint8_t*>(target);
+                matched = TraceHandleHop(trace,
+                                         "FF25",
+                                         p,
+                                         dest,
+                                         isRoot,
+                                         static_cast<uint32_t>(i),
+                                         depthRemaining,
+                                         visited,
+                                         visitedCount);
+                continue;
+            }
+#else
+            if (modrm == 0x25) {
+                uint32_t absMem = 0;
+                if (!TryLoad(p + 2, absMem))
+                    goto next_opcode;
+                void* slotAddr = reinterpret_cast<void*>(static_cast<uintptr_t>(absMem));
+                void* target = nullptr;
+                if (!TryLoad(slotAddr, target) || !target)
+                    goto next_opcode;
+                uint8_t* dest = reinterpret_cast<uint8_t*>(target);
+                matched = TraceHandleHop(trace,
+                                         "FF25",
+                                         p,
+                                         dest,
+                                         isRoot,
+                                         static_cast<uint32_t>(i),
+                                         depthRemaining,
+                                         visited,
+                                         visitedCount);
+                continue;
+            }
+#endif
         }
-        break;
+
+        if (opcode == 0x68 && remaining >= 10) {
+            uint8_t nextOp = 0;
+            if (!TryLoad(p + 5, nextOp) || nextOp != 0xE9)
+                continue;
+            int32_t rel = 0;
+            if (!TryLoad(p + 6, rel))
+                continue;
+            uint8_t* dest = p + 10 + rel;
+            matched = TraceHandleHop(trace,
+                                     "PUSH/JMP",
+                                     p,
+                                     dest,
+                                     isRoot,
+                                     static_cast<uint32_t>(i),
+                                     depthRemaining,
+                                     visited,
+                                     visitedCount);
+            continue;
+        }
+
+next_opcode:
+        (void)0;
     }
-    return p;
+
+    if (visitedCount > 0)
+        --visitedCount;
+    return matched;
 }
 
-static SBHit* FindSendPacketUse(uint8_t* fn, size_t maxScan, uint8_t* sendpkt)
+static bool TraceSendPacketUse(uint8_t* fn, TraceResult& trace)
 {
-    if (!fn || !sendpkt || maxScan < 5)
-        return nullptr;
+    if (!fn)
+        return false;
 
-    static SBHit hit{};
-    uint8_t* cursor = FollowTail(fn); // normalize entry through up to 2 jumps
-
-    uint8_t opcode = 0;
-    int32_t rel32 = 0;
-
-    for (size_t i = 0; i + 6 < maxScan; ++i)
-    {
-        uint8_t* p = cursor + i;
-
-        if (TryLoad(p, opcode) && opcode == 0xE8 && TryLoad(p + 1, rel32))
-        {
-            uint8_t* target = p + 5 + rel32;
-            if (target == sendpkt)
-            {
-                hit.site = p;
-                hit.form = "E8";
-                hit.offset = static_cast<uint32_t>(i);
-                return &hit;
-            }
-        }
-
-        if (TryLoad(p, opcode) && opcode == 0xFF)
-        {
-            uint8_t modrm = 0;
-            if (TryLoad(p + 1, modrm))
-            {
-#if defined(_M_X64)
-                if (modrm == 0x15)
-                {
-                    int32_t disp = 0;
-                    if (TryLoad(p + 2, disp))
-                    {
-                        uint8_t* slotAddr = p + 6 + disp;
-                        void* slot = nullptr;
-                        if (TryLoad(slotAddr, slot) && slot)
-                        {
-                            void* target = nullptr;
-                            if (TryLoad(slot, target) && target == sendpkt)
-                            {
-                                hit.site = p;
-                                hit.form = "FF15";
-                                hit.offset = static_cast<uint32_t>(i);
-                                return &hit;
-                            }
-                        }
-                    }
-                }
-#else
-                if (modrm == 0x15)
-                {
-                    uint32_t absMem = 0;
-                    if (TryLoad(p + 2, absMem))
-                    {
-                        void* slotAddr = reinterpret_cast<void*>(static_cast<uintptr_t>(absMem));
-                        void* slot = nullptr;
-                        if (TryLoad(slotAddr, slot) && slot)
-                        {
-                            void* target = nullptr;
-                            if (TryLoad(slot, target) && target == sendpkt)
-                            {
-                                hit.site = p;
-                                hit.form = "FF15";
-                                hit.offset = static_cast<uint32_t>(i);
-                                return &hit;
-                            }
-                        }
-                    }
-                }
-#endif
-                if ((modrm & 0xF8) == 0xD0)
-                {
-#if defined(_M_X64)
-                    if (i >= 10)
-                    {
-                        uint8_t rex = 0;
-                        uint8_t movOp = 0;
-                        if (TryLoad(p - 10, rex) && (rex & 0xF0) == 0x40 &&
-                            TryLoad(p - 9, movOp) && (movOp & 0xF8) == 0xB8)
-                        {
-                            uint64_t imm = 0;
-                            if (TryLoad(p - 8, imm) &&
-                                reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(imm)) == sendpkt)
-                            {
-                                hit.site = p;
-                                hit.form = "MOV/CALL";
-                                hit.offset = static_cast<uint32_t>(i);
-                                return &hit;
-                            }
-                        }
-                    }
-#else
-                    if (i >= 5)
-                    {
-                        uint8_t movOp = 0;
-                        if (TryLoad(p - 5, movOp) && (movOp & 0xF8) == 0xB8)
-                        {
-                            uintptr_t imm = 0;
-                            if (TryLoad(p - 4, imm) &&
-                                reinterpret_cast<uint8_t*>(imm) == sendpkt)
-                            {
-                                hit.site = p;
-                                hit.form = "MOV/CALL";
-                                hit.offset = static_cast<uint32_t>(i);
-                                return &hit;
-                            }
-                        }
-                    }
-#endif
-                }
-
-                // Handle MOV reg, imm32 ; JMP reg -> follow target once
-                if ((modrm & 0xF8) == 0xE0)
-                {
-#if defined(_M_X64)
-                    if (i >= 10)
-                    {
-                        uint8_t rex = 0;
-                        uint8_t movOp = 0;
-                        if (TryLoad(p - 10, rex) && (rex & 0xF0) == 0x40 &&
-                            TryLoad(p - 9, movOp) && (movOp & 0xF8) == 0xB8)
-                        {
-                            uint64_t imm = 0;
-                            if (TryLoad(p - 8, imm))
-                            {
-                                uint8_t* tail = FollowTail(reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(imm)));
-                                if (tail == sendpkt)
-                                {
-                                    hit.site = p;
-                                    hit.form = "MOV/JMP->SendPacket";
-                                    hit.offset = static_cast<uint32_t>(i);
-                                    return &hit;
-                                }
-                            }
-                        }
-                    }
-#else
-                    if (i >= 5)
-                    {
-                        uint8_t movOp = 0;
-                        if (TryLoad(p - 5, movOp) && (movOp & 0xF8) == 0xB8)
-                        {
-                            uintptr_t imm = 0;
-                            if (TryLoad(p - 4, imm))
-                            {
-                                uint8_t* tail = FollowTail(reinterpret_cast<uint8_t*>(imm));
-                                if (tail == sendpkt)
-                                {
-                                    hit.site = p;
-                                    hit.form = "MOV/JMP->SendPacket";
-                                    hit.offset = static_cast<uint32_t>(i);
-                                    return &hit;
-                                }
-                            }
-                        }
-                    }
-#endif
-                }
-            }
-        }
-    }
-
-    return nullptr;
+    uint8_t* visited[kTailFollowMaxDepth] = {};
+    size_t visitedCount = 0;
+    trace = {};
+    return TraceSendPacketFrom(fn,
+                               kEndpointScanWindow,
+                               kTailFollowMaxDepth,
+                               trace,
+                               visited,
+                               visitedCount,
+                               true);
 }
 
 // Note: second (__fastcall) parameter is required to consume the register slot when
@@ -1098,7 +1266,22 @@ static bool ScanEndpointVTable(void* endpoint)
                 continue;
             }
 
-            Logf("endpoint vtbl[%02X] = %p", i, fn);
+            Logf("endpoint vtbl[%02u] = %p", i, fn);
+            if (fn && IsExecutablePtr(fn))
+            {
+                uint8_t b[8] = {};
+                for (int k = 0; k < 8; ++k)
+                {
+                    if (!TryLoad(reinterpret_cast<uint8_t*>(fn) + k, b[k]))
+                        b[k] = 0xFF;
+                }
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[CORE] endpoint vtbl[%02u] = %p bytes=%02X %02X %02X %02X %02X %02X %02X %02X",
+                          i,
+                          fn,
+                          b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+            }
 
             slotFns[i] = fn;
 
@@ -1170,23 +1353,18 @@ static bool ScanEndpointVTable(void* endpoint)
     }
 
     bool fallbackMatched = false;
-    uint8_t fallbackOffset = 0;
-    const char* fallbackKind = nullptr;
-    uint8_t* fallbackSite = nullptr;
+    TraceResult trace{};
     if (!matchedFn && g_sendPacketTarget) {
-        uint8_t* sendpkt = reinterpret_cast<uint8_t*>(g_sendPacketTarget);
-        constexpr size_t kFallbackScanWindow = 0x300;
         for (int i = 0; i < 32; ++i) {
-            auto* fn = reinterpret_cast<uint8_t*>(slotFns[i]);
-            if (!fn || !IsExecutablePtr(fn))
+            auto* fnBytes = reinterpret_cast<uint8_t*>(slotFns[i]);
+            if (!fnBytes || !IsExecutablePtr(fnBytes))
                 continue;
-            if (auto* hit = FindSendPacketUse(fn, kFallbackScanWindow, sendpkt)) {
+            TraceResult candidate{};
+            if (TraceSendPacketUse(fnBytes, candidate)) {
                 matchedFn = slotFns[i];
                 matchedIndex = i;
+                trace = candidate;
                 fallbackMatched = true;
-                fallbackKind = hit->form;
-                fallbackOffset = static_cast<uint8_t>((hit->offset > 0xFFu) ? 0xFFu : hit->offset);
-                fallbackSite = hit->site;
                 break;
             }
         }
@@ -1213,19 +1391,65 @@ static bool ScanEndpointVTable(void* endpoint)
             g_sendBuilderHooked = true;
             g_sendBuilderTarget = matchedFn;
             if (fallbackMatched) {
+                for (size_t hop = 0; hop < trace.hopCount; ++hop) {
+                    const TraceHop& hopInfo = trace.hops[hop];
+                    Log::Logf(Log::Level::Info,
+                              Log::Category::Core,
+                              "[CORE][SB] hop%u vtbl[%02u] @%p: %s -> %p",
+                              static_cast<unsigned>(hop + 1),
+                              static_cast<unsigned>(matchedIndex & 0xFF),
+                              hopInfo.from,
+                              hopInfo.pattern ? hopInfo.pattern : "?",
+                              hopInfo.to);
+                }
                 uint8_t matchBytes[4] = {};
-                const void* byteTarget = fallbackSite ? fallbackSite : reinterpret_cast<const uint8_t*>(matchedFn) + fallbackOffset;
+                const void* byteTarget = trace.site ? trace.site : reinterpret_cast<const uint8_t*>(matchedFn);
                 bool haveBytes = SafeMem::SafeReadBytes(byteTarget,
                                                         matchBytes,
                                                         sizeof(matchBytes));
-                const char* kindStr = fallbackKind ? fallbackKind : "call";
+                char chain[128] = {};
+                if (trace.hopCount == 0) {
+                    std::snprintf(chain, sizeof(chain), "?");
+                } else {
+                    size_t written = 0;
+                    for (size_t hop = 0; hop < trace.hopCount; ++hop) {
+                        if (hop > 0 && written + 2 < sizeof(chain)) {
+                            int step = std::snprintf(chain + written, sizeof(chain) - written, "->");
+                            if (step < 0)
+                                break;
+                            if (static_cast<size_t>(step) >= sizeof(chain) - written) {
+                                written = sizeof(chain) - 1;
+                                break;
+                            }
+                            written += static_cast<size_t>(step);
+                        }
+                        const char* name = trace.hops[hop].pattern ? trace.hops[hop].pattern : "?";
+                        if (written < sizeof(chain)) {
+                            int step = std::snprintf(chain + written, sizeof(chain) - written, "%s", name);
+                            if (step < 0)
+                                break;
+                            if (static_cast<size_t>(step) >= sizeof(chain) - written) {
+                                written = sizeof(chain) - 1;
+                                break;
+                            }
+                            written += static_cast<size_t>(step);
+                        }
+                        if (written >= sizeof(chain) - 1)
+                            break;
+                    }
+                    if (written == 0)
+                        std::snprintf(chain, sizeof(chain), "?");
+                }
+                uint8_t* finalTarget = trace.finalTarget ? trace.finalTarget
+                                                         : reinterpret_cast<uint8_t*>(g_sendPacketTarget);
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
-                          "[CORE][SB] matched vtbl[%02u]=%p via %s->SendPacket at +0x%02X bytes=%02X %02X %02X %02X ; hook attached",
+                          "[CORE][SB] matched vtbl[%02u]=%p via %s -> SendPacket@%p (+0x%02X) bytes=%02X %02X %02X %02X ; hook attached",
                           static_cast<unsigned>(matchedIndex & 0xFF),
                           matchedFn,
-                          kindStr,
-                          static_cast<unsigned>(fallbackOffset),
+                          chain,
+                          finalTarget,
+                          static_cast<unsigned>(trace.offset),
                           haveBytes ? matchBytes[0] : 0xFF,
                           haveBytes ? matchBytes[1] : 0xFF,
                           haveBytes ? matchBytes[2] : 0xFF,

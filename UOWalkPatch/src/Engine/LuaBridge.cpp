@@ -265,8 +265,28 @@ struct HelpersRuntimeState {
     std::atomic<bool> rebind_pending{false};
 
     void SetCanonicalCtx(HCTX ctx, DWORD owner) noexcept {
-        canonical_ctx.store(ctx, std::memory_order_release);
-        owner_tid.store(owner, std::memory_order_release);
+        if (!ctx)
+            return;
+
+        HCTX expected = nullptr;
+        if (canonical_ctx.compare_exchange_strong(expected,
+                                                  ctx,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_acquire)) {
+            if (owner)
+                owner_tid.store(owner, std::memory_order_release);
+            return;
+        }
+
+        if (owner) {
+            DWORD current = owner_tid.load(std::memory_order_acquire);
+            if (current == 0) {
+                owner_tid.compare_exchange_strong(current,
+                                                  owner,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_acquire);
+            }
+        }
     }
 
     HCTX GetCanonicalCtx() const noexcept {
@@ -313,7 +333,7 @@ static void StopHelperPumpThread();
 static void MaybePumpLuaQueueFromScriptThread(const char* reason);
 static bool IsPlausibleContextPointer(const void* ctx);
 static bool IsValidCtx(HCTX ctx);
-static void ScheduleBindOnOwnerThread(lua_State* L, DWORD ownerTid, uint64_t generation, bool force, const char* reason);
+static void PostBindToOwnerThread(lua_State* L, DWORD ownerTid, uint64_t generation, bool force, const char* reason);
 
 static void SafeRefreshLuaStateFromSlot() noexcept {
     __try {
@@ -4633,16 +4653,20 @@ static void PostToOwner(lua_State* L, std::function<void()> fn) {
     PostToOwnerWithTask(L, "<owner>", std::move(fn));
 }
 
-static void ScheduleBindOnOwnerThread(lua_State* L,
-                                      DWORD ownerTid,
-                                      uint64_t generation,
-                                      bool force,
-                                      const char* reason) {
+static void PostBindToOwnerThread(lua_State* L,
+                                  DWORD ownerTid,
+                                  uint64_t generation,
+                                  bool force,
+                                  const char* reason) {
     if (!L)
         return;
 
+    DWORD canonicalOwner = GetCanonicalHelperOwnerTid();
+    if (canonicalOwner != 0)
+        ownerTid = canonicalOwner;
+
     if (ownerTid == 0)
-        ownerTid = GetCanonicalHelperOwnerTid();
+        return;
 
     if (ownerTid != 0 && ownerTid == GetCurrentThreadId())
         return;
@@ -5777,14 +5801,11 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
     if (info.ctx_reported && !IsValidCtx(info.ctx_reported)) {
         HCTX attemptedCtx = info.ctx_reported;
         SafeRefreshLuaStateFromSlot();
-        HCTX canonicalCtx = ResolveCanonicalEngineContext();
-        bool rebound = IsValidCtx(canonicalCtx) && canonicalCtx != attemptedCtx;
-        if (rebound) {
+        HCTX canonicalCtx = static_cast<HCTX>(ResolveCanonicalEngineContext());
+        bool haveCanonical = IsValidCtx(canonicalCtx);
+        if (haveCanonical && canonicalCtx != attemptedCtx) {
             DWORD canonicalOwner = GetCanonicalHelperOwnerTid();
-            if (canonicalOwner == 0)
-                canonicalOwner = GetCurrentThreadId();
             uint64_t nowTick = GetTickCount64();
-            SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
             g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
                 state.ctx_reported = canonicalCtx;
                 if (canonicalOwner) {
@@ -5806,9 +5827,18 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                       attemptedCtx,
                       canonicalCtx,
                       static_cast<unsigned>(canonicalOwner));
-            if (canonicalOwner && canonicalOwner != GetCurrentThreadId()) {
+            if (canonicalOwner == 0) {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Hooks,
+                          "helpers rebind defer ctx=%p reason=owner-unknown",
+                          canonicalCtx);
                 MarkHelperRebindPending();
-                ScheduleBindOnOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
+                return false;
+            }
+            SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
+            if (canonicalOwner != GetCurrentThreadId()) {
+                MarkHelperRebindPending();
+                PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
                 return false;
             }
         }
@@ -6045,16 +6075,19 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     LeaveHelperInstall(guardEngaged);
 
     ReleaseBindingSlot(L);
-    ClearHelperPending(L, generation, &info);
     uint64_t summaryTick = GetTickCount64();
     bool rebindPending = !ok ? ConsumeHelperRebindPending() : false;
     if (ok) {
+        ClearHelperPending(L, generation, &info);
         g_helperProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
         TrackHelperEvent(g_helperInstalledCount);
         MaybeEmitHelperSummary(summaryTick, true);
     } else {
-        if (rebindPending)
+        if (rebindPending) {
+            MaybeEmitHelperSummary(summaryTick);
             return;
+        }
+        ClearHelperPending(L, generation, &info);
         TrackHelperEvent(g_helperDeferredCount);
         const HelperRetryPolicy& retry = GetHelperRetryPolicy();
         g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
@@ -7131,7 +7164,10 @@ void GetStartupStatus(StartupStatus& out) {
     out.engineContextDiscovered = g_engineContext.load(std::memory_order_acquire) != nullptr;
     out.luaStateDiscovered = g_canonicalState.load(std::memory_order_acquire) != nullptr;
     out.helpersInstalled = g_helpersInstalledAny.load(std::memory_order_acquire);
-    out.ownerThreadId = g_lastHelperOwnerThread.load(std::memory_order_relaxed);
+    DWORD owner = g_lastHelperOwnerThread.load(std::memory_order_relaxed);
+    if (owner == 0)
+        owner = GetCanonicalHelperOwnerTid();
+    out.ownerThreadId = owner;
 }
 const char* GetHelperStageSummary() {
     lua_State* canonical = g_canonicalState.load(std::memory_order_acquire);
@@ -7149,39 +7185,88 @@ const char* GetHelperStageSummary() {
 void UpdateEngineContext(void* context) {
     g_engineContext.store(context, std::memory_order_release);
     NoteContextMutation();
+    DWORD threadId = GetCurrentThreadId();
     void* previous = g_loggedEngineContext.exchange(context, std::memory_order_acq_rel);
     if (context && context != previous) {
-        SetCanonicalHelperCtx(context, GetCurrentThreadId());
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "engine context discovered ctx=%p thread=%lu",
-                  context,
-                  static_cast<unsigned long>(GetCurrentThreadId()));
-        Core::StartupSummary::NotifyEngineContextReady();
-        bool expected = false;
-        if (g_engineVtableLogged.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            __try {
-                void** vtable = context ? *reinterpret_cast<void***>(context) : nullptr;
-                void* entry0 = (vtable && vtable[0]) ? vtable[0] : nullptr;
-                void* entry1 = (vtable && vtable[1]) ? vtable[1] : nullptr;
-                void* entry2 = (vtable && vtable[2]) ? vtable[2] : nullptr;
-                void* entry3 = (vtable && vtable[3]) ? vtable[3] : nullptr;
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Core,
-                          "[ENGINE][CTX] ctx=%p vtable=%p entry0=%p entry1=%p entry2=%p entry3=%p",
-                          context,
-                          vtable,
-                          entry0,
-                          entry1,
-                          entry2,
-                          entry3);
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                Log::Logf(Log::Level::Warn,
-                          Log::Category::Core,
-                          "[ENGINE][CTX] ctx=%p vtable-inspect-failed seh=0x%08lX",
-                          context,
-                          GetExceptionCode());
-                g_engineVtableLogged.store(false, std::memory_order_release);
+        void* priorCanonical = GetCanonicalHelperCtx();
+        DWORD priorOwner = GetCanonicalHelperOwnerTid();
+        SetCanonicalHelperCtx(context, threadId);
+        void* canonical = GetCanonicalHelperCtx();
+        DWORD canonicalOwner = GetCanonicalHelperOwnerTid();
+        bool canonicalMatch = canonical && context == canonical;
+        bool canonicalNew = (!priorCanonical && canonicalMatch);
+        bool ownerPromoted = (canonicalMatch && priorOwner == 0 && canonicalOwner != 0);
+
+        if (canonicalNew) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[ENGINE][CTX] canonical ctx=%p owner=%lu",
+                      canonical,
+                      static_cast<unsigned long>(canonicalOwner));
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "engine context discovered ctx=%p owner=%lu thread=%lu (canonical)",
+                      context,
+                      static_cast<unsigned long>(canonicalOwner),
+                      static_cast<unsigned long>(threadId));
+        } else if (canonicalMatch) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "engine context discovered ctx=%p owner=%lu thread=%lu (canonical)",
+                      context,
+                      static_cast<unsigned long>(canonicalOwner),
+                      static_cast<unsigned long>(threadId));
+        } else if (canonical && context != canonical) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[ENGINE][CTX_ALT] ctx=%p owner=%lu (canonical=%p/%lu)",
+                      context,
+                      static_cast<unsigned long>(threadId),
+                      canonical,
+                      static_cast<unsigned long>(canonicalOwner));
+        } else {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "engine context discovered ctx=%p thread=%lu",
+                      context,
+                      static_cast<unsigned long>(threadId));
+        }
+
+        if (ownerPromoted && !canonicalNew) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[ENGINE][CTX] canonical owner assigned ctx=%p owner=%lu",
+                      canonical,
+                      static_cast<unsigned long>(canonicalOwner));
+        }
+
+        if (canonicalMatch) {
+            Core::StartupSummary::NotifyEngineContextReady();
+            bool expected = false;
+            if (g_engineVtableLogged.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                __try {
+                    void** vtable = context ? *reinterpret_cast<void***>(context) : nullptr;
+                    void* entry0 = (vtable && vtable[0]) ? vtable[0] : nullptr;
+                    void* entry1 = (vtable && vtable[1]) ? vtable[1] : nullptr;
+                    void* entry2 = (vtable && vtable[2]) ? vtable[2] : nullptr;
+                    void* entry3 = (vtable && vtable[3]) ? vtable[3] : nullptr;
+                    Log::Logf(Log::Level::Info,
+                              Log::Category::Core,
+                              "[ENGINE][CTX] ctx=%p vtable=%p entry0=%p entry1=%p entry2=%p entry3=%p",
+                              context,
+                              vtable,
+                              entry0,
+                              entry1,
+                              entry2,
+                              entry3);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    Log::Logf(Log::Level::Warn,
+                              Log::Category::Core,
+                              "[ENGINE][CTX] ctx=%p vtable-inspect-failed seh=0x%08lX",
+                              context,
+                              GetExceptionCode());
+                    g_engineVtableLogged.store(false, std::memory_order_release);
+                }
             }
         }
     }
