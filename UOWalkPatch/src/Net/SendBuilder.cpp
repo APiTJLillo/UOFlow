@@ -8,9 +8,12 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include <mutex>
 #include <atomic>
+#include <ws2tcpip.h>
 #include <minhook.h>
+#include <intrin.h>
 #include "Core/Logging.hpp"
 #include "Core/Startup.hpp"
 #include "Core/PatternScan.hpp"
@@ -19,6 +22,7 @@
 #include "Win32/SafeProbe.h"
 #include "Net/PacketTrace.hpp"
 #include "Net/SendBuilder.hpp"
+#include "Net/ScannerStage3.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/LuaBridge.hpp"
 
@@ -78,6 +82,18 @@ static bool g_helperBypassWarningLogged = false;
 static std::unordered_set<uint64_t> g_vtblSlotCache;
 static std::unordered_set<void*> g_skipWarnedVtables;
 static DWORD g_nextNetCfgProbeTick = 0;
+static Scanner::SendSampleRing g_sendSampleRing{};
+static Scanner::TokenBucket g_sendSampleBucket(100, 200);
+static Scanner::TrustedEndpointCache g_trustedEndpoints{};
+static Scanner::RejectStore g_rejectStore{};
+static Scanner::Tuner g_tuner{};
+static Scanner::ScanPassTelemetry g_lastTelemetry{};
+static std::mutex g_lastTelemetryMutex;
+static std::atomic<std::uint64_t> g_passSeq{0};
+static std::unordered_map<void*, std::uint64_t> g_endpointCallsiteHints;
+static std::mutex g_endpointCallsiteMutex;
+using SampleAggregateMap = std::unordered_map<std::uint64_t, Scanner::SampleAggregate>;
+static thread_local std::vector<Scanner::SendSample> t_sendSampleBuffer;
 
 struct EndpointBackoffState {
     DWORD nextTick = 0;
@@ -517,6 +533,376 @@ struct SendPacketAttemptContext {
 
 static thread_local SendPacketAttemptContext g_lastSendAttempt{};
 
+static uint32_t SocketToId(SOCKET sock)
+{
+    if (sock == INVALID_SOCKET)
+        return 0u;
+    return static_cast<uint32_t>(static_cast<uintptr_t>(sock));
+}
+
+static bool TryCaptureSocketEndpoint(SOCKET sock, uint32_t& ipOut, uint16_t& portOut)
+{
+    ipOut = 0;
+    portOut = 0;
+    if (sock == INVALID_SOCKET)
+        return false;
+
+    sockaddr_in addr{};
+    int len = sizeof(addr);
+    if (getpeername(sock, reinterpret_cast<sockaddr*>(&addr), &len) != 0)
+        return false;
+
+    ipOut = ntohl(addr.sin_addr.s_addr);
+    portOut = ntohs(addr.sin_port);
+    return true;
+}
+
+static void DrainSendSamples(SampleAggregateMap& aggregates, uint32_t& totalSamples)
+{
+    aggregates.clear();
+    t_sendSampleBuffer.clear();
+    g_sendSampleRing.drain(t_sendSampleBuffer);
+    totalSamples = static_cast<uint32_t>(t_sendSampleBuffer.size());
+
+    for (const auto& sample : t_sendSampleBuffer) {
+        Scanner::SampleAggregate& agg = aggregates[sample.callsite];
+        if (agg.count == 0) {
+            agg.callsite = sample.callsite;
+            agg.ip = sample.ip;
+            agg.port = sample.port;
+            agg.sock = sample.sock;
+        }
+        agg.last_ts_ms = sample.ts_ms;
+        if (agg.count < UINT32_MAX)
+            ++agg.count;
+    }
+}
+
+static uint64_t PerfFrequency()
+{
+    static uint64_t s_freq = []() -> uint64_t {
+        LARGE_INTEGER freq{};
+        QueryPerformanceFrequency(&freq);
+        return freq.QuadPart == 0 ? 1ull : static_cast<uint64_t>(freq.QuadPart);
+    }();
+    return s_freq;
+}
+
+struct CandidateRaw
+{
+    void* endpoint = nullptr;
+    size_t offset = 0;
+};
+
+struct CandidateProcessOutcome
+{
+    bool accepted = false;
+    bool attempted = false;
+};
+
+struct TraceResult;
+struct TraceHop
+{
+    const char* pattern = nullptr;
+    uint8_t* from = nullptr;
+    uint8_t* to = nullptr;
+    uint8_t* slot = nullptr;
+    uint8_t* slotValue = nullptr;
+};
+
+struct TraceResult
+{
+    uint8_t* site = nullptr;
+    uint32_t offset = 0;
+    uint8_t* finalTarget = nullptr;
+    size_t hopCount = 0;
+    uint8_t slotIndex = 0xFF;
+    void* vtable = nullptr;
+    TraceHop hops[kTailFollowMaxDepth] = {};
+};
+
+static void ResetTraceResult(TraceResult& trace);
+
+static bool IsExecutableSendContext(void* candidate, void** outVtbl, void** outEntry0);
+static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* outTrace = nullptr);
+static void CaptureSendContext(void* candidate, const char* sourceTag);
+
+static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateDescriptor& descriptor,
+                                                       const SampleAggregateMap& samples,
+                                                       Scanner::ScanPassTelemetry& telemetry,
+                                                       uint64_t perfFreq);
+
+static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
+                             const SampleAggregateMap& samples,
+                             uint32_t sendSampleCount,
+                             uint32_t ringLoadPct);
+
+static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
+                             const SampleAggregateMap& samples,
+                             uint32_t sendSampleCount,
+                             uint32_t ringLoadPct)
+{
+    if (rawCandidates.empty())
+        return false;
+
+    std::vector<Scanner::CandidateDescriptor> descriptors;
+    descriptors.reserve(rawCandidates.size());
+
+    for (const auto& raw : rawCandidates) {
+        if (!raw.endpoint)
+            continue;
+
+        Scanner::CandidateDescriptor descriptor{};
+        descriptor.endpoint = raw.endpoint;
+        descriptor.offset = raw.offset;
+
+        auto trusted = g_trustedEndpoints.lookupByEndpoint(reinterpret_cast<std::uintptr_t>(raw.endpoint));
+        if (trusted) {
+            descriptor.trusted = true;
+            auto it = samples.find(trusted->callsite);
+            if (it != samples.end()) {
+                descriptor.sampleReferenced = true;
+                descriptor.sampleCount = it->second.count;
+            }
+        } else {
+            std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+            auto hint = g_endpointCallsiteHints.find(raw.endpoint);
+            if (hint != g_endpointCallsiteHints.end()) {
+                auto sampleIt = samples.find(hint->second);
+                if (sampleIt != samples.end()) {
+                    descriptor.sampleReferenced = true;
+                    descriptor.sampleCount = sampleIt->second.count;
+                }
+            }
+        }
+
+        descriptors.push_back(descriptor);
+    }
+
+    if (descriptors.empty())
+        return false;
+
+    Scanner::PrioritizeCandidates(descriptors);
+
+    Scanner::ScanPassTelemetry telemetry{};
+    telemetry.id = g_passSeq.fetch_add(1) + 1;
+    telemetry.send_samples = sendSampleCount;
+    telemetry.ring_load_pct = ringLoadPct;
+
+    const uint64_t freq = PerfFrequency();
+    uint32_t attempted = 0;
+    const uint32_t maxInflight = std::max(1u, g_tuner.maxInflight());
+
+    for (const auto& descriptor : descriptors) {
+        if (g_builderScanned)
+            break;
+        CandidateProcessOutcome outcome = ProcessScannerCandidate(descriptor, samples, telemetry, freq);
+        if (outcome.accepted)
+            break;
+        if (outcome.attempted) {
+            ++attempted;
+            if (attempted >= maxInflight)
+                break;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
+        g_lastTelemetry = telemetry;
+    }
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "TELEMETRY[PASS] id=%llu candidates=%u accepted=%u rejected=%u send_samples=%u avg_us=%llu max_us=%llu",
+              static_cast<unsigned long long>(telemetry.id),
+              telemetry.candidates_considered,
+              telemetry.accepted,
+              telemetry.rejected,
+              telemetry.send_samples,
+              telemetry.avg_us(),
+              telemetry.max_candidate_us);
+
+    g_tuner.applyTelemetry(telemetry);
+
+    Log::Logf(Log::Level::Debug,
+              Log::Category::Core,
+              "[BACKOFF] stepDelay=%ums inflight=%u escalation=%u",
+              g_tuner.stepDelayMs(),
+              g_tuner.maxInflight(),
+              g_tuner.escalationLevel());
+
+    return g_builderScanned;
+}
+
+static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateDescriptor& descriptor,
+                                                       const SampleAggregateMap& samples,
+                                                       Scanner::ScanPassTelemetry& telemetry,
+                                                       uint64_t perfFreq)
+{
+    CandidateProcessOutcome outcome{};
+    if (!descriptor.endpoint)
+        return outcome;
+
+    const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(descriptor.endpoint);
+    const uint64_t nowMs = GetTickCount64();
+
+    if (g_rejectStore.isRejectedAndActive(addr, nowMs)) {
+        ++telemetry.skipped;
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[REJECT] skip addr=%p active=1",
+                  descriptor.endpoint);
+        return outcome;
+    }
+
+    outcome.attempted = true;
+
+    auto trusted = g_trustedEndpoints.lookupByEndpoint(addr);
+    const Scanner::SampleAggregate* sampleAgg = nullptr;
+    uint64_t callsiteHint = 0;
+
+    if (trusted) {
+        callsiteHint = trusted->callsite;
+        auto it = samples.find(callsiteHint);
+        if (it != samples.end())
+            sampleAgg = &it->second;
+    } else {
+        std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+        auto it = g_endpointCallsiteHints.find(descriptor.endpoint);
+        if (it != g_endpointCallsiteHints.end()) {
+            callsiteHint = it->second;
+            auto sampleIt = samples.find(callsiteHint);
+            if (sampleIt != samples.end())
+                sampleAgg = &sampleIt->second;
+        }
+    }
+
+    LARGE_INTEGER start{}, end{};
+    QueryPerformanceCounter(&start);
+
+    bool accepted = false;
+    bool rejected = false;
+    bool noPath = false;
+    TraceResult trace{};
+    ResetTraceResult(trace);
+
+    if (trusted) {
+        void* vtbl = nullptr;
+        void* entry0 = nullptr;
+        if (IsExecutableSendContext(descriptor.endpoint, &vtbl, &entry0)) {
+            accepted = true;
+        } else {
+            g_trustedEndpoints.noteReject(trusted->callsite,
+                                          trusted->ip,
+                                          trusted->port,
+                                          nowMs);
+        }
+    }
+
+    if (!accepted) {
+        if (ScanEndpointVTable(descriptor.endpoint, noPath, &trace)) {
+            accepted = true;
+        } else {
+            rejected = true;
+        }
+    }
+
+    QueryPerformanceCounter(&end);
+    const uint64_t elapsed = static_cast<uint64_t>(end.QuadPart - start.QuadPart);
+    const uint64_t durationUs = (elapsed * 1000000ull) / (perfFreq ? perfFreq : 1ull);
+
+    telemetry.recordCandidate(durationUs, accepted, rejected);
+
+    if (accepted) {
+        uint64_t callsite = 0;
+        if (trace.site)
+            callsite = reinterpret_cast<uint64_t>(trace.site);
+        else if (trusted)
+            callsite = trusted->callsite;
+        else if (callsiteHint)
+            callsite = callsiteHint;
+
+        if (callsite) {
+            std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+            g_endpointCallsiteHints[descriptor.endpoint] = callsite;
+        }
+
+        const Scanner::SampleAggregate* agg = sampleAgg;
+        if (!agg && callsite) {
+            auto it = samples.find(callsite);
+            if (it != samples.end())
+                agg = &it->second;
+        }
+
+        const uint32_t ip = agg ? agg->ip : (trusted ? trusted->ip : 0);
+        const uint16_t port = agg ? agg->port : (trusted ? trusted->port : 0);
+        const uint32_t sock = agg ? agg->sock : (trusted ? trusted->sock : 0);
+
+        if (callsite) {
+            g_trustedEndpoints.addOrRefresh(callsite,
+                                            ip,
+                                            port,
+                                            sock,
+                                            addr,
+                                            true,
+                                            nowMs);
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[TRUST_CACHE] accept endpoint=%p callsite=%p ip=%u port=%u",
+                      descriptor.endpoint,
+                      reinterpret_cast<void*>(callsite),
+                      ip,
+                      port);
+        }
+
+        g_rejectStore.clear(addr);
+        g_lastLoggedEndpoint = descriptor.endpoint;
+        ClearEndpointBackoff(descriptor.endpoint);
+        if (g_sendBuilderHooked)
+            g_builderScanned = true;
+        outcome.accepted = true;
+        return outcome;
+    }
+
+    if (rejected) {
+        auto rejectInfo = g_rejectStore.incrementReject(addr, nowMs);
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[REJECT] endpoint=%p count=%u ttl=%us",
+                  descriptor.endpoint,
+                  rejectInfo.first,
+                  rejectInfo.second);
+
+        if (!trusted && sampleAgg) {
+            g_trustedEndpoints.addOrRefresh(sampleAgg->callsite,
+                                            sampleAgg->ip,
+                                            sampleAgg->port,
+                                            sampleAgg->sock,
+                                            addr,
+                                            false,
+                                            nowMs);
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[TRUST_CACHE] reject endpoint=%p callsite=%p",
+                      descriptor.endpoint,
+                      reinterpret_cast<void*>(sampleAgg->callsite));
+        }
+
+        if (trace.site) {
+            std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+            g_endpointCallsiteHints[descriptor.endpoint] = reinterpret_cast<uint64_t>(trace.site);
+        }
+    }
+
+    if (noPath) {
+        RegisterEndpointBackoff(descriptor.endpoint, GetTickCount());
+    } else {
+        ClearEndpointBackoff(descriptor.endpoint);
+    }
+
+    return outcome;
+}
+
 static bool TrySendViaSocket(const void* bytes, int len, const char* tag, SOCKET preferredSocket)
 {
     SOCKET sock = preferredSocket;
@@ -606,7 +992,7 @@ static void FormatDiscoverySlotInfo(char* dest,
         sprintf_s(dest, destSize, "%p@+0x%02zx", pointerValue, offsetValue);
 }
 
-static bool IsExecutableSendContext(void* candidate, void** outVtbl = nullptr, void** outEntry0 = nullptr)
+static bool IsExecutableSendContext(void* candidate, void** outVtbl, void** outEntry0)
 {
     if (!candidate)
         return false;
@@ -691,8 +1077,9 @@ static bool TryDiscoverEndpointFromManager(void* manager)
 
     constexpr size_t kScanLimit = kEndpointScanWindow;
     DWORD now = GetTickCount();
+    DWORD dynamicDelay = std::max<DWORD>(kManagerScanCooldownMs, g_tuner.stepDelayMs());
     if (g_lastBuilderScanTick != 0 &&
-        (DWORD)(now - g_lastBuilderScanTick) < kManagerScanCooldownMs)
+        (DWORD)(now - g_lastBuilderScanTick) < dynamicDelay)
         return false;
 
     if (manager == g_lastManagerScanPtr && (DWORD)(now - g_lastManagerScanTick) < 1000)
@@ -714,6 +1101,16 @@ static bool TryDiscoverEndpointFromManager(void* manager)
               kScanLimit,
               kTailFollowMaxDepth);
     WriteRawLog(startBuf);
+
+    SampleAggregateMap sampleAggregates;
+    uint32_t drainedSamples = 0;
+    uint32_t ringLoadPct = g_sendSampleRing.loadPercent();
+    DrainSendSamples(sampleAggregates, drainedSamples);
+
+    std::vector<CandidateRaw> rawCandidates;
+    rawCandidates.reserve(64);
+    std::unordered_set<void*> seenCandidates;
+    seenCandidates.reserve(64);
 
     const size_t kInvalidOffset = std::numeric_limits<size_t>::max();
     size_t slotsExamined = 0;
@@ -740,7 +1137,7 @@ static bool TryDiscoverEndpointFromManager(void* manager)
         void* candidate = nullptr;
         if (!SafeCopy(&candidate, reinterpret_cast<const uint8_t*>(manager) + offset, sizeof(candidate)))
             continue;
-        if (!candidate || candidate == manager || candidate == g_lastLoggedEndpoint)
+        if (!candidate || candidate == manager)
             continue;
 
         if (firstCandidateOffset == kInvalidOffset) {
@@ -795,23 +1192,8 @@ static bool TryDiscoverEndpointFromManager(void* manager)
             firstExecEntry = firstEntry;
         }
 
-        TryHookSendBuilder(candidate);
-        if (g_builderScanned)
-        {
-            g_lastLoggedEndpoint = candidate;
-            char buf[256];
-            sprintf_s(buf, sizeof(buf),
-                      "DiscoverEndpoint: manager=%p offset=0x%02zx endpoint=%p vtbl=%p",
-                      manager,
-                      offset,
-                      candidate,
-                      vtbl);
-            WriteRawLog(buf);
-            CaptureSendContext(candidate, "DiscoverEndpoint");
-            WriteRawLog("DiscoverEndpoint: endpoint hook established via manager scan");
-            g_lastBuilderScanTick = GetTickCount();
-            return true;
-        }
+        if (seenCandidates.insert(candidate).second)
+            rawCandidates.push_back({candidate, offset});
     }
 
     char candidateInfo[64];
@@ -827,18 +1209,30 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     FormatDiscoverySlotInfo(nonExecInfo, sizeof(nonExecInfo), firstNonExecOffset, firstNonExecValue, kInvalidOffset);
     FormatDiscoverySlotInfo(nonGameInfo, sizeof(nonGameInfo), firstNonGameOffset, firstNonGameValue, kInvalidOffset);
 
-    char summary[320];
+    char summary[360];
     sprintf_s(summary, sizeof(summary),
-              "DiscoverEndpoint: scan complete manager=%p slots=%zu firstCandidate=%s firstCommitted=%s firstGame=%s(vtbl=%p) firstExecutable=%s(entry=%p)",
+              "DiscoverEndpoint: scan complete manager=%p slots=%zu candidates=%zu firstCandidate=%s firstCommitted=%s firstGame=%s(vtbl=%p) firstExecutable=%s(entry=%p) sendSamples=%u ringLoad=%u",
               manager,
               slotsExamined,
+              rawCandidates.size(),
               candidateInfo,
               committedInfo,
               gameInfo,
               firstGameVtable,
               execInfo,
-              firstExecEntry);
+              firstExecEntry,
+              drainedSamples,
+              ringLoadPct);
     WriteRawLog(summary);
+
+    bool attached = RunCandidatePass(rawCandidates, sampleAggregates, drainedSamples, ringLoadPct);
+    if (attached) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] manager scan attached endpoint (candidates=%zu)",
+                  rawCandidates.size());
+        return true;
+    }
 
     if (firstNonGameValue || firstNonExecValue) {
         char reason[256];
@@ -1066,25 +1460,22 @@ static bool TryResolveSendPacket(uint8_t* candidate, uint8_t*& resolved)
     return false;
 }
 
-struct TraceHop
+static void ResetTraceResult(TraceResult& trace)
 {
-    const char* pattern = nullptr;
-    uint8_t* from = nullptr;
-    uint8_t* to = nullptr;
-    uint8_t* slot = nullptr;
-    uint8_t* slotValue = nullptr;
-};
-
-struct TraceResult
-{
-    uint8_t* site = nullptr;
-    uint32_t offset = 0;
-    uint8_t* finalTarget = nullptr;
-    size_t hopCount = 0;
-    uint8_t slotIndex = 0xFF;
-    void* vtable = nullptr;
-    TraceHop hops[kTailFollowMaxDepth] = {};
-};
+    trace.site = nullptr;
+    trace.offset = 0;
+    trace.finalTarget = nullptr;
+    trace.hopCount = 0;
+    trace.slotIndex = 0xFF;
+    trace.vtable = nullptr;
+    for (auto& hop : trace.hops) {
+        hop.pattern = nullptr;
+        hop.from = nullptr;
+        hop.to = nullptr;
+        hop.slot = nullptr;
+        hop.slotValue = nullptr;
+    }
+}
 
 static bool HasVisited(uint8_t* addr, uint8_t** visited, size_t count)
 {
@@ -1533,9 +1924,11 @@ static void* __fastcall Hook_SendBuilder(void* thisPtr, void* /*unused*/, void* 
     return fpSendBuilder ? fpSendBuilder(thisPtr, builder) : nullptr;
 }
 
-static bool ScanEndpointVTable(void* endpoint, bool& outNoPath)
+static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* outTrace)
 {
     outNoPath = false;
+    if (outTrace)
+        ResetTraceResult(*outTrace);
     g_builderProbeAttempted.fetch_add(1u, std::memory_order_relaxed);
     void** vtbl = nullptr;
     if (!SafeMem::SafeRead(endpoint, vtbl) || !vtbl) {
@@ -1559,6 +1952,7 @@ static bool ScanEndpointVTable(void* endpoint, bool& outNoPath)
     uint32_t scannedCount = 0;
     uint32_t execLikeCount = 0;
     TraceResult trace{};
+    ResetTraceResult(trace);
     bool tracedMatched = false;
     __try
     {
@@ -1722,6 +2116,8 @@ static bool ScanEndpointVTable(void* endpoint, bool& outNoPath)
     chain[0] = '\0';
 
     if (tracedMatched) {
+        if (outTrace)
+            *outTrace = trace;
         const unsigned slotLabel = (trace.slotIndex != 0xFF) ? trace.slotIndex : static_cast<unsigned>(matchedIndex & 0xFF);
         for (size_t hop = 0; hop < trace.hopCount; ++hop) {
             const TraceHop& hopInfo = trace.hops[hop];
@@ -1871,7 +2267,7 @@ static void TryHookSendBuilder(void* endpoint)
         return;
 
     bool noPath = false;
-    if (ScanEndpointVTable(endpoint, noPath))
+    if (ScanEndpointVTable(endpoint, noPath, nullptr))
     {
         g_builderScanned = true;
         ClearEndpointBackoff(endpoint);
@@ -2915,34 +3311,65 @@ static void HookSendBuilderFromNetMgr()
 
 static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int len)
 {
-    char tagBuf[128];
-    sprintf_s(tagBuf, sizeof(tagBuf), "H_SendPacket enter ctx=%p len=%d", thisPtr, len);
-    WriteRawLog(tagBuf);
-    void* vtbl = nullptr;
-    if (SafeCopy(&vtbl, thisPtr, sizeof(vtbl)) && vtbl) {
-        void* entry0 = nullptr;
-        SafeCopy(&entry0, vtbl, sizeof(entry0));
-        char ctxBuf[192];
-        sprintf_s(ctxBuf, sizeof(ctxBuf), "H_SendPacket context summary: this=%p vtbl=%p entry0=%p",
-                  thisPtr,
-                  vtbl,
-                  entry0);
-        WriteRawLog(ctxBuf);
-    } else {
-        WriteRawLog("H_SendPacket context summary: failed to read vtable");
-    }
-    DumpMemory("PLAIN-SendPacket", const_cast<void*>(pkt), len);
+    const void* returnAddr = _ReturnAddress();
 
     if (pkt && len > 0) {
-        uint8_t id = *(const uint8_t*)pkt;
-        char tag[64];
-        sprintf_s(tag, sizeof(tag), "H_SendPacket(pktLen=%d id=%02X)", len, id);
-        CaptureSendContext(thisPtr, tag);
-        CaptureNetManager(thisPtr, tag);
-    } else {
-        CaptureSendContext(thisPtr, "H_SendPacket");
-        CaptureNetManager(thisPtr, "H_SendPacket");
+        if (g_sendSampleBucket.tryConsume()) {
+            Scanner::SendSample sample{};
+            sample.ts_ms = static_cast<std::uint64_t>(GetTickCount64());
+            sample.callsite = reinterpret_cast<std::uint64_t>(returnAddr);
+
+            SOCKET sock = Net::GetLastSocket();
+            sample.sock = SocketToId(sock);
+            if (sock != INVALID_SOCKET) {
+                uint32_t ip = 0;
+                uint16_t port = 0;
+                if (TryCaptureSocketEndpoint(sock, ip, port)) {
+                    sample.ip = ip;
+                    sample.port = port;
+                }
+            }
+
+            if (thisPtr && sample.callsite != 0) {
+                std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+                auto it = g_endpointCallsiteHints.find(thisPtr);
+                if (it == g_endpointCallsiteHints.end() || it->second != sample.callsite) {
+                    g_endpointCallsiteHints[thisPtr] = sample.callsite;
+                }
+            }
+
+            if (g_sendSampleRing.push(sample)) {
+                static volatile LONG s_sampleLogBudget = 16;
+                if (s_sampleLogBudget > 0 && InterlockedDecrement(&s_sampleLogBudget) >= 0) {
+                    Log::Logf(Log::Level::Debug,
+                              Log::Category::Core,
+                              "[SEND_SAMPLE] captured callsite=%p sock=%u ip=%u port=%u",
+                              returnAddr,
+                              sample.sock,
+                              sample.ip,
+                              sample.port);
+                }
+            } else {
+                static std::atomic<DWORD> s_lastDropLogTick{0};
+                DWORD now = GetTickCount();
+                DWORD prev = s_lastDropLogTick.load(std::memory_order_relaxed);
+                if ((now - prev) > 1000 &&
+                    s_lastDropLogTick.compare_exchange_strong(prev,
+                                                              now,
+                                                              std::memory_order_acq_rel,
+                                                              std::memory_order_relaxed)) {
+                    Log::Logf(Log::Level::Warn,
+                              Log::Category::Core,
+                              "[SEND_SAMPLE] ring full callsite=%p",
+                              returnAddr);
+                }
+            }
+        }
     }
+
+    constexpr const char* kSendTag = "H_SendPacket";
+    CaptureSendContext(thisPtr, kSendTag);
+    CaptureNetManager(thisPtr, kSendTag);
     if (!g_builderScanned)
         HookSendBuilderFromNetMgr();
     LONG previous = InterlockedExchange(&g_needWalkReg, 0);
@@ -3203,6 +3630,12 @@ SendBuilderStatus GetSendBuilderStatus()
     bool activelyScanning = !g_builderScanned || HasEndpointBackoff() || g_nextNetCfgProbeTick != 0;
     status.probing = !status.hooked && (haveManager || activelyScanning);
     return status;
+}
+
+Scanner::ScanPassTelemetry DumpLastPassTelemetry()
+{
+    std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
+    return g_lastTelemetry;
 }
 
 

@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
-#include "../include/Net/ScannerStage3.hpp"
+#include "Net/ScannerStage3.hpp"
 
 using Net::Scanner::CandidateDescriptor;
 using Net::Scanner::PrioritizeCandidates;
