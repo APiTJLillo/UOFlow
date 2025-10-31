@@ -5852,16 +5852,64 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
         return false;
     }
 
+    HCTX canonicalCtx = static_cast<HCTX>(ResolveCanonicalEngineContext());
+    DWORD canonicalOwner = GetCanonicalHelperOwnerTid();
+    bool canonicalValid = IsValidCtx(canonicalCtx);
+    if (canonicalValid && info.ctx_reported != canonicalCtx) {
+        HCTX previousCtx = info.ctx_reported;
+        uint64_t nowTick = GetTickCount64();
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            state.ctx_reported = canonicalCtx;
+            state.helper_passive_since_ms = 0;
+            state.flags |= STATE_FLAG_CANON_READY;
+            UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, "ctx-rebind");
+            if (canonicalOwner) {
+                state.owner_tid = canonicalOwner;
+                state.last_tid = canonicalOwner;
+                state.flags |= STATE_FLAG_OWNER_READY;
+                if (state.owner_ready_tick_ms == 0)
+                    state.owner_ready_tick_ms = nowTick;
+            }
+        }, &info);
+        info.ctx_reported = canonicalCtx;
+        if (canonicalOwner)
+            info.owner_tid = canonicalOwner;
+        if (canonicalOwner)
+            SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u",
+                  previousCtx,
+                  canonicalCtx,
+                  static_cast<unsigned>(canonicalOwner));
+        if (canonicalOwner == 0) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "helpers rebind defer ctx=%p reason=owner-unknown",
+                      canonicalCtx);
+            MarkHelperRebindPending();
+            return false;
+        }
+        if (canonicalOwner != GetCurrentThreadId()) {
+            MarkHelperRebindPending();
+            PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
+            return false;
+        }
+    }
+
     if (info.ctx_reported && !IsValidCtx(info.ctx_reported)) {
         HCTX attemptedCtx = info.ctx_reported;
         SafeRefreshLuaStateFromSlot();
-        HCTX canonicalCtx = static_cast<HCTX>(ResolveCanonicalEngineContext());
-        bool haveCanonical = IsValidCtx(canonicalCtx);
-        if (haveCanonical && canonicalCtx != attemptedCtx) {
-            DWORD canonicalOwner = GetCanonicalHelperOwnerTid();
+        canonicalCtx = static_cast<HCTX>(ResolveCanonicalEngineContext());
+        canonicalOwner = GetCanonicalHelperOwnerTid();
+        canonicalValid = IsValidCtx(canonicalCtx);
+        if (canonicalValid && canonicalCtx != attemptedCtx) {
             uint64_t nowTick = GetTickCount64();
             g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
                 state.ctx_reported = canonicalCtx;
+                state.helper_passive_since_ms = 0;
+                state.flags |= STATE_FLAG_CANON_READY;
+                UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, "ctx-rebind");
                 if (canonicalOwner) {
                     state.owner_tid = canonicalOwner;
                     state.last_tid = canonicalOwner;
@@ -5869,12 +5917,12 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                     if (state.owner_ready_tick_ms == 0)
                         state.owner_ready_tick_ms = nowTick;
                 }
-                state.helper_passive_since_ms = 0;
-                UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, "ctx-rebind");
             }, &info);
             info.ctx_reported = canonicalCtx;
             if (canonicalOwner)
                 info.owner_tid = canonicalOwner;
+            if (canonicalOwner)
+                SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
             Log::Logf(Log::Level::Info,
                       Log::Category::Hooks,
                       "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u",
@@ -5889,7 +5937,6 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                 MarkHelperRebindPending();
                 return false;
             }
-            SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
             if (canonicalOwner != GetCurrentThreadId()) {
                 MarkHelperRebindPending();
                 PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");

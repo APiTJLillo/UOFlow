@@ -822,6 +822,8 @@ struct TraceHop
     const char* pattern = nullptr;
     uint8_t* from = nullptr;
     uint8_t* to = nullptr;
+    uint8_t* slot = nullptr;
+    uint8_t* slotValue = nullptr;
 };
 
 struct TraceResult
@@ -830,6 +832,8 @@ struct TraceResult
     uint32_t offset = 0;
     uint8_t* finalTarget = nullptr;
     size_t hopCount = 0;
+    uint8_t slotIndex = 0xFF;
+    void* vtable = nullptr;
     TraceHop hops[kTailFollowMaxDepth] = {};
 };
 
@@ -858,7 +862,9 @@ static bool TraceHandleHop(TraceResult& trace,
                            uint32_t offset,
                            int depthRemaining,
                            uint8_t** visited,
-                           size_t& visitedCount)
+                           size_t& visitedCount,
+                           uint8_t* slot,
+                           uint8_t* slotValue)
 {
     if (!dest || trace.hopCount >= kTailFollowMaxDepth)
         return false;
@@ -873,6 +879,8 @@ static bool TraceHandleHop(TraceResult& trace,
     trace.hops[trace.hopCount].pattern = pattern;
     trace.hops[trace.hopCount].from = from;
     trace.hops[trace.hopCount].to = dest;
+    trace.hops[trace.hopCount].slot = slot;
+    trace.hops[trace.hopCount].slotValue = slotValue;
     ++trace.hopCount;
 
     bool matched = false;
@@ -896,6 +904,8 @@ static bool TraceHandleHop(TraceResult& trace,
         if (!matched) {
             uint8_t* chained = nullptr;
             if (!destExecutable && TryLoad(dest, chained) && chained && chained != dest) {
+                trace.hops[trace.hopCount - 1].slot = dest;
+                trace.hops[trace.hopCount - 1].slotValue = chained;
                 if (TryResolveSendPacket(chained, resolved)) {
                     trace.finalTarget = resolved;
                     matched = true;
@@ -964,7 +974,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                      static_cast<uint32_t>(i),
                                      depthRemaining,
                                      visited,
-                                     visitedCount);
+                                     visitedCount,
+                                     nullptr,
+                                     nullptr);
             continue;
         }
 
@@ -981,7 +993,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                      static_cast<uint32_t>(i),
                                      depthRemaining,
                                      visited,
-                                     visitedCount);
+                                     visitedCount,
+                                     nullptr,
+                                     nullptr);
             continue;
         }
 
@@ -1010,7 +1024,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                          static_cast<uint32_t>(i),
                                          depthRemaining,
                                          visited,
-                                         visitedCount);
+                                         visitedCount,
+                                         slotAddr,
+                                         reinterpret_cast<uint8_t*>(target));
                 continue;
             }
 #else
@@ -1034,7 +1050,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                          static_cast<uint32_t>(i),
                                          depthRemaining,
                                          visited,
-                                         visitedCount);
+                                         visitedCount,
+                                         reinterpret_cast<uint8_t*>(slotAddr),
+                                         reinterpret_cast<uint8_t*>(target));
                 continue;
             }
 #endif
@@ -1059,7 +1077,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                              static_cast<uint32_t>(i - 10),
                                              depthRemaining,
                                              visited,
-                                             visitedCount);
+                                             visitedCount,
+                                             nullptr,
+                                             nullptr);
                     continue;
                 }
 #else
@@ -1079,7 +1099,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                              static_cast<uint32_t>(i - 5),
                                              depthRemaining,
                                              visited,
-                                             visitedCount);
+                                             visitedCount,
+                                             nullptr,
+                                             nullptr);
                     continue;
                 }
 #endif
@@ -1106,7 +1128,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                              static_cast<uint32_t>(i - 10),
                                              depthRemaining,
                                              visited,
-                                             visitedCount);
+                                             visitedCount,
+                                             nullptr,
+                                             nullptr);
                     continue;
                 }
 #else
@@ -1126,7 +1150,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                              static_cast<uint32_t>(i - 5),
                                              depthRemaining,
                                              visited,
-                                             visitedCount);
+                                             visitedCount,
+                                             nullptr,
+                                             nullptr);
                     continue;
                 }
 #endif
@@ -1150,7 +1176,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                          static_cast<uint32_t>(i),
                                          depthRemaining,
                                          visited,
-                                         visitedCount);
+                                         visitedCount,
+                                         slotAddr,
+                                         reinterpret_cast<uint8_t*>(target));
                 continue;
             }
 #else
@@ -1171,7 +1199,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                          static_cast<uint32_t>(i),
                                          depthRemaining,
                                          visited,
-                                         visitedCount);
+                                         visitedCount,
+                                         reinterpret_cast<uint8_t*>(slotAddr),
+                                         reinterpret_cast<uint8_t*>(target));
                 continue;
             }
 #endif
@@ -1193,7 +1223,9 @@ static bool TraceSendPacketFrom(uint8_t* fn,
                                      static_cast<uint32_t>(i),
                                      depthRemaining,
                                      visited,
-                                     visitedCount);
+                                     visitedCount,
+                                     nullptr,
+                                     nullptr);
             continue;
         }
 
@@ -1206,7 +1238,7 @@ next_opcode:
     return matched;
 }
 
-static bool TraceSendPacketUse(uint8_t* fn, TraceResult& trace)
+static bool TraceSendPacketUse(uint8_t* fn, TraceResult& trace, uint8_t slotIndex, void* vtable)
 {
     if (!fn)
         return false;
@@ -1214,6 +1246,8 @@ static bool TraceSendPacketUse(uint8_t* fn, TraceResult& trace)
     uint8_t* visited[kTailFollowMaxDepth] = {};
     size_t visitedCount = 0;
     trace = {};
+    trace.slotIndex = slotIndex;
+    trace.vtable = vtable;
     return TraceSendPacketFrom(fn,
                                kEndpointScanWindow,
                                kTailFollowMaxDepth,
@@ -1285,10 +1319,9 @@ static bool ScanEndpointVTable(void* endpoint)
         for (int i = 0; i < 32; ++i)
         {
             uint64_t slotKey = (static_cast<uint64_t>(vtblAddr) << 8) ^ static_cast<uint64_t>(i & 0xFF);
-            if (!g_vtblSlotCache.insert(slotKey).second)
-                continue;
-
-            anyNewSlot = true;
+            bool firstVisit = g_vtblSlotCache.insert(slotKey).second;
+            if (firstVisit)
+                anyNewSlot = true;
 
             void* fn = nullptr;
             bool readable = SafeMem::SafeRead(vtblEntries + i, fn);
@@ -1403,7 +1436,7 @@ static bool ScanEndpointVTable(void* endpoint)
             if (!fnBytes || !IsExecutablePtr(fnBytes))
                 continue;
             TraceResult candidate{};
-            if (TraceSendPacketUse(fnBytes, candidate)) {
+            if (TraceSendPacketUse(fnBytes, candidate, static_cast<uint8_t>(i), vtbl)) {
                 matchedFn = slotFns[i];
                 matchedIndex = i;
                 trace = candidate;
@@ -1425,6 +1458,92 @@ static bool ScanEndpointVTable(void* endpoint)
         return false;
     }
 
+    const void* byteTarget = nullptr;
+    uint8_t* finalTarget = reinterpret_cast<uint8_t*>(g_sendPacketTarget);
+    char chain[128] = {};
+    chain[0] = '\0';
+
+    if (fallbackMatched) {
+        const unsigned slotLabel = (trace.slotIndex != 0xFF) ? trace.slotIndex : static_cast<unsigned>(matchedIndex & 0xFF);
+        for (size_t hop = 0; hop < trace.hopCount; ++hop) {
+            const TraceHop& hopInfo = trace.hops[hop];
+            if (hopInfo.slot && hopInfo.slotValue) {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[SB] hop vtbl[%02u] @%p: %s slot=%p -> %p (val=%p)",
+                          slotLabel,
+                          hopInfo.from,
+                          hopInfo.pattern ? hopInfo.pattern : "?",
+                          hopInfo.slot,
+                          hopInfo.to,
+                          hopInfo.slotValue);
+            } else {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[SB] hop vtbl[%02u] @%p: %s -> %p",
+                          slotLabel,
+                          hopInfo.from,
+                          hopInfo.pattern ? hopInfo.pattern : "?",
+                          hopInfo.to);
+            }
+        }
+
+        if (trace.hopCount == 0) {
+            std::snprintf(chain, sizeof(chain), "?");
+        } else {
+            size_t written = 0;
+            for (size_t hop = 0; hop < trace.hopCount; ++hop) {
+                if (hop > 0 && written + 2 < sizeof(chain)) {
+                    int step = std::snprintf(chain + written, sizeof(chain) - written, "->");
+                    if (step < 0)
+                        break;
+                    if (static_cast<size_t>(step) >= sizeof(chain) - written) {
+                        written = sizeof(chain) - 1;
+                        break;
+                    }
+                    written += static_cast<size_t>(step);
+                }
+                const char* name = trace.hops[hop].pattern ? trace.hops[hop].pattern : "?";
+                if (written < sizeof(chain)) {
+                    int step = std::snprintf(chain + written, sizeof(chain) - written, "%s", name);
+                    if (step < 0)
+                        break;
+                    if (static_cast<size_t>(step) >= sizeof(chain) - written) {
+                        written = sizeof(chain) - 1;
+                        break;
+                    }
+                    written += static_cast<size_t>(step);
+                }
+                if (written >= sizeof(chain) - 1)
+                    break;
+            }
+            if (written == 0)
+                std::snprintf(chain, sizeof(chain), "?");
+        }
+
+        finalTarget = trace.finalTarget ? trace.finalTarget : reinterpret_cast<uint8_t*>(g_sendPacketTarget);
+        byteTarget = trace.site ? trace.site : reinterpret_cast<const uint8_t*>(matchedFn) + trace.offset;
+
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] matched vtbl[%02u]=%p via %s -> SendPacket@%p (+0x%02X)",
+                  slotLabel,
+                  matchedFn,
+                  chain[0] ? chain : "?",
+                  finalTarget,
+                  static_cast<unsigned>(trace.offset));
+    } else if (matchedFn && g_sendPacketTarget) {
+        std::snprintf(chain, sizeof(chain), "direct");
+        finalTarget = reinterpret_cast<uint8_t*>(g_sendPacketTarget);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] matched vtbl[%02u]=%p via %s -> SendPacket@%p",
+                  static_cast<unsigned>(matchedIndex & 0xFF),
+                  matchedFn,
+                  chain,
+                  finalTarget);
+    }
+
     if (matchedFn && !g_sendBuilderHooked)
     {
         if (MH_CreateHook(matchedFn, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
@@ -1433,83 +1552,22 @@ static bool ScanEndpointVTable(void* endpoint)
             g_builderProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
             g_sendBuilderHooked = true;
             g_sendBuilderTarget = matchedFn;
+            uint8_t bytesForLog[4] = {};
+            bool haveAttachBytes = false;
+            if (byteTarget) {
+                haveAttachBytes = SafeMem::SafeReadBytes(byteTarget, bytesForLog, sizeof(bytesForLog));
+            } else if (matchedFn) {
+                haveAttachBytes = SafeMem::SafeReadBytes(matchedFn, bytesForLog, sizeof(bytesForLog));
+            }
             Log::Logf(Log::Level::Info,
                       Log::Category::Core,
-                      "[CORE][SB] attaching vtbl[%02u] target=%p",
+                      "[CORE][SB] attaching vtbl[%02u]=%p bytes=%02X %02X %02X %02X",
                       static_cast<unsigned>(matchedIndex & 0xFF),
-                      matchedFn);
-            if (fallbackMatched) {
-                for (size_t hop = 0; hop < trace.hopCount; ++hop) {
-                    const TraceHop& hopInfo = trace.hops[hop];
-                    Log::Logf(Log::Level::Info,
-                              Log::Category::Core,
-                              "[CORE][SB] hop%u vtbl[%02u] @%p: %s -> %p",
-                              static_cast<unsigned>(hop + 1),
-                              static_cast<unsigned>(matchedIndex & 0xFF),
-                              hopInfo.from,
-                              hopInfo.pattern ? hopInfo.pattern : "?",
-                              hopInfo.to);
-                }
-                uint8_t matchBytes[4] = {};
-                const void* byteTarget = trace.site ? trace.site : reinterpret_cast<const uint8_t*>(matchedFn);
-                bool haveBytes = SafeMem::SafeReadBytes(byteTarget,
-                                                        matchBytes,
-                                                        sizeof(matchBytes));
-                char chain[128] = {};
-                if (trace.hopCount == 0) {
-                    std::snprintf(chain, sizeof(chain), "?");
-                } else {
-                    size_t written = 0;
-                    for (size_t hop = 0; hop < trace.hopCount; ++hop) {
-                        if (hop > 0 && written + 2 < sizeof(chain)) {
-                            int step = std::snprintf(chain + written, sizeof(chain) - written, "->");
-                            if (step < 0)
-                                break;
-                            if (static_cast<size_t>(step) >= sizeof(chain) - written) {
-                                written = sizeof(chain) - 1;
-                                break;
-                            }
-                            written += static_cast<size_t>(step);
-                        }
-                        const char* name = trace.hops[hop].pattern ? trace.hops[hop].pattern : "?";
-                        if (written < sizeof(chain)) {
-                            int step = std::snprintf(chain + written, sizeof(chain) - written, "%s", name);
-                            if (step < 0)
-                                break;
-                            if (static_cast<size_t>(step) >= sizeof(chain) - written) {
-                                written = sizeof(chain) - 1;
-                                break;
-                            }
-                            written += static_cast<size_t>(step);
-                        }
-                        if (written >= sizeof(chain) - 1)
-                            break;
-                    }
-                    if (written == 0)
-                        std::snprintf(chain, sizeof(chain), "?");
-                }
-                uint8_t* finalTarget = trace.finalTarget ? trace.finalTarget
-                                                         : reinterpret_cast<uint8_t*>(g_sendPacketTarget);
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Core,
-                          "[CORE][SB] matched vtbl[%02u]=%p via %s -> SendPacket@%p (+0x%02X) bytes=%02X %02X %02X %02X ; hook attached",
-                          static_cast<unsigned>(matchedIndex & 0xFF),
-                          matchedFn,
-                          chain,
-                          finalTarget,
-                          static_cast<unsigned>(trace.offset),
-                          haveBytes ? matchBytes[0] : 0xFF,
-                          haveBytes ? matchBytes[1] : 0xFF,
-                          haveBytes ? matchBytes[2] : 0xFF,
-                          haveBytes ? matchBytes[3] : 0xFF);
-            } else {
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Core,
-                          "SendBuilder hook attached entry=%p via vtbl=%p slot=%d",
-                          matchedFn,
-                          vtbl,
-                          matchedIndex);
-            }
+                      matchedFn,
+                      haveAttachBytes ? bytesForLog[0] : 0xFF,
+                      haveAttachBytes ? bytesForLog[1] : 0xFF,
+                      haveAttachBytes ? bytesForLog[2] : 0xFF,
+                      haveAttachBytes ? bytesForLog[3] : 0xFF);
             Core::StartupSummary::NotifySendBuilderReady();
             return true;
         }
