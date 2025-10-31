@@ -13,6 +13,8 @@
 #include "Core/Config.hpp"
 #include "Core/EarlyTrace.hpp"
 #include "Core/Logging.hpp"
+#include "Net/SendBuilder.hpp"
+#include "Engine/Movement.hpp"
 
 namespace Walk::Controller {
 namespace {
@@ -55,11 +57,19 @@ std::mutex g_stateMutex;
 ControllerState g_state{};
 std::atomic<std::uint32_t> g_inflightOverride{0};
 std::atomic<std::uint32_t> g_inflightOverrideBudget{0};
+std::atomic<std::uint32_t> g_runtimeMaxInflight{2};
 std::uint32_t g_tunedStepDelayMs = 0;
 std::uint32_t g_stepDelayFloor = 280;
 std::uint32_t g_stepDelayCeil = 400;
 std::uint32_t g_lastDelayTick = 0;
 std::uint32_t g_lastDecayTick = 0;
+std::uint32_t g_nominalStepDelayFloor = 280;
+std::uint32_t g_nominalStepDelayCeil = 400;
+std::uint32_t g_nominalMaxInflight = 2;
+bool g_preAttachDefaultsActive = false;
+bool g_builderWasAttached = false;
+std::uint32_t g_attachStableStartTick = 0;
+std::uint32_t g_attachBaselineAckDrops = 0;
 
 std::uint32_t GetTickMs() {
     return GetTickCount();
@@ -77,6 +87,74 @@ void UpdateStepDelay(std::uint32_t newValue, const char* reason) {
               oldValue,
               g_tunedStepDelayMs,
               reason ? reason : "unknown");
+}
+
+void ApplyPreAttachDefaultsLocked() {
+    if (g_preAttachDefaultsActive)
+        return;
+    g_stepDelayFloor = 320;
+    g_stepDelayCeil = 420;
+    g_preAttachDefaultsActive = true;
+    g_runtimeMaxInflight.store(1u, std::memory_order_release);
+    UpdateStepDelay(std::clamp(g_tunedStepDelayMs, g_stepDelayFloor, g_stepDelayCeil), "pre-attach");
+    Log::Logf(Log::Level::Info,
+              Log::Category::Walk,
+              "[WALK] pacing pre-attach floor=%u ceil=%u inflight=%u",
+              g_stepDelayFloor,
+              g_stepDelayCeil,
+              g_runtimeMaxInflight.load(std::memory_order_relaxed));
+}
+
+void RestoreNominalPacingLocked(const char* reason) {
+    if (!g_preAttachDefaultsActive)
+        return;
+    g_stepDelayFloor = g_nominalStepDelayFloor;
+    g_stepDelayCeil = g_nominalStepDelayCeil;
+    g_preAttachDefaultsActive = false;
+    g_runtimeMaxInflight.store(g_nominalMaxInflight, std::memory_order_release);
+    UpdateStepDelay(std::clamp(g_tunedStepDelayMs, g_stepDelayFloor, g_stepDelayCeil),
+                    reason ? reason : "attach-stable");
+    Log::Logf(Log::Level::Info,
+              Log::Category::Walk,
+              "[WALK] pacing restored floor=%u ceil=%u inflight=%u",
+              g_stepDelayFloor,
+              g_stepDelayCeil,
+              g_nominalMaxInflight);
+}
+
+void UpdatePacingLocked(std::uint32_t tickNow) {
+    bool builderAttached = Net::IsSendBuilderAttached();
+    if (!builderAttached) {
+        g_builderWasAttached = false;
+        g_attachStableStartTick = 0;
+        g_attachBaselineAckDrops = Engine::GetAckDropCount();
+        ApplyPreAttachDefaultsLocked();
+        return;
+    }
+
+    if (!g_builderWasAttached) {
+        g_builderWasAttached = true;
+        g_attachBaselineAckDrops = Engine::GetAckDropCount();
+        g_attachStableStartTick = tickNow;
+    }
+
+    if (!g_preAttachDefaultsActive)
+        return;
+
+    uint32_t currentDrops = Engine::GetAckDropCount();
+    if (currentDrops != g_attachBaselineAckDrops) {
+        g_attachBaselineAckDrops = currentDrops;
+        g_attachStableStartTick = tickNow;
+        return;
+    }
+
+    if (g_attachStableStartTick == 0)
+        g_attachStableStartTick = tickNow;
+
+    uint32_t elapsed = tickNow - g_attachStableStartTick;
+    if (elapsed >= 5000) {
+        RestoreNominalPacingLocked("sendbuilder-attached");
+    }
 }
 
 
@@ -143,6 +221,10 @@ void LoadConfig() {
     g_config = cfg;
     g_stepDelayFloor = cfg.stepDelayFloor;
     g_stepDelayCeil = cfg.stepDelayCeil;
+    g_nominalStepDelayFloor = cfg.stepDelayFloor;
+    g_nominalStepDelayCeil = cfg.stepDelayCeil;
+    g_nominalMaxInflight = cfg.maxInflight;
+    g_runtimeMaxInflight.store(cfg.maxInflight, std::memory_order_release);
     g_tunedStepDelayMs = cfg.stepDelayMs;
     g_lastDelayTick = 0;
     g_lastDecayTick = GetTickMs();
@@ -226,7 +308,9 @@ void Reset() {
     g_inflightOverrideBudget.store(0, std::memory_order_release);
     g_tunedStepDelayMs = std::clamp(g_config.stepDelayMs, g_stepDelayFloor, g_stepDelayCeil);
     g_lastDelayTick = 0;
-    g_lastDecayTick = GetTickMs();
+    std::uint32_t now = GetTickMs();
+    g_lastDecayTick = now;
+    UpdatePacingLocked(now);
 }
 
 bool IsEnabled() {
@@ -237,11 +321,15 @@ bool IsEnabled() {
 Settings GetSettings() {
     EnsureConfigLoaded();
     Settings settings{};
-    settings.enabled = g_config.enabled;
-    settings.maxInflight = g_config.maxInflight;
-    settings.stepDelayMs = g_tunedStepDelayMs;
-    settings.timeoutMs = g_config.timeoutMs;
-    settings.debug = g_config.debug;
+    {
+        std::lock_guard<std::mutex> lock(g_stateMutex);
+        UpdatePacingLocked(GetTickMs());
+        settings.enabled = g_config.enabled;
+        settings.maxInflight = g_runtimeMaxInflight.load(std::memory_order_relaxed);
+        settings.stepDelayMs = g_tunedStepDelayMs;
+        settings.timeoutMs = g_config.timeoutMs;
+        settings.debug = g_config.debug;
+    }
     return settings;
 }
 
@@ -257,13 +345,15 @@ bool RequestTarget(float x, float y, float z, bool run) {
         return false;
 
     std::lock_guard<std::mutex> lock(g_stateMutex);
+    std::uint32_t now = GetTickMs();
+    UpdatePacingLocked(now);
     g_state = ControllerState{};
     g_state.active = true;
     g_state.run = run;
     g_state.targetX = x;
     g_state.targetY = y;
     g_state.targetZ = z;
-    g_state.lastProgressTick = GetTickMs();
+    g_state.lastProgressTick = now;
 
     Engine::MovementSnapshot snapshot{};
     if (Engine::GetLastMovementSnapshot(snapshot)) {
@@ -301,6 +391,7 @@ void OnMovementSnapshot(const Engine::MovementSnapshot& snapshot,
     std::lock_guard<std::mutex> lock(g_stateMutex);
     if (!g_state.active)
         return;
+    UpdatePacingLocked(tickMs);
 
     g_state.currentX = snapshot.posX;
     g_state.currentZ = snapshot.posZ;
@@ -358,7 +449,7 @@ void OnMovementSnapshot(const Engine::MovementSnapshot& snapshot,
         g_lastDecayTick = tickMs;
     }
 
-    std::uint32_t effectiveMaxInflight = g_config.maxInflight;
+    std::uint32_t effectiveMaxInflight = g_runtimeMaxInflight.load(std::memory_order_relaxed);
     std::uint32_t override = g_inflightOverride.load(std::memory_order_relaxed);
     if (override > 0) {
         std::uint32_t budget = g_inflightOverrideBudget.load(std::memory_order_relaxed);

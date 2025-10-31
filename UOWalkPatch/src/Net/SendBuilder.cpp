@@ -5,7 +5,10 @@
 #include <cstring>
 #include <limits>
 #include <cstdint>
+#include <algorithm>
+#include <unordered_map>
 #include <unordered_set>
+#include <mutex>
 #include <atomic>
 #include <minhook.h>
 #include "Core/Logging.hpp"
@@ -34,8 +37,8 @@ namespace Net {
 using SendPacket_t = void(__thiscall*)(void* netMgr, const void* pkt, int len);
 using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 
-constexpr DWORD kEndpointScanCooldownMs = 2500;
 constexpr DWORD kEngineUnstableLogCooldownMs = 2000;
+constexpr DWORD kManagerScanCooldownMs = 2500;
 constexpr size_t kEndpointScanWindow = 0x800;
 constexpr int kTailFollowMaxDepth = 4;
 constexpr size_t kTailScanWindow = 0x100;
@@ -67,9 +70,6 @@ static void* g_lastNetCfgBase = nullptr;
 static SIZE_T g_lastNetCfgRegionSize = 0;
 static void* g_lastEngineCtxScanPtr = nullptr;
 static DWORD g_lastEngineCtxScanTick = 0;
-static DWORD g_lastEndpointScanFailTick = 0;
-static void* g_lastEndpointScanPtr = nullptr;
-static DWORD g_lastEndpointThrottleLogTick = 0;
 static bool g_loggedEngineUnstable = false;
 static DWORD g_lastEngineUnstableLogTick = 0;
 static DWORD g_lastBuilderScanTick = 0;
@@ -77,6 +77,44 @@ static DWORD g_helperWaitStartTick = 0;
 static bool g_helperBypassWarningLogged = false;
 static std::unordered_set<uint64_t> g_vtblSlotCache;
 static std::unordered_set<void*> g_skipWarnedVtables;
+static DWORD g_nextNetCfgProbeTick = 0;
+
+struct EndpointBackoffState {
+    DWORD nextTick = 0;
+    DWORD delayMs = 0;
+    uint32_t failures = 0;
+};
+
+static std::unordered_map<void*, EndpointBackoffState> g_endpointBackoff;
+static std::mutex g_endpointBackoffMutex;
+
+struct GuardLogState {
+    DWORD lastLogTick = 0;
+    uint32_t suppressed = 0;
+};
+
+static std::unordered_map<void*, GuardLogState> g_managerGuardLog;
+static std::mutex g_managerGuardLogMutex;
+
+struct SectionRange {
+    uintptr_t begin = 0;
+    uintptr_t end = 0;
+    bool Contains(uintptr_t addr) const {
+        if (begin == 0 && end == 0)
+            return false;
+        if (end < begin)
+            return addr >= begin;
+        return addr >= begin && addr < end;
+    }
+};
+
+static std::once_flag g_sectionRangeOnce;
+static SectionRange g_dataSection{};
+static SectionRange g_rdataSection{};
+static uintptr_t g_managerRegionBase = 0;
+static SIZE_T g_managerRegionSize = 0;
+
+static bool SafeCopy(void* dst, const void* src, size_t bytes);
 
 using VirtualProtect_t = BOOL(WINAPI*)(LPVOID, SIZE_T, DWORD, PDWORD);
 static VirtualProtect_t g_origVirtualProtect = nullptr;
@@ -136,6 +174,199 @@ static void* GetTrackedConfigPtr()
     if (g_state && g_state->networkConfig)
         return g_state->networkConfig;
     return g_lastNetCfgPtr;
+}
+
+static bool TickHasElapsed(DWORD now, DWORD target)
+{
+    return static_cast<int32_t>(now - target) >= 0;
+}
+
+static void EnsureSectionRanges()
+{
+    std::call_once(g_sectionRangeOnce, []() {
+        HMODULE module = GetModuleHandleW(nullptr);
+        if (!module)
+            return;
+        auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+        if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
+            return;
+        auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const uint8_t*>(module) + dos->e_lfanew);
+        if (!nt || nt->Signature != IMAGE_NT_SIGNATURE)
+            return;
+        auto section = IMAGE_FIRST_SECTION(nt);
+        for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
+            char name[9] = {};
+            memcpy(name, section->Name, sizeof(section->Name));
+            name[8] = '\0';
+            uintptr_t base = reinterpret_cast<uintptr_t>(module) + section->VirtualAddress;
+            uintptr_t end = base + section->Misc.VirtualSize;
+            SectionRange range{base, end};
+            if (strncmp(name, ".data", 8) == 0)
+                g_dataSection = range;
+            else if (strncmp(name, ".rdata", 8) == 0)
+                g_rdataSection = range;
+        }
+    });
+}
+
+static bool IsInManagerRegion(uintptr_t addr)
+{
+    if (g_managerRegionBase == 0 || g_managerRegionSize == 0)
+        return false;
+    uintptr_t end = g_managerRegionBase + g_managerRegionSize;
+    if (end < g_managerRegionBase)
+        return addr >= g_managerRegionBase;
+    return addr >= g_managerRegionBase && addr < end;
+}
+
+static void RememberManagerRegion(const MEMORY_BASIC_INFORMATION& mbi)
+{
+    g_managerRegionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    g_managerRegionSize = mbi.RegionSize;
+}
+
+static bool IsInImageSection(const SectionRange& range, uintptr_t addr)
+{
+    return range.Contains(addr);
+}
+
+static void LogGuardInvalidManager(void* manager)
+{
+    constexpr DWORD kGuardLogIntervalMs = 2000;
+    DWORD now = GetTickCount();
+    uint32_t suppressed = 0;
+    bool shouldLog = false;
+    {
+        std::lock_guard<std::mutex> lock(g_managerGuardLogMutex);
+        GuardLogState& state = g_managerGuardLog[manager];
+        DWORD nextAllowed = state.lastLogTick + kGuardLogIntervalMs;
+        if (state.lastLogTick == 0 || TickHasElapsed(now, nextAllowed)) {
+            suppressed = state.suppressed;
+            state.suppressed = 0;
+            state.lastLogTick = now;
+            shouldLog = true;
+        } else {
+            ++state.suppressed;
+        }
+    }
+
+    if (!shouldLog)
+        return;
+
+    if (suppressed > 0) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[SB][GUARD] skipped invalid manager=%p (x%u suppressed)",
+                  manager,
+                  suppressed);
+        return;
+    }
+
+    Log::Logf(Log::Level::Warn,
+              Log::Category::Core,
+              "[SB][GUARD] skipped invalid manager=%p",
+              manager);
+}
+
+static bool ShouldDeferEndpointScan(void* endpoint, DWORD now, DWORD& waitMs)
+{
+    std::lock_guard<std::mutex> lock(g_endpointBackoffMutex);
+    auto it = g_endpointBackoff.find(endpoint);
+    if (it == g_endpointBackoff.end())
+        return false;
+    EndpointBackoffState& entry = it->second;
+    if (entry.nextTick == 0)
+        return false;
+    if (!TickHasElapsed(now, entry.nextTick)) {
+        int32_t delta = static_cast<int32_t>(entry.nextTick - now);
+        waitMs = delta > 0 ? static_cast<DWORD>(delta) : 0;
+        return true;
+    }
+    entry.nextTick = 0;
+    entry.delayMs = 0;
+    return false;
+}
+
+static void ClearEndpointBackoff(void* endpoint)
+{
+    std::lock_guard<std::mutex> lock(g_endpointBackoffMutex);
+    g_endpointBackoff.erase(endpoint);
+}
+
+static void RegisterEndpointBackoff(void* endpoint, DWORD now)
+{
+    constexpr DWORD kBackoffTable[] = {500, 1000, 2000};
+    constexpr size_t kBackoffCount = sizeof(kBackoffTable) / sizeof(kBackoffTable[0]);
+
+    DWORD delay = kBackoffTable[0];
+    uint32_t attempt = 1;
+    {
+        std::lock_guard<std::mutex> lock(g_endpointBackoffMutex);
+        EndpointBackoffState& entry = g_endpointBackoff[endpoint];
+        entry.failures = std::min(entry.failures + 1, static_cast<uint32_t>(kBackoffCount));
+        attempt = entry.failures;
+        delay = kBackoffTable[entry.failures - 1];
+        entry.delayMs = delay;
+        entry.nextTick = now + delay;
+    }
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[CORE][SB] no path to SendPacket; backoff=%u ms endpoint=%p attempt=%u",
+              delay,
+              endpoint,
+              attempt);
+}
+
+static bool HasEndpointBackoff()
+{
+    std::lock_guard<std::mutex> lock(g_endpointBackoffMutex);
+    return !g_endpointBackoff.empty();
+}
+
+static bool ValidateManagerPointer(void* manager, void** outVtbl)
+{
+    if (!manager)
+        return false;
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(manager, &mbi, sizeof(mbi)) == 0)
+        return false;
+
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+        return false;
+
+    const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
+    if ((mbi.Protect & readableMask) == 0)
+        return false;
+
+    if (!SafeMem::IsReadable(manager, sizeof(void*) * 2))
+        return false;
+
+    EnsureSectionRanges();
+    uintptr_t managerAddr = reinterpret_cast<uintptr_t>(manager);
+    if (mbi.Type == MEM_IMAGE) {
+        if (!IsInImageSection(g_dataSection, managerAddr) && !IsInImageSection(g_rdataSection, managerAddr))
+            return false;
+    } else if (mbi.Type == MEM_PRIVATE) {
+        if (!IsInManagerRegion(managerAddr))
+            RememberManagerRegion(mbi);
+    } else {
+        if (!IsInImageSection(g_dataSection, managerAddr) && !IsInImageSection(g_rdataSection, managerAddr))
+            return false;
+    }
+
+    void* vtbl = nullptr;
+    if (!SafeCopy(&vtbl, manager, sizeof(vtbl)) || !vtbl)
+        return false;
+
+    uintptr_t vtblAddr = reinterpret_cast<uintptr_t>(vtbl);
+    if (!IsInImageSection(g_rdataSection, vtblAddr) && !IsInImageSection(g_dataSection, vtblAddr))
+        return false;
+
+    if (outVtbl)
+        *outVtbl = vtbl;
+    return true;
 }
 
 static bool IsTrackedConfigInRange(uintptr_t base, SIZE_T size)
@@ -449,22 +680,9 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     if (!manager || g_builderScanned)
         return false;
 
-    MEMORY_BASIC_INFORMATION mbiManager{};
-    bool managerValid = false;
-    if (manager) {
-        if (VirtualQuery(manager, &mbiManager, sizeof(mbiManager)) != 0 &&
-            mbiManager.State == MEM_COMMIT &&
-            !(mbiManager.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
-            (mbiManager.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
-        {
-            managerValid = SafeMem::IsReadable(manager, sizeof(void*) * 2);
-        }
-    }
-    if (!managerValid) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[SB][GUARD] skipped invalid manager=%p",
-                  manager);
+    void* managerVtbl = nullptr;
+    if (!ValidateManagerPointer(manager, &managerVtbl)) {
+        LogGuardInvalidManager(manager);
         return false;
     }
 
@@ -474,18 +692,14 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     constexpr size_t kScanLimit = kEndpointScanWindow;
     DWORD now = GetTickCount();
     if (g_lastBuilderScanTick != 0 &&
-        (DWORD)(now - g_lastBuilderScanTick) < kEndpointScanCooldownMs)
+        (DWORD)(now - g_lastBuilderScanTick) < kManagerScanCooldownMs)
         return false;
 
     if (manager == g_lastManagerScanPtr && (DWORD)(now - g_lastManagerScanTick) < 1000)
         return false;
 
     if (!SafeMem::IsReadable(manager, kScanLimit + sizeof(void*))) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[SB][GUARD] skipped invalid manager=%p window=0x%zX",
-                  manager,
-                  kScanLimit);
+        LogGuardInvalidManager(manager);
         return false;
     }
 
@@ -1319,8 +1533,9 @@ static void* __fastcall Hook_SendBuilder(void* thisPtr, void* /*unused*/, void* 
     return fpSendBuilder ? fpSendBuilder(thisPtr, builder) : nullptr;
 }
 
-static bool ScanEndpointVTable(void* endpoint)
+static bool ScanEndpointVTable(void* endpoint, bool& outNoPath)
 {
+    outNoPath = false;
     g_builderProbeAttempted.fetch_add(1u, std::memory_order_relaxed);
     void** vtbl = nullptr;
     if (!SafeMem::SafeRead(endpoint, vtbl) || !vtbl) {
@@ -1497,6 +1712,7 @@ static bool ScanEndpointVTable(void* endpoint)
                       g_sendPacketTarget);
         }
         g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
+        outNoPath = true;
         return false;
     }
 
@@ -1509,24 +1725,44 @@ static bool ScanEndpointVTable(void* endpoint)
         const unsigned slotLabel = (trace.slotIndex != 0xFF) ? trace.slotIndex : static_cast<unsigned>(matchedIndex & 0xFF);
         for (size_t hop = 0; hop < trace.hopCount; ++hop) {
             const TraceHop& hopInfo = trace.hops[hop];
-            if (hopInfo.slot && hopInfo.slotValue) {
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Core,
-                          "[SB] hop vtbl[%02u] @%p: %s slot=%p -> %p (val=%p)",
-                          slotLabel,
-                          hopInfo.from,
-                          hopInfo.pattern ? hopInfo.pattern : "?",
-                          hopInfo.slot,
-                          hopInfo.to,
-                          hopInfo.slotValue);
+            bool isRootHop = (hop == 0);
+            const char* pattern = hopInfo.pattern ? hopInfo.pattern : "?";
+            if (isRootHop) {
+                if (hopInfo.slot && hopInfo.slotValue) {
+                    Log::Logf(Log::Level::Info,
+                              Log::Category::Core,
+                              "[SB] hop vtbl[%02X] @%p: %s -> [%08lX]=%p",
+                              slotLabel,
+                              hopInfo.from,
+                              pattern,
+                              static_cast<unsigned long>(reinterpret_cast<uintptr_t>(hopInfo.slot)),
+                              hopInfo.slotValue);
+                } else {
+                    Log::Logf(Log::Level::Info,
+                              Log::Category::Core,
+                              "[SB] hop vtbl[%02X] @%p: %s -> %p",
+                              slotLabel,
+                              hopInfo.from,
+                              pattern,
+                              hopInfo.to);
+                }
             } else {
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Core,
-                          "[SB] hop vtbl[%02u] @%p: %s -> %p",
-                          slotLabel,
-                          hopInfo.from,
-                          hopInfo.pattern ? hopInfo.pattern : "?",
-                          hopInfo.to);
+                if (hopInfo.slot && hopInfo.slotValue) {
+                    Log::Logf(Log::Level::Info,
+                              Log::Category::Core,
+                              "[SB] hop @%p: %s -> [%08lX]=%p",
+                              hopInfo.from,
+                              pattern,
+                              static_cast<unsigned long>(reinterpret_cast<uintptr_t>(hopInfo.slot)),
+                              hopInfo.slotValue);
+                } else {
+                    Log::Logf(Log::Level::Info,
+                              Log::Category::Core,
+                              "[SB] hop @%p: %s -> %p",
+                              hopInfo.from,
+                              pattern,
+                              hopInfo.to);
+                }
             }
         }
 
@@ -1568,19 +1804,18 @@ static bool ScanEndpointVTable(void* endpoint)
 
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "[CORE][SB] matched vtbl[%02u]=%p via %s -> SendPacket@%p (+0x%02X)",
+                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket@%p",
                   slotLabel,
                   matchedFn,
                   chain[0] ? chain : "?",
-                  finalTarget,
-                  static_cast<unsigned>(trace.offset));
+                  finalTarget);
     } else if (matchedFn) {
         std::snprintf(chain, sizeof(chain), "direct");
         finalTarget = reinterpret_cast<uint8_t*>(g_sendPacketTarget ? g_sendPacketTarget : matchedFn);
         byteTarget = matchedFn;
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "[CORE][SB] matched vtbl[%02u]=%p via %s -> SendPacket@%p",
+                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket@%p",
                   static_cast<unsigned>(matchedIndex & 0xFF),
                   matchedFn,
                   chain,
@@ -1631,40 +1866,22 @@ static void TryHookSendBuilder(void* endpoint)
         return;
 
     DWORD now = GetTickCount();
-    if (endpoint == g_lastEndpointScanPtr)
-    {
-        if (g_lastEndpointScanFailTick != 0 &&
-            (DWORD)(now - g_lastEndpointScanFailTick) < kEndpointScanCooldownMs)
-        {
-            if ((DWORD)(now - g_lastEndpointThrottleLogTick) >= kEndpointScanCooldownMs)
-            {
-                char buf[176];
-                sprintf_s(buf, sizeof(buf),
-                          "TryHookSendBuilder: throttling vtbl scan endpoint=%p lastFail=%lu",
-                          endpoint,
-                          static_cast<unsigned long>(g_lastEndpointScanFailTick));
-                WriteRawLog(buf);
-                g_lastEndpointThrottleLogTick = now;
-            }
-            return;
-        }
-    }
-    else
-    {
-        g_lastEndpointScanPtr = endpoint;
-        g_lastEndpointScanFailTick = 0;
-        g_lastEndpointThrottleLogTick = 0;
-    }
+    DWORD waitMs = 0;
+    if (ShouldDeferEndpointScan(endpoint, now, waitMs))
+        return;
 
-    if (ScanEndpointVTable(endpoint))
+    bool noPath = false;
+    if (ScanEndpointVTable(endpoint, noPath))
     {
         g_builderScanned = true;
-        g_lastEndpointScanFailTick = 0;
-        g_lastEndpointThrottleLogTick = 0;
+        ClearEndpointBackoff(endpoint);
     }
     else
     {
-        g_lastEndpointScanFailTick = now;
+        if (noPath)
+            RegisterEndpointBackoff(endpoint, now);
+        else
+            ClearEndpointBackoff(endpoint);
     }
 }
 
@@ -2510,8 +2727,10 @@ static void HookSendBuilderFromNetMgr()
     if (g_builderScanned || !g_state)
         return;
 
-    if (g_netMgr)
-        TryDiscoverEndpointFromManager(g_netMgr);
+    DWORD now = GetTickCount();
+    if (g_nextNetCfgProbeTick != 0 && !TickHasElapsed(now, g_nextNetCfgProbeTick))
+        return;
+    g_nextNetCfgProbeTick = 0;
 
     void* rawCfg = g_state->networkConfig;
     if (!rawCfg) {
@@ -2552,7 +2771,6 @@ static void HookSendBuilderFromNetMgr()
             }
             g_loggedNetScanFailure = true;
             g_lastNetCfgState = 0xFFFFFFFE;
-            TryDiscoverEndpointFromManager(g_netMgr);
             return;
         }
 
@@ -2578,26 +2796,32 @@ static void HookSendBuilderFromNetMgr()
             g_lastNetCfgBase = mbi.BaseAddress;
             g_lastNetCfgRegionSize = mbi.RegionSize;
         }
-        if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD)) {
+        const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
+        bool readable = (mbi.State == MEM_COMMIT) && !(mbi.Protect & PAGE_GUARD) && (mbi.Protect & readableMask);
+        if (!readable) {
             if (!g_loggedNetScanFailure) {
-                WriteRawLog("HookSendBuilderFromNetMgr: networkConfig region not readable yet");
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[CORE][SB] networkConfig pending protect=0x%08lX state=0x%08lX; deferring scan",
+                          static_cast<unsigned long>(mbi.Protect),
+                          static_cast<unsigned long>(mbi.State));
             }
             g_loggedNetScanFailure = true;
-            TryDiscoverEndpointFromManager(g_netMgr);
-            TryDiscoverFromEngineContext();
+            DWORD jitter = 50u + (now % 51u);
+            g_nextNetCfgProbeTick = now + jitter;
             return;
         }
 
         // Region is committed but SafeCopy failed; try again below to capture exception info.
         if (!SafeCopy(snapshot, rawCfg, sizeof(snapshot))) {
             if (!g_loggedNetScanFailure) {
-                char buf[160];
-                sprintf_s(buf, sizeof(buf), "HookSendBuilderFromNetMgr: networkConfig=%p access still failing post-commit", rawCfg);
-                WriteRawLog(buf);
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[CORE][SB] networkConfig access fault; deferring scan");
             }
             g_loggedNetScanFailure = true;
-            TryDiscoverEndpointFromManager(g_netMgr);
-            TryDiscoverFromEngineContext();
+            DWORD jitter = 50u + ((now >> 1) % 51u);
+            g_nextNetCfgProbeTick = now + jitter;
             return;
         }
     }
@@ -2616,6 +2840,9 @@ static void HookSendBuilderFromNetMgr()
         g_haveNetCfgSnapshot = true;
     }
     g_loggedNetScanFailure = false;
+
+    if (g_netMgr)
+        TryDiscoverEndpointFromManager(g_netMgr);
 
     MEMORY_BASIC_INFORMATION mbiCurrent{};
     if (VirtualQuery(rawCfg, &mbiCurrent, sizeof(mbiCurrent))) {
@@ -2655,7 +2882,8 @@ static void HookSendBuilderFromNetMgr()
     void* managerCandidate = reinterpret_cast<void*>(snapshot[0]);
     if (managerCandidate && managerCandidate != g_lastLoggedManager) {
         uintptr_t vtbl = 0;
-        if (SafeCopy(&vtbl, managerCandidate, sizeof(vtbl)) && vtbl) {
+        bool managerOk = ValidateManagerPointer(managerCandidate, nullptr);
+        if (SafeCopy(&vtbl, managerCandidate, sizeof(vtbl)) && vtbl && managerOk) {
             char mgrBuf[160];
             sprintf_s(mgrBuf, sizeof(mgrBuf), "HookSendBuilderFromNetMgr: manager=%p vtbl=%p",
                       managerCandidate, reinterpret_cast<void*>(vtbl));
@@ -2663,6 +2891,8 @@ static void HookSendBuilderFromNetMgr()
             CaptureNetManager(managerCandidate, "networkConfig[0]");
             g_lastLoggedManager = managerCandidate;
             TryHookSendBuilder(managerCandidate);
+        } else if (!managerOk) {
+            LogGuardInvalidManager(managerCandidate);
         }
     }
 
@@ -2765,9 +2995,6 @@ bool InitSendBuilder(GlobalStateInfo* state)
             memset(g_lastNetCfgSnapshot, 0, sizeof(g_lastNetCfgSnapshot));
             g_lastLoggedManager = nullptr;
             g_lastLoggedEndpoint = nullptr;
-            g_lastEndpointScanFailTick = 0;
-            g_lastEndpointScanPtr = nullptr;
-            g_lastEndpointThrottleLogTick = 0;
             g_loggedEngineUnstable = false;
             g_lastEngineUnstableLogTick = 0;
             g_lastBuilderScanTick = 0;
@@ -2775,6 +3002,17 @@ bool InitSendBuilder(GlobalStateInfo* state)
             g_helperBypassWarningLogged = false;
             g_vtblSlotCache.clear();
             g_skipWarnedVtables.clear();
+            {
+                std::lock_guard<std::mutex> lock(g_endpointBackoffMutex);
+                g_endpointBackoff.clear();
+            }
+            {
+                std::lock_guard<std::mutex> lock(g_managerGuardLogMutex);
+                g_managerGuardLog.clear();
+            }
+            g_nextNetCfgProbeTick = 0;
+            g_managerRegionBase = 0;
+            g_managerRegionSize = 0;
         }
     }
 
@@ -2804,13 +3042,15 @@ void PollSendBuilder()
     if (g_netMgr && g_builderScanned)
         return;
 
-    if (!g_netMgr)
+    DWORD now = GetTickCount();
+    bool gatingActive = (g_nextNetCfgProbeTick != 0 && !TickHasElapsed(now, g_nextNetCfgProbeTick));
+
+    if (!g_netMgr && !gatingActive)
         TryDiscoverFromEngineContext();
 
-    if (g_netMgr)
+    if (g_netMgr && !g_builderScanned && !gatingActive)
         TryDiscoverEndpointFromManager(g_netMgr);
 
-    DWORD now = GetTickCount();
     DWORD last = g_lastPollTick;
     if (last != 0 && (DWORD)(now - last) < 100)
         return;
@@ -2852,9 +3092,6 @@ void ShutdownSendBuilder()
     g_state = nullptr;
     g_lastManagerScanPtr = nullptr;
     g_lastManagerScanTick = 0;
-    g_lastEndpointScanFailTick = 0;
-    g_lastEndpointScanPtr = nullptr;
-    g_lastEndpointThrottleLogTick = 0;
     g_loggedEngineUnstable = false;
     g_lastEngineUnstableLogTick = 0;
     g_lastBuilderScanTick = 0;
@@ -2862,6 +3099,17 @@ void ShutdownSendBuilder()
     g_helperBypassWarningLogged = false;
     g_vtblSlotCache.clear();
     g_skipWarnedVtables.clear();
+    {
+        std::lock_guard<std::mutex> lock(g_endpointBackoffMutex);
+        g_endpointBackoff.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_managerGuardLogMutex);
+        g_managerGuardLog.clear();
+    }
+    g_nextNetCfgProbeTick = 0;
+    g_managerRegionBase = 0;
+    g_managerRegionSize = 0;
 }
 
 bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint)
@@ -2952,7 +3200,7 @@ SendBuilderStatus GetSendBuilderStatus()
     status.hooked = g_sendBuilderHooked;
     status.sendPacket = g_sendPacketTarget;
     bool haveManager = g_netMgr != nullptr || g_sendCtx != nullptr;
-    bool activelyScanning = !g_builderScanned || g_lastEndpointScanFailTick != 0 || g_lastEndpointScanPtr != nullptr;
+    bool activelyScanning = !g_builderScanned || HasEndpointBackoff() || g_nextNetCfgProbeTick != 0;
     status.probing = !status.hooked && (haveManager || activelyScanning);
     return status;
 }
