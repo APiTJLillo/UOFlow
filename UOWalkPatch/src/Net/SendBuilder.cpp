@@ -49,6 +49,7 @@ constexpr DWORD kManagerScanCooldownMs = 2500;
 constexpr size_t kEndpointScanWindow = 0x800;
 constexpr int kTailFollowMaxDepth = 4;
 constexpr size_t kTailScanWindow = 0x100;
+constexpr uintptr_t kCanonicalManagerVtbl = 0x4E4E9C5Cull;
 static GlobalStateInfo* g_state = nullptr;
 static SendPacket_t g_sendPacket = nullptr;
 static void* g_sendPacketTarget = nullptr;
@@ -91,6 +92,9 @@ static Scanner::TokenBucket g_sendSampleBucket(100, 200);
 static constexpr std::uint32_t kSamplerWarmupSamples = 128;
 static std::atomic<std::uint32_t> g_samplerWarmupRemaining{kSamplerWarmupSamples};
 static std::atomic<bool> g_sbDebug{false};
+static std::atomic<bool> g_sbDebugNudge{false};
+static std::atomic<bool> g_debugNudgePending{false};
+static std::atomic<bool> g_debugNudgeSent{false};
 static std::atomic<DWORD> g_lastSampleDropLogTick{0};
 static Scanner::EndpointTrustCache g_endpointTrust{};
 static Scanner::RejectStore g_rejectStore{};
@@ -104,6 +108,7 @@ static std::atomic<std::uint64_t> g_guardWarnPass{0};
 static std::unordered_map<void*, std::uint64_t> g_endpointCallsiteHints;
 static std::mutex g_endpointCallsiteMutex;
 static thread_local std::vector<Scanner::SendSample> t_sendSampleBuffer;
+static thread_local bool t_debugNudgeCall = false;
 static Scanner::ModuleMap g_moduleMap;
 
 struct EndpointBackoffState {
@@ -422,8 +427,10 @@ static bool ValidateManagerPointer(void* manager, void** outVtbl)
         return false;
 
     uintptr_t vtblAddr = reinterpret_cast<uintptr_t>(vtbl);
-    if (!IsInImageSection(g_rdataSection, vtblAddr) && !IsInImageSection(g_dataSection, vtblAddr))
-        return false;
+    if (!IsInImageSection(g_rdataSection, vtblAddr) && !IsInImageSection(g_dataSection, vtblAddr)) {
+        if (vtblAddr != kCanonicalManagerVtbl)
+            return false;
+    }
 
     if (outVtbl)
         *outVtbl = vtbl;
@@ -755,40 +762,25 @@ static bool AttachSendBuilderFromTrace(void* matchedFn,
     if (!matchedFn)
         return false;
 
-    uint8_t* finalTarget = reinterpret_cast<uint8_t*>(g_sendPacketTarget ? g_sendPacketTarget : matchedFn);
     const uint8_t* byteTarget = byteTargetOverride;
     char chain[128] = {};
     chain[0] = '\0';
+    uint8_t displaySlot = slotIndex;
 
     if (traceOpt) {
         const TraceResult& trace = *traceOpt;
         const uint8_t slotLabel = (trace.slotIndex != 0xFF) ? trace.slotIndex : slotIndex;
+        displaySlot = slotLabel;
         LogTraceHops(trace, slotLabel);
         FormatTraceChain(trace, chain, sizeof(chain));
-        if (trace.finalTarget)
-            finalTarget = trace.finalTarget;
         if (trace.site)
             byteTarget = trace.site;
         else if (!byteTarget)
             byteTarget = reinterpret_cast<const uint8_t*>(matchedFn) + trace.offset;
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket@%p",
-                  slotLabel,
-                  matchedFn,
-                  chain[0] ? chain : "?",
-                  finalTarget);
     } else {
         std::snprintf(chain, sizeof(chain), "%s", (fallbackLabel && fallbackLabel[0]) ? fallbackLabel : "direct");
         if (!byteTarget)
             byteTarget = reinterpret_cast<const uint8_t*>(matchedFn);
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket@%p",
-                  slotIndex,
-                  matchedFn,
-                  chain,
-                  finalTarget);
     }
 
     if (g_sendBuilderHooked)
@@ -812,6 +804,12 @@ static bool AttachSendBuilderFromTrace(void* matchedFn,
                   haveBytes ? byteSample[1] : 0xFF,
                   haveBytes ? byteSample[2] : 0xFF,
                   haveBytes ? byteSample[3] : 0xFF);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket; attached",
+                  displaySlot,
+                  matchedFn,
+                  chain[0] ? chain : "?");
         Core::StartupSummary::NotifySendBuilderReady();
         return true;
     }
@@ -827,14 +825,14 @@ static uint8_t* LocateFunctionStart(uint8_t* ret,
     if (!ret)
         return nullptr;
 
-    constexpr std::size_t kMaxBack = 0x180;
+    constexpr std::size_t kMaxBack = 0x40;
     const std::uintptr_t moduleBegin = module.textBegin ? module.textBegin : module.base;
     const std::uintptr_t moduleEnd = module.textEnd ? module.textEnd : module.end;
     const std::uintptr_t retAddr = reinterpret_cast<std::uintptr_t>(ret);
     if (retAddr <= moduleBegin || retAddr >= moduleEnd)
         return nullptr;
 
-    for (std::size_t back = 0; back < kMaxBack; ++back) {
+    for (std::size_t back = 0; back <= kMaxBack; ++back) {
         if (retAddr <= moduleBegin + back + 4)
             break;
         uint8_t* candidate = ret - back;
@@ -951,8 +949,8 @@ static bool BuildSendSample(void* retPtr, std::uint64_t nowMs, Scanner::SendSamp
     outSample.func = funcStart;
     outSample.rva = rva;
     outSample.tick = nowMs;
-   outSample.edge = ClassifyEdgeFromReturn(ret);
-   return true;
+    outSample.edge = ClassifyEdgeFromReturn(ret);
+    return true;
 }
 
 namespace Scanner {
@@ -980,9 +978,6 @@ std::uint32_t enqueueFrames(void** frames, USHORT frameCount, std::uint64_t nowM
     const USHORT limit = frameCount > 12 ? 12 : frameCount;
     std::uint32_t produced = 0;
     SendSample firstSample{};
-
-    const ModuleInfo* primary = g_moduleMap.primaryExecutable();
-    const std::uintptr_t moduleBase = primary ? primary->base : 0;
 
     for (USHORT i = 0; i < limit; ++i) {
         void* frame = frames[i];
@@ -1014,17 +1009,11 @@ std::uint32_t enqueueFrames(void** frames, USHORT frameCount, std::uint64_t nowM
 
         ++produced;
 
-        if (g_sbDebug.load(std::memory_order_relaxed) && moduleBase != 0) {
-            const std::uintptr_t callsiteAddr = reinterpret_cast<std::uintptr_t>(sample.ret);
-            const std::uint32_t callsiteRva =
-                (callsiteAddr >= moduleBase)
-                    ? static_cast<std::uint32_t>(callsiteAddr - moduleBase)
-                    : 0u;
+        if (g_sbDebug.load(std::memory_order_relaxed) && sample.rva != 0) {
             Log::Logf(Log::Level::Info,
                       Log::Category::Core,
-                      "INFO[SEND_SAMPLE] callsite=UOSA+0x%08X func=UOSA+0x%08X",
-                      callsiteRva,
-                      sample.rva);
+                      "INFO[SEND_SAMPLE] func=UOSA+0x%X",
+                      static_cast<unsigned>(sample.rva));
         }
     }
 
@@ -1072,6 +1061,7 @@ void reset(std::uint64_t nowMs)
 static bool IsExecutableSendContext(void* candidate, void** outVtbl, void** outEntry0);
 static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* outTrace = nullptr);
 static void CaptureSendContext(void* candidate, const char* sourceTag);
+static void MaybeSendDebugNudge();
 static bool ProcessSendSamplesFast(const std::vector<CandidateRaw>& rawCandidates,
                                    const std::vector<Scanner::SendSample>& samples,
                                    Scanner::ScanPassTelemetry& telemetry);
@@ -1200,11 +1190,11 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
 
     Scanner::ScanPassTelemetry telemetry{};
     telemetry.id = g_passSeq.fetch_add(1) + 1;
-    telemetry.send_samples = sendSampleCount;
+    telemetry.send_samples = static_cast<std::uint32_t>(samples.size());
     telemetry.ring_load_pct = ringLoadPct;
 
     g_guardWarnPass.store(telemetry.id, std::memory_order_relaxed);
-    g_guardWarnBudget.store(2, std::memory_order_relaxed);
+    g_guardWarnBudget.store(1, std::memory_order_relaxed);
 
     if (ProcessSendSamplesFast(rawCandidates, samples, telemetry)) {
         {
@@ -1603,6 +1593,49 @@ static void CaptureSendContext(void* candidate, const char* sourceTag)
     }
     WriteRawLog(buf);
     g_sendCtx = candidate;
+    MaybeSendDebugNudge();
+}
+
+static void MaybeSendDebugNudge()
+{
+    if (!g_sbDebugNudge.load(std::memory_order_acquire))
+        return;
+    if (g_debugNudgeSent.load(std::memory_order_acquire))
+        return;
+    if (!g_debugNudgePending.load(std::memory_order_acquire))
+        return;
+    if (!g_sendPacketHooked || !g_sendPacketTarget)
+        return;
+
+    void* ctx = g_sendCtx ? g_sendCtx : g_netMgr;
+    if (!ctx)
+        return;
+
+    SendPacket_t target = reinterpret_cast<SendPacket_t>(g_sendPacketTarget);
+    if (!target)
+        return;
+
+    if (t_debugNudgeCall)
+        return;
+
+    static const std::uint8_t kDebugNudgePacket[] = {0x73, 0x00, 0x00, 0x00};
+
+    t_debugNudgeCall = true;
+    bool success = false;
+    __try {
+        target(ctx, kDebugNudgePacket, static_cast<int>(sizeof(kDebugNudgePacket)));
+        success = true;
+    } __finally {
+        t_debugNudgeCall = false;
+    }
+
+    if (success) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[CORE][SB] debug nudge triggered");
+        g_debugNudgeSent.store(true, std::memory_order_release);
+        g_debugNudgePending.store(false, std::memory_order_release);
+    }
 }
 
 static bool TryDiscoverEndpointFromManager(void* manager)
@@ -3727,6 +3760,8 @@ static void HookSendBuilderFromNetMgr()
 
 static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int len)
 {
+    const bool isDebugNudge = t_debugNudgeCall;
+
     if (pkt && len > 0) {
         const std::uint64_t nowMs = static_cast<std::uint64_t>(GetTickCount64());
         if (Scanner::Sampler::shouldSample(nowMs)) {
@@ -3749,7 +3784,8 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
     LONG previous = InterlockedExchange(&g_needWalkReg, 0);
     if (previous != 0)
         Engine::Lua::ScheduleWalkBinding();
-    g_sendPacket(thisPtr, pkt, len);
+    if (!isDebugNudge)
+        g_sendPacket(thisPtr, pkt, len);
 }
 
 static void FindSendPacket()
@@ -3777,7 +3813,9 @@ static void HookSendPacket()
             MH_EnableHook(g_sendPacketTarget) == MH_OK)
         {
             g_sendPacketHooked = true;
+            Scanner::Sampler::reset(GetTickCount64());
             WriteRawLog("SendPacket hook installed");
+            MaybeSendDebugNudge();
         }
     }
 }
@@ -3814,12 +3852,20 @@ bool InitSendBuilder(GlobalStateInfo* state)
             g_nextNetCfgProbeTick = 0;
             g_managerRegionBase = 0;
             g_managerRegionSize = 0;
+            g_debugNudgePending.store(false, std::memory_order_relaxed);
+            g_debugNudgeSent.store(false, std::memory_order_relaxed);
         }
         Scanner::Sampler::reset(GetTickCount64());
     }
 
     bool sbDebug = ResolveSendBuilderFlag("SB_DEBUG", "sb.debug", false);
     g_sbDebug.store(sbDebug, std::memory_order_relaxed);
+
+    bool sbDebugNudge = ResolveSendBuilderFlag("SB_DEBUG_NUDGE", "sb.debug_nudge", false);
+    g_sbDebugNudge.store(sbDebugNudge, std::memory_order_relaxed);
+    if (!sbDebugNudge) {
+        g_debugNudgePending.store(false, std::memory_order_relaxed);
+    }
 
     if (!g_initLogged || stateChanged) {
         char initBuf[160];
@@ -4021,6 +4067,16 @@ Scanner::ScanPassTelemetry DumpLastPassTelemetry()
 bool IsSendBuilderAttached()
 {
     return g_sendBuilderHooked;
+}
+
+void OnEngineReady()
+{
+    if (!g_sbDebugNudge.load(std::memory_order_acquire))
+        return;
+    if (g_debugNudgeSent.load(std::memory_order_acquire))
+        return;
+    g_debugNudgePending.store(true, std::memory_order_release);
+    MaybeSendDebugNudge();
 }
 
 

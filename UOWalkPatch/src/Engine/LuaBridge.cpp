@@ -5895,11 +5895,10 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
             SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "[HOOKS] helpers rebind ctx old=0x%p new=0x%p owner=%lu (pending attempt=%u)",
+                  "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u (pending)",
                   previousCtx,
                   canonicalCtx,
-                  static_cast<unsigned long>(canonicalOwner),
-                  static_cast<unsigned>(attempts));
+                  static_cast<unsigned>(canonicalOwner));
         MarkHelperRebindPending();
         if (canonicalOwner == 0) {
             Log::Logf(Log::Level::Info,
@@ -7397,6 +7396,7 @@ void UpdateEngineContext(void* context) {
 
         if (canonicalMatch) {
             Core::StartupSummary::NotifyEngineContextReady();
+            Net::OnEngineReady();
             bool expected = false;
             if (g_engineVtableLogged.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
                 __try {
