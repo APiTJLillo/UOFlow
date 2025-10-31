@@ -12,6 +12,8 @@ namespace Engine::Lua {
     void ProcessLuaQueue();
     void OnStateObserved(lua_State* L, void* scriptCtx, std::uint32_t ownerTid = 0, bool adoptThread = true);
     void OnStateRemoved(lua_State* L, const char* reason);
+    void GetHelperProbeStats(uint32_t& attempted, uint32_t& succeeded, uint32_t& skipped);
+    uint32_t GetSehTrapCount();
 
     struct StartupStatus {
         bool engineContextDiscovered = false;

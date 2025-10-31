@@ -20,6 +20,7 @@ enum class LuaGuardFailure {
 };
 
 LuaGuardFailure GetLastLuaGuardFailure() noexcept;
+unsigned long GetLastLuaGuardSehCode() noexcept;
 
 bool IsProbablyReadable(const void* p, size_t bytes) noexcept;
 bool ValidateLuaStateShallow(lua_State* L, uintptr_t expectedGlobal) noexcept;

@@ -304,6 +304,10 @@ void LuaStateRegistry::CombineInfo(LuaStateInfo& into, const LuaStateInfo& from)
         into.helper_last_attempt_ms = from.helper_last_attempt_ms;
     if (from.helper_last_mutation_tick_ms > into.helper_last_mutation_tick_ms)
         into.helper_last_mutation_tick_ms = from.helper_last_mutation_tick_ms;
+    if (from.helper_passive_since_ms && (!into.helper_passive_since_ms || from.helper_passive_since_ms < into.helper_passive_since_ms))
+        into.helper_passive_since_ms = from.helper_passive_since_ms;
+    if (from.helper_last_signal_ms > into.helper_last_signal_ms)
+        into.helper_last_signal_ms = from.helper_last_signal_ms;
 }
 
 std::pair<LuaStateRegistry::Entry*, bool> LuaStateRegistry::EnsureEntry(lua_State* reported, void* ctx, DWORD tid, uint64_t gen) {

@@ -37,6 +37,7 @@
 #include "Walk/WalkController.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/lua_safe.h"
+#include "Win32/SafeProbe.h"
 
 #include "LuaPlus.h"
 
@@ -200,6 +201,9 @@ static std::atomic<uint64_t> g_lastHelperSummaryTick{0};
 static std::atomic<uint32_t> g_helperScheduledCount{0};
 static std::atomic<uint32_t> g_helperInstalledCount{0};
 static std::atomic<uint32_t> g_helperDeferredCount{0};
+static std::atomic<uint32_t> g_helperProbeAttempted{0};
+static std::atomic<uint32_t> g_helperProbeSuccess{0};
+static std::atomic<uint32_t> g_helperProbeSkipped{0};
 static std::atomic<bool> g_helpersInstalledAny{false};
 static std::atomic<DWORD> g_lastHelperOwnerThread{0};
 static std::atomic<uint64_t> g_lastHelperRetryScanTick{0};
@@ -210,6 +214,10 @@ struct HelperRetryPolicy {
     uint32_t stableWindowMs = 250;
     uint32_t retryBackoffMs = 150;
     uint32_t ownerConfirmMs = 1000;
+    uint32_t minSettleMs = 500;
+    uint32_t debounceMs = 100;
+    uint32_t maxRetries = 10;
+    std::array<uint32_t, 8> retrySchedule{};
 };
 
 static HelperRetryPolicy g_helperRetryPolicy{};
@@ -279,13 +287,20 @@ static bool ParseUint32(const std::string& text, uint32_t& outValue) {
 
 static void LoadHelperRetryPolicy() {
     HelperRetryPolicy policy{};
+    policy.retrySchedule = {500u, 1000u, 2000u, 3000u, 5000u, 8000u, 13000u, 21000u};
 
     uint32_t value = 0;
-    if (auto envMax = Core::Config::TryGetEnv("LUA_HELPERS_RETRYMAX")) {
+
+    if (auto envMax = Core::Config::TryGetEnv("WALK_HELPERS_MAX_RETRIES")) {
         if (ParseUint32(*envMax, value))
-            policy.retryMax = value;
-    } else if (auto cfgMax = Core::Config::TryGetUInt("lua.helpers.retryMax")) {
-        policy.retryMax = *cfgMax;
+            policy.maxRetries = value;
+    } else if (auto cfgMax = Core::Config::TryGetUInt("walk.helpers.maxRetries")) {
+        policy.maxRetries = *cfgMax;
+    } else if (auto legacyEnvMax = Core::Config::TryGetEnv("LUA_HELPERS_RETRYMAX")) {
+        if (ParseUint32(*legacyEnvMax, value))
+            policy.maxRetries = value;
+    } else if (auto legacyCfgMax = Core::Config::TryGetUInt("lua.helpers.retryMax")) {
+        policy.maxRetries = *legacyCfgMax;
     }
 
     if (auto envWindow = Core::Config::TryGetEnv("LUA_HELPERS_RETRYWINDOWMS")) {
@@ -295,34 +310,127 @@ static void LoadHelperRetryPolicy() {
         policy.retryWindowMs = *cfgWindow;
     }
 
-    policy.retryMax = std::clamp<uint32_t>(policy.retryMax, 1u, 16u);
-    policy.retryWindowMs = std::clamp<uint32_t>(policy.retryWindowMs, 250u, 8000u);
-
-    const uint32_t derivedStable = std::clamp<uint32_t>(policy.retryWindowMs / 4u, 150u, 1000u);
-    const uint32_t retryDivisor = std::max(policy.retryMax, static_cast<uint32_t>(1));
-    const uint32_t derivedBackoff = std::clamp<uint32_t>(policy.retryWindowMs / retryDivisor, 50u, 500u);
-
-    policy.stableWindowMs = derivedStable;
-    policy.retryBackoffMs = derivedBackoff;
-
     if (auto envOwner = Core::Config::TryGetEnv("LUA_HELPERS_OWNERCONFIRMMS")) {
         if (ParseUint32(*envOwner, value))
             policy.ownerConfirmMs = value;
     } else if (auto cfgOwner = Core::Config::TryGetUInt("lua.helpers.ownerConfirmMs")) {
         policy.ownerConfirmMs = *cfgOwner;
     }
+
+    if (auto envSettle = Core::Config::TryGetEnv("WALK_HELPERS_MIN_SETTLE_MS")) {
+        if (ParseUint32(*envSettle, value))
+            policy.minSettleMs = value;
+    } else if (auto cfgSettle = Core::Config::TryGetMilliseconds("walk.helpers.minSettleMs")) {
+        policy.minSettleMs = *cfgSettle;
+    }
+
+    if (auto envDebounce = Core::Config::TryGetEnv("WALK_HELPERS_DEBOUNCE_MS")) {
+        if (ParseUint32(*envDebounce, value))
+            policy.debounceMs = value;
+    } else if (auto cfgDebounce = Core::Config::TryGetMilliseconds("walk.helpers.debounceMs")) {
+        policy.debounceMs = *cfgDebounce;
+    }
+
+    policy.maxRetries = std::clamp<uint32_t>(policy.maxRetries, 1u, 32u);
+    policy.retryMax = policy.maxRetries;
+    policy.retryWindowMs = std::clamp<uint32_t>(policy.retryWindowMs, 250u, 8000u);
+
+    const uint32_t derivedStable = std::clamp<uint32_t>(policy.retryWindowMs / 4u, 150u, 1000u);
+    const uint32_t retryDivisor = std::max<uint32_t>(policy.retryMax, 1u);
+    const uint32_t derivedBackoff = std::clamp<uint32_t>(policy.retryWindowMs / retryDivisor, 50u, 500u);
+
+    policy.stableWindowMs = derivedStable;
+    policy.retryBackoffMs = derivedBackoff;
     policy.ownerConfirmMs = std::clamp<uint32_t>(policy.ownerConfirmMs, 250u, 5000u);
+    policy.minSettleMs = std::clamp<uint32_t>(policy.minSettleMs, 100u, 5000u);
+    policy.debounceMs = std::clamp<uint32_t>(policy.debounceMs, 50u, 2000u);
 
     g_helperRetryPolicy = policy;
 
     Log::Logf(Log::Level::Debug,
               Log::Category::Hooks,
-              "helper-retry policy retryMax=%u retryWindowMs=%u stableWindowMs=%u retryBackoffMs=%u ownerConfirmMs=%u",
+              "helper-retry policy retryMax=%u retryWindowMs=%u stableWindowMs=%u retryBackoffMs=%u ownerConfirmMs=%u minSettleMs=%u debounceMs=%u maxRetries=%u",
               policy.retryMax,
               policy.retryWindowMs,
               policy.stableWindowMs,
               policy.retryBackoffMs,
-              policy.ownerConfirmMs);
+              policy.ownerConfirmMs,
+              policy.minSettleMs,
+              policy.debounceMs,
+              policy.maxRetries);
+}
+
+
+static uint32_t HelperRetryDelay(const HelperRetryPolicy& policy, uint32_t attemptIndex) {
+    if (attemptIndex == 0)
+        return 0;
+    if (policy.retrySchedule.empty())
+        return policy.retryBackoffMs;
+    size_t idx = static_cast<size_t>(attemptIndex - 1u);
+    if (idx < policy.retrySchedule.size() && policy.retrySchedule[idx] != 0)
+        return policy.retrySchedule[idx];
+    uint32_t fallback = policy.retrySchedule.back();
+    return fallback != 0 ? fallback : policy.retryBackoffMs;
+}
+
+static uint32_t HelperJitterMs(const HelperRetryPolicy& policy, const void* token, uint64_t now) {
+    uint32_t window = std::max<uint32_t>(policy.debounceMs, 25u);
+    uint64_t raw = (now << 21) ^ (now >> 7) ^ reinterpret_cast<std::uintptr_t>(token);
+    return static_cast<uint32_t>(raw % (static_cast<uint64_t>(window) + 1u));
+}
+
+static bool DescribeAddressForLog(const void* address, char* moduleBuf, size_t moduleBufLen, void** moduleBaseOut, DWORD* protectOut) {
+    if (moduleBuf && moduleBufLen)
+        moduleBuf[0] = '\0';
+    if (moduleBaseOut)
+        *moduleBaseOut = nullptr;
+    if (protectOut)
+        *protectOut = 0;
+
+    if (!address)
+        return false;
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(address, &mbi, sizeof(mbi)))
+        return false;
+
+    if (moduleBaseOut)
+        *moduleBaseOut = mbi.AllocationBase;
+    if (protectOut)
+        *protectOut = mbi.Protect;
+
+    if (moduleBuf && moduleBufLen) {
+        moduleBuf[0] = '\0';
+        HMODULE module = static_cast<HMODULE>(mbi.AllocationBase);
+        if (module) {
+            char fullPath[MAX_PATH] = {};
+            DWORD len = GetModuleFileNameA(module, fullPath, ARRAYSIZE(fullPath));
+            if (len != 0) {
+                const char* name = fullPath;
+                for (const char* it = fullPath; *it; ++it) {
+                    if (*it == '\\' || *it == '/')
+                        name = it + 1;
+                }
+                strncpy_s(moduleBuf, moduleBufLen, name, _TRUNCATE);
+            } else {
+                strncpy_s(moduleBuf, moduleBufLen, "<unknown>", _TRUNCATE);
+            }
+        } else {
+            strncpy_s(moduleBuf, moduleBufLen, "<anon>", _TRUNCATE);
+        }
+    }
+
+    return true;
+}
+
+static bool IsPlausibleContextPointer(const void* ctx) {
+    if (!ctx)
+        return false;
+    void* vtbl = nullptr;
+    if (!sp::is_readable(ctx, sizeof(void*)))
+        return false;
+    std::memcpy(&vtbl, ctx, sizeof(void*));
+    return vtbl && sp::is_plausible_vtbl_entry(vtbl);
 }
 
 static const HelperRetryPolicy& GetHelperRetryPolicy() {
@@ -1017,6 +1125,9 @@ static bool DebugInstrumentationEnabled();
 static std::atomic<uint64_t> g_lastContextMutationTick{0};
 static std::atomic<uint64_t> g_lastDestabilizedTick{0};
 static std::atomic<uint64_t> g_lastCanonicalReadyTick{0};
+static std::atomic<uint64_t> g_lastLuaHeartbeatTick{0};
+static std::atomic<uint64_t> g_lastWaypointFacetTick{0};
+static std::atomic<uint32_t> g_sehTrapCount{0};
 static std::atomic<uint64_t> g_lastDebugDeferLogTick{0};
 static std::atomic<uint64_t> g_lastDebugStableLogTick{0};
 static std::atomic<uint64_t> g_lastSentinelStackLogTick{0};
@@ -4138,12 +4249,13 @@ static void ProcessPendingLuaTasks(lua_State* L) {
     }
     if (queuedCount == 0) {
         g_queueNeedsPump.store(false, std::memory_order_release);
-        Log::Logf(Log::Level::Info,
-                  Log::Category::LuaGuard,
-                  "[LUA][HB] tid=%lu queued=0 processed=0",
-                  static_cast<unsigned long>(tid));
-        Core::StartupSummary::NotifyLuaHeartbeat();
-        return;
+    Log::Logf(Log::Level::Info,
+              Log::Category::LuaGuard,
+              "[LUA][HB] tid=%lu queued=0 processed=0",
+              static_cast<unsigned long>(tid));
+    g_lastLuaHeartbeatTick.store(GetTickCount64(), std::memory_order_release);
+    Core::StartupSummary::NotifyLuaHeartbeat();
+    return;
     }
 
     g_processingLuaQueue = true;
@@ -4191,6 +4303,7 @@ static void ProcessPendingLuaTasks(lua_State* L) {
               processedCount);
     if (queuedAfter == 0)
         g_queueNeedsPump.store(false, std::memory_order_release);
+    g_lastLuaHeartbeatTick.store(GetTickCount64(), std::memory_order_release);
     Core::StartupSummary::NotifyLuaHeartbeat();
 }
 
@@ -4334,25 +4447,60 @@ static void MaybeProcessHelperRetryQueue() {
         return;
 
     uint64_t generation = g_generation.load(std::memory_order_acquire);
-    for (const auto& info : snapshot) {
+    uint64_t heartbeatTick = g_lastLuaHeartbeatTick.load(std::memory_order_acquire);
+    uint64_t facetTick = g_lastWaypointFacetTick.load(std::memory_order_acquire);
+    uint64_t mutationTick = g_lastContextMutationTick.load(std::memory_order_acquire);
+    uint64_t globalSignalTick = std::max<uint64_t>({heartbeatTick, facetTick, mutationTick});
+
+    for (auto info : snapshot) {
         bool installed = (info.flags & STATE_FLAG_HELPERS_INSTALLED) && info.gen == generation;
         if (installed)
             continue;
         if (info.flags & STATE_FLAG_HELPERS_PENDING)
             continue;
-        if (info.helper_next_retry_ms == 0)
+
+        bool scheduleDue = (info.helper_next_retry_ms != 0) && now >= info.helper_next_retry_ms;
+        bool passiveEligible = false;
+        uint64_t consumedSignal = 0;
+
+        if (!scheduleDue && info.helper_passive_since_ms != 0) {
+            if (globalSignalTick != 0 && globalSignalTick > info.helper_last_signal_ms) {
+                passiveEligible = true;
+                consumedSignal = globalSignalTick;
+            }
+        }
+
+        if (!scheduleDue && !passiveEligible)
             continue;
-        if (now < info.helper_next_retry_ms)
-            continue;
+
+        lua_State* key = info.L_canonical ? info.L_canonical : info.L_reported;
+        if (key && passiveEligible && consumedSignal != 0) {
+            g_stateRegistry.UpdateByPointer(key, [&](LuaStateInfo& state) {
+                if (consumedSignal > state.helper_last_signal_ms)
+                    state.helper_last_signal_ms = consumedSignal;
+                if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms > now)
+                    state.helper_next_retry_ms = now;
+            }, &info);
+        }
+
+        uint64_t nextTick = info.helper_next_retry_ms;
+        if (passiveEligible && consumedSignal != 0)
+            nextTick = now;
+
+        uint64_t firstTick = info.helper_first_attempt_ms;
+        uint64_t elapsedMs = (firstTick && now >= firstTick) ? (now - firstTick) : 0;
+
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "helpers retry scheduling L=%p owner=%lu retries=%u next=%llu now=%llu",
-                  info.L_canonical ? info.L_canonical : info.L_reported,
+                  "helpers retry scheduling L=%p owner=%lu retries=%u next=%llu elapsed=%llu reason=%s",
+                  key,
                   static_cast<unsigned long>(info.owner_tid),
                   static_cast<unsigned>(info.helper_retry_count),
-                  static_cast<unsigned long long>(info.helper_next_retry_ms),
-                  static_cast<unsigned long long>(now));
-        RequestBindForState(info, "retry", false);
+                  static_cast<unsigned long long>(nextTick),
+                  static_cast<unsigned long long>(elapsedMs),
+                  scheduleDue ? "timer" : "signal");
+
+        RequestBindForState(info, scheduleDue ? "retry" : "signal", false);
     }
 }
 
@@ -4616,64 +4764,87 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
     }
 
     const uint64_t mutationTick = g_lastContextMutationTick.load(std::memory_order_acquire);
+    const uint64_t heartbeatTick = g_lastLuaHeartbeatTick.load(std::memory_order_acquire);
+    const uint64_t facetTick = g_lastWaypointFacetTick.load(std::memory_order_acquire);
+    const uint64_t latestSignalTick = std::max<uint64_t>({heartbeatTick, facetTick, mutationTick});
+    const uint32_t autopLimit = retry.retrySchedule.empty()
+                                    ? 0u
+                                    : std::min<uint32_t>(retry.maxRetries, static_cast<uint32_t>(retry.retrySchedule.size()));
 
+    uint32_t attemptsSoFar = current.helper_retry_count;
+    uint32_t nextAttemptIndex = attemptsSoFar + 1;
     bool allowNow = force;
+    bool passiveMode = false;
+    bool signalConsumed = false;
+    bool logOverride = false;
+    const char* overrideReason = nullptr;
+    const char* gateReason = nullptr;
+    uint64_t desiredNextMs = 0;
+
     if (!force) {
-        bool canonicalStable = canonicalReadyFlag;
-        uint64_t readyTick = current.canonical_ready_tick_ms;
-        if (!canonicalStable && readyTick && now >= readyTick) {
-            uint64_t readyAge = now - readyTick;
-            if (readyAge >= retry.stableWindowMs)
-                canonicalStable = true;
-        }
+        bool canonicalReady = (current.flags & STATE_FLAG_CANON_READY) != 0;
+        uint64_t canonicalTick = current.canonical_ready_tick_ms;
+        uint64_t settleBase = canonicalTick;
+        if (current.helper_last_mutation_tick_ms > settleBase)
+            settleBase = current.helper_last_mutation_tick_ms;
+        if (mutationTick > settleBase)
+            settleBase = mutationTick;
 
-        uint64_t sinceFirst = current.helper_first_attempt_ms
-                                  ? (now - current.helper_first_attempt_ms)
-                                  : 0;
-        bool attemptsExceeded = retry.retryMax > 0 && current.helper_retry_count >= retry.retryMax;
-        bool windowExceeded = current.helper_first_attempt_ms != 0 && sinceFirst >= retry.retryWindowMs;
-        bool forcedByRetry = false;
-        if (!canonicalStable && (attemptsExceeded || windowExceeded)) {
-            canonicalStable = true;
-            forcedByRetry = true;
-        }
-
-        allowNow = canonicalStable;
-        if (allowNow) {
-            if (!forcedByRetry && current.helper_next_retry_ms && now < current.helper_next_retry_ms)
+        if (!canonicalReady || canonicalTick == 0) {
+            allowNow = false;
+            gateReason = "canon";
+        } else {
+            uint64_t settleDeadline = settleBase ? (settleBase + retry.minSettleMs) : 0;
+            if (settleDeadline && now < settleDeadline) {
                 allowNow = false;
+                gateReason = "settle";
+                desiredNextMs = settleDeadline;
+            }
         }
 
-        if (allowNow && (attemptsExceeded || windowExceeded)) {
-            bool logOverride = false;
-            const char* overrideReason = nullptr;
-            if (attemptsExceeded && retry.retryMax > 0 && current.helper_retry_count == retry.retryMax) {
-                logOverride = true;
-                overrideReason = "retry-max";
-            } else if (windowExceeded && sinceFirst >= retry.retryWindowMs) {
-                uint64_t windowDelta = sinceFirst - retry.retryWindowMs;
-                if (windowDelta < retry.retryBackoffMs) {
+        uint64_t activityTick = std::max<uint64_t>(heartbeatTick, facetTick);
+        if (allowNow) {
+            if (activityTick == 0 || (settleBase && activityTick < settleBase)) {
+                allowNow = false;
+                gateReason = "signal";
+                desiredNextMs = std::max<uint64_t>(desiredNextMs, now + std::max<uint32_t>(retry.debounceMs, 100u));
+            }
+        }
+
+        if (allowNow) {
+            bool autopStageAvailable = autopLimit > 0;
+            bool beyondAutop = !autopStageAvailable || attemptsSoFar >= autopLimit;
+            bool hasNewSignal = latestSignalTick != 0 && latestSignalTick > current.helper_last_signal_ms;
+
+            if (attemptsSoFar >= retry.maxRetries) {
+                allowNow = false;
+                gateReason = "retry-max";
+                passiveMode = true;
+            } else if (beyondAutop) {
+                passiveMode = true;
+                if (hasNewSignal) {
+                    allowNow = true;
+                    signalConsumed = true;
                     logOverride = true;
-                    overrideReason = "retry-window";
+                    overrideReason = "retry-max";
+                } else {
+                    allowNow = false;
+                    gateReason = "passive";
                 }
-            }
-            if (logOverride) {
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Hooks,
-                          "helpers gating override L=%p reason=%s retries=%u ageMs=%llu action=%s",
-                          target,
-                          overrideReason ? overrideReason : "unknown",
-                          static_cast<unsigned>(current.helper_retry_count),
-                          static_cast<unsigned long long>(sinceFirst),
-                          action);
+            } else if (hasNewSignal) {
+                signalConsumed = true;
             }
         }
-
-        if (!allowNow && mutationTick > current.helper_last_mutation_tick_ms)
-            allowNow = true;
     }
 
     if (!allowNow) {
+        g_helperProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
+        uint64_t backoff = HelperRetryDelay(retry, nextAttemptIndex);
+        if (!passiveMode && backoff > 0) {
+            uint64_t jitter = HelperJitterMs(retry, target, now);
+            desiredNextMs = std::max<uint64_t>(desiredNextMs, now + backoff + jitter);
+        }
+
         g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
             if (!state.helper_first_attempt_ms)
                 state.helper_first_attempt_ms = now;
@@ -4682,26 +4853,56 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
                 state.helper_retry_count = 0;
                 state.helper_first_attempt_ms = now;
             }
-            uint32_t shift = std::min<uint32_t>(state.helper_retry_count, 6u);
-            uint64_t backoff = static_cast<uint64_t>(retry.retryBackoffMs) << shift;
-            if (backoff > retry.retryWindowMs)
-                backoff = retry.retryWindowMs;
-            uint64_t minNext = now + backoff;
-            if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < minNext)
-                state.helper_next_retry_ms = minNext;
-            UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, "not-ready");
+            if (passiveMode) {
+                if (state.helper_passive_since_ms == 0)
+                    state.helper_passive_since_ms = now;
+            } else {
+                state.helper_passive_since_ms = 0;
+            }
+            if (desiredNextMs != 0) {
+                if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < desiredNextMs)
+                    state.helper_next_retry_ms = desiredNextMs;
+            } else {
+                state.helper_next_retry_ms = 0;
+            }
+            UpdateHelperStage(state,
+                              HelperInstallStage::WaitingForGlobalState,
+                              now,
+                              gateReason ? gateReason : "not-ready");
         }, &current);
         ClearHelperPending(target, generation, &current);
         TrackHelperEvent(g_helperDeferredCount);
         MaybeEmitHelperSummary(now);
+
+        if (logOverride && overrideReason) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "helpers gating override L=%p reason=%s retries=%u action=%s",
+                      target,
+                      overrideReason,
+                      static_cast<unsigned>(current.helper_retry_count),
+                      action);
+        }
+
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "helpers skip Lc=%p reason=not-ready nextRetry=%llu gen=%llu action=%s",
+                  "helpers skip L=%p reason=%s retries=%u next=%llu action=%s",
                   target,
-                  static_cast<unsigned long long>(current.helper_next_retry_ms),
-                  static_cast<unsigned long long>(generation),
+                  gateReason ? gateReason : "not-ready",
+                  static_cast<unsigned>(current.helper_retry_count),
+                  static_cast<unsigned long long>(desiredNextMs),
                   action);
         return;
+    }
+
+    if (logOverride && overrideReason) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "helpers gating override L=%p reason=%s retries=%u action=%s",
+                  target,
+                  overrideReason,
+                  static_cast<unsigned>(current.helper_retry_count),
+                  action);
     }
 
     g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
@@ -4711,15 +4912,22 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         if (!state.helper_first_attempt_ms)
             state.helper_first_attempt_ms = now;
         state.helper_last_attempt_ms = now;
-        uint32_t backoffShift = std::min<uint32_t>(state.helper_retry_count, 6u);
-        uint64_t backoff = static_cast<uint64_t>(retry.retryBackoffMs) << backoffShift;
-        if (backoff > retry.retryWindowMs)
-            backoff = retry.retryWindowMs;
-        state.helper_next_retry_ms = now + backoff;
-        if (state.helper_retry_count < std::numeric_limits<uint32_t>::max())
-            ++state.helper_retry_count;
         if (mutationTick > state.helper_last_mutation_tick_ms)
             state.helper_last_mutation_tick_ms = mutationTick;
+        if (latestSignalTick != 0)
+            state.helper_last_signal_ms = latestSignalTick;
+        if (state.helper_retry_count < std::numeric_limits<uint32_t>::max())
+            ++state.helper_retry_count;
+        uint64_t backoff = HelperRetryDelay(retry, state.helper_retry_count);
+        if (!passiveMode) {
+            if (backoff == 0)
+                backoff = retry.debounceMs;
+            uint64_t jitter = HelperJitterMs(retry, target, now);
+            state.helper_next_retry_ms = now + backoff + jitter;
+            state.helper_passive_since_ms = 0;
+        } else {
+            state.helper_next_retry_ms = 0;
+        }
         UpdateHelperStage(state, HelperInstallStage::Installing, now, "schedule");
     }, &current);
 
@@ -5099,7 +5307,14 @@ static void HandleProbeFailure(lua_State* L, LuaStateInfo& info, Engine::Lua::Lu
             if (reason == Engine::Lua::LuaGuardFailure::GenerationMismatch)
                 state.gc_gen = 0;
             UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, "probe-invalid");
-            uint64_t minNext = now + retry.retryBackoffMs;
+            uint64_t penalty = retry.retryBackoffMs;
+            if (reason == Engine::Lua::LuaGuardFailure::Seh) {
+                // Treat hard faults as a reset so we do not immediately force retries.
+                state.helper_retry_count = 0;
+                state.helper_first_attempt_ms = now;
+                penalty = std::max<uint64_t>(retry.retryWindowMs ? retry.retryWindowMs : 2000u, retry.retryBackoffMs << 2);
+            }
+            uint64_t minNext = now + penalty;
             if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < minNext)
                 state.helper_next_retry_ms = minNext;
         }
@@ -5132,6 +5347,24 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
               info.flags,
               static_cast<unsigned>(info.helper_retry_count));
 
+    if (g_clientRegister && !sp::is_plausible_vtbl_entry(reinterpret_cast<const void*>(g_clientRegister))) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Hooks,
+                  "helpers bind abort L=%p reason=register-invalid target=%p",
+                  L,
+                  reinterpret_cast<void*>(g_clientRegister));
+        return false;
+    }
+
+    if (info.ctx_reported && !IsPlausibleContextPointer(info.ctx_reported)) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Hooks,
+                  "helpers bind abort L=%p reason=ctx-invalid ctx=%p",
+                  L,
+                  info.ctx_reported);
+        return false;
+    }
+
     const bool probeOk = ProbeLua(L);
     g_stateRegistry.GetByPointer(L, info);
 
@@ -5141,6 +5374,24 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
         const char* guardName = DescribeGuardFailure(failure);
         HandleProbeFailure(L, info, failure);
         LogLuaBind("bind-helpers probe-failed L=%p guard=%s", L, guardName);
+        if (failure == Engine::Lua::LuaGuardFailure::Seh) {
+            unsigned long sehCode = Engine::Lua::GetLastLuaGuardSehCode();
+            char moduleName[MAX_PATH] = {};
+            void* moduleBase = nullptr;
+            DWORD protect = 0;
+            DescribeAddressForLog(L, moduleName, ARRAYSIZE(moduleName), &moduleBase, &protect);
+            g_sehTrapCount.fetch_add(1u, std::memory_order_relaxed);
+            const char* stageName = HelperStageName(CurrentHelperStage(info));
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "[HOOKS][SAFE] probe AV: target=%p module=%s base=%p prot=0x%08lX exc=0x%08lX stage=%s",
+                      L,
+                      moduleName,
+                      moduleBase,
+                      static_cast<unsigned long>(protect),
+                      sehCode,
+                      stageName ? stageName : "unknown");
+        }
         Log::Logf(Log::Level::Warn,
                   Log::Category::Hooks,
                   "helpers install probe failed L=%p owner=%lu gen=%llu guard=%s",
@@ -5227,13 +5478,12 @@ static bool BindHelpersWithSeh(lua_State* L,
     bool ok = false;
     bool attempted = false;
     DWORD sehCode = 0;
-    __try {
-        attempted = true;
+    attempted = true;
+    bool probeOk = sp::seh_probe([&]() {
         ok = BindHelpersOnThread(L, info, generation, force);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        sehCode = GetExceptionCode();
+    }, &sehCode);
+    if (!probeOk)
         ok = false;
-    }
     attemptedOut = attempted;
     sehCodeOut = sehCode;
     return ok;
@@ -5331,6 +5581,7 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
                   L,
                   static_cast<unsigned long>(info.owner_tid));
     } else {
+        g_helperProbeAttempted.fetch_add(1u, std::memory_order_relaxed);
         ok = BindHelpersWithSeh(L, info, generation, force, attempted, sehCode);
     }
     LeaveHelperInstall(guardEngaged);
@@ -5339,13 +5590,21 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     ClearHelperPending(L, generation, &info);
     uint64_t summaryTick = GetTickCount64();
     if (ok) {
+        g_helperProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
         TrackHelperEvent(g_helperInstalledCount);
         MaybeEmitHelperSummary(summaryTick, true);
     } else {
         TrackHelperEvent(g_helperDeferredCount);
         const HelperRetryPolicy& retry = GetHelperRetryPolicy();
         g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-            uint64_t next = summaryTick + retry.retryBackoffMs;
+            if (state.helper_passive_since_ms != 0) {
+                state.helper_next_retry_ms = 0;
+                return;
+            }
+            uint64_t delay = HelperRetryDelay(retry, state.helper_retry_count);
+            if (delay == 0)
+                delay = retry.debounceMs;
+            uint64_t next = summaryTick + delay + HelperJitterMs(retry, L, summaryTick);
             if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < next)
                 state.helper_next_retry_ms = next;
         });
@@ -5356,17 +5615,39 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
             after = info;
         const char* stageName = HelperStageName(static_cast<HelperInstallStage>(after.helper_state));
         DWORD codeToLog = (reentrancyBlocked || !attempted) ? 0 : sehCode;
+        uint64_t elapsedMs = (after.helper_first_attempt_ms && summaryTick >= after.helper_first_attempt_ms)
+                                 ? (summaryTick - after.helper_first_attempt_ms)
+                                 : 0;
+        uint64_t nextRetry = after.helper_next_retry_ms;
         Log::Logf(Log::Level::Warn,
                   Log::Category::Hooks,
-                  "helpers install failed (will retry) code=0x%08lX stage=%s",
+                  "helpers install failed (will retry) code=0x%08lX stage=%s retries=%u elapsed=%llu next=%llu",
                   static_cast<unsigned long>(codeToLog),
-                  stageName ? stageName : "unknown");
+                  stageName ? stageName : "unknown",
+                  static_cast<unsigned>(after.helper_retry_count),
+                  static_cast<unsigned long long>(elapsedMs),
+                  static_cast<unsigned long long>(nextRetry));
         if (sehCode != 0) {
-            LogLuaState("bind-fail Lc=%p ctx=%p gen=%llu seh=0x%08lX",
+            g_sehTrapCount.fetch_add(1u, std::memory_order_relaxed);
+            char moduleName[MAX_PATH] = {};
+            void* moduleBase = nullptr;
+            DWORD protect = 0;
+            DescribeAddressForLog(L, moduleName, ARRAYSIZE(moduleName), &moduleBase, &protect);
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "[HOOKS][SAFE] probe AV: target=%p module=%s base=%p prot=0x%08lX exc=0x%08lX stage=%s",
+                      L,
+                      moduleName,
+                      moduleBase,
+                      static_cast<unsigned long>(protect),
+                      static_cast<unsigned long>(sehCode),
+                      stageName ? stageName : "unknown");
+            LogLuaState("bind-fail Lc=%p ctx=%p gen=%llu seh=0x%08lX module=%s",
                         L,
                         info.ctx_reported,
                         static_cast<unsigned long long>(generation),
-                        sehCode);
+                        sehCode,
+                        moduleName);
         } else {
             LogLuaState("bind-fail Lc=%p ctx=%p gen=%llu",
                         L,
@@ -6493,6 +6774,16 @@ void OnStateRemoved(lua_State* L, const char* reason) {
             g_canonicalState.store(nullptr, std::memory_order_release);
         NoteDestabilization("state-removed", reason);
     }
+}
+
+void GetHelperProbeStats(uint32_t& attempted, uint32_t& succeeded, uint32_t& skipped) {
+    attempted = g_helperProbeAttempted.load(std::memory_order_acquire);
+    succeeded = g_helperProbeSuccess.load(std::memory_order_acquire);
+    skipped = g_helperProbeSkipped.load(std::memory_order_acquire);
+}
+
+uint32_t GetSehTrapCount() {
+    return g_sehTrapCount.load(std::memory_order_acquire);
 }
 
 

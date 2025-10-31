@@ -21,6 +21,7 @@ constexpr int kMaxReasonableLuaTop = 1'000'000;
 constexpr uint32_t kStateFlagValid = 1u << 2;
 
 thread_local LuaGuardFailure g_lastFailure = LuaGuardFailure::None;
+thread_local DWORD g_lastSehCode = 0;
 
 void SetFailure(LuaGuardFailure reason) noexcept {
     g_lastFailure = reason;
@@ -28,6 +29,7 @@ void SetFailure(LuaGuardFailure reason) noexcept {
 
 void ClearFailure() noexcept {
     g_lastFailure = LuaGuardFailure::None;
+    g_lastSehCode = 0;
 }
 
 bool CheckThreadOwnership(const LuaStateInfo& info) noexcept {
@@ -53,6 +55,10 @@ bool IsStackTopPlausible(int top) noexcept {
 
 LuaGuardFailure GetLastLuaGuardFailure() noexcept {
     return g_lastFailure;
+}
+
+DWORD GetLastLuaGuardSehCode() noexcept {
+    return g_lastSehCode;
 }
 
 bool IsProbablyReadable(const void* p, size_t bytes) noexcept {
@@ -141,6 +147,7 @@ LuaTopRes safe_lua_gettop(lua_State* L, const LuaStateInfo& info) noexcept {
     __try {
         top = lua_gettop(L);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_lastSehCode = GetExceptionCode();
         SetFailure(LuaGuardFailure::Seh);
         return res;
     }
@@ -168,6 +175,7 @@ bool safe_lua_settop(lua_State* L, const LuaStateInfo& info, int idx) noexcept {
     __try {
         lua_settop(L, idx);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_lastSehCode = GetExceptionCode();
         SetFailure(LuaGuardFailure::Seh);
         return false;
     }

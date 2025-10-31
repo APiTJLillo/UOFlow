@@ -6,12 +6,14 @@
 #include <limits>
 #include <cstdint>
 #include <unordered_set>
+#include <atomic>
 #include <minhook.h>
 #include "Core/Logging.hpp"
 #include "Core/Startup.hpp"
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
 #include "Core/SafeMem.h"
+#include "Win32/SafeProbe.h"
 #include "Net/PacketTrace.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/GlobalState.hpp"
@@ -46,6 +48,9 @@ static void* g_sendBuilderTarget = nullptr;
 static bool g_builderScanned = false;
 static bool g_loggedNetScanFailure = false;
 static bool g_initLogged = false;
+static std::atomic<uint32_t> g_builderProbeAttempted{0};
+static std::atomic<uint32_t> g_builderProbeSuccess{0};
+static std::atomic<uint32_t> g_builderProbeSkipped{0};
 static DWORD g_lastPollTick = 0;
 static uintptr_t g_lastNetCfgSnapshot[4] = {};
 static bool g_haveNetCfgSnapshot = false;
@@ -241,7 +246,7 @@ static HMODULE GetGameModule()
 
 static bool IsExecutableCodeAddress(void* addr)
 {
-    return SafeMem::IsProbablyCodePtr(addr);
+    return sp::is_executable_code_ptr(addr);
 }
 
 static bool IsGameVtableAddress(void* addr)
@@ -751,11 +756,13 @@ static void* __fastcall Hook_SendBuilder(void* thisPtr, void* /*unused*/, void* 
 
 static bool ScanEndpointVTable(void* endpoint)
 {
+    g_builderProbeAttempted.fetch_add(1u, std::memory_order_relaxed);
     void** vtbl = nullptr;
     if (!SafeMem::SafeRead(endpoint, vtbl) || !vtbl) {
         char msg[160];
         sprintf_s(msg, sizeof(msg), "ScanEndpointVTable: endpoint=%p vtbl unreadable", endpoint);
         WriteRawLog(msg);
+        g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         return false;
     }
 
@@ -768,6 +775,8 @@ static bool ScanEndpointVTable(void* endpoint)
     int matchedIndex = -1;
     void* matchedFn = nullptr;
 
+    uint32_t scannedCount = 0;
+    uint32_t execLikeCount = 0;
     __try
     {
         for (int i = 0; i < 32; ++i)
@@ -780,6 +789,7 @@ static bool ScanEndpointVTable(void* endpoint)
 
             void* fn = nullptr;
             bool readable = SafeMem::SafeRead(vtblEntries + i, fn);
+            ++scannedCount;
             if (!readable)
             {
                 Logf("endpoint vtbl[%02X] unreadable (vtbl=%p)", i, vtbl);
@@ -793,15 +803,17 @@ static bool ScanEndpointVTable(void* endpoint)
 
             Logf("endpoint vtbl[%02X] = %p", i, fn);
 
-            bool probableCode = fn && SafeMem::IsProbablyCodePtr(fn);
+            bool execCandidate = fn && sp::is_executable_code_ptr(fn);
+            if (execCandidate)
+                ++execLikeCount;
             if (i < 8)
             {
                 ++firstEightCount;
-                if (!probableCode)
+                if (!execCandidate)
                     ++firstEightMisses;
             }
 
-            if (!probableCode)
+            if (!execCandidate)
                 continue;
 
             if (!g_sendBuilderHooked && !matchedFn && FunctionCallsSendPacket(fn))
@@ -822,11 +834,23 @@ static bool ScanEndpointVTable(void* endpoint)
                   endpoint,
                   vtbl);
         WriteRawLog(msg);
+        g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         return false;
     }
 
-    if (!anyNewSlot && !matchedFn)
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[SB] endpoint candidates: scanned=%u exec_like=%u selected=%p entry=%p",
+              scannedCount,
+              execLikeCount,
+              endpoint,
+              matchedFn);
+
+    if (!anyNewSlot && !matchedFn) {
+        if (!g_sendBuilderHooked)
+            g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         return g_sendBuilderHooked;
+    }
 
     if (firstEightCount >= 8 && firstEightMisses >= 6)
     {
@@ -837,12 +861,22 @@ static bool ScanEndpointVTable(void* endpoint)
                   vtbl,
                   firstEightMisses);
         WriteRawLog(msg);
+        g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         return false;
     }
 
     if (!matchedFn) {
-        if (g_skipWarnedVtables.insert(vtbl).second)
+        bool firstWarn = g_skipWarnedVtables.insert(vtbl).second;
+        if (firstWarn) {
             WriteRawLog("ScanEndpointVTable: no vtbl entry calling SendPacket; skipping hook");
+            if (g_sendPacketTarget) {
+                Log::Logf(Log::Level::Warn,
+                          Log::Category::Core,
+                          "[SB] no viable endpoint; fallback pattern scan is TODO (send=%p)",
+                          g_sendPacketTarget);
+            }
+        }
+        g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         return false;
     }
 
@@ -851,6 +885,7 @@ static bool ScanEndpointVTable(void* endpoint)
         if (MH_CreateHook(matchedFn, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
             MH_EnableHook(matchedFn) == MH_OK)
         {
+            g_builderProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
             g_sendBuilderHooked = true;
             g_sendBuilderTarget = matchedFn;
             Log::Logf(Log::Level::Info,
@@ -865,6 +900,7 @@ static bool ScanEndpointVTable(void* endpoint)
         else
         {
             WriteRawLog("ScanEndpointVTable: failed to hook suspected builder");
+            g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         }
     }
 
@@ -2069,6 +2105,13 @@ void PollSendBuilder()
         FindSendPacket();
     HookSendPacket();
     HookSendBuilderFromNetMgr();
+}
+
+void GetSendBuilderProbeStats(uint32_t& attempted, uint32_t& succeeded, uint32_t& skipped)
+{
+    attempted = g_builderProbeAttempted.load(std::memory_order_acquire);
+    succeeded = g_builderProbeSuccess.load(std::memory_order_acquire);
+    skipped = g_builderProbeSkipped.load(std::memory_order_acquire);
 }
 
 void ShutdownSendBuilder()

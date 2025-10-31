@@ -10,4 +10,5 @@ namespace Net {
     bool IsSendReady();
     bool IsSendBuilderAttached();
     void PollSendBuilder();
+    void GetSendBuilderProbeStats(uint32_t& attempted, uint32_t& succeeded, uint32_t& skipped);
 }

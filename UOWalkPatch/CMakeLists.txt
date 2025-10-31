@@ -80,6 +80,7 @@ add_library(UOWalkPatchDLL SHARED
     src/Core/MinHookHelpers.cpp
     src/Core/CrashHandler.cpp
     src/Core/SafeMem.cpp
+    src/Win32/SafeProbe.cpp
     src/Net/PacketTrace.cpp
     src/Net/SendBuilder.cpp
     src/Engine/GlobalState.cpp

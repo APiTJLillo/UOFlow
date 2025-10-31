@@ -1,6 +1,7 @@
 #include "Core/Startup.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <sstream>
 #include <chrono>
 #include <thread>
@@ -59,6 +60,15 @@ void MaybeEmitSummary() {
     Engine::Lua::StartupStatus luaStatus{};
     Engine::Lua::GetStartupStatus(luaStatus);
     Walk::Controller::Settings walkSettings = Walk::Controller::GetSettings();
+    uint32_t helperAttempt = 0;
+    uint32_t helperSuccess = 0;
+    uint32_t helperSkipped = 0;
+    Engine::Lua::GetHelperProbeStats(helperAttempt, helperSuccess, helperSkipped);
+    uint32_t builderAttempt = 0;
+    uint32_t builderSuccess = 0;
+    uint32_t builderSkipped = 0;
+    Net::GetSendBuilderProbeStats(builderAttempt, builderSuccess, builderSkipped);
+    uint32_t sehTraps = Engine::Lua::GetSehTrapCount();
 
     std::ostringstream summary;
     summary << "startup summary hooks.movement=" << g_state.movementHooks.load(std::memory_order_acquire)
@@ -73,7 +83,10 @@ void MaybeEmitSummary() {
             << " stepDelayMs=" << walkSettings.stepDelayMs
             << " timeoutMs=" << walkSettings.timeoutMs
             << " debug=" << (walkSettings.debug ? 1 : 0)
-            << " helperOwnerTid=" << luaStatus.ownerThreadId;
+            << " helperOwnerTid=" << luaStatus.ownerThreadId
+            << " helpers.probes=" << helperAttempt << '/' << helperSuccess << '/' << helperSkipped
+            << " builder.probes=" << builderAttempt << '/' << builderSuccess << '/' << builderSkipped
+            << " seh.traps=" << sehTraps;
 
     auto message = summary.str();
     Log::LogMessage(Log::Level::Info, Log::Category::Core, message.c_str());

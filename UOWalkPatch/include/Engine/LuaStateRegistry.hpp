@@ -92,6 +92,8 @@ struct LuaStateInfo {
     uint64_t helper_last_mutation_tick_ms = 0;
     uint64_t helper_state_since_ms = 0;
     uint64_t helper_owner_deadline_ms = 0;
+    uint64_t helper_passive_since_ms = 0;
+    uint64_t helper_last_signal_ms = 0;
     uint8_t helper_state = static_cast<uint8_t>(HelperInstallStage::WaitingForGlobalState);
     uint8_t helper_failover_count = 0;
     uint16_t helper_reserved = 0;
