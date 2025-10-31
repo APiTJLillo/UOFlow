@@ -37,11 +37,6 @@ typedef LONG NTSTATUS;
 // Define the global variable that was previously only declared as extern
 volatile LONG g_needWalkReg = 0;
 
-extern "C" USHORT NTAPI RtlCaptureStackBackTrace(ULONG FramesToSkip,
-                                                 ULONG FramesToCapture,
-                                                 PVOID* BackTrace,
-                                                 PULONG BackTraceHash);
-
 namespace Net {
 
 using SendPacket_t = void(__thiscall*)(void* netMgr, const void* pkt, int len);
@@ -635,6 +630,15 @@ struct TraceResult
 };
 
 static void ResetTraceResult(TraceResult& trace);
+static bool TraceSendPacketUse(uint8_t* fn, TraceResult& trace, uint8_t slotIndex, void* vtable);
+static bool TraceSendPacketFrom(uint8_t* fn,
+                                size_t window,
+                                int depthRemaining,
+                                TraceResult& trace,
+                                uint8_t** visited,
+                                size_t& visitedCount,
+                                bool isRoot);
+static void* __fastcall Hook_SendBuilder(void* thisPtr, void* /*unused*/, void* builder);
 
 static void LogTraceHops(const TraceResult& trace, uint8_t slotLabel)
 {

@@ -459,8 +459,8 @@ private:
     }
 
     mutable std::mutex m_mutex;
-    std::unordered_map<SlotKey, CacheResult, SlotHasher, SlotEq> m_slots;
-    std::unordered_map<CodeKey, CacheResult, CodeHasher, CodeEq> m_codes;
+    mutable std::unordered_map<SlotKey, CacheResult, SlotHasher, SlotEq> m_slots;
+    mutable std::unordered_map<CodeKey, CacheResult, CodeHasher, CodeEq> m_codes;
     mutable std::atomic<std::uint32_t> m_generation{0};
 };
 
