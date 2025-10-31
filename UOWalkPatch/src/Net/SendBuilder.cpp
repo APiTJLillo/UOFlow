@@ -759,29 +759,30 @@ static bool CallsOrJumpsTo(uint8_t* p, size_t len, uintptr_t send, uintptr_t* at
     if (!p || !send || len < 5)
         return false;
 
-    uint8_t* origin = p;
     bool followedTail = false;
 
     __try {
-        for (int pass = 0; pass < 2 && p; ++pass) {
+        uint8_t* cursor = p;
+        for (int pass = 0; pass < 2 && cursor; ++pass) {
+            uint8_t* segment = cursor;
             for (size_t i = 0; i + 5 <= len; ++i) {
-                uint8_t op = p[i];
+                uint8_t op = segment[i];
                 if (op == 0xE8 || op == 0xE9) {
-                    int32_t rel = *reinterpret_cast<int32_t*>(p + i + 1);
-                    uintptr_t tgt = reinterpret_cast<uintptr_t>(p + i + 5) + rel;
+                    int32_t rel = *reinterpret_cast<int32_t*>(segment + i + 1);
+                    uintptr_t tgt = reinterpret_cast<uintptr_t>(segment + i + 5) + rel;
                     if (tgt == send) {
                         if (atOff)
-                            *atOff = reinterpret_cast<uintptr_t>(p + i) - reinterpret_cast<uintptr_t>(origin);
+                            *atOff = static_cast<uintptr_t>(i);
                         if (kind)
                             *kind = (op == 0xE8) ? "call" : "jmp";
                         return true;
                     }
-                } else if (op == 0xFF && (i + 6) <= len && p[i + 1] == 0x25) {
-                    uintptr_t mem = *reinterpret_cast<uintptr_t*>(p + i + 2);
+                } else if (op == 0xFF && (i + 6) <= len && segment[i + 1] == 0x25) {
+                    uintptr_t mem = *reinterpret_cast<uintptr_t*>(segment + i + 2);
                     uintptr_t tgt = 0;
                     if (ResolveIAT(mem, &tgt) && tgt == send) {
                         if (atOff)
-                            *atOff = reinterpret_cast<uintptr_t>(p + i) - reinterpret_cast<uintptr_t>(origin);
+                            *atOff = static_cast<uintptr_t>(i);
                         if (kind)
                             *kind = "call[IAT]";
                         return true;
@@ -789,12 +790,12 @@ static bool CallsOrJumpsTo(uint8_t* p, size_t len, uintptr_t send, uintptr_t* at
                 }
             }
 
-            if (!followedTail && len >= 5 && p[0] == 0xE9) {
-                int32_t rel = *reinterpret_cast<int32_t*>(p + 1);
-                uintptr_t dest = reinterpret_cast<uintptr_t>(p + 5) + rel;
+            if (!followedTail && len >= 5 && segment[0] == 0xE9) {
+                int32_t rel = *reinterpret_cast<int32_t*>(segment + 1);
+                uintptr_t dest = reinterpret_cast<uintptr_t>(segment + 5) + rel;
                 if (!dest || !sp::is_executable_code_ptr(reinterpret_cast<void*>(dest)))
                     break;
-                p = reinterpret_cast<uint8_t*>(dest);
+                cursor = reinterpret_cast<uint8_t*>(dest);
                 followedTail = true;
                 continue;
             }
@@ -867,6 +868,7 @@ static bool ScanEndpointVTable(void* endpoint)
     };
     CandidateEntry execCandidates[32]{};
     uint32_t execCandidateCount = 0;
+    void* slotFns[32]{};
 
     uint32_t scannedCount = 0;
     uint32_t execLikeCount = 0;
@@ -895,6 +897,8 @@ static bool ScanEndpointVTable(void* endpoint)
             }
 
             Logf("endpoint vtbl[%02X] = %p", i, fn);
+
+            slotFns[i] = fn;
 
             bool execCandidate = fn && sp::is_executable_code_ptr(fn);
             if (execCandidate)
@@ -967,16 +971,19 @@ static bool ScanEndpointVTable(void* endpoint)
     uint8_t fallbackOffset = 0;
     const char* fallbackKind = nullptr;
     if (!matchedFn && g_sendPacketTarget) {
-        for (uint32_t c = 0; c < execCandidateCount; ++c) {
+        for (int i = 0; i < 32; ++i) {
+            void* fn = slotFns[i];
+            if (!fn)
+                continue;
             uintptr_t offset = 0;
             const char* kind = nullptr;
-            if (CallsOrJumpsTo(reinterpret_cast<uint8_t*>(execCandidates[c].fn),
+            if (CallsOrJumpsTo(reinterpret_cast<uint8_t*>(fn),
                                0x400,
                                reinterpret_cast<uintptr_t>(g_sendPacketTarget),
                                &offset,
                                &kind)) {
-                matchedFn = execCandidates[c].fn;
-                matchedIndex = execCandidates[c].index;
+                matchedFn = fn;
+                matchedIndex = i;
                 fallbackMatched = true;
                 fallbackKind = kind;
                 fallbackOffset = static_cast<uint8_t>((offset > 0xFFu) ? 0xFFu : offset);

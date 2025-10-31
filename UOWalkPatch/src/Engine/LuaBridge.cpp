@@ -274,6 +274,20 @@ static void SafeRefreshLuaStateFromSlot() noexcept {
     }
 }
 
+static void* ResolveCanonicalEngineContext() noexcept {
+    void* ctx = nullptr;
+    __try {
+        const GlobalStateInfo* globalInfo = ::Engine::Info();
+        if (globalInfo && globalInfo->engineContext)
+            ctx = globalInfo->engineContext;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ctx = nullptr;
+    }
+    if (!ctx)
+        ctx = g_engineContext.load(std::memory_order_acquire);
+    return ctx;
+}
+
 static LuaStateGetCStateFn g_luaStateGetCState = nullptr;
 static LuaStateAtPanicFn g_luaStateAtPanic = nullptr;
 
@@ -5672,9 +5686,8 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
 
     if (info.ctx_reported && !IsPlausibleContextPointer(info.ctx_reported)) {
         void* attemptedCtx = info.ctx_reported;
-        void* reboundCtx = attemptedCtx;
         SafeRefreshLuaStateFromSlot();
-        reboundCtx = g_engineContext.load(std::memory_order_acquire);
+        void* reboundCtx = ResolveCanonicalEngineContext();
         if (reboundCtx && reboundCtx != attemptedCtx && IsPlausibleContextPointer(reboundCtx)) {
             DWORD newOwner = GetCurrentThreadId();
             uint64_t nowTick = GetTickCount64();
@@ -5703,6 +5716,7 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                       attemptedCtx,
                       reboundCtx,
                       static_cast<unsigned>(newOwner));
+            RequestBindForState(info, "ctx-rebind", false);
             return false;
         }
 
