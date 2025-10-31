@@ -115,6 +115,15 @@ public:
         return static_cast<std::uint32_t>(head - tail);
     }
 
+    void reset()
+    {
+        for (auto& flag : m_ready) {
+            flag.store(0, std::memory_order_relaxed);
+        }
+        m_head.store(0, std::memory_order_relaxed);
+        m_tail.store(0, std::memory_order_relaxed);
+    }
+
 private:
     std::array<SendSample, kCapacity> m_buffer{};
     std::array<std::atomic<std::uint8_t>, kCapacity> m_ready{};
@@ -328,6 +337,7 @@ struct EndpointTrust {
     std::uint32_t rva = 0;
     std::uint64_t ttlExpiryMs = 0;
     std::uint32_t gen = 0;
+    std::uint32_t acceptCount = 0;
 };
 
 class EndpointTrustCache {
@@ -356,9 +366,11 @@ public:
         if (it == m_slots.end())
             return std::nullopt;
         if (nowMs >= it->second.trust.ttlExpiryMs) {
+            m_managerIndex.erase(key.manager);
             m_slots.erase(it);
             return std::nullopt;
         }
+        m_managerIndex[key.manager] = it->second;
         return it->second;
     }
 
@@ -370,6 +382,23 @@ public:
             return std::nullopt;
         if (nowMs >= it->second.trust.ttlExpiryMs) {
             m_codes.erase(it);
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    std::optional<CacheResult> lookupByManager(void* manager, std::uint64_t nowMs) const
+    {
+        if (!manager)
+            return std::nullopt;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_managerIndex.find(manager);
+        if (it == m_managerIndex.end())
+            return std::nullopt;
+        const SlotKey key{it->second.trust.manager, it->second.trust.vtbl, it->second.trust.slot};
+        if (nowMs >= it->second.trust.ttlExpiryMs) {
+            m_managerIndex.erase(it);
+            m_slots.erase(key);
             return std::nullopt;
         }
         return it->second;
@@ -397,7 +426,12 @@ public:
         entry.accepted = accepted;
 
         std::lock_guard<std::mutex> lock(m_mutex);
+        auto existing = m_slots.find(key);
+        std::uint32_t priorAccepts = (existing != m_slots.end()) ? existing->second.trust.acceptCount : 0u;
+        entry.trust.acceptCount = accepted ? priorAccepts + 1u : priorAccepts;
         m_slots[key] = entry;
+        m_managerIndex[key.manager] = entry;
+        trimSlotsLocked();
     }
 
     void store(const CodeKey& key, bool accepted, std::uint64_t nowMs, std::uint64_t ttlMs)
@@ -410,7 +444,11 @@ public:
         entry.accepted = accepted;
 
         std::lock_guard<std::mutex> lock(m_mutex);
+        auto existing = m_codes.find(key);
+        std::uint32_t priorAccepts = (existing != m_codes.end()) ? existing->second.trust.acceptCount : 0u;
+        entry.trust.acceptCount = accepted ? priorAccepts + 1u : priorAccepts;
         m_codes[key] = entry;
+        trimCodesLocked();
     }
 
     void reset()
@@ -418,10 +456,13 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
         m_slots.clear();
         m_codes.clear();
+        m_managerIndex.clear();
         m_generation = 0;
     }
 
 private:
+    static constexpr std::size_t kMaxEntries = 2000;
+
     struct SlotHasher {
         std::size_t operator()(const SlotKey& key) const noexcept
         {
@@ -458,9 +499,39 @@ private:
         return m_generation.fetch_add(1u, std::memory_order_relaxed) + 1u;
     }
 
+    void trimSlotsLocked()
+    {
+        while (m_slots.size() > kMaxEntries) {
+            auto evict = std::min_element(m_slots.begin(),
+                                          m_slots.end(),
+                                          [](const auto& lhs, const auto& rhs) {
+                                              return lhs.second.trust.gen < rhs.second.trust.gen;
+                                          });
+            if (evict == m_slots.end())
+                break;
+            m_managerIndex.erase(evict->second.trust.manager);
+            m_slots.erase(evict);
+        }
+    }
+
+    void trimCodesLocked()
+    {
+        while (m_codes.size() > kMaxEntries) {
+            auto evict = std::min_element(m_codes.begin(),
+                                          m_codes.end(),
+                                          [](const auto& lhs, const auto& rhs) {
+                                              return lhs.second.trust.gen < rhs.second.trust.gen;
+                                          });
+            if (evict == m_codes.end())
+                break;
+            m_codes.erase(evict);
+        }
+    }
+
     mutable std::mutex m_mutex;
     mutable std::unordered_map<SlotKey, CacheResult, SlotHasher, SlotEq> m_slots;
     mutable std::unordered_map<CodeKey, CacheResult, CodeHasher, CodeEq> m_codes;
+    mutable std::unordered_map<void*, CacheResult> m_managerIndex;
     mutable std::atomic<std::uint32_t> m_generation{0};
 };
 
@@ -632,6 +703,8 @@ private:
 
 struct CandidateDescriptor {
     void* endpoint = nullptr;
+    void* manager = nullptr;
+    void* vtbl = nullptr;
     std::size_t offset = 0;
     bool trusted = false;
     bool sampleReferenced = false;
@@ -704,10 +777,29 @@ public:
         }
     }
 
+    void reset(std::uint64_t nowMs = 0)
+    {
+        const std::uint32_t nowTick = static_cast<std::uint32_t>((nowMs ? nowMs : GetTickCount()) & 0xFFFFFFFFu);
+        const std::uint64_t initial = (static_cast<std::uint64_t>(m_capacity) << 32) |
+                                      static_cast<std::uint64_t>(nowTick);
+        m_state.store(initial, std::memory_order_relaxed);
+    }
+
 private:
     const std::uint32_t m_rate;
     const std::uint32_t m_capacity;
     std::atomic<std::uint64_t> m_state;
 };
+
+namespace Sampler {
+
+bool shouldSample(std::uint64_t nowMs = 0);
+std::uint32_t enqueueFrames(void** frames, USHORT frameCount, std::uint64_t nowMs, SendSample* firstOut = nullptr);
+void drain(std::vector<SendSample>& out, std::uint32_t max = 0, std::uint32_t* ringLoadPctOut = nullptr);
+std::vector<SendSample> drain(std::uint32_t max = 0);
+std::uint32_t ringLoadPercent();
+void reset(std::uint64_t nowMs = 0);
+
+} // namespace Sampler
 
 } // namespace Net::Scanner

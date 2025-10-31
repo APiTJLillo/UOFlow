@@ -171,6 +171,7 @@ constexpr DWORD kRegisterSettleWindowMs = 250;
 constexpr DWORD kBindSummaryIntervalMs = 2000;
 constexpr DWORD kBindLogCooldownMs = 800;
 constexpr const char* kSettlePromoteReason = "settle-promote";
+constexpr uint32_t kMaxHelperRebindAttempts = 3;
 
 struct LuaTask {
     std::string name;
@@ -1331,15 +1332,17 @@ static void MaybeEmitHelperSummary(uint64_t now, bool force = false) {
     uint32_t scheduled = g_helperScheduledCount.exchange(0u, std::memory_order_acq_rel);
     uint32_t installed = g_helperInstalledCount.exchange(0u, std::memory_order_acq_rel);
     uint32_t deferred = g_helperDeferredCount.exchange(0u, std::memory_order_acq_rel);
-    if (scheduled || installed || deferred) {
-        DWORD ownerTid = g_lastHelperOwnerThread.load(std::memory_order_relaxed);
+    DWORD ownerTid = g_lastHelperOwnerThread.load(std::memory_order_relaxed);
+    DWORD canonicalOwnerTid = GetCanonicalHelperOwnerTid();
+    if (scheduled || installed || deferred || canonicalOwnerTid || force) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "helpers summary scheduled=%u installed=%u deferred=%u ownerTid=%lu",
+                  "helpers summary scheduled=%u installed=%u deferred=%u ownerTid=%lu helperOwnerTid=%lu",
                   scheduled,
                   installed,
                   deferred,
-                  static_cast<unsigned long>(ownerTid));
+                  static_cast<unsigned long>(ownerTid),
+                  static_cast<unsigned long>(canonicalOwnerTid));
     }
 }
 
@@ -4686,15 +4689,28 @@ static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::functio
     const char* name = taskName ? taskName : "<owner>";
 
     if (owner && owner == from && haveInfo) {
-        Log::Logf("[Bind] owner-inline L=%p owner=%lu task=%s", L, owner, name);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][Bind] owner-inline L=%p owner=%lu task=%s",
+                  L,
+                  owner,
+                  name);
         fn();
         return;
     }
 
     std::string taskLabel = name;
-    Log::Logf("[Bind] posted-to-owner L=%p from=%lu -> owner=%lu task=%s", L, from, owner, taskLabel.c_str());
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[CORE][Bind] posted-to-owner L=%p from=%lu -> owner=%lu task=%s",
+              L,
+              from,
+              owner,
+              taskLabel.c_str());
     PostToLuaThread(L, name, [fn = std::move(fn), taskLabel = std::move(taskLabel), owner, L](lua_State*) mutable {
-        Log::Logf("[Bind] owner-run L=%p owner=%lu runner=%lu task=%s",
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][Bind] owner-run L=%p owner=%lu runner=%lu task=%s",
                   L,
                   owner,
                   GetCurrentThreadId(),
@@ -5842,6 +5858,17 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
     auto rebindToCanonical = [&](HCTX previousCtx, const char* reason) -> bool {
         if (!canonicalValid)
             return false;
+
+        uint32_t attempts = info.helper_rebind_attempts;
+        if (attempts >= kMaxHelperRebindAttempts) {
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "[HOOKS] helpers rebind limit ctx old=0x%p attempts=%u",
+                      previousCtx,
+                      static_cast<unsigned>(attempts));
+            return false;
+        }
+
         const char* stageReason = reason ? reason : "ctx-rebind";
         uint64_t nowTick = GetTickCount64();
         g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
@@ -5856,24 +5883,30 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                 if (state.owner_ready_tick_ms == 0)
                     state.owner_ready_tick_ms = nowTick;
             }
+            if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
+                ++state.helper_rebind_attempts;
+            attempts = state.helper_rebind_attempts;
         }, &info);
         info.ctx_reported = canonicalCtx;
+        info.helper_rebind_attempts = attempts;
         if (canonicalOwner)
             info.owner_tid = canonicalOwner;
         if (canonicalOwner)
             SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "[HOOKS] helpers rebind ctx old=0x%p new=0x%p owner=%lu (pending)",
+                  "[HOOKS] helpers rebind ctx old=0x%p new=0x%p owner=%lu (pending attempt=%u)",
                   previousCtx,
                   canonicalCtx,
-                  static_cast<unsigned long>(canonicalOwner));
+                  static_cast<unsigned long>(canonicalOwner),
+                  static_cast<unsigned>(attempts));
         MarkHelperRebindPending();
         if (canonicalOwner == 0) {
             Log::Logf(Log::Level::Info,
                       Log::Category::Hooks,
-                      "helpers rebind defer ctx=%p reason=owner-unknown",
-                      canonicalCtx);
+                      "helpers rebind defer ctx=%p reason=owner-unknown attempts=%u",
+                      canonicalCtx,
+                      static_cast<unsigned>(attempts));
             return true;
         }
         PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
@@ -6175,6 +6208,9 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     bool rebindPending = !ok ? ConsumeHelperRebindPending() : false;
     if (ok) {
         ClearHelperPending(L, generation, &info);
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            state.helper_rebind_attempts = 0;
+        }, &info);
         g_helperProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
         TrackHelperEvent(g_helperInstalledCount);
         MaybeEmitHelperSummary(summaryTick, true);

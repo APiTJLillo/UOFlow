@@ -51,6 +51,17 @@ static void TestEndpointTrustCache()
     auto slotHit = cache.lookup(slotKey, 2000);
     assert(slotHit.has_value());
     assert(slotHit->accepted);
+    auto managerHit = cache.lookupByManager(slotKey.manager, 2000);
+    assert(managerHit.has_value());
+    assert(managerHit->trust.acceptCount == 1);
+
+    cache.store(slotKey, true, 3000, 60000);
+    auto slotHit2 = cache.lookup(slotKey, 4000);
+    assert(slotHit2.has_value());
+    assert(slotHit2->trust.acceptCount == 2);
+
+    const std::uint64_t expireTick = slotHit2->trust.ttlExpiryMs + 1;
+    assert(!cache.lookupByManager(slotKey.manager, expireTick).has_value());
 
     cache.store(codeKey, false, 1000, 1000);
     auto codeHit = cache.lookup(codeKey, 1500);
