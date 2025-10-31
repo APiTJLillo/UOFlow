@@ -449,6 +449,25 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     if (!manager || g_builderScanned)
         return false;
 
+    MEMORY_BASIC_INFORMATION mbiManager{};
+    bool managerValid = false;
+    if (manager) {
+        if (VirtualQuery(manager, &mbiManager, sizeof(mbiManager)) != 0 &&
+            mbiManager.State == MEM_COMMIT &&
+            !(mbiManager.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+            (mbiManager.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
+        {
+            managerValid = SafeMem::IsReadable(manager, sizeof(void*) * 2);
+        }
+    }
+    if (!managerValid) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[SB][GUARD] skipped invalid manager=%p",
+                  manager);
+        return false;
+    }
+
     if (!IsEngineStableForScanning())
         return false;
 
@@ -461,8 +480,14 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     if (manager == g_lastManagerScanPtr && (DWORD)(now - g_lastManagerScanTick) < 1000)
         return false;
 
-    if (!SafeMem::IsReadable(manager, kScanLimit + sizeof(void*)))
+    if (!SafeMem::IsReadable(manager, kScanLimit + sizeof(void*))) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[SB][GUARD] skipped invalid manager=%p window=0x%zX",
+                  manager,
+                  kScanLimit);
         return false;
+    }
 
     g_lastBuilderScanTick = now;
     g_lastManagerScanPtr = manager;
@@ -794,9 +819,16 @@ static bool TryResolveSendPacket(uint8_t* candidate, uint8_t*& resolved)
     if (!candidate)
         return false;
 
+    constexpr uintptr_t kExpectedSendPacketAddr = 0x0082FB60;
+    uint8_t* expected = reinterpret_cast<uint8_t*>(kExpectedSendPacketAddr);
+
     uint8_t* target = reinterpret_cast<uint8_t*>(g_sendPacketTarget);
     uint8_t* original = reinterpret_cast<uint8_t*>(g_sendPacket);
 
+    if (candidate == expected) {
+        resolved = expected;
+        return true;
+    }
     if (target && candidate == target) {
         resolved = target;
         return true;
@@ -808,7 +840,10 @@ static bool TryResolveSendPacket(uint8_t* candidate, uint8_t*& resolved)
 
     uint8_t* deref = nullptr;
     if (TryLoad(candidate, deref) && deref) {
-        if ((target && deref == target) || (original && deref == original)) {
+        if (deref == expected ||
+            (target && deref == target) ||
+            (original && deref == original))
+        {
             resolved = deref;
             return true;
         }
@@ -1304,16 +1339,12 @@ static bool ScanEndpointVTable(void* endpoint)
     int firstEightMisses = 0;
     int matchedIndex = -1;
     void* matchedFn = nullptr;
-    struct CandidateEntry {
-        void* fn;
-        uint8_t index;
-    };
-    CandidateEntry execCandidates[32]{};
-    uint32_t execCandidateCount = 0;
     void* slotFns[32]{};
 
     uint32_t scannedCount = 0;
     uint32_t execLikeCount = 0;
+    TraceResult trace{};
+    bool tracedMatched = false;
     __try
     {
         for (int i = 0; i < 32; ++i)
@@ -1359,11 +1390,6 @@ static bool ScanEndpointVTable(void* endpoint)
             bool execCandidate = fn && sp::is_executable_code_ptr(fn);
             if (execCandidate)
                 ++execLikeCount;
-            if (execCandidate && execCandidateCount < _countof(execCandidates)) {
-                execCandidates[execCandidateCount].fn = fn;
-                execCandidates[execCandidateCount].index = static_cast<uint8_t>(i);
-                ++execCandidateCount;
-            }
             if (i < 8)
             {
                 ++firstEightCount;
@@ -1374,12 +1400,22 @@ static bool ScanEndpointVTable(void* endpoint)
             if (!execCandidate)
                 continue;
 
-            if (!g_sendBuilderHooked && !matchedFn && FunctionCallsSendPacket(fn))
+            if (!matchedFn)
             {
-                matchedIndex = i;
-                matchedFn = fn;
-                if (i >= 7)
+                TraceResult candidate{};
+                if (TraceSendPacketUse(reinterpret_cast<uint8_t*>(fn), candidate, static_cast<uint8_t>(i), vtbl)) {
+                    matchedIndex = i;
+                    matchedFn = fn;
+                    trace = candidate;
+                    tracedMatched = true;
                     break;
+                }
+
+                if (!g_sendBuilderHooked && FunctionCallsSendPacket(fn)) {
+                    matchedIndex = i;
+                    matchedFn = fn;
+                    break;
+                }
             }
         }
     }
@@ -1423,9 +1459,7 @@ static bool ScanEndpointVTable(void* endpoint)
         return false;
     }
 
-    bool fallbackMatched = false;
-    TraceResult trace{};
-    if (!matchedFn && g_sendPacketTarget) {
+    if (!matchedFn) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
                   "[CORE][SB] fallback scan window=0x%zX depth=%d",
@@ -1440,9 +1474,17 @@ static bool ScanEndpointVTable(void* endpoint)
                 matchedFn = slotFns[i];
                 matchedIndex = i;
                 trace = candidate;
-                fallbackMatched = true;
+                tracedMatched = true;
                 break;
             }
+        }
+    }
+
+    if (!tracedMatched && matchedFn) {
+        TraceResult candidate{};
+        if (TraceSendPacketUse(reinterpret_cast<uint8_t*>(matchedFn), candidate, static_cast<uint8_t>(matchedIndex & 0xFF), vtbl)) {
+            trace = candidate;
+            tracedMatched = true;
         }
     }
 
@@ -1463,7 +1505,7 @@ static bool ScanEndpointVTable(void* endpoint)
     char chain[128] = {};
     chain[0] = '\0';
 
-    if (fallbackMatched) {
+    if (tracedMatched) {
         const unsigned slotLabel = (trace.slotIndex != 0xFF) ? trace.slotIndex : static_cast<unsigned>(matchedIndex & 0xFF);
         for (size_t hop = 0; hop < trace.hopCount; ++hop) {
             const TraceHop& hopInfo = trace.hops[hop];
@@ -1532,9 +1574,10 @@ static bool ScanEndpointVTable(void* endpoint)
                   chain[0] ? chain : "?",
                   finalTarget,
                   static_cast<unsigned>(trace.offset));
-    } else if (matchedFn && g_sendPacketTarget) {
+    } else if (matchedFn) {
         std::snprintf(chain, sizeof(chain), "direct");
-        finalTarget = reinterpret_cast<uint8_t*>(g_sendPacketTarget);
+        finalTarget = reinterpret_cast<uint8_t*>(g_sendPacketTarget ? g_sendPacketTarget : matchedFn);
+        byteTarget = matchedFn;
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
                   "[CORE][SB] matched vtbl[%02u]=%p via %s -> SendPacket@%p",
@@ -1552,22 +1595,20 @@ static bool ScanEndpointVTable(void* endpoint)
             g_builderProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
             g_sendBuilderHooked = true;
             g_sendBuilderTarget = matchedFn;
-            uint8_t bytesForLog[4] = {};
-            bool haveAttachBytes = false;
-            if (byteTarget) {
-                haveAttachBytes = SafeMem::SafeReadBytes(byteTarget, bytesForLog, sizeof(bytesForLog));
-            } else if (matchedFn) {
-                haveAttachBytes = SafeMem::SafeReadBytes(matchedFn, bytesForLog, sizeof(bytesForLog));
-            }
+            uint8_t byteSample[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
+            bool haveBytes = false;
+            const uint8_t* source = reinterpret_cast<const uint8_t*>(byteTarget ? byteTarget : matchedFn);
+            if (source)
+                haveBytes = SafeMem::SafeReadBytes(source, byteSample, sizeof(byteSample));
             Log::Logf(Log::Level::Info,
                       Log::Category::Core,
                       "[CORE][SB] attaching vtbl[%02u]=%p bytes=%02X %02X %02X %02X",
                       static_cast<unsigned>(matchedIndex & 0xFF),
                       matchedFn,
-                      haveAttachBytes ? bytesForLog[0] : 0xFF,
-                      haveAttachBytes ? bytesForLog[1] : 0xFF,
-                      haveAttachBytes ? bytesForLog[2] : 0xFF,
-                      haveAttachBytes ? bytesForLog[3] : 0xFF);
+                      haveBytes ? byteSample[0] : 0xFF,
+                      haveBytes ? byteSample[1] : 0xFF,
+                      haveBytes ? byteSample[2] : 0xFF,
+                      haveBytes ? byteSample[3] : 0xFF);
             Core::StartupSummary::NotifySendBuilderReady();
             return true;
         }
@@ -2924,4 +2965,3 @@ bool IsSendBuilderAttached()
 
 
 } // namespace Net
-

@@ -4722,10 +4722,14 @@ static void PostBindToOwnerThread(lua_State* L,
     if (ownerTid == 0)
         return;
 
-    if (ownerTid != 0 && ownerTid == GetCurrentThreadId())
-        return;
-
     std::string reasonCopy = reason ? reason : "ctx-rebind";
+    if (ownerTid == GetCurrentThreadId()) {
+        PostToLuaThread(nullptr, "helpers", [L, generation, force, reasonCopy](lua_State*) {
+            BindHelpersTask(L, generation, force, reasonCopy.c_str());
+        });
+        return;
+    }
+
     PostToOwnerWithTask(L, "helpers", [L, generation, force, reasonCopy]() {
         BindHelpersTask(L, generation, force, reasonCopy.c_str());
     });
@@ -5882,19 +5886,16 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                   previousCtx,
                   canonicalCtx,
                   static_cast<unsigned>(canonicalOwner));
+        MarkHelperRebindPending();
         if (canonicalOwner == 0) {
             Log::Logf(Log::Level::Info,
                       Log::Category::Hooks,
                       "helpers rebind defer ctx=%p reason=owner-unknown",
                       canonicalCtx);
-            MarkHelperRebindPending();
             return false;
         }
-        if (canonicalOwner != GetCurrentThreadId()) {
-            MarkHelperRebindPending();
-            PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
-            return false;
-        }
+        PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
+        return false;
     }
 
     if (info.ctx_reported && !IsValidCtx(info.ctx_reported)) {
@@ -5929,19 +5930,16 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                       attemptedCtx,
                       canonicalCtx,
                       static_cast<unsigned>(canonicalOwner));
+            MarkHelperRebindPending();
             if (canonicalOwner == 0) {
                 Log::Logf(Log::Level::Info,
                           Log::Category::Hooks,
                           "helpers rebind defer ctx=%p reason=owner-unknown",
                           canonicalCtx);
-                MarkHelperRebindPending();
                 return false;
             }
-            if (canonicalOwner != GetCurrentThreadId()) {
-                MarkHelperRebindPending();
-                PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
-                return false;
-            }
+            PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
+            return false;
         }
 
         if (!IsValidCtx(info.ctx_reported)) {
