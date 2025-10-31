@@ -7174,7 +7174,30 @@ void OnGlobalStateValidated(const GlobalStateInfo* info, std::uint32_t cookie) {
         DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
         LuaStateInfo snapshot{};
         if (g_stateRegistry.GetByPointer(canonical, snapshot)) {
-            if (scriptTid) {
+            DWORD canonicalOwner = GetCanonicalHelperOwnerTid();
+            bool ownerAssigned = false;
+            if (canonicalOwner) {
+                g_stateRegistry.UpdateByPointer(canonical, [&](LuaStateInfo& state) {
+                    if (state.owner_tid != canonicalOwner) {
+                        state.owner_tid = canonicalOwner;
+                        state.last_tid = canonicalOwner;
+                    }
+                    if ((state.flags & STATE_FLAG_OWNER_READY) == 0 || state.owner_ready_tick_ms == 0)
+                        state.owner_ready_tick_ms = now;
+                    state.flags |= (STATE_FLAG_OWNER_READY | STATE_FLAG_CANON_READY);
+                    if (info->engineContext && state.ctx_reported != info->engineContext)
+                        state.ctx_reported = info->engineContext;
+                }, &snapshot);
+                snapshot.owner_tid = canonicalOwner;
+                snapshot.last_tid = canonicalOwner;
+                if ((snapshot.flags & STATE_FLAG_OWNER_READY) == 0 || snapshot.owner_ready_tick_ms == 0)
+                    snapshot.owner_ready_tick_ms = now;
+                snapshot.flags |= (STATE_FLAG_OWNER_READY | STATE_FLAG_CANON_READY);
+                if (info->engineContext && snapshot.ctx_reported != info->engineContext)
+                    snapshot.ctx_reported = info->engineContext;
+                ownerAssigned = true;
+            }
+            if (!ownerAssigned && scriptTid) {
                 g_stateRegistry.UpdateByPointer(canonical, [&](LuaStateInfo& state) {
                     if (state.owner_tid == 0) {
                         state.owner_tid = scriptTid;
@@ -7182,11 +7205,11 @@ void OnGlobalStateValidated(const GlobalStateInfo* info, std::uint32_t cookie) {
                         state.owner_ready_tick_ms = now;
                     }
                 }, &snapshot);
-            }
-            if (snapshot.owner_tid == 0 && scriptTid) {
-                snapshot.owner_tid = scriptTid;
-                snapshot.flags |= STATE_FLAG_OWNER_READY;
-                snapshot.owner_ready_tick_ms = now;
+                if (snapshot.owner_tid == 0) {
+                    snapshot.owner_tid = scriptTid;
+                    snapshot.flags |= STATE_FLAG_OWNER_READY;
+                    snapshot.owner_ready_tick_ms = now;
+                }
             }
             RequestBindForState(snapshot, "global-ready", false);
         }

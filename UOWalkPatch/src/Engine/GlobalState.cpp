@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include "Core/CoreFlags.hpp"
 #include "Core/Logging.hpp"
 #include "Core/PatternScan.hpp"
@@ -27,6 +28,9 @@ static GlobalStateInfo* g_lastValidatedInfo = nullptr;
 static std::atomic<std::uint32_t> g_globalStateCookie{0};
 static BYTE* g_guardPageBase = nullptr;
 static SIZE_T g_guardPageSize = 0;
+static HANDLE g_pollThread = nullptr;
+static volatile LONG g_stopPoll = 0;
+static std::atomic<bool> g_pollThreadStarted{false};
 
 namespace Lua {
     void OnGlobalStateValidated(const GlobalStateInfo* info, std::uint32_t cookie);
@@ -37,9 +41,12 @@ static void* FindGlobalStateInfo();
 static void* FindOwnerOfLuaState(void* lua);
 static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate);
 static void InstallWriteWatch();
+static void StartGlobalStatePoll();
 static DWORD WINAPI WaitForLua(LPVOID);
 static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x);
 static GlobalStateInfo* ReadSlotUnsafe();
+static DWORD WINAPI PollGlobalStateSlot(LPVOID);
+static bool HelpersAwaitingGlobalState();
 
 void* FindRegisterLuaFunction() {
     HMODULE hExe = GetModuleHandleA(nullptr);
@@ -493,7 +500,8 @@ static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x) {
 static void InstallWriteWatch() {
     if (!g_globalStateSlot) return;
 
-    if (InterlockedExchange(&g_once, 1) == 0) {
+    bool firstInstall = (InterlockedExchange(&g_once, 1) == 0);
+    if (firstInstall) {
         char buffer[128];
         sprintf_s(buffer, sizeof(buffer), "Installing write watch on slot %p", g_globalStateSlot);
         WriteRawLog(buffer);
@@ -515,6 +523,8 @@ static void InstallWriteWatch() {
             WriteRawLog(buffer);
         }
     }
+
+    StartGlobalStatePoll();
 }
 
 static GlobalStateInfo* ReadSlotUnsafe()
@@ -530,6 +540,73 @@ static GlobalStateInfo* ReadSlotUnsafe()
         value = nullptr;
     }
     return value;
+}
+
+static bool HelpersAwaitingGlobalState()
+{
+    const char* stage = Engine::Lua::GetHelperStageSummary();
+    if (!stage)
+        return true;
+    return std::strcmp(stage, "waiting_for_global_state") == 0;
+}
+
+static DWORD WINAPI PollGlobalStateSlot(LPVOID)
+{
+    constexpr DWORD kInitialDelayMs = 150;
+    constexpr DWORD kPollIntervalMs = 500;
+    constexpr DWORD kMaxAttempts = 10;
+
+    Sleep(kInitialDelayMs);
+
+    for (DWORD attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        if (InterlockedCompareExchange(&g_stopPoll, 0, 0) != 0)
+            break;
+        if (g_globalStateInfo && g_luaStateCaptured)
+            break;
+        if (!HelpersAwaitingGlobalState())
+            break;
+
+        GlobalStateInfo* slotVal = ReadSlotUnsafe();
+        if (slotVal) {
+            GlobalStateInfo* validated = ValidateGlobalState(slotVal);
+            if (validated && validated == g_globalStateInfo &&
+                g_globalStateInfo && g_globalStateInfo->luaState && g_globalStateInfo->databaseManager) {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[CORE] GlobalState polled OK @ %p",
+                          validated);
+                InterlockedExchange(&g_stopPoll, 1);
+                break;
+            }
+        }
+
+        if (attempt + 1 < kMaxAttempts)
+            Sleep(kPollIntervalMs);
+    }
+
+    g_pollThreadStarted.store(false, std::memory_order_release);
+    InterlockedExchange(&g_stopPoll, 1);
+    return 0;
+}
+
+static void StartGlobalStatePoll()
+{
+    if (!g_globalStateSlot)
+        return;
+
+    bool expected = false;
+    if (!g_pollThreadStarted.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return;
+
+    InterlockedExchange(&g_stopPoll, 0);
+    HANDLE thread = CreateThread(nullptr, 0, PollGlobalStateSlot, nullptr, 0, nullptr);
+    if (!thread) {
+        g_pollThreadStarted.store(false, std::memory_order_release);
+        WriteRawLog("Failed to create GlobalState poll thread");
+        g_pollThread = nullptr;
+        return;
+    }
+    g_pollThread = thread;
 }
 
 static DWORD WINAPI WaitForLua(LPVOID) {
@@ -570,6 +647,8 @@ static DWORD WINAPI WaitForLua(LPVOID) {
 bool InitGlobalStateWatch() {
     g_stopScan = 0;
     g_luaStateCaptured = false;
+    InterlockedExchange(&g_stopPoll, 0);
+    g_pollThreadStarted.store(false, std::memory_order_release);
     g_scanThread = CreateThread(nullptr, 0, WaitForLua, nullptr, 0, nullptr);
     if (!g_scanThread) {
         WriteRawLog("Failed to create scanner thread");
@@ -580,6 +659,7 @@ bool InitGlobalStateWatch() {
 
 void ShutdownGlobalStateWatch() {
     g_stopScan = 1;
+    InterlockedExchange(&g_stopPoll, 1);
     if (g_scanThread) {
         WaitForSingleObject(g_scanThread, 1000);
         CloseHandle(g_scanThread);
@@ -589,6 +669,12 @@ void ShutdownGlobalStateWatch() {
         RemoveVectoredExceptionHandler(g_vehHandle);
         g_vehHandle = nullptr;
     }
+    if (g_pollThread) {
+        WaitForSingleObject(g_pollThread, 1000);
+        CloseHandle(g_pollThread);
+        g_pollThread = nullptr;
+    }
+    g_pollThreadStarted.store(false, std::memory_order_release);
     g_guardPageBase = nullptr;
     g_guardPageSize = 0;
 }
