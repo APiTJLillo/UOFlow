@@ -153,6 +153,8 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 
 namespace {
 
+using HCTX = void*;
+
 using ClientRegisterFn = int(__stdcall*)(void*, void*, const char*);
 using LuaStateGetCStateFn = lua_State* (__thiscall*)(void*);
 using LuaStateAtPanicFn = lua_CFunction(__thiscall*)(void*, lua_CFunction);
@@ -258,14 +260,60 @@ static std::thread g_helperPumpThread;
 
 struct HelpersRuntimeState {
     std::atomic<uint64_t> settle_start_ms{0};
+    std::atomic<HCTX> canonical_ctx{nullptr};
+    std::atomic<DWORD> owner_tid{0};
+    std::atomic<bool> rebind_pending{false};
+
+    void SetCanonicalCtx(HCTX ctx, DWORD owner) noexcept {
+        canonical_ctx.store(ctx, std::memory_order_release);
+        owner_tid.store(owner, std::memory_order_release);
+    }
+
+    HCTX GetCanonicalCtx() const noexcept {
+        return canonical_ctx.load(std::memory_order_acquire);
+    }
+
+    DWORD GetOwnerTid() const noexcept {
+        return owner_tid.load(std::memory_order_acquire);
+    }
+
+    void MarkRebindPending() noexcept {
+        rebind_pending.store(true, std::memory_order_release);
+    }
+
+    bool ConsumeRebindPending() noexcept {
+        return rebind_pending.exchange(false, std::memory_order_acq_rel);
+    }
 };
 
 static HelpersRuntimeState g_helpers{};
+
+static void SetCanonicalHelperCtx(HCTX ctx, DWORD ownerTid) noexcept {
+    g_helpers.SetCanonicalCtx(ctx, ownerTid);
+}
+
+static HCTX GetCanonicalHelperCtx() noexcept {
+    return g_helpers.GetCanonicalCtx();
+}
+
+static DWORD GetCanonicalHelperOwnerTid() noexcept {
+    return g_helpers.GetOwnerTid();
+}
+
+static void MarkHelperRebindPending() noexcept {
+    g_helpers.MarkRebindPending();
+}
+
+static bool ConsumeHelperRebindPending() noexcept {
+    return g_helpers.ConsumeRebindPending();
+}
 
 static void StartHelperPumpThread();
 static void StopHelperPumpThread();
 static void MaybePumpLuaQueueFromScriptThread(const char* reason);
 static bool IsPlausibleContextPointer(const void* ctx);
+static bool IsValidCtx(HCTX ctx);
+static void ScheduleBindOnOwnerThread(lua_State* L, DWORD ownerTid, uint64_t generation, bool force, const char* reason);
 
 static void SafeRefreshLuaStateFromSlot() noexcept {
     __try {
@@ -275,8 +323,16 @@ static void SafeRefreshLuaStateFromSlot() noexcept {
     }
 }
 
+static bool IsValidCtx(HCTX ctx) {
+    return ctx && IsPlausibleContextPointer(ctx);
+}
+
 static void* ResolveCanonicalEngineContext() noexcept {
-    void* ctx = nullptr;
+    void* ctx = GetCanonicalHelperCtx();
+    if (IsValidCtx(ctx))
+        return ctx;
+
+    ctx = nullptr;
     __try {
         const GlobalStateInfo* globalInfo = ::Engine::Info();
         if (globalInfo && globalInfo->engineContext)
@@ -4577,6 +4633,26 @@ static void PostToOwner(lua_State* L, std::function<void()> fn) {
     PostToOwnerWithTask(L, "<owner>", std::move(fn));
 }
 
+static void ScheduleBindOnOwnerThread(lua_State* L,
+                                      DWORD ownerTid,
+                                      uint64_t generation,
+                                      bool force,
+                                      const char* reason) {
+    if (!L)
+        return;
+
+    if (ownerTid == 0)
+        ownerTid = GetCanonicalHelperOwnerTid();
+
+    if (ownerTid != 0 && ownerTid == GetCurrentThreadId())
+        return;
+
+    std::string reasonCopy = reason ? reason : "ctx-rebind";
+    PostToOwnerWithTask(L, "helpers", [L, generation, force, reasonCopy]() {
+        BindHelpersTask(L, generation, force, reasonCopy.c_str());
+    });
+}
+
 static void MaybeRunMaintenance() {
     uint64_t now = GetTickCount64();
     uint64_t last = g_lastMaintenanceTick.load(std::memory_order_relaxed);
@@ -5698,42 +5774,46 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
         return false;
     }
 
-    if (info.ctx_reported && !IsPlausibleContextPointer(info.ctx_reported)) {
-        void* attemptedCtx = info.ctx_reported;
+    if (info.ctx_reported && !IsValidCtx(info.ctx_reported)) {
+        HCTX attemptedCtx = info.ctx_reported;
         SafeRefreshLuaStateFromSlot();
-        void* reboundCtx = ResolveCanonicalEngineContext();
-        bool rebound = reboundCtx && reboundCtx != attemptedCtx && IsPlausibleContextPointer(reboundCtx);
+        HCTX canonicalCtx = ResolveCanonicalEngineContext();
+        bool rebound = IsValidCtx(canonicalCtx) && canonicalCtx != attemptedCtx;
         if (rebound) {
-            DWORD newOwner = GetCurrentThreadId();
+            DWORD canonicalOwner = GetCanonicalHelperOwnerTid();
+            if (canonicalOwner == 0)
+                canonicalOwner = GetCurrentThreadId();
             uint64_t nowTick = GetTickCount64();
-            const HelperRetryPolicy& retry = GetHelperRetryPolicy();
-            const void* jitterToken = L ? L : info.L_reported;
+            SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
             g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-                state.ctx_reported = reboundCtx;
-                state.owner_tid = newOwner;
-                state.last_tid = newOwner;
-                state.flags |= STATE_FLAG_OWNER_READY;
-                if (state.owner_ready_tick_ms == 0)
-                    state.owner_ready_tick_ms = nowTick;
+                state.ctx_reported = canonicalCtx;
+                if (canonicalOwner) {
+                    state.owner_tid = canonicalOwner;
+                    state.last_tid = canonicalOwner;
+                    state.flags |= STATE_FLAG_OWNER_READY;
+                    if (state.owner_ready_tick_ms == 0)
+                        state.owner_ready_tick_ms = nowTick;
+                }
                 state.helper_passive_since_ms = 0;
-                uint64_t delayMs = HelperRetryDelay(retry, state.helper_retry_count);
-                if (delayMs == 0)
-                    delayMs = retry.debounceMs;
-                delayMs += HelperJitterMs(retry, jitterToken, nowTick);
-                state.helper_next_retry_ms = nowTick + delayMs;
-                UpdateHelperStage(state, HelperInstallStage::ReadyToInstall, nowTick, "ctx-rebind");
+                UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, "ctx-rebind");
             }, &info);
-            info.ctx_reported = reboundCtx;
-            info.owner_tid = newOwner;
+            info.ctx_reported = canonicalCtx;
+            if (canonicalOwner)
+                info.owner_tid = canonicalOwner;
             Log::Logf(Log::Level::Info,
                       Log::Category::Hooks,
-                      "helpers rebind ctx  old=%p  new=%p  owner=%u",
+                      "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u",
                       attemptedCtx,
-                      reboundCtx,
-                      static_cast<unsigned>(newOwner));
+                      canonicalCtx,
+                      static_cast<unsigned>(canonicalOwner));
+            if (canonicalOwner && canonicalOwner != GetCurrentThreadId()) {
+                MarkHelperRebindPending();
+                ScheduleBindOnOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
+                return false;
+            }
         }
 
-        if (info.ctx_reported && !IsPlausibleContextPointer(info.ctx_reported)) {
+        if (!IsValidCtx(info.ctx_reported)) {
             Log::Logf(Log::Level::Warn,
                       Log::Category::Hooks,
                       "helpers bind abort L=%p reason=ctx-invalid ctx=%p",
@@ -5967,11 +6047,14 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     ReleaseBindingSlot(L);
     ClearHelperPending(L, generation, &info);
     uint64_t summaryTick = GetTickCount64();
+    bool rebindPending = !ok ? ConsumeHelperRebindPending() : false;
     if (ok) {
         g_helperProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
         TrackHelperEvent(g_helperInstalledCount);
         MaybeEmitHelperSummary(summaryTick, true);
     } else {
+        if (rebindPending)
+            return;
         TrackHelperEvent(g_helperDeferredCount);
         const HelperRetryPolicy& retry = GetHelperRetryPolicy();
         g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
@@ -7068,6 +7151,7 @@ void UpdateEngineContext(void* context) {
     NoteContextMutation();
     void* previous = g_loggedEngineContext.exchange(context, std::memory_order_acq_rel);
     if (context && context != previous) {
+        SetCanonicalHelperCtx(context, GetCurrentThreadId());
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
                   "engine context discovered ctx=%p thread=%lu",
