@@ -5924,6 +5924,25 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
 
     Log::Logf(Log::Level::Info,
               Log::Category::Hooks,
+              "[HOOKS] helpers owner-run ctx=%p canonical=%p owner=%lu canonicalOwner=%lu thread=%lu",
+              info.ctx_reported,
+              canonicalCtx,
+              static_cast<unsigned long>(info.owner_tid),
+              static_cast<unsigned long>(canonicalOwner),
+              static_cast<unsigned long>(GetCurrentThreadId()));
+
+    if (canonicalOwner && canonicalOwner != GetCurrentThreadId()) {
+        if (rebindToCanonical(info.ctx_reported, "owner-mismatch"))
+            return false;
+    }
+
+    if (canonicalValid && info.ctx_reported != canonicalCtx) {
+        if (rebindToCanonical(info.ctx_reported, "ctx-mismatch"))
+            return false;
+    }
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Hooks,
               "helpers bind begin L=%p owner=%lu gen=%llu thread=%lu flags=0x%08X retries=%u",
               L,
               static_cast<unsigned long>(info.owner_tid),
@@ -5939,11 +5958,6 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                   L,
                   reinterpret_cast<void*>(g_clientRegister));
         return false;
-    }
-
-    if (canonicalValid && info.ctx_reported != canonicalCtx) {
-        if (rebindToCanonical(info.ctx_reported, "ctx-mismatch"))
-            return false;
     }
 
     if (info.ctx_reported && !IsValidCtx(info.ctx_reported)) {

@@ -189,10 +189,17 @@ struct ModuleInfo {
     std::uintptr_t end = 0;
     std::uintptr_t textBegin = 0;
     std::uintptr_t textEnd = 0;
+    std::uintptr_t rdataBegin = 0;
+    std::uintptr_t rdataEnd = 0;
 
     [[nodiscard]] bool containsText(std::uintptr_t addr) const noexcept
     {
         return textBegin != 0 && textEnd > textBegin && addr >= textBegin && addr < textEnd;
+    }
+
+    [[nodiscard]] bool containsRdata(std::uintptr_t addr) const noexcept
+    {
+        return rdataBegin != 0 && rdataEnd > rdataBegin && addr >= rdataBegin && addr < rdataEnd;
     }
 };
 
@@ -280,15 +287,27 @@ public:
 
             const IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION(nt);
             for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
-                if (!(section->Characteristics & IMAGE_SCN_MEM_EXECUTE))
-                    continue;
-                std::uint32_t size = section->Misc.VirtualSize ? section->Misc.VirtualSize : section->SizeOfRawData;
+                std::uint32_t virtSize = section->Misc.VirtualSize;
+                std::uint32_t rawSize = section->SizeOfRawData;
+                std::uint32_t size = virtSize > rawSize ? virtSize : rawSize;
                 if (size == 0)
                     continue;
                 std::uintptr_t begin = info.base + section->VirtualAddress;
                 std::uintptr_t end = begin + size;
                 if (end <= begin)
                     continue;
+
+                if (section->Name[0] == '.' &&
+                    section->Name[1] == 'r' &&
+                    section->Name[2] == 'd' &&
+                    section->Name[3] == 'a') {
+                    info.rdataBegin = begin;
+                    info.rdataEnd = end;
+                }
+
+                if ((section->Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0)
+                    continue;
+
                 if (section->Name[0] == '.' && section->Name[1] == 't' && section->Name[2] == 'e') {
                     info.textBegin = begin;
                     info.textEnd = end;

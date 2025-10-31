@@ -123,6 +123,7 @@ static std::mutex g_endpointBackoffMutex;
 struct GuardLogState {
     DWORD lastLogTick = 0;
     uint32_t suppressed = 0;
+    std::uint64_t lastWarnPass = 0;
 };
 
 static std::unordered_map<void*, GuardLogState> g_managerGuardLog;
@@ -239,6 +240,22 @@ static bool TickHasElapsed(DWORD now, DWORD target)
     return static_cast<int32_t>(now - target) >= 0;
 }
 
+static bool LooksLikeAsciiDword(uintptr_t value)
+{
+    std::uint32_t lower = static_cast<std::uint32_t>(value & 0xFFFFFFFFu);
+    unsigned printable = 0;
+    for (int i = 0; i < 4; ++i) {
+        std::uint8_t ch = static_cast<std::uint8_t>(lower & 0xFFu);
+        lower >>= 8;
+        if (ch == 0)
+            continue;
+        if (ch < 0x20 || ch > 0x7Eu)
+            return false;
+        ++printable;
+    }
+    return printable >= 3;
+}
+
 static void EnsureSectionRanges()
 {
     std::call_once(g_sectionRangeOnce, []() {
@@ -257,14 +274,42 @@ static void EnsureSectionRanges()
             memcpy(name, section->Name, sizeof(section->Name));
             name[8] = '\0';
             uintptr_t base = reinterpret_cast<uintptr_t>(module) + section->VirtualAddress;
-            uintptr_t end = base + section->Misc.VirtualSize;
+            DWORD virtSize = section->Misc.VirtualSize;
+            DWORD rawSize = section->SizeOfRawData;
+            DWORD size = virtSize > rawSize ? virtSize : rawSize;
+            if (size == 0)
+                continue;
+            uintptr_t end = base + size;
             SectionRange range{base, end};
             if (strncmp(name, ".data", 8) == 0)
                 g_dataSection = range;
             else if (strncmp(name, ".rdata", 8) == 0)
                 g_rdataSection = range;
         }
+        uintptr_t canonical = static_cast<uintptr_t>(kCanonicalManagerVtbl);
+        if (canonical != 0 && !g_rdataSection.Contains(canonical)) {
+            if (const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable()) {
+                if (primary->containsRdata(canonical)) {
+                    g_rdataSection.begin = primary->rdataBegin;
+                    g_rdataSection.end = primary->rdataEnd;
+                } else if (primary->containsText(canonical)) {
+                    g_rdataSection.begin = primary->textBegin;
+                    g_rdataSection.end = primary->textEnd;
+                }
+            }
+            if (!g_rdataSection.Contains(canonical)) {
+                uintptr_t page = canonical & ~static_cast<uintptr_t>(0xFFFu);
+                g_rdataSection.begin = page;
+                g_rdataSection.end = page + 0x1000;
+            }
+        }
     });
+}
+
+static bool IsInModuleRdata(uintptr_t addr)
+{
+    const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
+    return primary && primary->containsRdata(addr);
 }
 
 static bool IsInManagerRegion(uintptr_t addr)
@@ -294,6 +339,8 @@ static void LogGuardInvalidManager(void* manager)
     DWORD now = GetTickCount();
     uint32_t suppressed = 0;
     bool shouldLog = false;
+    bool alreadyWarnedThisPass = false;
+    const std::uint64_t warnPass = g_guardWarnPass.load(std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(g_managerGuardLogMutex);
         GuardLogState& state = g_managerGuardLog[manager];
@@ -306,17 +353,29 @@ static void LogGuardInvalidManager(void* manager)
         } else {
             ++state.suppressed;
         }
+        if (shouldLog && warnPass != 0)
+            alreadyWarnedThisPass = (state.lastWarnPass == warnPass);
     }
 
     if (!shouldLog)
         return;
 
     Log::Level level = Log::Level::Warn;
-    uint32_t budget = g_guardWarnBudget.load(std::memory_order_relaxed);
-    if (budget > 0) {
-        g_guardWarnBudget.fetch_sub(1, std::memory_order_relaxed);
-    } else {
+    if (alreadyWarnedThisPass) {
         level = Log::Level::Debug;
+    } else {
+        uint32_t budget = g_guardWarnBudget.load(std::memory_order_relaxed);
+        if (budget > 0) {
+            g_guardWarnBudget.fetch_sub(1, std::memory_order_relaxed);
+        } else {
+            level = Log::Level::Debug;
+        }
+    }
+
+    if (level == Log::Level::Warn && warnPass != 0) {
+        std::lock_guard<std::mutex> lock(g_managerGuardLogMutex);
+        GuardLogState& state = g_managerGuardLog[manager];
+        state.lastWarnPass = warnPass;
     }
 
     if (suppressed > 0) {
@@ -427,10 +486,11 @@ static bool ValidateManagerPointer(void* manager, void** outVtbl)
         return false;
 
     uintptr_t vtblAddr = reinterpret_cast<uintptr_t>(vtbl);
-    if (!IsInImageSection(g_rdataSection, vtblAddr) && !IsInImageSection(g_dataSection, vtblAddr)) {
-        if (vtblAddr != kCanonicalManagerVtbl)
-            return false;
-    }
+    bool inKnownRegion = IsInImageSection(g_rdataSection, vtblAddr) ||
+                         IsInImageSection(g_dataSection, vtblAddr) ||
+                         IsInModuleRdata(vtblAddr);
+    if (!inKnownRegion && vtblAddr != kCanonicalManagerVtbl)
+        return false;
 
     if (outVtbl)
         *outVtbl = vtbl;
@@ -675,7 +735,7 @@ static void LogTraceHops(const TraceResult& trace, uint8_t slotLabel)
             if (hopInfo.slot && hopInfo.slotValue) {
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
-                          "[SB] hop vtbl[%02X] @%p: %s -> [%08lX]=%p",
+                          "[CORE][SB] hop vtbl[%02X] @%p: %s -> [%08lX]=%p",
                           slotLabel,
                           hopInfo.from,
                           pattern,
@@ -684,7 +744,7 @@ static void LogTraceHops(const TraceResult& trace, uint8_t slotLabel)
             } else {
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
-                          "[SB] hop vtbl[%02X] @%p: %s -> %p",
+                          "[CORE][SB] hop vtbl[%02X] @%p: %s -> %p",
                           slotLabel,
                           hopInfo.from,
                           pattern,
@@ -694,7 +754,7 @@ static void LogTraceHops(const TraceResult& trace, uint8_t slotLabel)
             if (hopInfo.slot && hopInfo.slotValue) {
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
-                          "[SB] hop @%p: %s -> [%08lX]=%p",
+                          "[CORE][SB] hop @%p: %s -> [%08lX]=%p",
                           hopInfo.from,
                           pattern,
                           static_cast<unsigned long>(reinterpret_cast<uintptr_t>(hopInfo.slot)),
@@ -702,7 +762,7 @@ static void LogTraceHops(const TraceResult& trace, uint8_t slotLabel)
             } else {
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
-                          "[SB] hop @%p: %s -> %p",
+                          "[CORE][SB] hop @%p: %s -> %p",
                           hopInfo.from,
                           pattern,
                           hopInfo.to);
@@ -2530,6 +2590,9 @@ static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* out
     TraceResult trace{};
     ResetTraceResult(trace);
     bool tracedMatched = false;
+    bool asciiReject = false;
+    std::uint32_t asciiValue = 0;
+    int asciiSlot = -1;
     __try
     {
         for (int i = 0; i < 32; ++i)
@@ -2582,6 +2645,21 @@ static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* out
                     ++firstEightMisses;
             }
 
+            if (!execCandidate && fn) {
+                uintptr_t candidate = reinterpret_cast<uintptr_t>(fn);
+                bool inModule = false;
+                if (const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable()) {
+                    inModule = (candidate >= primary->base && candidate < primary->end) ||
+                               primary->containsRdata(candidate);
+                }
+                if (!inModule && LooksLikeAsciiDword(candidate)) {
+                    asciiReject = true;
+                    asciiValue = static_cast<std::uint32_t>(candidate & 0xFFFFFFFFu);
+                    asciiSlot = i;
+                    break;
+                }
+            }
+
             if (!execCandidate)
                 continue;
 
@@ -2613,6 +2691,17 @@ static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* out
                   endpoint,
                   vtbl);
         WriteRawLog(msg);
+        g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
+        return false;
+    }
+
+    if (asciiReject) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] ascii vtbl endpoint=%p slot=%02d value=0x%08X",
+                  endpoint,
+                  asciiSlot,
+                  asciiValue);
         g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         return false;
     }
