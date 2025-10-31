@@ -445,8 +445,11 @@ static std::unordered_map<int, WaypointFacetLogState> g_waypointFacetLogState;
 static constexpr uint64_t kWaypointFacetDebounceMs = 1500;
 
 static thread_local bool g_pumpingLuaQueueFromScript = false;
+static std::atomic<bool> g_queueNeedsPump{false};
 
 static void MaybePumpLuaQueueFromScriptThread(const char* /*reason*/) {
+    if (!g_queueNeedsPump.load(std::memory_order_acquire))
+        return;
     DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
     DWORD current = GetCurrentThreadId();
     if (scriptTid == 0 || scriptTid != current)
@@ -1066,6 +1069,28 @@ static DWORD MapGuardFailureToStatus(Engine::Lua::LuaGuardFailure reason) noexce
         return kLuaStatusImplausibleTop;
     default:
         return kLuaStatusGuardSeh;
+    }
+}
+
+static const char* DescribeGuardFailure(Engine::Lua::LuaGuardFailure reason) noexcept {
+    using Engine::Lua::LuaGuardFailure;
+    switch (reason) {
+    case LuaGuardFailure::None:
+        return "none";
+    case LuaGuardFailure::CanonMismatch:
+        return "canon_mismatch";
+    case LuaGuardFailure::GenerationMismatch:
+        return "generation_mismatch";
+    case LuaGuardFailure::OwnerMismatch:
+        return "owner_mismatch";
+    case LuaGuardFailure::ReadCheckFailed:
+        return "read_check_failed";
+    case LuaGuardFailure::Seh:
+        return "seh";
+    case LuaGuardFailure::ImplausibleTop:
+        return "implausible_top";
+    default:
+        return "unknown";
     }
 }
 
@@ -4112,6 +4137,7 @@ static void ProcessPendingLuaTasks(lua_State* L) {
         }
     }
     if (queuedCount == 0) {
+        g_queueNeedsPump.store(false, std::memory_order_release);
         Log::Logf(Log::Level::Info,
                   Log::Category::LuaGuard,
                   "[LUA][HB] tid=%lu queued=0 processed=0",
@@ -4163,6 +4189,8 @@ static void ProcessPendingLuaTasks(lua_State* L) {
               static_cast<unsigned long>(tid),
               queuedAfter,
               processedCount);
+    if (queuedAfter == 0)
+        g_queueNeedsPump.store(false, std::memory_order_release);
     Core::StartupSummary::NotifyLuaHeartbeat();
 }
 
@@ -4172,6 +4200,7 @@ static void PostToLuaThread(lua_State* L, const char* name, std::function<void(l
         std::lock_guard<std::mutex> lock(g_taskMutex);
         g_taskQueue.push_back(LuaTask{ name ? name : "<lambda>", L, std::move(fn) });
     }
+    g_queueNeedsPump.store(true, std::memory_order_release);
     LogLuaQ("post fn=%s L=%p from=tid=%lu", name ? name : "<lambda>", L, fromTid);
 
     DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
@@ -5054,6 +5083,29 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
     return registered;
 }
 
+static void HandleProbeFailure(lua_State* L, LuaStateInfo& info, Engine::Lua::LuaGuardFailure reason) {
+    const HelperRetryPolicy& retry = GetHelperRetryPolicy();
+    const uint64_t now = GetTickCount64();
+
+    g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+        if (reason == Engine::Lua::LuaGuardFailure::OwnerMismatch) {
+            state.flags &= ~STATE_FLAG_OWNER_READY;
+            state.owner_tid = 0;
+            uint64_t deadline = retry.ownerConfirmMs ? (now + retry.ownerConfirmMs) : now;
+            state.helper_owner_deadline_ms = deadline;
+            UpdateHelperStage(state, HelperInstallStage::WaitingForOwnerThread, now, "probe-owner-mismatch");
+        } else {
+            state.flags &= ~(STATE_FLAG_VALID | STATE_FLAG_CANON_READY);
+            if (reason == Engine::Lua::LuaGuardFailure::GenerationMismatch)
+                state.gc_gen = 0;
+            UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, "probe-invalid");
+            uint64_t minNext = now + retry.retryBackoffMs;
+            if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < minNext)
+                state.helper_next_retry_ms = minNext;
+        }
+    }, &info);
+}
+
 static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, uint64_t generation, bool force) {
     if (!L)
         return false;
@@ -5085,13 +5137,17 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
 
     bool ok = probeOk;
     if (!probeOk) {
-        LogLuaBind("bind-helpers probe-failed L=%p", L);
+        Engine::Lua::LuaGuardFailure failure = Engine::Lua::GetLastLuaGuardFailure();
+        const char* guardName = DescribeGuardFailure(failure);
+        HandleProbeFailure(L, info, failure);
+        LogLuaBind("bind-helpers probe-failed L=%p guard=%s", L, guardName);
         Log::Logf(Log::Level::Warn,
                   Log::Category::Hooks,
-                  "helpers install probe failed L=%p owner=%lu gen=%llu",
+                  "helpers install probe failed L=%p owner=%lu gen=%llu guard=%s",
                   L,
                   static_cast<unsigned long>(info.owner_tid),
-                  static_cast<unsigned long long>(generation));
+                  static_cast<unsigned long long>(generation),
+                  guardName ? guardName : "unknown");
     }
     if (probeOk) {
         bool helpersBound = (info.flags & STATE_FLAG_HELPERS_BOUND) && info.gen == generation;
@@ -6393,12 +6449,13 @@ void ProcessLuaQueue() {
     MaybeRunMaintenance();
 }
 
-void OnStateObserved(lua_State* L, void* scriptCtx, std::uint32_t ownerTid) {
+void OnStateObserved(lua_State* L, void* scriptCtx, std::uint32_t ownerTid, bool adoptThread) {
     if (!L)
         return;
     uint64_t gen = g_generation.load(std::memory_order_acquire);
     DWORD tid = ownerTid ? ownerTid : GetCurrentThreadId();
-    EnsureScriptThread(tid, L);
+    if (adoptThread)
+        EnsureScriptThread(tid, L);
     if (scriptCtx)
         g_latestScriptCtx.store(scriptCtx, std::memory_order_release);
 

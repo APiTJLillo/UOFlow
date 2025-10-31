@@ -552,8 +552,9 @@ static DWORD WINAPI WaitForLua(LPVOID) {
             // Queue Lua helper registration for the next safe point
             RequestWalkRegistration();
             Engine::Lua::OnStateObserved(static_cast<lua_State*>(g_luaState),
-                                         active ? active->scriptContext : nullptr);
-
+                                         active ? active->scriptContext : nullptr,
+                                         0,
+                                         false);
             return 0;
         }
         Sleep(200);

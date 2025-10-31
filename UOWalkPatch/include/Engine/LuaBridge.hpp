@@ -10,7 +10,7 @@ namespace Engine::Lua {
     void EnsureWalkBinding(const char* reason = nullptr);
     void ScheduleWalkBinding();
     void ProcessLuaQueue();
-    void OnStateObserved(lua_State* L, void* scriptCtx, std::uint32_t ownerTid = 0);
+    void OnStateObserved(lua_State* L, void* scriptCtx, std::uint32_t ownerTid = 0, bool adoptThread = true);
     void OnStateRemoved(lua_State* L, const char* reason);
 
     struct StartupStatus {
