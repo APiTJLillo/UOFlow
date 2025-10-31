@@ -470,9 +470,10 @@ static bool TryDiscoverEndpointFromManager(void* manager)
 
     char startBuf[160];
     sprintf_s(startBuf, sizeof(startBuf),
-              "DiscoverEndpoint: scan begin manager=%p window=0x%zx",
+              "DiscoverEndpoint: scan begin manager=%p window=0x%zx depth=%d",
               manager,
-              kScanLimit);
+              kScanLimit,
+              kTailFollowMaxDepth);
     WriteRawLog(startBuf);
 
     const size_t kInvalidOffset = std::numeric_limits<size_t>::max();
@@ -634,9 +635,10 @@ static bool TryDiscoverFromEngineContext()
     const size_t kScanLimit = kEndpointScanWindow;
     char startBuf[160];
     sprintf_s(startBuf, sizeof(startBuf),
-              "EngineCtx scan begin ctx=%p window=0x%zx",
+              "EngineCtx scan begin ctx=%p window=0x%zx depth=%d",
               engineCtx,
-              kScanLimit);
+              kScanLimit,
+              kTailFollowMaxDepth);
     WriteRawLog(startBuf);
 
     size_t scanned = 0;
@@ -786,18 +788,31 @@ static bool TryLoad(const void* p, T& out)
     }
 }
 
-static bool IsSendPacketAddress(uint8_t* addr)
+static bool TryResolveSendPacket(uint8_t* candidate, uint8_t*& resolved)
 {
-    if (!addr)
+    resolved = nullptr;
+    if (!candidate)
         return false;
 
     uint8_t* target = reinterpret_cast<uint8_t*>(g_sendPacketTarget);
-    if (target && addr == target)
-        return true;
-
     uint8_t* original = reinterpret_cast<uint8_t*>(g_sendPacket);
-    if (original && addr == original)
+
+    if (target && candidate == target) {
+        resolved = target;
         return true;
+    }
+    if (original && candidate == original) {
+        resolved = original;
+        return true;
+    }
+
+    uint8_t* deref = nullptr;
+    if (TryLoad(candidate, deref) && deref) {
+        if ((target && deref == target) || (original && deref == original)) {
+            resolved = deref;
+            return true;
+        }
+    }
 
     return false;
 }
@@ -861,17 +876,40 @@ static bool TraceHandleHop(TraceResult& trace,
     ++trace.hopCount;
 
     bool matched = false;
-    if (IsSendPacketAddress(dest)) {
-        trace.finalTarget = dest;
+    uint8_t* resolved = nullptr;
+
+    if (TryResolveSendPacket(dest, resolved)) {
+        trace.finalTarget = resolved;
         matched = true;
-    } else if (depthRemaining > 1 && IsExecutablePtr(dest) && !HasVisited(dest, visited, visitedCount)) {
-        matched = TraceSendPacketFrom(dest,
-                                      kTailScanWindow,
-                                      depthRemaining - 1,
-                                      trace,
-                                      visited,
-                                      visitedCount,
-                                      false);
+    } else {
+        bool destExecutable = IsExecutablePtr(dest);
+        if (destExecutable && depthRemaining > 1 && !HasVisited(dest, visited, visitedCount)) {
+            matched = TraceSendPacketFrom(dest,
+                                          kTailScanWindow,
+                                          depthRemaining - 1,
+                                          trace,
+                                          visited,
+                                          visitedCount,
+                                          false);
+        }
+
+        if (!matched) {
+            uint8_t* chained = nullptr;
+            if (!destExecutable && TryLoad(dest, chained) && chained && chained != dest) {
+                if (TryResolveSendPacket(chained, resolved)) {
+                    trace.finalTarget = resolved;
+                    matched = true;
+                } else if (depthRemaining > 1 && IsExecutablePtr(chained) && !HasVisited(chained, visited, visitedCount)) {
+                    matched = TraceSendPacketFrom(chained,
+                                                  kTailScanWindow,
+                                                  depthRemaining - 1,
+                                                  trace,
+                                                  visited,
+                                                  visitedCount,
+                                                  false);
+                }
+            }
+        }
     }
 
     if (!matched) {
@@ -1355,6 +1393,11 @@ static bool ScanEndpointVTable(void* endpoint)
     bool fallbackMatched = false;
     TraceResult trace{};
     if (!matchedFn && g_sendPacketTarget) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] fallback scan window=0x%zX depth=%d",
+                  kEndpointScanWindow,
+                  kTailFollowMaxDepth);
         for (int i = 0; i < 32; ++i) {
             auto* fnBytes = reinterpret_cast<uint8_t*>(slotFns[i]);
             if (!fnBytes || !IsExecutablePtr(fnBytes))
@@ -1390,6 +1433,11 @@ static bool ScanEndpointVTable(void* endpoint)
             g_builderProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
             g_sendBuilderHooked = true;
             g_sendBuilderTarget = matchedFn;
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[CORE][SB] attaching vtbl[%02u] target=%p",
+                      static_cast<unsigned>(matchedIndex & 0xFF),
+                      matchedFn);
             if (fallbackMatched) {
                 for (size_t hop = 0; hop < trace.hopCount; ++hop) {
                     const TraceHop& hopInfo = trace.hops[hop];

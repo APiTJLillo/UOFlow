@@ -273,18 +273,18 @@ struct HelpersRuntimeState {
                                                   ctx,
                                                   std::memory_order_acq_rel,
                                                   std::memory_order_acquire)) {
-            if (owner)
+            if (owner) {
                 owner_tid.store(owner, std::memory_order_release);
+                g_lastHelperOwnerThread.store(owner, std::memory_order_relaxed);
+            }
             return;
         }
 
         if (owner) {
             DWORD current = owner_tid.load(std::memory_order_acquire);
-            if (current == 0) {
-                owner_tid.compare_exchange_strong(current,
-                                                  owner,
-                                                  std::memory_order_acq_rel,
-                                                  std::memory_order_acquire);
+            if (current != owner) {
+                owner_tid.store(owner, std::memory_order_release);
+                g_lastHelperOwnerThread.store(owner, std::memory_order_relaxed);
             }
         }
     }
@@ -4559,6 +4559,45 @@ static void PostToLuaThread(lua_State* L, const char* name, std::function<void(l
 }
 
 static void MaybeAdoptOwnerThread(lua_State* L, LuaStateInfo& info) {
+    DWORD canonicalOwner = GetCanonicalHelperOwnerTid();
+    if (canonicalOwner) {
+        if (info.owner_tid == canonicalOwner)
+            return;
+        uint64_t now = GetTickCount64();
+
+        auto assignCanonical = [&](lua_State* pointer, const char* source) -> bool {
+            if (!pointer)
+                return false;
+            DWORD previous = info.owner_tid;
+            bool updated = g_stateRegistry.UpdateByPointer(pointer, [&](LuaStateInfo& state) {
+                state.owner_tid = canonicalOwner;
+                state.last_tid = canonicalOwner;
+                if (!(state.flags & STATE_FLAG_OWNER_READY) || state.owner_ready_tick_ms == 0) {
+                    state.owner_ready_tick_ms = now;
+                    state.flags |= STATE_FLAG_OWNER_READY;
+                }
+            }, &info);
+            if (updated) {
+                info.owner_tid = canonicalOwner;
+                if (previous != canonicalOwner) {
+                    LogLuaState("owner-adopt L=%p old=%lu new=%lu source=%s",
+                                pointer,
+                                previous,
+                                canonicalOwner,
+                                source ? source : "canonical");
+                }
+            }
+            return updated;
+        };
+
+        if (assignCanonical(info.L_canonical, "canonical"))
+            return;
+        if (assignCanonical(L, "direct"))
+            return;
+        assignCanonical(info.L_reported, "reported");
+        return;
+    }
+
     DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
     if (!scriptTid)
         return;
@@ -4622,7 +4661,22 @@ static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::functio
         MaybeAdoptOwnerThread(L, info);
 
     DWORD owner = 0;
-    if (haveInfo) {
+    DWORD canonicalOwner = GetCanonicalHelperOwnerTid();
+    if (canonicalOwner) {
+        owner = canonicalOwner;
+        if (haveInfo && info.owner_tid != canonicalOwner) {
+            uint64_t now = GetTickCount64();
+            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+                state.owner_tid = canonicalOwner;
+                state.last_tid = canonicalOwner;
+                if (!(state.flags & STATE_FLAG_OWNER_READY) || state.owner_ready_tick_ms == 0) {
+                    state.owner_ready_tick_ms = now;
+                    state.flags |= STATE_FLAG_OWNER_READY;
+                }
+            }, &info);
+            info.owner_tid = canonicalOwner;
+        }
+    } else if (haveInfo) {
         owner = info.owner_tid ? info.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
     } else {
         owner = g_scriptThreadId.load(std::memory_order_acquire);
