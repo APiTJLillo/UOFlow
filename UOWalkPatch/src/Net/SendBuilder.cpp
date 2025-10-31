@@ -790,23 +790,73 @@ struct SBHit
     uint32_t offset = 0;
 };
 
+static uint8_t* FollowTail(uint8_t* p)
+{
+    // Follow up to two tail jumps through rel32 and import jumps
+    for (int depth = 0; depth < 2 && IsExecutablePtr(p); ++depth)
+    {
+        uint8_t op = 0;
+        if (!TryLoad(p, op))
+            break;
+
+        if (op == 0xE9)
+        {
+            int32_t rel = 0;
+            if (!TryLoad(p + 1, rel))
+                break;
+            p = p + 5 + rel;
+            continue;
+        }
+
+        if (op == 0xFF)
+        {
+            uint8_t b1 = 0;
+            if (!TryLoad(p + 1, b1))
+                break;
+#if defined(_M_X64)
+            if (b1 == 0x25)
+            {
+                int32_t disp = 0;
+                if (!TryLoad(p + 2, disp))
+                    break;
+                uint8_t* slotAddr = p + 6 + disp;
+                void* tgt = nullptr;
+                if (!TryLoad(slotAddr, tgt) || !tgt)
+                    break;
+                p = reinterpret_cast<uint8_t*>(tgt);
+                continue;
+            }
+#else
+            if (b1 == 0x25)
+            {
+                uint32_t absMem = 0;
+                if (!TryLoad(p + 2, absMem))
+                    break;
+                void* slotAddr = reinterpret_cast<void*>(static_cast<uintptr_t>(absMem));
+                void* tgt = nullptr;
+                if (!TryLoad(slotAddr, tgt) || !tgt)
+                    break;
+                p = reinterpret_cast<uint8_t*>(tgt);
+                continue;
+            }
+#endif
+            // FF E0..E7 jmp reg: cannot resolve statically -> stop
+        }
+        break;
+    }
+    return p;
+}
+
 static SBHit* FindSendPacketUse(uint8_t* fn, size_t maxScan, uint8_t* sendpkt)
 {
     if (!fn || !sendpkt || maxScan < 5)
         return nullptr;
 
     static SBHit hit{};
-    uint8_t* cursor = fn;
+    uint8_t* cursor = FollowTail(fn); // normalize entry through up to 2 jumps
 
     uint8_t opcode = 0;
     int32_t rel32 = 0;
-
-    if (maxScan >= 5 && TryLoad(cursor, opcode) && opcode == 0xE9 && TryLoad(cursor + 1, rel32))
-    {
-        uint8_t* hop = cursor + 5 + rel32;
-        if (IsExecutablePtr(hop))
-            cursor = hop;
-    }
 
     for (size_t i = 0; i + 6 < maxScan; ++i)
     {
@@ -907,6 +957,54 @@ static SBHit* FindSendPacketUse(uint8_t* fn, size_t maxScan, uint8_t* sendpkt)
                                 hit.form = "MOV/CALL";
                                 hit.offset = static_cast<uint32_t>(i);
                                 return &hit;
+                            }
+                        }
+                    }
+#endif
+                }
+
+                // Handle MOV reg, imm32 ; JMP reg -> follow target once
+                if ((modrm & 0xF8) == 0xE0)
+                {
+#if defined(_M_X64)
+                    if (i >= 10)
+                    {
+                        uint8_t rex = 0;
+                        uint8_t movOp = 0;
+                        if (TryLoad(p - 10, rex) && (rex & 0xF0) == 0x40 &&
+                            TryLoad(p - 9, movOp) && (movOp & 0xF8) == 0xB8)
+                        {
+                            uint64_t imm = 0;
+                            if (TryLoad(p - 8, imm))
+                            {
+                                uint8_t* tail = FollowTail(reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(imm)));
+                                if (tail == sendpkt)
+                                {
+                                    hit.site = p;
+                                    hit.form = "MOV/JMP->SendPacket";
+                                    hit.offset = static_cast<uint32_t>(i);
+                                    return &hit;
+                                }
+                            }
+                        }
+                    }
+#else
+                    if (i >= 5)
+                    {
+                        uint8_t movOp = 0;
+                        if (TryLoad(p - 5, movOp) && (movOp & 0xF8) == 0xB8)
+                        {
+                            uintptr_t imm = 0;
+                            if (TryLoad(p - 4, imm))
+                            {
+                                uint8_t* tail = FollowTail(reinterpret_cast<uint8_t*>(imm));
+                                if (tail == sendpkt)
+                                {
+                                    hit.site = p;
+                                    hit.form = "MOV/JMP->SendPacket";
+                                    hit.offset = static_cast<uint32_t>(i);
+                                    return &hit;
+                                }
                             }
                         }
                     }
