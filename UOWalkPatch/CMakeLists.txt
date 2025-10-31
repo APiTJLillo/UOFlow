@@ -234,3 +234,15 @@ add_executable(DumpAnalyzer tools/DumpAnalyzer.cpp)
 target_link_libraries(DumpAnalyzer PRIVATE dbghelp)
 set_target_properties(DumpAnalyzer PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_executable(UOWalkPatchTests
+    tests/ScannerStage3Tests.cpp
+)
+
+target_include_directories(UOWalkPatchTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+set_target_properties(UOWalkPatchTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)

@@ -186,6 +186,10 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <Project>{07BBD48A-0AED-36B7-9B7F-6BE527088992}</Project>
       <Name>UOWalkPatchDLL</Name>
     </ProjectReference>
+    <ProjectReference Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\build-codex\UOWalkPatchTests.vcxproj">
+      <Project>{0E55ED77-C230-37CB-AD35-C0C2CA57DC42}</Project>
+      <Name>UOWalkPatchTests</Name>
+    </ProjectReference>
     <ProjectReference Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\build-codex\external\minhook\src\minhook.vcxproj">
       <Project>{F5EAC1D0-BF1D-32C2-BD2C-41350295F2F5}</Project>
       <Name>minhook</Name>

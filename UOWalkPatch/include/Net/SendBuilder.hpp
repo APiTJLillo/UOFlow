@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <winsock2.h>
+#include "Net/ScannerStage3.hpp"
 #include "../include/Engine/GlobalState.hpp"
 
 namespace Net {
@@ -17,4 +18,5 @@ namespace Net {
         void* sendPacket = nullptr;
     };
     SendBuilderStatus GetSendBuilderStatus();
+    Scanner::ScanPassTelemetry DumpLastPassTelemetry();
 }
