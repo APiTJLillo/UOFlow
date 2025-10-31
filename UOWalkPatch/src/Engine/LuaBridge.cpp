@@ -265,6 +265,7 @@ static HelpersRuntimeState g_helpers{};
 static void StartHelperPumpThread();
 static void StopHelperPumpThread();
 static void MaybePumpLuaQueueFromScriptThread(const char* reason);
+static bool IsPlausibleContextPointer(const void* ctx);
 
 static void SafeRefreshLuaStateFromSlot() noexcept {
     __try {
@@ -283,8 +284,21 @@ static void* ResolveCanonicalEngineContext() noexcept {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         ctx = nullptr;
     }
-    if (!ctx)
+    if (ctx && !IsPlausibleContextPointer(ctx))
+        ctx = nullptr;
+
+    if (!ctx) {
         ctx = g_engineContext.load(std::memory_order_acquire);
+        if (ctx && !IsPlausibleContextPointer(ctx))
+            ctx = nullptr;
+    }
+
+    if (!ctx) {
+        void* logged = g_loggedEngineContext.load(std::memory_order_acquire);
+        if (logged && IsPlausibleContextPointer(logged))
+            ctx = logged;
+    }
+
     return ctx;
 }
 
@@ -5702,7 +5716,11 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                 if (state.owner_ready_tick_ms == 0)
                     state.owner_ready_tick_ms = nowTick;
                 state.helper_passive_since_ms = 0;
-                state.helper_next_retry_ms = nowTick;
+                uint64_t delayMs = HelperRetryDelay(retry, state.helper_retry_count);
+                if (delayMs == 0)
+                    delayMs = retry.debounceMs;
+                delayMs += HelperJitterMs(retry, jitterToken, nowTick);
+                state.helper_next_retry_ms = nowTick + delayMs;
                 UpdateHelperStage(state, HelperInstallStage::ReadyToInstall, nowTick, "ctx-rebind");
             }, &info);
             info.ctx_reported = reboundCtx;

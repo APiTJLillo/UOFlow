@@ -788,17 +788,37 @@ static bool CallsOrJumpsTo(uint8_t* p, size_t len, uintptr_t send, uintptr_t* at
                             *kind = "call[IAT]";
                         return true;
                     }
+                } else if ((op & 0xF8) == 0xB8 && (i + 7) <= len && segment[i + 5] == 0xFF &&
+                           (segment[i + 6] & 0xF8) == 0xD0) {
+                    uintptr_t tgt = *reinterpret_cast<uintptr_t*>(segment + i + 1);
+                    if (tgt == send) {
+                        if (atOff)
+                            *atOff = reinterpret_cast<uintptr_t>(segment + i + 5) - base;
+                        if (kind)
+                            *kind = "reg-call";
+                        return true;
+                    }
                 }
             }
 
-            if (!followedTail && len >= 5 && segment[0] == 0xE9) {
-                int32_t rel = *reinterpret_cast<int32_t*>(segment + 1);
-                uintptr_t dest = reinterpret_cast<uintptr_t>(segment + 5) + rel;
-                if (!dest || !sp::is_executable_code_ptr(reinterpret_cast<void*>(dest)))
-                    break;
-                cursor = reinterpret_cast<uint8_t*>(dest);
-                followedTail = true;
-                continue;
+            if (!followedTail) {
+                if (len >= 5 && segment[0] == 0xE9) {
+                    int32_t rel = *reinterpret_cast<int32_t*>(segment + 1);
+                    uintptr_t dest = reinterpret_cast<uintptr_t>(segment + 5) + rel;
+                    if (!dest || !sp::is_executable_code_ptr(reinterpret_cast<void*>(dest)))
+                        break;
+                    cursor = reinterpret_cast<uint8_t*>(dest);
+                    followedTail = true;
+                    continue;
+                } else if (len >= 6 && segment[0] == 0xFF && segment[1] == 0x25) {
+                    uintptr_t mem = *reinterpret_cast<uintptr_t*>(segment + 2);
+                    uintptr_t dest = 0;
+                    if (ResolveIAT(mem, &dest) && dest && sp::is_executable_code_ptr(reinterpret_cast<void*>(dest))) {
+                        cursor = reinterpret_cast<uint8_t*>(dest);
+                        followedTail = true;
+                        continue;
+                    }
+                }
             }
             break;
         }
@@ -979,7 +999,7 @@ static bool ScanEndpointVTable(void* endpoint)
             uintptr_t offset = 0;
             const char* kind = nullptr;
             if (CallsOrJumpsTo(reinterpret_cast<uint8_t*>(fn),
-                               0x400,
+                               0x600,
                                reinterpret_cast<uintptr_t>(g_sendPacketTarget),
                                &offset,
                                &kind)) {
