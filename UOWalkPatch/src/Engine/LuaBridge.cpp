@@ -311,6 +311,8 @@ static HelpersRuntimeState g_helpers{};
 
 static void SetCanonicalHelperCtx(HCTX ctx, DWORD ownerTid) noexcept {
     g_helpers.SetCanonicalCtx(ctx, ownerTid);
+    if (ctx)
+        Net::NotifyCanonicalManagerDiscovered();
 }
 
 static HCTX GetCanonicalHelperCtx() noexcept {
@@ -5849,17 +5851,58 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
     DWORD canonicalOwner = 0;
     bool canonicalValid = false;
     auto refreshCanonical = [&]() {
-        canonicalCtx = static_cast<HCTX>(ResolveCanonicalEngineContext());
+        canonicalCtx = GetCanonicalHelperCtx();
         canonicalOwner = GetCanonicalHelperOwnerTid();
-        canonicalValid = IsValidCtx(canonicalCtx);
+        canonicalValid = canonicalCtx && IsValidCtx(canonicalCtx);
     };
     refreshCanonical();
 
     auto rebindToCanonical = [&](HCTX previousCtx, const char* reason) -> bool {
-        if (!canonicalValid)
-            return false;
+        refreshCanonical();
+
+        constexpr uint32_t kCanonicalNullRetryBudget = 3;
 
         uint32_t attempts = info.helper_rebind_attempts;
+        if (!canonicalValid) {
+            if (attempts >= kCanonicalNullRetryBudget) {
+                Log::Logf(Log::Level::Warn,
+                          Log::Category::Hooks,
+                          "[HOOKS] helpers canonical unresolved ctx old=%p attempts=%u",
+                          previousCtx,
+                          static_cast<unsigned>(attempts));
+                return false;
+            }
+
+            uint64_t nowTick = GetTickCount64();
+            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+                state.ctx_reported = canonicalCtx;
+                state.helper_passive_since_ms = 0;
+                UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, reason ? reason : "canonical-missing");
+                if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
+                    ++state.helper_rebind_attempts;
+                attempts = state.helper_rebind_attempts;
+                if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms > nowTick + 200)
+                    state.helper_next_retry_ms = nowTick + 200;
+            }, &info);
+            info.ctx_reported = canonicalCtx;
+            info.helper_rebind_attempts = attempts;
+
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u (pending)",
+                      previousCtx,
+                      canonicalCtx,
+                      static_cast<unsigned>(canonicalOwner));
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "helpers rebind defer ctx=%p reason=canonical-missing attempts=%u",
+                      canonicalCtx,
+                      static_cast<unsigned>(attempts));
+            MarkHelperRebindPending();
+            PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-missing");
+            return true;
+        }
+
         if (attempts >= kMaxHelperRebindAttempts) {
             Log::Logf(Log::Level::Warn,
                       Log::Category::Hooks,
@@ -5900,14 +5943,6 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                   canonicalCtx,
                   static_cast<unsigned>(canonicalOwner));
         MarkHelperRebindPending();
-        if (canonicalOwner == 0) {
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Hooks,
-                      "helpers rebind defer ctx=%p reason=owner-unknown attempts=%u",
-                      canonicalCtx,
-                      static_cast<unsigned>(attempts));
-            return true;
-        }
         PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
         return true;
     };
@@ -5931,14 +5966,22 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
               static_cast<unsigned long>(canonicalOwner),
               static_cast<unsigned long>(GetCurrentThreadId()));
 
+    if (!canonicalValid) {
+        if (rebindToCanonical(info.ctx_reported, "canonical-invalid"))
+            return false;
+        refreshCanonical();
+    }
+
     if (canonicalOwner && canonicalOwner != GetCurrentThreadId()) {
         if (rebindToCanonical(info.ctx_reported, "owner-mismatch"))
             return false;
+        refreshCanonical();
     }
 
     if (canonicalValid && info.ctx_reported != canonicalCtx) {
         if (rebindToCanonical(info.ctx_reported, "ctx-mismatch"))
             return false;
+        refreshCanonical();
     }
 
     Log::Logf(Log::Level::Info,

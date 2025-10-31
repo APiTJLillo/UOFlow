@@ -20,4 +20,5 @@ namespace Net {
     SendBuilderStatus GetSendBuilderStatus();
     Scanner::ScanPassTelemetry DumpLastPassTelemetry();
     void OnEngineReady();
+    void NotifyCanonicalManagerDiscovered();
 }

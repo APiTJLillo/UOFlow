@@ -1,6 +1,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <dbghelp.h>
+#include <psapi.h>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -105,6 +106,7 @@ static std::atomic<std::uint64_t> g_passSeq{0};
 static std::atomic<std::uint32_t> g_lastRingLoad{0};
 static std::atomic<std::uint32_t> g_guardWarnBudget{0};
 static std::atomic<std::uint64_t> g_guardWarnPass{0};
+static std::atomic<std::uint64_t> g_asciiWarnLastPass{0};
 static std::unordered_map<void*, std::uint64_t> g_endpointCallsiteHints;
 static std::mutex g_endpointCallsiteMutex;
 static thread_local std::vector<Scanner::SendSample> t_sendSampleBuffer;
@@ -121,8 +123,6 @@ static std::unordered_map<void*, EndpointBackoffState> g_endpointBackoff;
 static std::mutex g_endpointBackoffMutex;
 
 struct GuardLogState {
-    DWORD lastLogTick = 0;
-    uint32_t suppressed = 0;
     std::uint64_t lastWarnPass = 0;
 };
 
@@ -306,6 +306,31 @@ static void EnsureSectionRanges()
     });
 }
 
+static void EnsureCanonicalVtblWhitelisted()
+{
+    uintptr_t canonical = static_cast<uintptr_t>(kCanonicalManagerVtbl);
+    if (canonical == 0)
+        return;
+    EnsureSectionRanges();
+    if (g_rdataSection.Contains(canonical))
+        return;
+    if (const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable()) {
+        if (primary->containsRdata(canonical)) {
+            g_rdataSection.begin = primary->rdataBegin;
+            g_rdataSection.end = primary->rdataEnd;
+            return;
+        }
+        if (primary->containsText(canonical)) {
+            g_rdataSection.begin = primary->textBegin;
+            g_rdataSection.end = primary->textEnd;
+            return;
+        }
+    }
+    uintptr_t page = canonical & ~static_cast<uintptr_t>(0xFFFu);
+    g_rdataSection.begin = page;
+    g_rdataSection.end = page + 0x1000;
+}
+
 static bool IsInModuleRdata(uintptr_t addr)
 {
     const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
@@ -335,56 +360,26 @@ static bool IsInImageSection(const SectionRange& range, uintptr_t addr)
 
 static void LogGuardInvalidManager(void* manager)
 {
-    constexpr DWORD kGuardLogIntervalMs = 2000;
-    DWORD now = GetTickCount();
-    uint32_t suppressed = 0;
-    bool shouldLog = false;
-    bool alreadyWarnedThisPass = false;
     const std::uint64_t warnPass = g_guardWarnPass.load(std::memory_order_relaxed);
-    {
+    bool warnThisPass = true;
+    if (warnPass != 0) {
         std::lock_guard<std::mutex> lock(g_managerGuardLogMutex);
         GuardLogState& state = g_managerGuardLog[manager];
-        DWORD nextAllowed = state.lastLogTick + kGuardLogIntervalMs;
-        if (state.lastLogTick == 0 || TickHasElapsed(now, nextAllowed)) {
-            suppressed = state.suppressed;
-            state.suppressed = 0;
-            state.lastLogTick = now;
-            shouldLog = true;
+        if (state.lastWarnPass == warnPass) {
+            warnThisPass = false;
         } else {
-            ++state.suppressed;
+            state.lastWarnPass = warnPass;
         }
-        if (shouldLog && warnPass != 0)
-            alreadyWarnedThisPass = (state.lastWarnPass == warnPass);
     }
 
-    if (!shouldLog)
-        return;
-
-    Log::Level level = Log::Level::Warn;
-    if (alreadyWarnedThisPass) {
-        level = Log::Level::Debug;
-    } else {
+    Log::Level level = warnThisPass ? Log::Level::Warn : Log::Level::Debug;
+    if (warnThisPass) {
         uint32_t budget = g_guardWarnBudget.load(std::memory_order_relaxed);
         if (budget > 0) {
             g_guardWarnBudget.fetch_sub(1, std::memory_order_relaxed);
         } else {
             level = Log::Level::Debug;
         }
-    }
-
-    if (level == Log::Level::Warn && warnPass != 0) {
-        std::lock_guard<std::mutex> lock(g_managerGuardLogMutex);
-        GuardLogState& state = g_managerGuardLog[manager];
-        state.lastWarnPass = warnPass;
-    }
-
-    if (suppressed > 0) {
-        Log::Logf(level,
-                  Log::Category::Core,
-                  "[SB][GUARD] skipped invalid manager=%p (x%u suppressed)",
-                  manager,
-                  suppressed);
-        return;
     }
 
     Log::Logf(level,
@@ -979,17 +974,20 @@ static Scanner::EdgeType ClassifyEdgeFromReturn(uint8_t* ret)
     return Scanner::EdgeType::Unknown;
 }
 
-static bool BuildSendSample(void* retPtr, std::uint64_t nowMs, Scanner::SendSample& outSample)
+static bool BuildSendSample(void* retPtr,
+                            std::uint64_t nowMs,
+                            Scanner::SendSample& outSample,
+                            const Scanner::ModuleInfo** moduleOut)
 {
     if (!retPtr)
         return false;
 
     const Scanner::ModuleInfo* module = g_moduleMap.findByAddress(retPtr);
+    if (!module) {
+        g_moduleMap.refresh(true);
+        module = g_moduleMap.findByAddress(retPtr);
+    }
     if (!module)
-        return false;
-
-    const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
-    if (!primary || module->module != primary->module)
         return false;
 
     uint8_t* ret = reinterpret_cast<uint8_t*>(retPtr);
@@ -1010,7 +1008,46 @@ static bool BuildSendSample(void* retPtr, std::uint64_t nowMs, Scanner::SendSamp
     outSample.rva = rva;
     outSample.tick = nowMs;
     outSample.edge = ClassifyEdgeFromReturn(ret);
+    outSample.moduleBase = module->base;
+    if (moduleOut)
+        *moduleOut = module;
     return true;
+}
+
+static void FormatSampleLabel(const Scanner::ModuleInfo* module,
+                              const Scanner::SendSample& sample,
+                              char* buffer,
+                              size_t bufferLen)
+{
+    if (!buffer || bufferLen == 0) {
+        return;
+    }
+
+    buffer[0] = '\0';
+
+    const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
+    if (module && primary && module->module == primary->module) {
+        std::snprintf(buffer, bufferLen, "UOSA+0x%X", static_cast<unsigned>(sample.rva));
+        return;
+    }
+
+    if (module && module->module) {
+        char moduleName[MAX_PATH] = {};
+        if (GetModuleBaseNameA(GetCurrentProcess(), module->module, moduleName, static_cast<DWORD>(sizeof(moduleName))) == 0) {
+            std::snprintf(moduleName,
+                          sizeof(moduleName),
+                          "%p",
+                          module->module);
+        }
+        std::snprintf(buffer, bufferLen, "%s!0x%X", moduleName, static_cast<unsigned>(sample.rva));
+        return;
+    }
+
+    std::snprintf(buffer,
+                  bufferLen,
+                  "0x%llX!0x%X",
+                  static_cast<unsigned long long>(sample.moduleBase),
+                  static_cast<unsigned>(sample.rva));
 }
 
 namespace Scanner {
@@ -1030,7 +1067,11 @@ bool shouldSample(std::uint64_t nowMs)
     return g_sendSampleBucket.tryConsume(nowMs);
 }
 
-std::uint32_t enqueueFrames(void** frames, USHORT frameCount, std::uint64_t nowMs, SendSample* firstOut)
+std::uint32_t enqueueFrames(void** frames,
+                            USHORT frameCount,
+                            std::uint64_t nowMs,
+                            void* thisPtr,
+                            SendSample* firstOut)
 {
     if (!frames || frameCount == 0)
         return 0;
@@ -1044,9 +1085,12 @@ std::uint32_t enqueueFrames(void** frames, USHORT frameCount, std::uint64_t nowM
         if (!frame)
             continue;
 
+        const Scanner::ModuleInfo* moduleInfo = nullptr;
         SendSample sample{};
-        if (!BuildSendSample(frame, nowMs, sample))
+        if (!BuildSendSample(frame, nowMs, sample, &moduleInfo))
             continue;
+
+        sample.thisPtr = thisPtr;
 
         if (!g_sendSampleRing.push(sample)) {
             DWORD nowTick = GetTickCount();
@@ -1070,10 +1114,12 @@ std::uint32_t enqueueFrames(void** frames, USHORT frameCount, std::uint64_t nowM
         ++produced;
 
         if (g_sbDebug.load(std::memory_order_relaxed) && sample.rva != 0) {
+            char label[128];
+            FormatSampleLabel(moduleInfo, sample, label, sizeof(label));
             Log::Logf(Log::Level::Info,
                       Log::Category::Core,
-                      "INFO[SEND_SAMPLE] func=UOSA+0x%X",
-                      static_cast<unsigned>(sample.rva));
+                      "[SEND_SAMPLE] func=%s",
+                      label);
         }
     }
 
@@ -1122,13 +1168,10 @@ static bool IsExecutableSendContext(void* candidate, void** outVtbl, void** outE
 static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* outTrace = nullptr);
 static void CaptureSendContext(void* candidate, const char* sourceTag);
 static void MaybeSendDebugNudge();
-static bool ProcessSendSamplesFast(const std::vector<CandidateRaw>& rawCandidates,
-                                   const std::vector<Scanner::SendSample>& samples,
+static bool IsExecutablePtr(const void* p);
+static void ApplySuccessfulAttach(void* endpoint, void* manager, const TraceResult& trace, std::uint64_t nowMs);
+static bool ProcessSendSamplesFast(const std::vector<Scanner::SendSample>& samples,
                                    Scanner::ScanPassTelemetry& telemetry);
-static bool TryAttachFromSample(const Scanner::SendSample& sample,
-                                TraceResult& trace,
-                                const std::vector<CandidateRaw>& rawCandidates,
-                                std::uint64_t nowMs);
 static std::optional<std::uint32_t> ResolveRva(void* addr);
 
 static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateDescriptor& descriptor,
@@ -1148,48 +1191,81 @@ static std::optional<std::uint32_t> ResolveRva(void* addr)
     return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(addr) - module->base);
 }
 
-static bool TryAttachFromSample(const Scanner::SendSample& sample,
-                                TraceResult& trace,
-                                const std::vector<CandidateRaw>& rawCandidates,
-                                std::uint64_t nowMs)
+static void ApplySuccessfulAttach(void* endpoint, void* manager, const TraceResult& trace, std::uint64_t nowMs)
 {
-    for (const auto& raw : rawCandidates) {
-        if (!raw.endpoint)
-            continue;
-        void* vtbl = raw.vtbl;
-        if (!vtbl) {
-            if (!SafeCopy(&vtbl, raw.endpoint, sizeof(vtbl)) || !vtbl)
-                continue;
-        }
-        void* fn = nullptr;
-        for (uint8_t slot = 0; slot < 32; ++slot) {
-            if (!SafeMem::SafeRead(reinterpret_cast<void* const*>(vtbl) + slot, fn) || !fn)
-                continue;
-            if (fn != sample.func)
-                continue;
-            TraceResult candidateTrace{};
-            ResetTraceResult(candidateTrace);
-            if (!TraceSendPacketUse(reinterpret_cast<uint8_t*>(fn), candidateTrace, slot, vtbl))
-                continue;
-            if (!AttachSendBuilderFromTrace(fn, slot, vtbl, &candidateTrace, nullptr, nullptr))
-                continue;
-            {
-                std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
-                g_endpointCallsiteHints[raw.endpoint] = sample.rva;
-            }
-            void* trustManager = raw.manager ? raw.manager : raw.endpoint;
-            Scanner::EndpointTrustCache::SlotKey slotKey{trustManager, vtbl, slot};
-            g_endpointTrust.store(slotKey, true, nowMs, 600000);
-            g_rejectStore.clear(reinterpret_cast<std::uintptr_t>(raw.endpoint));
-            ClearEndpointBackoff(raw.endpoint);
-            return true;
+    if (!endpoint)
+        return;
+
+    g_rejectStore.clear(reinterpret_cast<std::uintptr_t>(endpoint));
+
+    void* trustManager = manager ? manager : endpoint;
+    if (trace.vtable && trace.slotIndex != 0xFF) {
+        Scanner::EndpointTrustCache::SlotKey slotKey{trustManager, trace.vtable, trace.slotIndex};
+        g_endpointTrust.store(slotKey, true, nowMs, 600000);
+    }
+
+    if (trace.site) {
+        if (auto rva = ResolveRva(trace.site)) {
+            Scanner::EndpointTrustCache::CodeKey codeKey{*rva};
+            g_endpointTrust.store(codeKey, true, nowMs, 600000);
+            std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+            g_endpointCallsiteHints[endpoint] = *rva;
         }
     }
-    return false;
+
+    g_lastLoggedEndpoint = endpoint;
+    ClearEndpointBackoff(endpoint);
+    if (g_sendBuilderHooked)
+        g_builderScanned = true;
 }
 
-static bool ProcessSendSamplesFast(const std::vector<CandidateRaw>& rawCandidates,
-                                   const std::vector<Scanner::SendSample>& samples,
+static bool AttachSampleViaEndpoint(const Scanner::SendSample& sample, std::uint64_t nowMs)
+{
+    if (!sample.thisPtr)
+        return false;
+
+    bool noPath = false;
+    TraceResult endpointTrace{};
+    ResetTraceResult(endpointTrace);
+    if (!ScanEndpointVTable(sample.thisPtr, noPath, &endpointTrace))
+        return false;
+
+    ApplySuccessfulAttach(sample.thisPtr, nullptr, endpointTrace, nowMs);
+    if (sample.rva != 0) {
+        std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+        g_endpointCallsiteHints[sample.thisPtr] = sample.rva;
+    }
+    return true;
+}
+
+static bool AttachSampleViaCodesite(const Scanner::SendSample& sample,
+                                    const TraceResult& trace,
+                                    std::uint64_t nowMs)
+{
+    if (!sample.func || !IsExecutablePtr(sample.func))
+        return false;
+
+    if (!AttachSendBuilderFromTrace(sample.func, 0xFF, nullptr, &trace, "sample-trace", nullptr))
+        return false;
+
+    const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
+    if (primary && sample.moduleBase == primary->base && sample.rva != 0) {
+        Scanner::EndpointTrustCache::CodeKey codeKey{sample.rva};
+        g_endpointTrust.store(codeKey, true, nowMs, 600000);
+    }
+
+    if (sample.thisPtr && sample.rva != 0) {
+        std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+        g_endpointCallsiteHints[sample.thisPtr] = sample.rva;
+    }
+
+    if (sample.thisPtr)
+        ClearEndpointBackoff(sample.thisPtr);
+    g_builderScanned = g_sendBuilderHooked;
+    return true;
+}
+
+static bool ProcessSendSamplesFast(const std::vector<Scanner::SendSample>& samples,
                                    Scanner::ScanPassTelemetry& telemetry)
 {
     if (samples.empty())
@@ -1197,14 +1273,23 @@ static bool ProcessSendSamplesFast(const std::vector<CandidateRaw>& rawCandidate
 
     const uint64_t nowMs = GetTickCount64();
     std::uint32_t examined = 0;
+    std::unordered_set<void*> visitedEndpoints;
+    visitedEndpoints.reserve(samples.size());
+
+    const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
+    const std::uintptr_t primaryBase = primary ? primary->base : 0;
 
     for (const auto& sample : samples) {
         if (examined >= 16)
             break;
         ++examined;
 
-        Scanner::EndpointTrustCache::CodeKey codeKey{sample.rva};
-        if (g_endpointTrust.shouldSkip(codeKey, nowMs)) {
+        const bool hasPrimaryRva = (primaryBase != 0 && sample.moduleBase == primaryBase && sample.rva != 0);
+        Scanner::EndpointTrustCache::CodeKey codeKey{};
+        if (hasPrimaryRva)
+            codeKey = {sample.rva};
+
+        if (hasPrimaryRva && g_endpointTrust.shouldSkip(codeKey, nowMs)) {
             ++telemetry.sample_rejects;
             continue;
         }
@@ -1220,21 +1305,36 @@ static bool ProcessSendSamplesFast(const std::vector<CandidateRaw>& rawCandidate
                                            visited,
                                            visitedCount,
                                            true);
-        if (!matched) {
-            g_endpointTrust.store(codeKey, false, nowMs, 10000);
+        if (!matched || !trace.finalTarget) {
+            if (hasPrimaryRva)
+                g_endpointTrust.store(codeKey, false, nowMs, 10000);
             ++telemetry.sample_rejects;
             continue;
         }
 
         ++telemetry.sample_hits;
-        if (TryAttachFromSample(sample, trace, rawCandidates, nowMs)) {
+
+        bool attached = false;
+        if (sample.thisPtr) {
+            if (visitedEndpoints.insert(sample.thisPtr).second) {
+                attached = AttachSampleViaEndpoint(sample, nowMs);
+            }
+        }
+
+        if (!attached) {
+            attached = AttachSampleViaCodesite(sample, trace, nowMs);
+        }
+
+        if (attached) {
+            if (hasPrimaryRva)
+                g_endpointTrust.store(codeKey, true, nowMs, 600000);
             ++telemetry.accepted;
-            g_endpointTrust.store(codeKey, true, nowMs, 600000);
-            g_builderScanned = g_sendBuilderHooked;
             return true;
         }
 
-        g_endpointTrust.store(codeKey, false, nowMs, 10000);
+        if (hasPrimaryRva)
+            g_endpointTrust.store(codeKey, false, nowMs, 30000);
+        ++telemetry.sample_rejects;
     }
 
     return false;
@@ -1245,18 +1345,15 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
                              uint32_t sendSampleCount,
                              uint32_t ringLoadPct)
 {
-    if (rawCandidates.empty())
-        return false;
-
     Scanner::ScanPassTelemetry telemetry{};
     telemetry.id = g_passSeq.fetch_add(1) + 1;
-    telemetry.send_samples = static_cast<std::uint32_t>(samples.size());
+    telemetry.send_samples = sendSampleCount;
     telemetry.ring_load_pct = ringLoadPct;
 
     g_guardWarnPass.store(telemetry.id, std::memory_order_relaxed);
     g_guardWarnBudget.store(1, std::memory_order_relaxed);
 
-    if (ProcessSendSamplesFast(rawCandidates, samples, telemetry)) {
+    if (ProcessSendSamplesFast(samples, telemetry)) {
         {
             std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
             g_lastTelemetry = telemetry;
@@ -1285,6 +1382,14 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
                   g_tuner.escalationLevel());
 
         return g_builderScanned;
+    }
+
+    if (rawCandidates.empty()) {
+        {
+            std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
+            g_lastTelemetry = telemetry;
+        }
+        return false;
     }
 
     std::unordered_map<std::uint32_t, std::uint32_t> sampleCounts;
@@ -1450,24 +1555,7 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
     telemetry.recordCandidate(durationUs, accepted, rejected);
 
     if (accepted) {
-        g_rejectStore.clear(reinterpret_cast<std::uintptr_t>(descriptor.endpoint));
-        if (trace.vtable && trace.slotIndex != 0xFF) {
-            void* trustManager = descriptor.manager ? descriptor.manager : descriptor.endpoint;
-            Scanner::EndpointTrustCache::SlotKey slotKey{trustManager, trace.vtable, trace.slotIndex};
-            g_endpointTrust.store(slotKey, true, nowMs, 600000);
-        }
-        if (trace.site) {
-            if (auto rva = ResolveRva(trace.site)) {
-                Scanner::EndpointTrustCache::CodeKey codeKey{*rva};
-                g_endpointTrust.store(codeKey, true, nowMs, 600000);
-                std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
-                g_endpointCallsiteHints[descriptor.endpoint] = *rva;
-            }
-        }
-        g_lastLoggedEndpoint = descriptor.endpoint;
-        ClearEndpointBackoff(descriptor.endpoint);
-        if (g_sendBuilderHooked)
-            g_builderScanned = true;
+        ApplySuccessfulAttach(descriptor.endpoint, descriptor.manager, trace, nowMs);
         outcome.accepted = true;
         return outcome;
     }
@@ -1740,7 +1828,7 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     WriteRawLog(startBuf);
 
     uint32_t ringLoadPct = 0;
-    Scanner::Sampler::drain(t_sendSampleBuffer, 16, &ringLoadPct);
+    Scanner::Sampler::drain(t_sendSampleBuffer, 0, &ringLoadPct);
     const std::uint32_t drainedSamples = static_cast<std::uint32_t>(t_sendSampleBuffer.size());
 
     std::vector<CandidateRaw> rawCandidates;
@@ -2696,7 +2784,17 @@ static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* out
     }
 
     if (asciiReject) {
-        Log::Logf(Log::Level::Info,
+        Log::Level asciiLevel = Log::Level::Warn;
+        const std::uint64_t passId = g_guardWarnPass.load(std::memory_order_relaxed);
+        if (passId != 0) {
+            std::uint64_t last = g_asciiWarnLastPass.load(std::memory_order_relaxed);
+            if (last == passId) {
+                asciiLevel = Log::Level::Debug;
+            } else {
+                g_asciiWarnLastPass.store(passId, std::memory_order_relaxed);
+            }
+        }
+        Log::Logf(asciiLevel,
                   Log::Category::Core,
                   "[CORE][SB] ascii vtbl endpoint=%p slot=%02d value=0x%08X",
                   endpoint,
@@ -3857,7 +3955,7 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
             void* frames[12] = {};
             USHORT captured = RtlCaptureStackBackTrace(0, 12, frames, nullptr);
             Scanner::SendSample firstSample{};
-            std::uint32_t produced = Scanner::Sampler::enqueueFrames(frames, captured, nowMs, &firstSample);
+            std::uint32_t produced = Scanner::Sampler::enqueueFrames(frames, captured, nowMs, thisPtr, &firstSample);
             if (produced > 0 && thisPtr) {
                 std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
                 g_endpointCallsiteHints[thisPtr] = firstSample.rva;
@@ -4166,6 +4264,11 @@ void OnEngineReady()
         return;
     g_debugNudgePending.store(true, std::memory_order_release);
     MaybeSendDebugNudge();
+}
+
+void NotifyCanonicalManagerDiscovered()
+{
+    EnsureCanonicalVtblWhitelisted();
 }
 
 

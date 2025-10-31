@@ -44,6 +44,8 @@ struct SendSample {
     EdgeType edge = EdgeType::Unknown;
     std::uint32_t rva = 0;
     std::uint64_t tick = 0;
+    std::uintptr_t moduleBase = 0;
+    void* thisPtr = nullptr;
 };
 
 class SendSampleRing {
@@ -813,7 +815,11 @@ private:
 namespace Sampler {
 
 bool shouldSample(std::uint64_t nowMs = 0);
-std::uint32_t enqueueFrames(void** frames, USHORT frameCount, std::uint64_t nowMs, SendSample* firstOut = nullptr);
+std::uint32_t enqueueFrames(void** frames,
+                            USHORT frameCount,
+                            std::uint64_t nowMs,
+                            void* thisPtr,
+                            SendSample* firstOut = nullptr);
 void drain(std::vector<SendSample>& out, std::uint32_t max = 0, std::uint32_t* ringLoadPctOut = nullptr);
 std::vector<SendSample> drain(std::uint32_t max = 0);
 std::uint32_t ringLoadPercent();
