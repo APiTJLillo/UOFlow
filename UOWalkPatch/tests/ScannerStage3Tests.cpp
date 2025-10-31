@@ -7,70 +7,56 @@
 using Net::Scanner::CandidateDescriptor;
 using Net::Scanner::PrioritizeCandidates;
 using Net::Scanner::RejectStore;
-using Net::Scanner::SampleAggregate;
 using Net::Scanner::SendSample;
 using Net::Scanner::SendSampleRing;
+using Net::Scanner::SampleDeduper;
 using Net::Scanner::ScanPassTelemetry;
 using Net::Scanner::TokenBucket;
-using Net::Scanner::TrustedEndpointCache;
+using Net::Scanner::EndpointTrustCache;
+using Net::Scanner::RejectStore;
 using Net::Scanner::Tuner;
 
 static void TestSamplePrioritization()
 {
     SendSampleRing ring;
     SendSample sample{};
-    sample.ts_ms = 1;
-    sample.callsite = 0x12345678u;
-    sample.ip = 0x0A000001u;
-    sample.port = 7777;
-    sample.sock = 42;
+    sample.tick = 1;
+    sample.func = reinterpret_cast<void*>(0x1000);
+    sample.ret = reinterpret_cast<void*>(0x2000);
     assert(ring.push(sample));
 
     std::vector<SendSample> drained;
     ring.drain(drained);
     assert(drained.size() == 1);
-
-    std::unordered_map<std::uint64_t, SampleAggregate> aggregates;
-    auto& agg = aggregates[sample.callsite];
-    agg.callsite = sample.callsite;
-    agg.ip = sample.ip;
-    agg.port = sample.port;
-    agg.sock = sample.sock;
-    agg.count = 1;
-    agg.last_ts_ms = sample.ts_ms;
-
-    CandidateDescriptor eager{};
-    eager.endpoint = reinterpret_cast<void*>(0x2000);
-    eager.sampleReferenced = true;
-    eager.sampleCount = agg.count;
-
-    CandidateDescriptor fallback{};
-    fallback.endpoint = reinterpret_cast<void*>(0x3000);
-
-    std::vector<CandidateDescriptor> descriptors{fallback, eager};
-    PrioritizeCandidates(descriptors);
-    assert(descriptors.front().endpoint == eager.endpoint);
 }
 
-static void TestTrustedEndpointCache()
+static void TestSampleDeduper()
 {
-    TrustedEndpointCache cache;
-    const std::uint64_t callsite = 0xCAFEBABEull;
-    const std::uint32_t ip = 0x7F000001u;
-    const std::uint16_t port = 2593;
-    const std::uint32_t sock = 55;
-    const std::uintptr_t endpoint = 0x5000;
+    SampleDeduper dedupe;
+    const std::uint64_t now = 1000;
+    assert(dedupe.accept(0x400000, 0x1234, now));
+    assert(!dedupe.accept(0x400000, 0x1234, now + 200));
+    assert(dedupe.accept(0x400000, 0x1234, now + 2000));
+}
 
-    cache.addOrRefresh(callsite, ip, port, sock, endpoint, true, 100);
-    auto lookup = cache.lookupByEndpoint(endpoint);
-    assert(lookup.has_value());
-    assert(lookup->accept_count == 1);
+static void TestEndpointTrustCache()
+{
+    EndpointTrustCache cache;
+    EndpointTrustCache::SlotKey slotKey{reinterpret_cast<void*>(0x4000),
+                                        reinterpret_cast<void*>(0x5000),
+                                        3};
+    EndpointTrustCache::CodeKey codeKey{0x2000};
 
-    cache.addOrRefresh(callsite, ip, port, sock, endpoint, true, 200);
-    lookup = cache.lookup(callsite, ip, port);
-    assert(lookup.has_value());
-    assert(lookup->accept_count == 2);
-    assert(lookup->last_seen_ms == 200);
+    cache.store(slotKey, true, 1000, 60000);
+    auto slotHit = cache.lookup(slotKey, 2000);
+    assert(slotHit.has_value());
+    assert(slotHit->accepted);
+
+    cache.store(codeKey, false, 1000, 1000);
+    auto codeHit = cache.lookup(codeKey, 1500);
+    assert(codeHit.has_value());
+    assert(!codeHit->accepted);
+    assert(!cache.lookup(codeKey, 3000).has_value());
 }
 
 static void TestRejectStoreTtl()
@@ -119,7 +105,8 @@ static void TestTunerAdjustments()
 int main()
 {
     TestSamplePrioritization();
-    TestTrustedEndpointCache();
+    TestSampleDeduper();
+    TestEndpointTrustCache();
     TestRejectStoreTtl();
     TestTunerAdjustments();
     return 0;

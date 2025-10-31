@@ -11,6 +11,7 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
+#include <optional>
 #include <ws2tcpip.h>
 #include <minhook.h>
 #include <intrin.h>
@@ -35,6 +36,11 @@ typedef LONG NTSTATUS;
 
 // Define the global variable that was previously only declared as extern
 volatile LONG g_needWalkReg = 0;
+
+extern "C" USHORT NTAPI RtlCaptureStackBackTrace(ULONG FramesToSkip,
+                                                 ULONG FramesToCapture,
+                                                 PVOID* BackTrace,
+                                                 PULONG BackTraceHash);
 
 namespace Net {
 
@@ -83,17 +89,22 @@ static std::unordered_set<uint64_t> g_vtblSlotCache;
 static std::unordered_set<void*> g_skipWarnedVtables;
 static DWORD g_nextNetCfgProbeTick = 0;
 static Scanner::SendSampleRing g_sendSampleRing{};
+static Scanner::SampleDeduper g_sendSampleDeduper{};
 static Scanner::TokenBucket g_sendSampleBucket(100, 200);
-static Scanner::TrustedEndpointCache g_trustedEndpoints{};
+static Scanner::EndpointTrustCache g_endpointTrust{};
 static Scanner::RejectStore g_rejectStore{};
 static Scanner::Tuner g_tuner{};
 static Scanner::ScanPassTelemetry g_lastTelemetry{};
 static std::mutex g_lastTelemetryMutex;
 static std::atomic<std::uint64_t> g_passSeq{0};
+static std::atomic<std::uint64_t> g_totalSampleCount{0};
+static std::atomic<std::uint32_t> g_lastRingLoad{0};
+static std::atomic<std::uint32_t> g_guardWarnBudget{0};
+static std::atomic<std::uint64_t> g_guardWarnPass{0};
 static std::unordered_map<void*, std::uint64_t> g_endpointCallsiteHints;
 static std::mutex g_endpointCallsiteMutex;
-using SampleAggregateMap = std::unordered_map<std::uint64_t, Scanner::SampleAggregate>;
 static thread_local std::vector<Scanner::SendSample> t_sendSampleBuffer;
+static Scanner::ModuleMap g_moduleMap;
 
 struct EndpointBackoffState {
     DWORD nextTick = 0;
@@ -269,8 +280,16 @@ static void LogGuardInvalidManager(void* manager)
     if (!shouldLog)
         return;
 
+    Log::Level level = Log::Level::Warn;
+    uint32_t budget = g_guardWarnBudget.load(std::memory_order_relaxed);
+    if (budget > 0) {
+        g_guardWarnBudget.fetch_sub(1, std::memory_order_relaxed);
+    } else {
+        level = Log::Level::Debug;
+    }
+
     if (suppressed > 0) {
-        Log::Logf(Log::Level::Warn,
+        Log::Logf(level,
                   Log::Category::Core,
                   "[SB][GUARD] skipped invalid manager=%p (x%u suppressed)",
                   manager,
@@ -278,7 +297,7 @@ static void LogGuardInvalidManager(void* manager)
         return;
     }
 
-    Log::Logf(Log::Level::Warn,
+    Log::Logf(level,
               Log::Category::Core,
               "[SB][GUARD] skipped invalid manager=%p",
               manager);
@@ -557,24 +576,18 @@ static bool TryCaptureSocketEndpoint(SOCKET sock, uint32_t& ipOut, uint16_t& por
     return true;
 }
 
-static void DrainSendSamples(SampleAggregateMap& aggregates, uint32_t& totalSamples)
+static void DrainSendSamples(std::vector<Scanner::SendSample>& samples,
+                             std::uint32_t maxSamples,
+                             std::uint32_t& drainedSamples,
+                             std::uint32_t& ringLoadPct)
 {
-    aggregates.clear();
-    t_sendSampleBuffer.clear();
-    g_sendSampleRing.drain(t_sendSampleBuffer);
-    totalSamples = static_cast<uint32_t>(t_sendSampleBuffer.size());
-
-    for (const auto& sample : t_sendSampleBuffer) {
-        Scanner::SampleAggregate& agg = aggregates[sample.callsite];
-        if (agg.count == 0) {
-            agg.callsite = sample.callsite;
-            agg.ip = sample.ip;
-            agg.port = sample.port;
-            agg.sock = sample.sock;
-        }
-        agg.last_ts_ms = sample.ts_ms;
-        if (agg.count < UINT32_MAX)
-            ++agg.count;
+    samples.clear();
+    g_sendSampleRing.drain(samples, maxSamples);
+    drainedSamples = static_cast<std::uint32_t>(samples.size());
+    ringLoadPct = g_sendSampleRing.loadPercent();
+    g_lastRingLoad.store(ringLoadPct, std::memory_order_relaxed);
+    if (drainedSamples > 0) {
+        g_totalSampleCount.fetch_add(drainedSamples, std::memory_order_relaxed);
     }
 }
 
@@ -623,27 +636,474 @@ struct TraceResult
 
 static void ResetTraceResult(TraceResult& trace);
 
+static void LogTraceHops(const TraceResult& trace, uint8_t slotLabel)
+{
+    for (size_t hop = 0; hop < trace.hopCount; ++hop) {
+        const TraceHop& hopInfo = trace.hops[hop];
+        const bool isRoot = (hop == 0);
+        const char* pattern = hopInfo.pattern ? hopInfo.pattern : "?";
+        if (isRoot) {
+            if (hopInfo.slot && hopInfo.slotValue) {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[SB] hop vtbl[%02X] @%p: %s -> [%08lX]=%p",
+                          slotLabel,
+                          hopInfo.from,
+                          pattern,
+                          static_cast<unsigned long>(reinterpret_cast<uintptr_t>(hopInfo.slot)),
+                          hopInfo.slotValue);
+            } else {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[SB] hop vtbl[%02X] @%p: %s -> %p",
+                          slotLabel,
+                          hopInfo.from,
+                          pattern,
+                          hopInfo.to);
+            }
+        } else {
+            if (hopInfo.slot && hopInfo.slotValue) {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[SB] hop @%p: %s -> [%08lX]=%p",
+                          hopInfo.from,
+                          pattern,
+                          static_cast<unsigned long>(reinterpret_cast<uintptr_t>(hopInfo.slot)),
+                          hopInfo.slotValue);
+            } else {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[SB] hop @%p: %s -> %p",
+                          hopInfo.from,
+                          pattern,
+                          hopInfo.to);
+            }
+        }
+    }
+}
+
+static void FormatTraceChain(const TraceResult& trace, char* buffer, size_t length)
+{
+    if (!buffer || length == 0)
+        return;
+
+    buffer[0] = '\0';
+    if (trace.hopCount == 0) {
+        std::snprintf(buffer, length, "?");
+        return;
+    }
+
+    size_t written = 0;
+    for (size_t hop = 0; hop < trace.hopCount; ++hop) {
+        if (hop > 0 && written + 2 < length) {
+            int step = std::snprintf(buffer + written, length - written, "->");
+            if (step < 0)
+                break;
+            if (static_cast<size_t>(step) >= length - written) {
+                written = length - 1;
+                break;
+            }
+            written += static_cast<size_t>(step);
+        }
+        const char* pattern = trace.hops[hop].pattern ? trace.hops[hop].pattern : "?";
+        if (written < length) {
+            int step = std::snprintf(buffer + written, length - written, "%s", pattern);
+            if (step < 0)
+                break;
+            if (static_cast<size_t>(step) >= length - written) {
+                written = length - 1;
+                break;
+            }
+            written += static_cast<size_t>(step);
+        }
+        if (written >= length - 1)
+            break;
+    }
+    if (written == 0)
+        std::snprintf(buffer, length, "?");
+}
+
+static bool AttachSendBuilderFromTrace(void* matchedFn,
+                                       uint8_t slotIndex,
+                                       void* vtbl,
+                                       const TraceResult* traceOpt,
+                                       const char* fallbackLabel,
+                                       const uint8_t* byteTargetOverride)
+{
+    if (!matchedFn)
+        return false;
+
+    uint8_t* finalTarget = reinterpret_cast<uint8_t*>(g_sendPacketTarget ? g_sendPacketTarget : matchedFn);
+    const uint8_t* byteTarget = byteTargetOverride;
+    char chain[128] = {};
+    chain[0] = '\0';
+
+    if (traceOpt) {
+        const TraceResult& trace = *traceOpt;
+        const uint8_t slotLabel = (trace.slotIndex != 0xFF) ? trace.slotIndex : slotIndex;
+        LogTraceHops(trace, slotLabel);
+        FormatTraceChain(trace, chain, sizeof(chain));
+        if (trace.finalTarget)
+            finalTarget = trace.finalTarget;
+        if (trace.site)
+            byteTarget = trace.site;
+        else if (!byteTarget)
+            byteTarget = reinterpret_cast<const uint8_t*>(matchedFn) + trace.offset;
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket@%p",
+                  slotLabel,
+                  matchedFn,
+                  chain[0] ? chain : "?",
+                  finalTarget);
+    } else {
+        std::snprintf(chain, sizeof(chain), "%s", (fallbackLabel && fallbackLabel[0]) ? fallbackLabel : "direct");
+        if (!byteTarget)
+            byteTarget = reinterpret_cast<const uint8_t*>(matchedFn);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket@%p",
+                  slotIndex,
+                  matchedFn,
+                  chain,
+                  finalTarget);
+    }
+
+    if (g_sendBuilderHooked)
+        return true;
+
+    if (MH_CreateHook(matchedFn, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
+        MH_EnableHook(matchedFn) == MH_OK) {
+        g_builderProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
+        g_sendBuilderHooked = true;
+        g_sendBuilderTarget = matchedFn;
+        uint8_t byteSample[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+        bool haveBytes = false;
+        if (byteTarget)
+            haveBytes = SafeMem::SafeReadBytes(byteTarget, byteSample, sizeof(byteSample));
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] attaching vtbl[%02u]=%p bytes=%02X %02X %02X %02X",
+                  static_cast<unsigned>(slotIndex),
+                  matchedFn,
+                  haveBytes ? byteSample[0] : 0xFF,
+                  haveBytes ? byteSample[1] : 0xFF,
+                  haveBytes ? byteSample[2] : 0xFF,
+                  haveBytes ? byteSample[3] : 0xFF);
+        Core::StartupSummary::NotifySendBuilderReady();
+        return true;
+    }
+
+    WriteRawLog("ScanEndpointVTable: failed to hook suspected builder");
+    g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
+    return false;
+}
+
+static uint8_t* LocateFunctionStart(uint8_t* ret,
+                                    const Scanner::ModuleInfo& module)
+{
+    if (!ret)
+        return nullptr;
+
+    constexpr std::size_t kMaxBack = 0x180;
+    const std::uintptr_t moduleBegin = module.textBegin ? module.textBegin : module.base;
+    const std::uintptr_t moduleEnd = module.textEnd ? module.textEnd : module.end;
+    const std::uintptr_t retAddr = reinterpret_cast<std::uintptr_t>(ret);
+    if (retAddr <= moduleBegin || retAddr >= moduleEnd)
+        return nullptr;
+
+    for (std::size_t back = 0; back < kMaxBack; ++back) {
+        if (retAddr <= moduleBegin + back + 4)
+            break;
+        uint8_t* candidate = ret - back;
+        if (!candidate)
+            break;
+        if (reinterpret_cast<std::uintptr_t>(candidate) < moduleBegin)
+            break;
+        uint8_t bytes[6] = {};
+        if (!SafeMem::SafeReadBytes(candidate, bytes, sizeof(bytes)))
+            continue;
+
+        if (bytes[0] == 0x55 && bytes[1] == 0x8B && (bytes[2] == 0xEC || bytes[2] == 0xE5))
+            return candidate;
+        if (bytes[0] == 0x53 && bytes[1] == 0x56)
+            return candidate;
+        if (bytes[0] == 0x53 && bytes[1] == 0x57)
+            return candidate;
+        if (bytes[0] == 0x56 && bytes[1] == 0x57)
+            return candidate;
+        if (bytes[0] == 0x57 && bytes[1] == 0x56)
+            return candidate;
+        if (bytes[0] == 0x8B && bytes[1] == 0xFF && bytes[2] == 0x55 && bytes[3] == 0x8B && (bytes[4] == 0xEC || bytes[4] == 0xE5))
+            return candidate + 2;
+        if (bytes[0] == 0xCC && back > 0)
+            return candidate + 1;
+    }
+
+    return ret;
+}
+
+static Scanner::EdgeType ClassifyEdgeFromReturn(uint8_t* ret)
+{
+    if (!ret)
+        return Scanner::EdgeType::Unknown;
+
+    const std::uintptr_t retAddr = reinterpret_cast<std::uintptr_t>(ret);
+
+    auto readByte = [](const uint8_t* addr, uint8_t& value) -> bool {
+        return SafeMem::SafeReadBytes(addr, &value, sizeof(value));
+    };
+
+    uint8_t opcode = 0;
+
+    if (retAddr >= 5 && readByte(ret - 5, opcode) && opcode == 0xE8)
+        return Scanner::EdgeType::Direct;
+
+    if (retAddr >= 6) {
+        uint8_t bytes[2] = {};
+        if (SafeMem::SafeReadBytes(ret - 6, bytes, sizeof(bytes))) {
+            if (bytes[0] == 0xFF && bytes[1] == 0x15)
+                return Scanner::EdgeType::Direct;
+        }
+    }
+
+    if (retAddr >= 2) {
+        uint8_t bytes[2] = {};
+        if (SafeMem::SafeReadBytes(ret - 2, bytes, sizeof(bytes))) {
+            if (bytes[0] == 0xFF && (bytes[1] & 0xF8) == 0xD0)
+                return Scanner::EdgeType::RegThunk;
+        }
+    }
+
+    if (retAddr >= 3) {
+        uint8_t bytes[3] = {};
+        if (SafeMem::SafeReadBytes(ret - 3, bytes, sizeof(bytes))) {
+            if (bytes[0] == 0xFF && (bytes[1] & 0xF8) == 0xE0)
+                return Scanner::EdgeType::Tail;
+        }
+    }
+
+    if (retAddr >= 7) {
+        uint8_t bytes[7] = {};
+        if (SafeMem::SafeReadBytes(ret - 7, bytes, sizeof(bytes))) {
+            if (bytes[0] == 0x68 && bytes[5] == 0xE9)
+                return Scanner::EdgeType::PushJmp;
+            if (bytes[0] == 0x68 && bytes[5] == 0xFF && bytes[6] == 0x25)
+                return Scanner::EdgeType::PushJmp;
+        }
+    }
+
+    if (retAddr >= 5 && readByte(ret - 5, opcode) && opcode == 0xE9)
+        return Scanner::EdgeType::Tail;
+
+    return Scanner::EdgeType::Unknown;
+}
+
+static bool BuildSendSample(void* retPtr, std::uint64_t nowMs, Scanner::SendSample& outSample)
+{
+    if (!retPtr)
+        return false;
+
+    const Scanner::ModuleInfo* module = g_moduleMap.findByAddress(retPtr);
+    if (!module)
+        return false;
+
+    const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
+    if (!primary || module->module != primary->module)
+        return false;
+
+    uint8_t* ret = reinterpret_cast<uint8_t*>(retPtr);
+    uint8_t* funcStart = LocateFunctionStart(ret, *module);
+    if (!funcStart)
+        return false;
+
+    const std::uintptr_t funcAddr = reinterpret_cast<std::uintptr_t>(funcStart);
+    if (funcAddr < module->textBegin || funcAddr >= module->textEnd)
+        return false;
+
+    std::uint32_t rva = static_cast<std::uint32_t>(funcAddr - module->base);
+    if (!g_sendSampleDeduper.accept(module->base, rva, nowMs))
+        return false;
+
+    outSample.ret = retPtr;
+    outSample.func = funcStart;
+    outSample.rva = rva;
+    outSample.tick = nowMs;
+    outSample.edge = ClassifyEdgeFromReturn(ret);
+    return true;
+}
+
 static bool IsExecutableSendContext(void* candidate, void** outVtbl, void** outEntry0);
 static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* outTrace = nullptr);
 static void CaptureSendContext(void* candidate, const char* sourceTag);
+static bool ProcessSendSamplesFast(const std::vector<CandidateRaw>& rawCandidates,
+                                   const std::vector<Scanner::SendSample>& samples,
+                                   Scanner::ScanPassTelemetry& telemetry);
+static bool TryAttachFromSample(const Scanner::SendSample& sample,
+                                TraceResult& trace,
+                                const std::vector<CandidateRaw>& rawCandidates,
+                                std::uint64_t nowMs);
+static std::optional<std::uint32_t> ResolveRva(void* addr);
 
 static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateDescriptor& descriptor,
-                                                       const SampleAggregateMap& samples,
                                                        Scanner::ScanPassTelemetry& telemetry,
                                                        uint64_t perfFreq);
 
-static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
-                             const SampleAggregateMap& samples,
-                             uint32_t sendSampleCount,
-                             uint32_t ringLoadPct);
+static std::optional<std::uint32_t> ResolveRva(void* addr)
+{
+    if (!addr)
+        return std::nullopt;
+    const Scanner::ModuleInfo* module = g_moduleMap.findByAddress(addr);
+    if (!module)
+        return std::nullopt;
+    const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
+    if (!primary || module->module != primary->module)
+        return std::nullopt;
+    return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(addr) - module->base);
+}
+
+static bool TryAttachFromSample(const Scanner::SendSample& sample,
+                                TraceResult& trace,
+                                const std::vector<CandidateRaw>& rawCandidates,
+                                std::uint64_t nowMs)
+{
+    for (const auto& raw : rawCandidates) {
+        if (!raw.endpoint)
+            continue;
+        void* vtbl = nullptr;
+        if (!SafeCopy(&vtbl, raw.endpoint, sizeof(vtbl)) || !vtbl)
+            continue;
+        void* fn = nullptr;
+        for (uint8_t slot = 0; slot < 32; ++slot) {
+            if (!SafeMem::SafeRead(reinterpret_cast<void* const*>(vtbl) + slot, fn) || !fn)
+                continue;
+            if (fn != sample.func)
+                continue;
+            TraceResult candidateTrace{};
+            ResetTraceResult(candidateTrace);
+            if (!TraceSendPacketUse(reinterpret_cast<uint8_t*>(fn), candidateTrace, slot, vtbl))
+                continue;
+            if (!AttachSendBuilderFromTrace(fn, slot, vtbl, &candidateTrace, nullptr, nullptr))
+                continue;
+            {
+                std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+                g_endpointCallsiteHints[raw.endpoint] = sample.rva;
+            }
+            Scanner::EndpointTrustCache::SlotKey slotKey{raw.endpoint, vtbl, slot};
+            g_endpointTrust.store(slotKey, true, nowMs, 600000);
+            g_rejectStore.clear(reinterpret_cast<std::uintptr_t>(raw.endpoint));
+            ClearEndpointBackoff(raw.endpoint);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool ProcessSendSamplesFast(const std::vector<CandidateRaw>& rawCandidates,
+                                   const std::vector<Scanner::SendSample>& samples,
+                                   Scanner::ScanPassTelemetry& telemetry)
+{
+    if (samples.empty())
+        return false;
+
+    const uint64_t nowMs = GetTickCount64();
+    std::uint32_t examined = 0;
+
+    for (const auto& sample : samples) {
+        if (examined >= 16)
+            break;
+        ++examined;
+
+        Scanner::EndpointTrustCache::CodeKey codeKey{sample.rva};
+        if (g_endpointTrust.shouldSkip(codeKey, nowMs)) {
+            ++telemetry.sample_rejects;
+            continue;
+        }
+
+        TraceResult trace{};
+        ResetTraceResult(trace);
+        uint8_t* visited[kTailFollowMaxDepth] = {};
+        size_t visitedCount = 0;
+        bool matched = TraceSendPacketFrom(reinterpret_cast<uint8_t*>(sample.func),
+                                           kEndpointScanWindow,
+                                           kTailFollowMaxDepth,
+                                           trace,
+                                           visited,
+                                           visitedCount,
+                                           true);
+        if (!matched) {
+            g_endpointTrust.store(codeKey, false, nowMs, 10000);
+            ++telemetry.sample_rejects;
+            continue;
+        }
+
+        ++telemetry.sample_hits;
+        if (TryAttachFromSample(sample, trace, rawCandidates, nowMs)) {
+            ++telemetry.accepted;
+            g_endpointTrust.store(codeKey, true, nowMs, 600000);
+            g_builderScanned = g_sendBuilderHooked;
+            return true;
+        }
+
+        g_endpointTrust.store(codeKey, false, nowMs, 10000);
+    }
+
+    return false;
+}
 
 static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
-                             const SampleAggregateMap& samples,
+                             const std::vector<Scanner::SendSample>& samples,
                              uint32_t sendSampleCount,
                              uint32_t ringLoadPct)
 {
     if (rawCandidates.empty())
         return false;
+
+    Scanner::ScanPassTelemetry telemetry{};
+    telemetry.id = g_passSeq.fetch_add(1) + 1;
+    telemetry.send_samples = sendSampleCount;
+    telemetry.ring_load_pct = ringLoadPct;
+
+    g_guardWarnPass.store(telemetry.id, std::memory_order_relaxed);
+    g_guardWarnBudget.store(2, std::memory_order_relaxed);
+
+    if (ProcessSendSamplesFast(rawCandidates, samples, telemetry)) {
+        {
+            std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
+            g_lastTelemetry = telemetry;
+        }
+
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "TELEMETRY[PASS] id=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u avg_us=%llu max_us=%llu",
+                  static_cast<unsigned long long>(telemetry.id),
+                  telemetry.candidates_considered,
+                  telemetry.accepted,
+                  telemetry.rejected,
+                  telemetry.send_samples,
+                  telemetry.sample_hits,
+                  telemetry.sample_rejects,
+                  telemetry.avg_us(),
+                  telemetry.max_candidate_us);
+
+        g_tuner.applyTelemetry(telemetry);
+
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[BACKOFF] stepDelay=%ums inflight=%u escalation=%u",
+                  g_tuner.stepDelayMs(),
+                  g_tuner.maxInflight(),
+                  g_tuner.escalationLevel());
+
+        return g_builderScanned;
+    }
+
+    std::unordered_map<std::uint32_t, std::uint32_t> sampleCounts;
+    sampleCounts.reserve(samples.size());
+    for (const auto& sample : samples) {
+        if (sample.rva != 0)
+            ++sampleCounts[sample.rva];
+    }
 
     std::vector<Scanner::CandidateDescriptor> descriptors;
     descriptors.reserve(rawCandidates.size());
@@ -656,38 +1116,32 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
         descriptor.endpoint = raw.endpoint;
         descriptor.offset = raw.offset;
 
-        auto trusted = g_trustedEndpoints.lookupByEndpoint(reinterpret_cast<std::uintptr_t>(raw.endpoint));
-        if (trusted) {
-            descriptor.trusted = true;
-            auto it = samples.find(trusted->callsite);
-            if (it != samples.end()) {
-                descriptor.sampleReferenced = true;
-                descriptor.sampleCount = it->second.count;
-            }
-        } else {
+        std::uint64_t hintRva = 0;
+        {
             std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
             auto hint = g_endpointCallsiteHints.find(raw.endpoint);
-            if (hint != g_endpointCallsiteHints.end()) {
-                auto sampleIt = samples.find(hint->second);
-                if (sampleIt != samples.end()) {
-                    descriptor.sampleReferenced = true;
-                    descriptor.sampleCount = sampleIt->second.count;
-                }
+            if (hint != g_endpointCallsiteHints.end())
+                hintRva = hint->second;
+        }
+
+        if (hintRva != 0) {
+            auto it = sampleCounts.find(static_cast<std::uint32_t>(hintRva));
+            if (it != sampleCounts.end()) {
+                descriptor.sampleReferenced = true;
+                descriptor.sampleCount = it->second;
             }
         }
 
         descriptors.push_back(descriptor);
     }
 
-    if (descriptors.empty())
+    if (descriptors.empty()) {
+        std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
+        g_lastTelemetry = telemetry;
         return false;
+    }
 
     Scanner::PrioritizeCandidates(descriptors);
-
-    Scanner::ScanPassTelemetry telemetry{};
-    telemetry.id = g_passSeq.fetch_add(1) + 1;
-    telemetry.send_samples = sendSampleCount;
-    telemetry.ring_load_pct = ringLoadPct;
 
     const uint64_t freq = PerfFrequency();
     uint32_t attempted = 0;
@@ -696,7 +1150,7 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
     for (const auto& descriptor : descriptors) {
         if (g_builderScanned)
             break;
-        CandidateProcessOutcome outcome = ProcessScannerCandidate(descriptor, samples, telemetry, freq);
+        CandidateProcessOutcome outcome = ProcessScannerCandidate(descriptor, telemetry, freq);
         if (outcome.accepted)
             break;
         if (outcome.attempted) {
@@ -713,12 +1167,14 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
 
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
-              "TELEMETRY[PASS] id=%llu candidates=%u accepted=%u rejected=%u send_samples=%u avg_us=%llu max_us=%llu",
+              "TELEMETRY[PASS] id=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u avg_us=%llu max_us=%llu",
               static_cast<unsigned long long>(telemetry.id),
               telemetry.candidates_considered,
               telemetry.accepted,
               telemetry.rejected,
               telemetry.send_samples,
+              telemetry.sample_hits,
+              telemetry.sample_rejects,
               telemetry.avg_us(),
               telemetry.max_candidate_us);
 
@@ -735,7 +1191,6 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
 }
 
 static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateDescriptor& descriptor,
-                                                       const SampleAggregateMap& samples,
                                                        Scanner::ScanPassTelemetry& telemetry,
                                                        uint64_t perfFreq)
 {
@@ -757,26 +1212,6 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
 
     outcome.attempted = true;
 
-    auto trusted = g_trustedEndpoints.lookupByEndpoint(addr);
-    const Scanner::SampleAggregate* sampleAgg = nullptr;
-    uint64_t callsiteHint = 0;
-
-    if (trusted) {
-        callsiteHint = trusted->callsite;
-        auto it = samples.find(callsiteHint);
-        if (it != samples.end())
-            sampleAgg = &it->second;
-    } else {
-        std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
-        auto it = g_endpointCallsiteHints.find(descriptor.endpoint);
-        if (it != g_endpointCallsiteHints.end()) {
-            callsiteHint = it->second;
-            auto sampleIt = samples.find(callsiteHint);
-            if (sampleIt != samples.end())
-                sampleAgg = &sampleIt->second;
-        }
-    }
-
     LARGE_INTEGER start{}, end{};
     QueryPerformanceCounter(&start);
 
@@ -786,25 +1221,10 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
     TraceResult trace{};
     ResetTraceResult(trace);
 
-    if (trusted) {
-        void* vtbl = nullptr;
-        void* entry0 = nullptr;
-        if (IsExecutableSendContext(descriptor.endpoint, &vtbl, &entry0)) {
-            accepted = true;
-        } else {
-            g_trustedEndpoints.noteReject(trusted->callsite,
-                                          trusted->ip,
-                                          trusted->port,
-                                          nowMs);
-        }
-    }
-
-    if (!accepted) {
-        if (ScanEndpointVTable(descriptor.endpoint, noPath, &trace)) {
-            accepted = true;
-        } else {
-            rejected = true;
-        }
+    if (ScanEndpointVTable(descriptor.endpoint, noPath, &trace)) {
+        accepted = true;
+    } else {
+        rejected = true;
     }
 
     QueryPerformanceCounter(&end);
@@ -814,48 +1234,19 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
     telemetry.recordCandidate(durationUs, accepted, rejected);
 
     if (accepted) {
-        uint64_t callsite = 0;
-        if (trace.site)
-            callsite = reinterpret_cast<uint64_t>(trace.site);
-        else if (trusted)
-            callsite = trusted->callsite;
-        else if (callsiteHint)
-            callsite = callsiteHint;
-
-        if (callsite) {
-            std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
-            g_endpointCallsiteHints[descriptor.endpoint] = callsite;
+        g_rejectStore.clear(reinterpret_cast<std::uintptr_t>(descriptor.endpoint));
+        if (trace.vtable && trace.slotIndex != 0xFF) {
+            Scanner::EndpointTrustCache::SlotKey slotKey{descriptor.endpoint, trace.vtable, trace.slotIndex};
+            g_endpointTrust.store(slotKey, true, nowMs, 600000);
         }
-
-        const Scanner::SampleAggregate* agg = sampleAgg;
-        if (!agg && callsite) {
-            auto it = samples.find(callsite);
-            if (it != samples.end())
-                agg = &it->second;
+        if (trace.site) {
+            if (auto rva = ResolveRva(trace.site)) {
+                Scanner::EndpointTrustCache::CodeKey codeKey{*rva};
+                g_endpointTrust.store(codeKey, true, nowMs, 600000);
+                std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+                g_endpointCallsiteHints[descriptor.endpoint] = *rva;
+            }
         }
-
-        const uint32_t ip = agg ? agg->ip : (trusted ? trusted->ip : 0);
-        const uint16_t port = agg ? agg->port : (trusted ? trusted->port : 0);
-        const uint32_t sock = agg ? agg->sock : (trusted ? trusted->sock : 0);
-
-        if (callsite) {
-            g_trustedEndpoints.addOrRefresh(callsite,
-                                            ip,
-                                            port,
-                                            sock,
-                                            addr,
-                                            true,
-                                            nowMs);
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Core,
-                      "[TRUST_CACHE] accept endpoint=%p callsite=%p ip=%u port=%u",
-                      descriptor.endpoint,
-                      reinterpret_cast<void*>(callsite),
-                      ip,
-                      port);
-        }
-
-        g_rejectStore.clear(addr);
         g_lastLoggedEndpoint = descriptor.endpoint;
         ClearEndpointBackoff(descriptor.endpoint);
         if (g_sendBuilderHooked)
@@ -872,25 +1263,11 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
                   descriptor.endpoint,
                   rejectInfo.first,
                   rejectInfo.second);
-
-        if (!trusted && sampleAgg) {
-            g_trustedEndpoints.addOrRefresh(sampleAgg->callsite,
-                                            sampleAgg->ip,
-                                            sampleAgg->port,
-                                            sampleAgg->sock,
-                                            addr,
-                                            false,
-                                            nowMs);
-            Log::Logf(Log::Level::Debug,
-                      Log::Category::Core,
-                      "[TRUST_CACHE] reject endpoint=%p callsite=%p",
-                      descriptor.endpoint,
-                      reinterpret_cast<void*>(sampleAgg->callsite));
-        }
-
         if (trace.site) {
-            std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
-            g_endpointCallsiteHints[descriptor.endpoint] = reinterpret_cast<uint64_t>(trace.site);
+            if (auto rva = ResolveRva(trace.site)) {
+                Scanner::EndpointTrustCache::CodeKey codeKey{*rva};
+                g_endpointTrust.store(codeKey, false, nowMs, 10000);
+            }
         }
     }
 
@@ -1102,10 +1479,9 @@ static bool TryDiscoverEndpointFromManager(void* manager)
               kTailFollowMaxDepth);
     WriteRawLog(startBuf);
 
-    SampleAggregateMap sampleAggregates;
     uint32_t drainedSamples = 0;
-    uint32_t ringLoadPct = g_sendSampleRing.loadPercent();
-    DrainSendSamples(sampleAggregates, drainedSamples);
+    uint32_t ringLoadPct = 0;
+    DrainSendSamples(t_sendSampleBuffer, 16, drainedSamples, ringLoadPct);
 
     std::vector<CandidateRaw> rawCandidates;
     rawCandidates.reserve(64);
@@ -1225,7 +1601,7 @@ static bool TryDiscoverEndpointFromManager(void* manager)
               ringLoadPct);
     WriteRawLog(summary);
 
-    bool attached = RunCandidatePass(rawCandidates, sampleAggregates, drainedSamples, ringLoadPct);
+    bool attached = RunCandidatePass(rawCandidates, t_sendSampleBuffer, drainedSamples, ringLoadPct);
     if (attached) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
@@ -2110,144 +2486,17 @@ static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* out
         return false;
     }
 
-    const void* byteTarget = nullptr;
-    uint8_t* finalTarget = reinterpret_cast<uint8_t*>(g_sendPacketTarget);
-    char chain[128] = {};
-    chain[0] = '\0';
+    const TraceResult* tracePtr = tracedMatched ? &trace : nullptr;
+    if (tracedMatched && outTrace)
+        *outTrace = trace;
 
-    if (tracedMatched) {
-        if (outTrace)
-            *outTrace = trace;
-        const unsigned slotLabel = (trace.slotIndex != 0xFF) ? trace.slotIndex : static_cast<unsigned>(matchedIndex & 0xFF);
-        for (size_t hop = 0; hop < trace.hopCount; ++hop) {
-            const TraceHop& hopInfo = trace.hops[hop];
-            bool isRootHop = (hop == 0);
-            const char* pattern = hopInfo.pattern ? hopInfo.pattern : "?";
-            if (isRootHop) {
-                if (hopInfo.slot && hopInfo.slotValue) {
-                    Log::Logf(Log::Level::Info,
-                              Log::Category::Core,
-                              "[SB] hop vtbl[%02X] @%p: %s -> [%08lX]=%p",
-                              slotLabel,
-                              hopInfo.from,
-                              pattern,
-                              static_cast<unsigned long>(reinterpret_cast<uintptr_t>(hopInfo.slot)),
-                              hopInfo.slotValue);
-                } else {
-                    Log::Logf(Log::Level::Info,
-                              Log::Category::Core,
-                              "[SB] hop vtbl[%02X] @%p: %s -> %p",
-                              slotLabel,
-                              hopInfo.from,
-                              pattern,
-                              hopInfo.to);
-                }
-            } else {
-                if (hopInfo.slot && hopInfo.slotValue) {
-                    Log::Logf(Log::Level::Info,
-                              Log::Category::Core,
-                              "[SB] hop @%p: %s -> [%08lX]=%p",
-                              hopInfo.from,
-                              pattern,
-                              static_cast<unsigned long>(reinterpret_cast<uintptr_t>(hopInfo.slot)),
-                              hopInfo.slotValue);
-                } else {
-                    Log::Logf(Log::Level::Info,
-                              Log::Category::Core,
-                              "[SB] hop @%p: %s -> %p",
-                              hopInfo.from,
-                              pattern,
-                              hopInfo.to);
-                }
-            }
-        }
-
-        if (trace.hopCount == 0) {
-            std::snprintf(chain, sizeof(chain), "?");
-        } else {
-            size_t written = 0;
-            for (size_t hop = 0; hop < trace.hopCount; ++hop) {
-                if (hop > 0 && written + 2 < sizeof(chain)) {
-                    int step = std::snprintf(chain + written, sizeof(chain) - written, "->");
-                    if (step < 0)
-                        break;
-                    if (static_cast<size_t>(step) >= sizeof(chain) - written) {
-                        written = sizeof(chain) - 1;
-                        break;
-                    }
-                    written += static_cast<size_t>(step);
-                }
-                const char* name = trace.hops[hop].pattern ? trace.hops[hop].pattern : "?";
-                if (written < sizeof(chain)) {
-                    int step = std::snprintf(chain + written, sizeof(chain) - written, "%s", name);
-                    if (step < 0)
-                        break;
-                    if (static_cast<size_t>(step) >= sizeof(chain) - written) {
-                        written = sizeof(chain) - 1;
-                        break;
-                    }
-                    written += static_cast<size_t>(step);
-                }
-                if (written >= sizeof(chain) - 1)
-                    break;
-            }
-            if (written == 0)
-                std::snprintf(chain, sizeof(chain), "?");
-        }
-
-        finalTarget = trace.finalTarget ? trace.finalTarget : reinterpret_cast<uint8_t*>(g_sendPacketTarget);
-        byteTarget = trace.site ? trace.site : reinterpret_cast<const uint8_t*>(matchedFn) + trace.offset;
-
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket@%p",
-                  slotLabel,
-                  matchedFn,
-                  chain[0] ? chain : "?",
-                  finalTarget);
-    } else if (matchedFn) {
-        std::snprintf(chain, sizeof(chain), "direct");
-        finalTarget = reinterpret_cast<uint8_t*>(g_sendPacketTarget ? g_sendPacketTarget : matchedFn);
-        byteTarget = matchedFn;
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket@%p",
-                  static_cast<unsigned>(matchedIndex & 0xFF),
-                  matchedFn,
-                  chain,
-                  finalTarget);
-    }
-
-    if (matchedFn && !g_sendBuilderHooked)
-    {
-        if (MH_CreateHook(matchedFn, Hook_SendBuilder, reinterpret_cast<LPVOID*>(&fpSendBuilder)) == MH_OK &&
-            MH_EnableHook(matchedFn) == MH_OK)
-        {
-            g_builderProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
-            g_sendBuilderHooked = true;
-            g_sendBuilderTarget = matchedFn;
-            uint8_t byteSample[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
-            bool haveBytes = false;
-            const uint8_t* source = reinterpret_cast<const uint8_t*>(byteTarget ? byteTarget : matchedFn);
-            if (source)
-                haveBytes = SafeMem::SafeReadBytes(source, byteSample, sizeof(byteSample));
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Core,
-                      "[CORE][SB] attaching vtbl[%02u]=%p bytes=%02X %02X %02X %02X",
-                      static_cast<unsigned>(matchedIndex & 0xFF),
-                      matchedFn,
-                      haveBytes ? byteSample[0] : 0xFF,
-                      haveBytes ? byteSample[1] : 0xFF,
-                      haveBytes ? byteSample[2] : 0xFF,
-                      haveBytes ? byteSample[3] : 0xFF);
-            Core::StartupSummary::NotifySendBuilderReady();
-            return true;
-        }
-        else
-        {
-            WriteRawLog("ScanEndpointVTable: failed to hook suspected builder");
-            g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
-        }
+    if (AttachSendBuilderFromTrace(matchedFn,
+                                   static_cast<uint8_t>(matchedIndex & 0xFF),
+                                   vtbl,
+                                   tracePtr,
+                                   "direct",
+                                   tracedMatched ? nullptr : reinterpret_cast<const uint8_t*>(matchedFn))) {
+        return true;
     }
 
     return g_sendBuilderHooked;
@@ -3311,43 +3560,35 @@ static void HookSendBuilderFromNetMgr()
 
 static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int len)
 {
-    const void* returnAddr = _ReturnAddress();
+    if (pkt && len > 0 && g_sendSampleBucket.tryConsume()) {
+        const std::uint64_t nowMs = static_cast<std::uint64_t>(GetTickCount64());
+        void* frames[16] = {};
+        USHORT captured = RtlCaptureStackBackTrace(0, 12, frames, nullptr);
+        std::uint32_t recorded = 0;
 
-    if (pkt && len > 0) {
-        if (g_sendSampleBucket.tryConsume()) {
+        for (USHORT i = 0; i < captured; ++i) {
+            if (recorded >= 12)
+                break;
             Scanner::SendSample sample{};
-            sample.ts_ms = static_cast<std::uint64_t>(GetTickCount64());
-            sample.callsite = reinterpret_cast<std::uint64_t>(returnAddr);
+            if (!BuildSendSample(frames[i], nowMs, sample))
+                continue;
 
-            SOCKET sock = Net::GetLastSocket();
-            sample.sock = SocketToId(sock);
-            if (sock != INVALID_SOCKET) {
-                uint32_t ip = 0;
-                uint16_t port = 0;
-                if (TryCaptureSocketEndpoint(sock, ip, port)) {
-                    sample.ip = ip;
-                    sample.port = port;
-                }
-            }
-
-            if (thisPtr && sample.callsite != 0) {
+            if (thisPtr && recorded == 0) {
                 std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
-                auto it = g_endpointCallsiteHints.find(thisPtr);
-                if (it == g_endpointCallsiteHints.end() || it->second != sample.callsite) {
-                    g_endpointCallsiteHints[thisPtr] = sample.callsite;
-                }
+                g_endpointCallsiteHints[thisPtr] = sample.rva;
             }
 
             if (g_sendSampleRing.push(sample)) {
+                ++recorded;
                 static volatile LONG s_sampleLogBudget = 16;
                 if (s_sampleLogBudget > 0 && InterlockedDecrement(&s_sampleLogBudget) >= 0) {
                     Log::Logf(Log::Level::Debug,
                               Log::Category::Core,
-                              "[SEND_SAMPLE] captured callsite=%p sock=%u ip=%u port=%u",
-                              returnAddr,
-                              sample.sock,
-                              sample.ip,
-                              sample.port);
+                              "[SEND_SAMPLE] ret=%p func=%p rva=0x%08X edge=%s",
+                              sample.ret,
+                              sample.func,
+                              sample.rva,
+                              Scanner::ToString(sample.edge));
                 }
             } else {
                 static std::atomic<DWORD> s_lastDropLogTick{0};
@@ -3360,9 +3601,10 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
                                                               std::memory_order_relaxed)) {
                     Log::Logf(Log::Level::Warn,
                               Log::Category::Core,
-                              "[SEND_SAMPLE] ring full callsite=%p",
-                              returnAddr);
+                              "[SEND_SAMPLE] ring full rva=0x%08X",
+                              sample.rva);
                 }
+                break;
             }
         }
     }

@@ -5864,10 +5864,10 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
             SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u",
+                  "[HOOKS] helpers rebind ctx old=0x%p new=0x%p owner=%lu (pending)",
                   previousCtx,
                   canonicalCtx,
-                  static_cast<unsigned>(canonicalOwner));
+                  static_cast<unsigned long>(canonicalOwner));
         MarkHelperRebindPending();
         if (canonicalOwner == 0) {
             Log::Logf(Log::Level::Info,
@@ -5921,12 +5921,26 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
         if (rebindToCanonical(attemptedCtx, "ctx-invalid"))
             return false;
 
+        g_stateRegistry.GetByPointer(L, info);
+
         if (!IsValidCtx(info.ctx_reported)) {
+            constexpr uint32_t kCtxInvalidDemoteThreshold = 3;
+            if (info.helper_retry_count < kCtxInvalidDemoteThreshold) {
+                Log::Logf(Log::Level::Debug,
+                          Log::Category::Hooks,
+                          "helpers ctx invalid rebind pending L=%p ctx=%p retries=%u",
+                          L,
+                          attemptedCtx,
+                          static_cast<unsigned>(info.helper_retry_count));
+                return false;
+            }
+
             Log::Logf(Log::Level::Warn,
                       Log::Category::Hooks,
-                      "helpers bind abort L=%p reason=ctx-invalid ctx=%p",
+                      "helpers bind abort L=%p reason=ctx-invalid ctx=%p attempts=%u",
                       L,
-                      info.ctx_reported);
+                      info.ctx_reported,
+                      static_cast<unsigned>(info.helper_retry_count));
             return false;
         }
     } else if (!info.ctx_reported) {
