@@ -32,6 +32,9 @@ constexpr uint32_t STATE_FLAG_CANON_READY     = 1u << 11;
 constexpr uint32_t STATE_FLAG_HELPERS_PENDING = 1u << 12;
 constexpr uint32_t STATE_FLAG_HELPERS_INSTALLED = 1u << 13;
 
+constexpr uint16_t HELPER_FLAG_SETTLE_PROMOTED = 1u << 0;
+constexpr uint16_t HELPER_FLAG_SETTLE_ARMED    = 1u << 1;
+
 enum class HelperInstallStage : uint8_t {
     WaitingForGlobalState = 0,
     WaitingForOwnerThread = 1,
@@ -91,12 +94,14 @@ struct LuaStateInfo {
     uint64_t helper_last_attempt_ms = 0;
     uint64_t helper_last_mutation_tick_ms = 0;
     uint64_t helper_state_since_ms = 0;
+    uint64_t helper_settle_start_ms = 0;
+    uint64_t helper_next_skip_log_ms = 0;
     uint64_t helper_owner_deadline_ms = 0;
     uint64_t helper_passive_since_ms = 0;
     uint64_t helper_last_signal_ms = 0;
     uint8_t helper_state = static_cast<uint8_t>(HelperInstallStage::WaitingForGlobalState);
     uint8_t helper_failover_count = 0;
-    uint16_t helper_reserved = 0;
+    uint16_t helper_flags = 0;
 };
 
 class LuaStateRegistry {

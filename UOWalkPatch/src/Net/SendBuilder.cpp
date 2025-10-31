@@ -701,30 +701,42 @@ static void CaptureNetManager(void* candidate, const char* sourceTag)
     TryDiscoverEndpointFromManager(g_netMgr);
 }
 
+static bool CallsSendPacket(uint8_t* fn, size_t maxScan, uint8_t& outOffset)
+{
+    if (!fn || !g_sendPacketTarget || maxScan < 5)
+        return false;
+
+    uintptr_t target = reinterpret_cast<uintptr_t>(g_sendPacketTarget);
+    __try {
+        for (size_t i = 0; i + 5 <= maxScan; ++i) {
+            uint8_t op = fn[i];
+            if (op == 0xE8 || op == 0xE9) {
+                int32_t rel = *reinterpret_cast<int32_t*>(fn + i + 1);
+                uintptr_t callTarget = reinterpret_cast<uintptr_t>(fn + i + 5) + rel;
+                if (callTarget == target) {
+                    outOffset = static_cast<uint8_t>(i);
+                    return true;
+                }
+            }
+            if (op == 0xFF && (i + 6) <= maxScan && fn[i + 1] == 0x25) {
+                uintptr_t ptr = *reinterpret_cast<uintptr_t*>(fn + i + 2);
+                uintptr_t callTarget = *reinterpret_cast<uintptr_t*>(reinterpret_cast<void*>(ptr));
+                if (callTarget == target) {
+                    outOffset = static_cast<uint8_t>(i);
+                    return true;
+                }
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return false;
+}
+
 static bool FunctionCallsSendPacket(void* fn)
 {
-    if (!fn || !g_sendPacketTarget)
-        return false;
-
-    uint8_t buffer[256]{};
-    if (!SafeCopy(buffer, fn, sizeof(buffer)))
-        return false;
-
-    uintptr_t fnAddr = reinterpret_cast<uintptr_t>(fn);
-    uintptr_t target = reinterpret_cast<uintptr_t>(g_sendPacketTarget);
-
-    for (size_t i = 0; i + 5 <= sizeof(buffer); ++i)
-    {
-        if (buffer[i] != 0xE8) // CALL rel32
-            continue;
-        int32_t rel = 0;
-        memcpy(&rel, buffer + i + 1, sizeof(rel));
-        uintptr_t callTarget = fnAddr + i + 5 + static_cast<intptr_t>(rel);
-        if (callTarget == target)
-            return true;
-    }
-
-    return false;
+    uint8_t unusedOffset = 0;
+    return CallsSendPacket(reinterpret_cast<uint8_t*>(fn), 0x80, unusedOffset);
 }
 
 // Note: second (__fastcall) parameter is required to consume the register slot when
@@ -774,6 +786,12 @@ static bool ScanEndpointVTable(void* endpoint)
     int firstEightMisses = 0;
     int matchedIndex = -1;
     void* matchedFn = nullptr;
+    struct CandidateEntry {
+        void* fn;
+        uint8_t index;
+    };
+    CandidateEntry execCandidates[32]{};
+    uint32_t execCandidateCount = 0;
 
     uint32_t scannedCount = 0;
     uint32_t execLikeCount = 0;
@@ -806,6 +824,11 @@ static bool ScanEndpointVTable(void* endpoint)
             bool execCandidate = fn && sp::is_executable_code_ptr(fn);
             if (execCandidate)
                 ++execLikeCount;
+            if (execCandidate && execCandidateCount < _countof(execCandidates)) {
+                execCandidates[execCandidateCount].fn = fn;
+                execCandidates[execCandidateCount].index = static_cast<uint8_t>(i);
+                ++execCandidateCount;
+            }
             if (i < 8)
             {
                 ++firstEightCount;
@@ -865,16 +888,29 @@ static bool ScanEndpointVTable(void* endpoint)
         return false;
     }
 
+    bool fallbackMatched = false;
+    uint8_t fallbackOffset = 0;
+    if (!matchedFn && g_sendPacketTarget) {
+        for (uint32_t c = 0; c < execCandidateCount; ++c) {
+            uint8_t offset = 0;
+            if (CallsSendPacket(reinterpret_cast<uint8_t*>(execCandidates[c].fn), 0x80, offset)) {
+                matchedFn = execCandidates[c].fn;
+                matchedIndex = execCandidates[c].index;
+                fallbackMatched = true;
+                fallbackOffset = offset;
+                break;
+            }
+        }
+    }
+
     if (!matchedFn) {
         bool firstWarn = g_skipWarnedVtables.insert(vtbl).second;
         if (firstWarn) {
-            WriteRawLog("ScanEndpointVTable: no vtbl entry calling SendPacket; skipping hook");
-            if (g_sendPacketTarget) {
-                Log::Logf(Log::Level::Warn,
-                          Log::Category::Core,
-                          "[SB] no viable endpoint; fallback pattern scan is TODO (send=%p)",
-                          g_sendPacketTarget);
-            }
+            WriteRawLog("ScanEndpointVTable: fallback scan found no viable SendPacket target");
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Core,
+                      "[SB] fallback scan found no call/jmp to SendPacket (send=%p) ; deferring",
+                      g_sendPacketTarget);
         }
         g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         return false;
@@ -888,12 +924,21 @@ static bool ScanEndpointVTable(void* endpoint)
             g_builderProbeSuccess.fetch_add(1u, std::memory_order_relaxed);
             g_sendBuilderHooked = true;
             g_sendBuilderTarget = matchedFn;
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Core,
-                      "SendBuilder hook attached entry=%p via vtbl=%p slot=%d",
-                      matchedFn,
-                      vtbl,
-                      matchedIndex);
+            if (fallbackMatched) {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[SB] fallback matched vtbl[%02u]=%p via call->SendPacket at +0x%02X ; hook attached",
+                          static_cast<unsigned>(matchedIndex & 0xFF),
+                          matchedFn,
+                          static_cast<unsigned>(fallbackOffset));
+            } else {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "SendBuilder hook attached entry=%p via vtbl=%p slot=%d",
+                          matchedFn,
+                          vtbl,
+                          matchedIndex);
+            }
             Core::StartupSummary::NotifySendBuilderReady();
             return true;
         }
@@ -2229,6 +2274,17 @@ bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint)
 bool IsSendReady()
 {
     return g_sendPacket && (g_sendCtx || g_netMgr);
+}
+
+SendBuilderStatus GetSendBuilderStatus()
+{
+    SendBuilderStatus status{};
+    status.hooked = g_sendBuilderHooked;
+    status.sendPacket = g_sendPacketTarget;
+    bool haveManager = g_netMgr != nullptr || g_sendCtx != nullptr;
+    bool activelyScanning = !g_builderScanned || g_lastEndpointScanFailTick != 0 || g_lastEndpointScanPtr != nullptr;
+    status.probing = !status.hooked && (haveManager || activelyScanning);
+    return status;
 }
 
 

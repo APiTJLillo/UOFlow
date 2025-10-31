@@ -167,6 +167,7 @@ constexpr DWORD kProbeMaxBackoffMs = 8000;
 constexpr DWORD kRegisterSettleWindowMs = 250;
 constexpr DWORD kBindSummaryIntervalMs = 2000;
 constexpr DWORD kBindLogCooldownMs = 800;
+constexpr const char* kSettlePromoteReason = "settle-promote";
 
 struct LuaTask {
     std::string name;
@@ -207,6 +208,11 @@ static std::atomic<uint32_t> g_helperProbeSkipped{0};
 static std::atomic<bool> g_helpersInstalledAny{false};
 static std::atomic<DWORD> g_lastHelperOwnerThread{0};
 static std::atomic<uint64_t> g_lastHelperRetryScanTick{0};
+static std::atomic<uint64_t> g_lastHeartbeatTick{0};
+static constexpr size_t kLuaTraceRingSize = 64 * 1024;
+static std::array<char, kLuaTraceRingSize> g_luaTraceRing{};
+static std::atomic<uint32_t> g_luaTraceHead{0};
+static std::atomic<uint32_t> g_luaTraceTail{0};
 
 struct HelperRetryPolicy {
     uint32_t retryMax = 3;
@@ -377,6 +383,115 @@ static uint32_t HelperJitterMs(const HelperRetryPolicy& policy, const void* toke
     uint32_t window = std::max<uint32_t>(policy.debounceMs, 25u);
     uint64_t raw = (now << 21) ^ (now >> 7) ^ reinterpret_cast<std::uintptr_t>(token);
     return static_cast<uint32_t>(raw % (static_cast<uint64_t>(window) + 1u));
+}
+
+static uint32_t HelperRandomWindow(const void* token, uint64_t now, uint32_t window) noexcept {
+    window = std::max<uint32_t>(window, 1u);
+    uint64_t seed = (now << 19) ^ (now >> 13) ^ reinterpret_cast<std::uintptr_t>(token) ^ 0x4C11DB7u;
+    seed ^= (seed >> 17);
+    seed ^= (seed << 31);
+    return static_cast<uint32_t>(seed % (static_cast<uint64_t>(window) + 1u));
+}
+
+static uint32_t HelperBudgetBackoffMs(const void* token, uint64_t now) noexcept {
+    const uint32_t base = 450u + HelperRandomWindow(token, now ^ 0xA5A5A5A5u, 250u);
+    const void* jitterToken = reinterpret_cast<const void*>(reinterpret_cast<std::uintptr_t>(token) ^ 0x5A5A5A5Au);
+    int32_t jitter = static_cast<int32_t>(HelperRandomWindow(jitterToken, now ^ 0x3C3C3C3Cu, 200u)) - 100;
+    int32_t total = static_cast<int32_t>(base) + jitter;
+    if (total < 250)
+        total = 250;
+    if (total > 900)
+        total = 900;
+    return static_cast<uint32_t>(total);
+}
+
+static bool DebugRingTryWrite(const char* fmt, ...) noexcept {
+    if (!fmt)
+        return false;
+
+    char temp[256];
+    va_list args;
+    va_start(args, fmt);
+    va_list argsCopy;
+    va_copy(argsCopy, args);
+    int required = _vscprintf(fmt, argsCopy);
+    va_end(argsCopy);
+    if (required <= 0) {
+        va_end(args);
+        return false;
+    }
+    int written = _vsnprintf_s(temp, sizeof(temp), _TRUNCATE, fmt, args);
+    va_end(args);
+    if (written < 0)
+        written = static_cast<int>(std::strlen(temp));
+    if (written <= 0)
+        return false;
+
+    size_t msgLen = static_cast<size_t>(written);
+    if (msgLen > 0xFFFF)
+        msgLen = 0xFFFF;
+    size_t total = msgLen + sizeof(uint16_t);
+    if (total == 0 || total >= kLuaTraceRingSize)
+        return false;
+
+    uint32_t head = g_luaTraceHead.load(std::memory_order_relaxed);
+    uint32_t tail = g_luaTraceTail.load(std::memory_order_acquire);
+    uint32_t used = head - tail;
+    if (used >= kLuaTraceRingSize)
+        return false;
+    size_t freeSpace = kLuaTraceRingSize - static_cast<size_t>(used);
+    if (freeSpace <= total)
+        return false;
+
+    uint32_t writePos = head;
+    auto storeByte = [&](uint8_t byte) {
+        g_luaTraceRing[writePos % kLuaTraceRingSize] = static_cast<char>(byte);
+        ++writePos;
+    };
+
+    uint16_t storedLen = static_cast<uint16_t>(msgLen);
+    storeByte(static_cast<uint8_t>(storedLen & 0xFFu));
+    storeByte(static_cast<uint8_t>((storedLen >> 8) & 0xFFu));
+    for (size_t i = 0; i < msgLen; ++i)
+        storeByte(static_cast<uint8_t>(temp[i]));
+
+    g_luaTraceHead.store(writePos, std::memory_order_release);
+    return true;
+}
+
+static void DebugRingFlush() noexcept {
+    uint32_t tail = g_luaTraceTail.load(std::memory_order_relaxed);
+    uint32_t head = g_luaTraceHead.load(std::memory_order_acquire);
+    if (tail == head)
+        return;
+
+    char message[512];
+    while (tail < head) {
+        uint32_t available = head - tail;
+        if (available < 2)
+            break;
+        uint32_t readPos = tail % kLuaTraceRingSize;
+        uint8_t low = static_cast<uint8_t>(g_luaTraceRing[readPos]);
+        uint8_t high = static_cast<uint8_t>(g_luaTraceRing[(readPos + 1u) % kLuaTraceRingSize]);
+        uint16_t storedLen = static_cast<uint16_t>(low | (static_cast<uint16_t>(high) << 8));
+        if (storedLen == 0 || storedLen > kLuaTraceRingSize - 2) {
+            tail = head;
+            break;
+        }
+        if (available < static_cast<uint32_t>(storedLen) + 2)
+            break;
+
+        tail += 2;
+        size_t copyLen = std::min<size_t>(storedLen, sizeof(message) - 1);
+        for (size_t i = 0; i < copyLen; ++i)
+            message[i] = g_luaTraceRing[(tail + static_cast<uint32_t>(i)) % kLuaTraceRingSize];
+        message[copyLen] = '\0';
+        if (storedLen > copyLen && sizeof(message) > 2)
+            message[sizeof(message) - 2] = '\0';
+        WriteRawLog(message);
+        tail += storedLen;
+    }
+    g_luaTraceTail.store(tail, std::memory_order_release);
 }
 
 static bool DescribeAddressForLog(const void* address, char* moduleBuf, size_t moduleBufLen, void** moduleBaseOut, DWORD* protectOut) {
@@ -1074,6 +1189,7 @@ static void ClearHelperPending(lua_State* L, uint64_t generation, LuaStateInfo* 
             state.flags &= ~STATE_FLAG_HELPERS_PENDING;
             state.helper_pending_generation = 0;
             state.helper_pending_tick_ms = 0;
+            state.helper_flags &= ~HELPER_FLAG_SETTLE_ARMED;
             if ((state.flags & STATE_FLAG_HELPERS_INSTALLED) == 0) {
                 uint64_t now = GetTickCount64();
                 UpdateHelperStage(state, DetermineHelperStage(state, (state.flags & STATE_FLAG_CANON_READY) != 0), now, "clear-pending");
@@ -1682,7 +1798,8 @@ static int Lua_UOWDebugPing(lua_State* L);
 static int __cdecl HookSentinelGC(lua_State* L);
 static void ForceRebindAll(const char* reason);
 static bool ResolveRegisterFunction();
-static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
+static int __stdcall RegisterHookImpl(void* ctx, void* func, const char* name);
+static int __stdcall RegLua_detour(void* ctx, void* func, const char* name);
 static bool ProbeLua(lua_State* L);
 static lua_State* NormalizeLuaStatePointer(lua_State* candidate);
 static bool IsOwnerThread(const LuaStateInfo& info);
@@ -4504,16 +4621,70 @@ static void MaybeProcessHelperRetryQueue() {
     }
 }
 
+static void MaybeEmitHeartbeat() {
+    uint64_t now = GetTickCount64();
+    uint64_t last = g_lastHeartbeatTick.load(std::memory_order_relaxed);
+    if (now - last < 2000)
+        return;
+    if (!g_lastHeartbeatTick.compare_exchange_strong(last, now, std::memory_order_acq_rel))
+        return;
+
+    lua_State* canonical = g_canonicalState.load(std::memory_order_acquire);
+    LuaStateInfo info{};
+    bool haveInfo = canonical && g_stateRegistry.GetByPointer(canonical, info);
+    HelperInstallStage stage = haveInfo ? static_cast<HelperInstallStage>(info.helper_state)
+                                        : HelperInstallStage::WaitingForGlobalState;
+    const char* helperLabel = HelperStageName(stage);
+    uint64_t ageMs = (haveInfo && info.helper_state_since_ms && now >= info.helper_state_since_ms)
+                         ? (now - info.helper_state_since_ms)
+                         : 0;
+
+    const char* luaLabel = canonical ? "OK" : "MISS";
+    void* engineCtx = g_engineContext.load(std::memory_order_acquire);
+    const char* ctxLabel = engineCtx ? "OK" : "MISS";
+    Net::SendBuilderStatus sbStatus = Net::GetSendBuilderStatus();
+    const char* sbLabel = sbStatus.hooked ? "attached" : (sbStatus.probing ? "probing" : "pending");
+
+    Walk::Controller::Settings walkSettings = Walk::Controller::GetSettings();
+    uint32_t inflight = Walk::Controller::GetInflightCount();
+    uint32_t maxInflight = walkSettings.maxInflight ? walkSettings.maxInflight : 1;
+    uint32_t stepDelay = walkSettings.stepDelayMs;
+    uint32_t ackOk = Engine::GetAckOkCount();
+    uint32_t ackDrop = Engine::GetAckDropCount();
+
+    unsigned long ageLog = ageMs > std::numeric_limits<unsigned long>::max()
+                               ? std::numeric_limits<unsigned long>::max()
+                               : static_cast<unsigned long>(ageMs);
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[HB] lua=%s ctx=%s helpers=%s (age=%lums) sb=%s send=%p inflight=%u/%u stepDelay=%ums ack.ok=%u ack.drop=%u",
+              luaLabel,
+              ctxLabel,
+              helperLabel ? helperLabel : "unknown",
+              ageLog,
+              sbLabel,
+              sbStatus.sendPacket,
+              static_cast<unsigned>(inflight),
+              static_cast<unsigned>(maxInflight),
+              static_cast<unsigned>(stepDelay),
+              static_cast<unsigned>(ackOk),
+              static_cast<unsigned>(ackDrop));
+}
+
 static void HelperPumpThreadMain() {
     while (!g_helperPumpStop.load(std::memory_order_acquire)) {
         MaybeProcessHelperRetryQueue();
         Net::PollSendBuilder();
+        MaybeEmitHeartbeat();
+        DebugRingFlush();
         for (int i = 0; i < 5; ++i) {
             if (g_helperPumpStop.load(std::memory_order_acquire))
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
+    DebugRingFlush();
     g_helperPumpRunning.store(false, std::memory_order_release);
 }
 
@@ -4619,6 +4790,16 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
 
     lua_State* target = current.L_canonical;
     HelperInstallStage stage = DetermineHelperStage(current, canonicalReadyFlag);
+    void* engineCtxSnapshot = g_engineContext.load(std::memory_order_acquire);
+    if (engineCtxSnapshot && current.helper_settle_start_ms == 0) {
+        lua_State* settlePtr = target ? target : lookupPtr;
+        if (settlePtr) {
+            g_stateRegistry.UpdateByPointer(settlePtr, [&](LuaStateInfo& state) {
+                if (state.helper_settle_start_ms == 0)
+                    state.helper_settle_start_ms = now;
+            }, &current);
+        }
+    }
     if (target) {
         g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
             UpdateHelperStage(state, stage, now, action);
@@ -4699,6 +4880,15 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
 
     uint64_t generation = g_generation.load(std::memory_order_acquire);
     now = GetTickCount64();
+    uint64_t settleElapsed = (current.helper_settle_start_ms && now >= current.helper_settle_start_ms)
+                                 ? (now - current.helper_settle_start_ms)
+                                 : 0;
+    uint64_t attemptElapsed = (current.helper_first_attempt_ms && now >= current.helper_first_attempt_ms)
+                                  ? (now - current.helper_first_attempt_ms)
+                                  : 0;
+    const void* jitterToken = target ? target : lookupPtr;
+    bool promotionTriggered = false;
+    uint64_t promotionElapsed = 0;
     if (!force) {
         if ((current.flags & STATE_FLAG_HELPERS_BOUND) && current.gen == generation) {
             if (now - current.last_bind_log_tick_ms >= kBindLogCooldownMs) {
@@ -4835,16 +5025,41 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
                 signalConsumed = true;
             }
         }
+
+        if (!allowNow) {
+            bool gateSettle = gateReason && _stricmp(gateReason, "settle") == 0;
+            bool gateEligible = gateSettle || (gateReason == nullptr);
+            if (gateEligible && settleElapsed >= 2000 && engineCtxSnapshot && jitterToken) {
+                if ((current.helper_flags & HELPER_FLAG_SETTLE_PROMOTED) == 0) {
+                    allowNow = true;
+                    passiveMode = false;
+                    gateReason = nullptr;
+                    logOverride = true;
+                    overrideReason = "settle-budget";
+                    promotionTriggered = true;
+                    promotionElapsed = settleElapsed;
+                }
+            }
+        }
     }
 
     if (!allowNow) {
         g_helperProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         uint64_t backoff = HelperRetryDelay(retry, nextAttemptIndex);
-        if (!passiveMode && backoff > 0) {
-            uint64_t jitter = HelperJitterMs(retry, target, now);
-            desiredNextMs = std::max<uint64_t>(desiredNextMs, now + backoff + jitter);
+        if (!passiveMode) {
+            uint32_t delayMs = 0;
+            if (attemptElapsed >= 2000) {
+                delayMs = HelperBudgetBackoffMs(jitterToken ? jitterToken : target, now);
+            } else {
+                if (backoff == 0)
+                    backoff = retry.debounceMs;
+                delayMs = static_cast<uint32_t>(backoff);
+                delayMs += HelperJitterMs(retry, target, now);
+            }
+            desiredNextMs = std::max<uint64_t>(desiredNextMs, now + delayMs);
         }
 
+        bool shouldLogSkip = false;
         g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
             if (!state.helper_first_attempt_ms)
                 state.helper_first_attempt_ms = now;
@@ -4865,6 +5080,12 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
             } else {
                 state.helper_next_retry_ms = 0;
             }
+            bool allowLog = (state.helper_next_skip_log_ms == 0) || now >= state.helper_next_skip_log_ms;
+            if (allowLog) {
+                uint32_t skipJitter = HelperRandomWindow(jitterToken ? jitterToken : target, now, 300u);
+                state.helper_next_skip_log_ms = now + 700u + skipJitter;
+            }
+            shouldLogSkip = allowLog;
             UpdateHelperStage(state,
                               HelperInstallStage::WaitingForGlobalState,
                               now,
@@ -4884,14 +5105,16 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
                       action);
         }
 
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "helpers skip L=%p reason=%s retries=%u next=%llu action=%s",
-                  target,
-                  gateReason ? gateReason : "not-ready",
-                  static_cast<unsigned>(current.helper_retry_count),
-                  static_cast<unsigned long long>(desiredNextMs),
-                  action);
+        if (shouldLogSkip) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "helpers skip L=%p reason=%s retries=%u next=%llu action=%s",
+                      target,
+                      gateReason ? gateReason : "not-ready",
+                      static_cast<unsigned>(current.helper_retry_count),
+                      static_cast<unsigned long long>(desiredNextMs),
+                      action);
+        }
         return;
     }
 
@@ -4911,6 +5134,9 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         state.helper_pending_tick_ms = now;
         if (!state.helper_first_attempt_ms)
             state.helper_first_attempt_ms = now;
+        uint64_t localAttemptElapsed = (state.helper_first_attempt_ms && now >= state.helper_first_attempt_ms)
+                                           ? (now - state.helper_first_attempt_ms)
+                                           : 0;
         state.helper_last_attempt_ms = now;
         if (mutationTick > state.helper_last_mutation_tick_ms)
             state.helper_last_mutation_tick_ms = mutationTick;
@@ -4920,13 +5146,24 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
             ++state.helper_retry_count;
         uint64_t backoff = HelperRetryDelay(retry, state.helper_retry_count);
         if (!passiveMode) {
-            if (backoff == 0)
-                backoff = retry.debounceMs;
-            uint64_t jitter = HelperJitterMs(retry, target, now);
-            state.helper_next_retry_ms = now + backoff + jitter;
+            uint32_t delayMs = 0;
+            if (promotionTriggered || localAttemptElapsed >= 2000) {
+                delayMs = HelperBudgetBackoffMs(jitterToken ? jitterToken : target, now);
+            } else {
+                if (backoff == 0)
+                    backoff = retry.debounceMs;
+                delayMs = static_cast<uint32_t>(backoff);
+                delayMs += HelperJitterMs(retry, target, now);
+            }
+            state.helper_next_retry_ms = now + delayMs;
             state.helper_passive_since_ms = 0;
         } else {
             state.helper_next_retry_ms = 0;
+        }
+        if (promotionTriggered) {
+            state.helper_flags |= (HELPER_FLAG_SETTLE_PROMOTED | HELPER_FLAG_SETTLE_ARMED);
+        } else {
+            state.helper_flags &= ~HELPER_FLAG_SETTLE_ARMED;
         }
         UpdateHelperStage(state, HelperInstallStage::Installing, now, "schedule");
     }, &current);
@@ -4934,12 +5171,23 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
     TrackHelperEvent(g_helperScheduledCount);
     MaybeEmitHelperSummary(now);
 
+    if (promotionTriggered) {
+        unsigned long elapsedLog = promotionElapsed > std::numeric_limits<unsigned long>::max()
+                                       ? std::numeric_limits<unsigned long>::max()
+                                       : static_cast<unsigned long>(promotionElapsed);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "helpers promoting after settle budget elapsed=%lums (lua=OK, ctx=OK) guard=enabled",
+                  elapsedLog);
+    }
+
+    const char* bindReason = promotionTriggered ? kSettlePromoteReason : action;
     DWORD owner = current.owner_tid ? current.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
 
     if (owner && owner == GetCurrentThreadId()) {
-        BindHelpersTask(target, generation, force, action);
+        BindHelpersTask(target, generation, force, bindReason);
     } else {
-        std::string reasonCopy = action;
+        std::string reasonCopy = bindReason;
         PostToOwnerWithTask(target, "helpers", [target, generation, force, reasonCopy]() {
             BindHelpersTask(target, generation, force, reasonCopy.c_str());
         });
@@ -5604,7 +5852,16 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
             uint64_t delay = HelperRetryDelay(retry, state.helper_retry_count);
             if (delay == 0)
                 delay = retry.debounceMs;
-            uint64_t next = summaryTick + delay + HelperJitterMs(retry, L, summaryTick);
+            uint64_t firstTick = state.helper_first_attempt_ms;
+            uint64_t elapsed = (firstTick && summaryTick >= firstTick) ? (summaryTick - firstTick) : 0;
+            uint32_t delayMs = 0;
+            if (elapsed >= 2000) {
+                delayMs = HelperBudgetBackoffMs(L, summaryTick);
+            } else {
+                delayMs = static_cast<uint32_t>(delay);
+                delayMs += HelperJitterMs(retry, L, summaryTick);
+            }
+            uint64_t next = summaryTick + delayMs;
             if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < next)
                 state.helper_next_retry_ms = next;
         });
@@ -5627,6 +5884,11 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
                   static_cast<unsigned>(after.helper_retry_count),
                   static_cast<unsigned long long>(elapsedMs),
                   static_cast<unsigned long long>(nextRetry));
+        if (sehCode != 0 && reason && _stricmp(reason, kSettlePromoteReason) == 0) {
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "helpers promotion failed (seh) \xE2\x80\x94 will defer and retry later");
+        }
         if (sehCode != 0) {
             g_sehTrapCount.fetch_add(1u, std::memory_order_relaxed);
             char moduleName[MAX_PATH] = {};
@@ -6400,7 +6662,7 @@ static bool ResolveRegisterFunction() {
         return false;
     }
 
-    if (MH_CreateHook(addr, &Hook_Register, reinterpret_cast<LPVOID*>(&g_origRegister)) != MH_OK ||
+    if (MH_CreateHook(addr, &RegLua_detour, reinterpret_cast<LPVOID*>(&g_origRegister)) != MH_OK ||
         MH_EnableHook(addr) != MH_OK) {
         LogLuaProbe("hook installation failed");
         g_origRegister = nullptr;
@@ -6410,12 +6672,25 @@ static bool ResolveRegisterFunction() {
     g_registerTarget = addr;
     g_clientRegister = g_origRegister;
     g_registerResolved.store(true, std::memory_order_release);
+    char tracerMsg[128];
+    sprintf_s(tracerMsg, sizeof(tracerMsg), "[INFO][LUA] RegisterLuaFunction tracer attached at %p", addr);
+    WriteRawLog(tracerMsg);
     LogLuaProbe("register-hook-installed target=%p", addr);
     return true;
 }
 
 // Game client exports RegisterLuaFunction with stdcall; keep the hook matched so the stack remains balanced.
-static int __stdcall Hook_Register(void* ctx, void* func, const char* name) {
+static int __stdcall RegLua_detour(void* ctx, void* func, const char* name) {
+    __try {
+        const char* label = name ? name : "<null>";
+        DebugRingTryWrite("[LUA][REG] name=\"%s\" fn=%p", label, func);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return RegisterHookImpl(ctx, func, name);
+    }
+    return RegisterHookImpl(ctx, func, name);
+}
+
+static int __stdcall RegisterHookImpl(void* ctx, void* func, const char* name) {
     if (func) {
         lua_CFunction original = reinterpret_cast<lua_CFunction>(func);
         lua_CFunction wrapped = MaybeWrapLuaFunction(name, original);
@@ -6603,6 +6878,7 @@ bool InitLuaBridge() {
 
 void ShutdownLuaBridge() {
     StopHelperPumpThread();
+    DebugRingFlush();
     if (g_registerTarget) {
         MH_DisableHook(g_registerTarget);
         MH_RemoveHook(g_registerTarget);

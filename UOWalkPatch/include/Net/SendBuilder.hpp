@@ -11,4 +11,10 @@ namespace Net {
     bool IsSendBuilderAttached();
     void PollSendBuilder();
     void GetSendBuilderProbeStats(uint32_t& attempted, uint32_t& succeeded, uint32_t& skipped);
+    struct SendBuilderStatus {
+        bool hooked = false;
+        bool probing = false;
+        void* sendPacket = nullptr;
+    };
+    SendBuilderStatus GetSendBuilderStatus();
 }

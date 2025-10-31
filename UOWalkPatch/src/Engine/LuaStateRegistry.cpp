@@ -308,6 +308,11 @@ void LuaStateRegistry::CombineInfo(LuaStateInfo& into, const LuaStateInfo& from)
         into.helper_passive_since_ms = from.helper_passive_since_ms;
     if (from.helper_last_signal_ms > into.helper_last_signal_ms)
         into.helper_last_signal_ms = from.helper_last_signal_ms;
+    if (from.helper_settle_start_ms && (!into.helper_settle_start_ms || from.helper_settle_start_ms < into.helper_settle_start_ms))
+        into.helper_settle_start_ms = from.helper_settle_start_ms;
+    if (from.helper_next_skip_log_ms > into.helper_next_skip_log_ms)
+        into.helper_next_skip_log_ms = from.helper_next_skip_log_ms;
+    into.helper_flags |= from.helper_flags;
 }
 
 std::pair<LuaStateRegistry::Entry*, bool> LuaStateRegistry::EnsureEntry(lua_State* reported, void* ctx, DWORD tid, uint64_t gen) {

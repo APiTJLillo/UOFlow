@@ -105,6 +105,8 @@ struct AckProcessResult {
 
 static std::mutex g_ackMutex;
 static std::unordered_map<SOCKET, AckTracker> g_ackTrackers;
+static std::atomic<uint32_t> g_ackOkCount{0};
+static std::atomic<uint32_t> g_ackDropCount{0};
 
 static bool ShouldLogWalkDebug() {
     return Walk::Controller::DebugEnabled() ||
@@ -1685,6 +1687,17 @@ MovementAckResult ProcessMovementAck(SOCKET socket, uint8_t seq, uint8_t status)
         result.action = MovementAckAction::Ignore;
         break;
     }
+    switch (result.action) {
+    case MovementAckAction::Ok:
+        g_ackOkCount.fetch_add(1u, std::memory_order_relaxed);
+        break;
+    case MovementAckAction::Drop:
+    case MovementAckAction::Resync:
+        g_ackDropCount.fetch_add(1u, std::memory_order_relaxed);
+        break;
+    default:
+        break;
+    }
     return result;
 }
 
@@ -1728,6 +1741,16 @@ void GetFastWalkCounters(FastWalkCounters& out)
 uint64_t GetWalkStepsSent()
 {
     return g_walkStepsSent.load(std::memory_order_relaxed);
+}
+
+uint32_t GetAckOkCount()
+{
+    return g_ackOkCount.load(std::memory_order_relaxed);
+}
+
+uint32_t GetAckDropCount()
+{
+    return g_ackDropCount.load(std::memory_order_relaxed);
 }
 
 void NotifyClientMovementSent()
