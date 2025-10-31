@@ -5688,7 +5688,8 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
         void* attemptedCtx = info.ctx_reported;
         SafeRefreshLuaStateFromSlot();
         void* reboundCtx = ResolveCanonicalEngineContext();
-        if (reboundCtx && reboundCtx != attemptedCtx && IsPlausibleContextPointer(reboundCtx)) {
+        bool rebound = reboundCtx && reboundCtx != attemptedCtx && IsPlausibleContextPointer(reboundCtx);
+        if (rebound) {
             DWORD newOwner = GetCurrentThreadId();
             uint64_t nowTick = GetTickCount64();
             const HelperRetryPolicy& retry = GetHelperRetryPolicy();
@@ -5701,11 +5702,7 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                 if (state.owner_ready_tick_ms == 0)
                     state.owner_ready_tick_ms = nowTick;
                 state.helper_passive_since_ms = 0;
-                uint64_t delayMs = HelperRetryDelay(retry, state.helper_retry_count);
-                if (delayMs == 0)
-                    delayMs = retry.debounceMs;
-                delayMs += HelperJitterMs(retry, jitterToken, nowTick);
-                state.helper_next_retry_ms = nowTick + delayMs;
+                state.helper_next_retry_ms = nowTick;
                 UpdateHelperStage(state, HelperInstallStage::ReadyToInstall, nowTick, "ctx-rebind");
             }, &info);
             info.ctx_reported = reboundCtx;
@@ -5716,16 +5713,16 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                       attemptedCtx,
                       reboundCtx,
                       static_cast<unsigned>(newOwner));
-            RequestBindForState(info, "ctx-rebind", false);
-            return false;
         }
 
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "helpers bind abort L=%p reason=ctx-invalid ctx=%p",
-                  L,
-                  attemptedCtx);
-        return false;
+        if (info.ctx_reported && !IsPlausibleContextPointer(info.ctx_reported)) {
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "helpers bind abort L=%p reason=ctx-invalid ctx=%p",
+                      L,
+                      info.ctx_reported);
+            return false;
+        }
     }
 
     const bool probeOk = ProbeLua(L);

@@ -759,6 +759,7 @@ static bool CallsOrJumpsTo(uint8_t* p, size_t len, uintptr_t send, uintptr_t* at
     if (!p || !send || len < 5)
         return false;
 
+    const uintptr_t base = reinterpret_cast<uintptr_t>(p);
     bool followedTail = false;
 
     __try {
@@ -772,7 +773,7 @@ static bool CallsOrJumpsTo(uint8_t* p, size_t len, uintptr_t send, uintptr_t* at
                     uintptr_t tgt = reinterpret_cast<uintptr_t>(segment + i + 5) + rel;
                     if (tgt == send) {
                         if (atOff)
-                            *atOff = static_cast<uintptr_t>(i);
+                            *atOff = reinterpret_cast<uintptr_t>(segment + i) - base;
                         if (kind)
                             *kind = (op == 0xE8) ? "call" : "jmp";
                         return true;
@@ -782,7 +783,7 @@ static bool CallsOrJumpsTo(uint8_t* p, size_t len, uintptr_t send, uintptr_t* at
                     uintptr_t tgt = 0;
                     if (ResolveIAT(mem, &tgt) && tgt == send) {
                         if (atOff)
-                            *atOff = static_cast<uintptr_t>(i);
+                            *atOff = reinterpret_cast<uintptr_t>(segment + i) - base;
                         if (kind)
                             *kind = "call[IAT]";
                         return true;
@@ -1013,14 +1014,22 @@ static bool ScanEndpointVTable(void* endpoint)
             g_sendBuilderHooked = true;
             g_sendBuilderTarget = matchedFn;
             if (fallbackMatched) {
+                uint8_t matchBytes[4] = {};
+                bool haveBytes = SafeMem::SafeReadBytes(reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(matchedFn) + fallbackOffset),
+                                                        matchBytes,
+                                                        sizeof(matchBytes));
                 const char* kindStr = fallbackKind ? fallbackKind : "call";
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
-                          "[SB] fallback matched vtbl[%02u]=%p via %s->SendPacket at +0x%02X ; hook attached",
+                          "[SB] fallback matched vtbl[%02u]=%p via %s->SendPacket at +0x%02X bytes=%02X %02X %02X %02X ; hook attached",
                           static_cast<unsigned>(matchedIndex & 0xFF),
                           matchedFn,
                           kindStr,
-                          static_cast<unsigned>(fallbackOffset));
+                          static_cast<unsigned>(fallbackOffset),
+                          haveBytes ? matchBytes[0] : 0xFF,
+                          haveBytes ? matchBytes[1] : 0xFF,
+                          haveBytes ? matchBytes[2] : 0xFF,
+                          haveBytes ? matchBytes[3] : 0xFF);
             } else {
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
