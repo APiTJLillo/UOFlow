@@ -108,6 +108,8 @@ static Scanner::ScanPassTelemetry g_lastTelemetry{};
 static std::mutex g_lastTelemetryMutex;
 static std::atomic<std::uint64_t> g_passSeq{0};
 static std::atomic<std::uint32_t> g_lastRingLoad{0};
+static std::atomic<bool> g_requireSendSample{true};
+static std::atomic<std::uint32_t> g_nextScanDelayMs{0};
 static std::atomic<std::uint32_t> g_guardWarnBudget{0};
 static std::atomic<std::uint64_t> g_guardWarnPass{0};
 static std::atomic<std::uint64_t> g_asciiWarnLastPass{0};
@@ -1266,13 +1268,13 @@ static void ApplySuccessfulAttach(void* endpoint, void* manager, const TraceResu
     void* trustManager = manager ? manager : endpoint;
     if (trace.vtable && trace.slotIndex != 0xFF) {
         Scanner::EndpointTrustCache::SlotKey slotKey{trustManager, trace.vtable, trace.slotIndex};
-        g_endpointTrust.store(slotKey, true, nowMs, 600000);
+        g_endpointTrust.store(slotKey, true, nowMs, 30u * 60u * 1000u);
     }
 
     if (trace.site) {
         if (auto rva = ResolveRva(trace.site)) {
             Scanner::EndpointTrustCache::CodeKey codeKey{*rva};
-            g_endpointTrust.store(codeKey, true, nowMs, 600000);
+            g_endpointTrust.store(codeKey, true, nowMs, 30u * 60u * 1000u);
             std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
             g_endpointCallsiteHints[endpoint] = *rva;
         }
@@ -1405,6 +1407,20 @@ static bool ProcessSendSamplesFast(const std::vector<Scanner::SendSample>& sampl
     return false;
 }
 
+// Stage-3: adaptively space scans based on recent pass outcomes.
+static void UpdateNextScanDelay(const Scanner::ScanPassTelemetry& telemetry)
+{
+    if (telemetry.accepted == 0 && telemetry.sample_hits == 0) {
+        const std::uint32_t previous = g_nextScanDelayMs.load(std::memory_order_relaxed);
+        const std::uint64_t doubled = static_cast<std::uint64_t>(previous) * 2ull;
+        const std::uint32_t newDelay =
+            static_cast<std::uint32_t>(std::max<std::uint64_t>(5000ull, doubled));
+        g_nextScanDelayMs.store(newDelay, std::memory_order_relaxed);
+    } else {
+        g_nextScanDelayMs.store(g_tuner.stepDelayMs(), std::memory_order_relaxed);
+    }
+}
+
 static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
                              const std::vector<Scanner::SendSample>& samples,
                              uint32_t sendSampleCount,
@@ -1448,6 +1464,7 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
                   telemetry.max_candidate_us);
 
         g_tuner.applyTelemetry(telemetry);
+        UpdateNextScanDelay(telemetry);
 
         Log::Logf(Log::Level::Debug,
                   Log::Category::Core,
@@ -1480,6 +1497,7 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
                   telemetry.avg_us(),
                   telemetry.max_candidate_us);
         g_tuner.applyTelemetry(telemetry);
+        UpdateNextScanDelay(telemetry);
         return false;
     }
 
@@ -1535,6 +1553,7 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
     if (descriptors.empty()) {
         std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
         g_lastTelemetry = telemetry;
+        UpdateNextScanDelay(telemetry);
         return false;
     }
 
@@ -1595,6 +1614,7 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
               g_tuner.maxInflight(),
               g_tuner.escalationLevel());
 
+    UpdateNextScanDelay(telemetry);
     return g_builderScanned;
 }
 
@@ -1616,6 +1636,39 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
                   "[REJECT] skip addr=%p active=1",
                   descriptor.endpoint);
         return outcome;
+    }
+
+    void* trustManager = descriptor.manager ? descriptor.manager : descriptor.endpoint;
+    if (trustManager) {
+        if (auto cached = g_endpointTrust.lookupByManager(trustManager, nowMs)) {
+            ++telemetry.skipped;
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[SB] skip candidate manager=%p endpoint=%p reason=manager-cache accepted=%u",
+                      trustManager,
+                      descriptor.endpoint,
+                      cached->accepted ? 1u : 0u);
+            return outcome;
+        }
+    }
+
+    if (descriptor.vtbl && descriptor.offset != std::numeric_limits<std::size_t>::max()) {
+        const std::size_t slotIndexRaw = descriptor.offset / sizeof(void*);
+        if (slotIndexRaw <= static_cast<std::size_t>(std::numeric_limits<int>::max()) &&
+            (descriptor.offset % sizeof(void*)) == 0) {
+            const int slotIndex = static_cast<int>(slotIndexRaw);
+            Scanner::EndpointTrustCache::SlotKey slotKey{trustManager, descriptor.vtbl, slotIndex};
+            if (g_endpointTrust.shouldSkip(slotKey, nowMs)) {
+                ++telemetry.skipped;
+                Log::Logf(Log::Level::Debug,
+                          Log::Category::Core,
+                          "[SB] skip candidate manager=%p endpoint=%p reason=slot-cache slot=%d",
+                          trustManager,
+                          descriptor.endpoint,
+                          slotIndex);
+                return outcome;
+            }
+        }
     }
 
     outcome.attempted = true;
@@ -1658,7 +1711,7 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
         if (trace.site) {
             if (auto rva = ResolveRva(trace.site)) {
                 Scanner::EndpointTrustCache::CodeKey codeKey{*rva};
-                g_endpointTrust.store(codeKey, false, nowMs, 10000);
+                g_endpointTrust.store(codeKey, false, nowMs, 120000);
             }
         }
     }
@@ -1889,6 +1942,21 @@ static bool TryDiscoverEndpointFromManager(void* manager)
 
     if (!IsEngineStableForScanning())
         return false;
+
+    // Stage-3: require live send samples before paying full scan cost.
+    if (g_requireSendSample.load(std::memory_order_relaxed)) {
+        const std::uint32_t pendingSamples = g_sendSampleRing.size();
+        if (pendingSamples == 0) {
+            const std::uint32_t baseDelay = std::max(1u, g_tuner.stepDelayMs());
+            const std::uint32_t deferDelay = baseDelay * 10u;
+            g_nextScanDelayMs.store(deferDelay, std::memory_order_relaxed);
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[SB] no send samples, deferring scan delay=%ums",
+                      deferDelay);
+            return false;
+        }
+    }
 
     constexpr size_t kScanLimit = kEndpointScanWindow;
     DWORD now = GetTickCount();
@@ -2414,6 +2482,27 @@ static bool TraceSendPacketFrom(uint8_t* fn,
         return false;
     if (HasVisited(fn, visited, visitedCount))
         return false;
+
+    const std::uint64_t nowMs = GetTickCount64();
+    const std::uintptr_t codeAddr = reinterpret_cast<std::uintptr_t>(fn);
+    if (g_rejectStore.isRejectedAndActive(codeAddr, nowMs)) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[SB] skip trace addr=%p reason=reject-cache",
+                  fn);
+        return false;
+    }
+    if (auto rva = ResolveRva(fn)) {
+        Scanner::EndpointTrustCache::CodeKey codeKey{*rva};
+        if (g_endpointTrust.shouldSkip(codeKey, nowMs)) {
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[SB] skip trace addr=%p reason=code-cache rva=0x%X",
+                      fn,
+                      *rva);
+            return false;
+        }
+    }
 
     visited[visitedCount++] = fn;
     bool matched = false;
@@ -4186,6 +4275,8 @@ bool InitSendBuilder(GlobalStateInfo* state)
         }
         Scanner::Sampler::reset(GetTickCount64());
         g_sendSampleStore.Reset();
+        g_nextScanDelayMs.store(0, std::memory_order_relaxed);
+        g_lastPollTick = 0;
     }
 
     bool sbDebug = ResolveSendBuilderFlag("SB_DEBUG", "sb.debug", false);
@@ -4215,6 +4306,9 @@ bool InitSendBuilder(GlobalStateInfo* state)
         g_sendSampleStore.Reset();
     }
 
+    bool requireSamples = ResolveSendBuilderFlag("SB_REQUIRE_SAMPLE", "sb.requireSendSample", true);
+    g_requireSendSample.store(requireSamples, std::memory_order_relaxed);
+
     if (!g_initLogged || stateChanged) {
         char initBuf[160];
         sprintf_s(initBuf, sizeof(initBuf),
@@ -4238,10 +4332,20 @@ void PollSendBuilder()
 {
     if (!g_state)
         return;
+
+    DWORD now = GetTickCount();
+    // Stage-3: dynamic poll delay driven by last scan outcome.
+    DWORD delay = g_nextScanDelayMs.load(std::memory_order_relaxed);
+    if (delay == 0)
+        delay = 100;
+    DWORD last = g_lastPollTick;
+    if (last != 0 && (DWORD)(now - last) < delay)
+        return;
+    g_lastPollTick = now;
+
     if (g_netMgr && g_builderScanned)
         return;
 
-    DWORD now = GetTickCount();
     bool gatingActive = (g_nextNetCfgProbeTick != 0 && !TickHasElapsed(now, g_nextNetCfgProbeTick));
 
     if (!g_netMgr && !gatingActive)
@@ -4249,11 +4353,6 @@ void PollSendBuilder()
 
     if (g_netMgr && !g_builderScanned && !gatingActive)
         TryDiscoverEndpointFromManager(g_netMgr);
-
-    DWORD last = g_lastPollTick;
-    if (last != 0 && (DWORD)(now - last) < 100)
-        return;
-    g_lastPollTick = now;
 
     if (!g_sendPacketTarget)
         FindSendPacket();
@@ -4309,6 +4408,8 @@ void ShutdownSendBuilder()
     g_nextNetCfgProbeTick = 0;
     g_managerRegionBase = 0;
     g_managerRegionSize = 0;
+    g_nextScanDelayMs.store(0, std::memory_order_relaxed);
+    g_lastPollTick = 0;
     Scanner::Sampler::reset(GetTickCount64());
     g_sendSampleStore.Reset();
     Util::RegionWatch::ClearWatch();
