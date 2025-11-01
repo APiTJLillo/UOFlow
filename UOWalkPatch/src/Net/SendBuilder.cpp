@@ -135,6 +135,7 @@ static Stage3ScanStats g_lastScanStats{};
 static std::atomic<bool> g_netCfgPendingWake{false};
 static std::atomic<int> g_stage3SettleBypassBudget{0};
 static std::atomic<bool> g_stage3WarmupSampleFired{false};
+static std::atomic<bool> g_stage3WarmupBypass{false};
 static std::atomic<std::uint32_t> g_stage3QuickRetryCount{0};
 static std::atomic<bool> g_stage3RetryPending{false};
 static std::atomic<DWORD> g_stage3RetryDeadline{0};
@@ -993,9 +994,26 @@ static bool g_ntUnmapViewOfSectionHooked = false;
 
 static void* g_lastManagerScanPtr = nullptr;
 static DWORD g_lastManagerScanTick = 0;
+static bool g_loggedNetCfgBlockedSnapshot = false;
+static void* g_netCfgFallbackPtr = nullptr;
+struct NetCfgCandidates {
+    void* entries[8]{};
+    std::uint8_t slot[8]{};
+    std::size_t count{0};
+};
+static NetCfgCandidates g_netCfgCandidates{};
+
+static void ResetNetCfgCandidates() noexcept
+{
+    g_netCfgCandidates.count = 0;
+    memset(g_netCfgCandidates.entries, 0, sizeof(g_netCfgCandidates.entries));
+    memset(g_netCfgCandidates.slot, 0, sizeof(g_netCfgCandidates.slot));
+}
 
 static void* GetTrackedConfigPtr()
 {
+    if (g_netCfgFallbackPtr)
+        return g_netCfgFallbackPtr;
     if (g_state && g_state->networkConfig)
         return g_state->networkConfig;
     return g_lastNetCfgPtr;
@@ -1074,6 +1092,108 @@ static void StopNetCfgRetryLoop() noexcept
     g_netCfgSettleLogged = false;
 }
 
+static void LogNetCfgBlockedDiagnostics(void* cfgPtr,
+                                        const MEMORY_BASIC_INFORMATION& mbi) noexcept
+{
+    if (g_loggedNetCfgBlockedSnapshot)
+        return;
+    g_loggedNetCfgBlockedSnapshot = true;
+
+    char summary[256];
+    sprintf_s(summary,
+              sizeof(summary),
+              "[CORE][SB][DBG] netcfg blocked ptr=%p base=%p size=0x%zx state=0x%08lX protect=0x%08lX type=0x%08lX",
+              cfgPtr,
+              mbi.BaseAddress,
+              static_cast<std::size_t>(mbi.RegionSize),
+              static_cast<unsigned long>(mbi.State),
+              static_cast<unsigned long>(mbi.Protect),
+              static_cast<unsigned long>(mbi.Type));
+    WriteRawLog(summary);
+
+    if (g_state) {
+        const GlobalStateInfo* state = g_state;
+        char stateBuf[256];
+        sprintf_s(stateBuf,
+                  sizeof(stateBuf),
+                  "[CORE][SB][DBG] GlobalState snapshot lua=%p dbMgr=%p scriptCtx=%p resourceMgr=%p netCfg=%p engineCtx=%p flags=0x%08X",
+                  state->luaState,
+                  state->databaseManager,
+                  state->scriptContext,
+                  state->resourceManager,
+                  state->networkConfig,
+                  state->engineContext,
+                  static_cast<unsigned>(state->initFlags));
+        WriteRawLog(stateBuf);
+    } else {
+        WriteRawLog("[CORE][SB][DBG] GlobalState snapshot unavailable (g_state=null)");
+    }
+
+    if (g_netMgr) {
+        uintptr_t slots[8]{};
+        if (SafeCopy(slots, g_netMgr, sizeof(slots))) {
+            char mgrBuf[320];
+            sprintf_s(mgrBuf,
+                      sizeof(mgrBuf),
+                      "[CORE][SB][DBG] NetMgr head @ %p slots[0..7]={%p,%p,%p,%p,%p,%p,%p,%p}",
+                      g_netMgr,
+                      reinterpret_cast<void*>(slots[0]),
+                      reinterpret_cast<void*>(slots[1]),
+                      reinterpret_cast<void*>(slots[2]),
+                      reinterpret_cast<void*>(slots[3]),
+                      reinterpret_cast<void*>(slots[4]),
+                      reinterpret_cast<void*>(slots[5]),
+                      reinterpret_cast<void*>(slots[6]),
+                      reinterpret_cast<void*>(slots[7]));
+            WriteRawLog(mgrBuf);
+
+            for (std::size_t i = 0; i < (sizeof(slots) / sizeof(slots[0])); ++i) {
+                void* candidate = reinterpret_cast<void*>(slots[i]);
+                if (!candidate || candidate == cfgPtr)
+                    continue;
+
+                MEMORY_BASIC_INFORMATION cm{};
+                if (!VirtualQuery(candidate, &cm, sizeof(cm)))
+                    continue;
+                if (cm.State != MEM_COMMIT)
+                    continue;
+
+                char candBuf[256];
+                sprintf_s(candBuf,
+                          sizeof(candBuf),
+                          "[CORE][SB][DBG] netcfg candidate slot%zu ptr=%p base=%p size=0x%zx state=0x%08lX protect=0x%08lX type=0x%08lX",
+                          i,
+                          candidate,
+                          cm.BaseAddress,
+                          static_cast<std::size_t>(cm.RegionSize),
+                          static_cast<unsigned long>(cm.State),
+                          static_cast<unsigned long>(cm.Protect),
+                          static_cast<unsigned long>(cm.Type));
+                WriteRawLog(candBuf);
+
+                const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
+                if (cm.State == MEM_COMMIT &&
+                    !(cm.Protect & PAGE_GUARD) &&
+                    !(cm.Protect & PAGE_NOACCESS) &&
+                    (cm.Protect & readableMask)) {
+                    if (g_netCfgCandidates.count < (sizeof(g_netCfgCandidates.entries) / sizeof(g_netCfgCandidates.entries[0]))) {
+                        g_netCfgCandidates.entries[g_netCfgCandidates.count++] = candidate;
+                    }
+                }
+            }
+        } else {
+            char failBuf[160];
+            sprintf_s(failBuf,
+                      sizeof(failBuf),
+                      "[CORE][SB][DBG] NetMgr snapshot failed addr=%p (read fault)",
+                      g_netMgr);
+            WriteRawLog(failBuf);
+        }
+    } else {
+        WriteRawLog("[CORE][SB][DBG] NetMgr snapshot unavailable (g_netMgr=null)");
+    }
+}
+
 static void StartNetCfgRetryLoop(void* watchPtr, DWORD nowTick) noexcept
 {
     if (!watchPtr)
@@ -1089,6 +1209,26 @@ static void StartNetCfgRetryLoop(void* watchPtr, DWORD nowTick) noexcept
     g_netCfgSettleLogged = false;
     g_sbReady.store(false, std::memory_order_release);
     g_stage3SettleBypassBudget.store(2, std::memory_order_release);
+    g_loggedNetCfgBlockedSnapshot = false;
+    ResetNetCfgCandidates();
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(watchPtr, &mbi, sizeof(mbi))) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB][PEND] networkConfig settle start ptr=%p state=0x%08lX protect=0x%08lX type=0x%08lX size=0x%zx",
+                  watchPtr,
+                  static_cast<unsigned long>(mbi.State),
+                  static_cast<unsigned long>(mbi.Protect),
+                  static_cast<unsigned long>(mbi.Type),
+                  static_cast<std::size_t>(mbi.RegionSize));
+    } else {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[CORE][SB][PEND] networkConfig settle start VirtualQuery failed ptr=%p error=%lu",
+                  watchPtr,
+                  GetLastError());
+    }
 }
 
 static void ServiceNetCfgRetryLoop(DWORD nowTick)
@@ -1114,14 +1254,35 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
             ScheduleScan("settle:ready", false);
             return;
         }
-    }
 
-    if (!g_netCfgSettleLogged) {
-        Log::Logf(Log::Level::Debug,
-                  Log::Category::Core,
-                  "[CORE][SB] networkConfig settle watcher polling ptr=%p",
-                  g_netCfgSettlePtr);
-        g_netCfgSettleLogged = true;
+        ++g_netCfgRetryIndex;
+        const bool shouldLog = !g_netCfgSettleLogged ||
+                               g_netCfgRetryIndex <= 8 ||
+                               (g_netCfgRetryIndex % 8u) == 0;
+        if (shouldLog) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[CORE][SB][SKIP] netcfg settle waiting ptr=%p attempt=%u state=0x%08lX protect=0x%08lX guard=%d noaccess=%d",
+                      g_netCfgSettlePtr,
+                      static_cast<unsigned>(g_netCfgRetryIndex),
+                      static_cast<unsigned long>(mbi.State),
+                      static_cast<unsigned long>(mbi.Protect),
+                      guard ? 1 : 0,
+                      noAccess ? 1 : 0);
+            g_netCfgSettleLogged = true;
+        }
+        LogNetCfgBlockedDiagnostics(g_netCfgSettlePtr, mbi);
+    } else {
+        ++g_netCfgRetryIndex;
+        if (!g_netCfgSettleLogged || (g_netCfgRetryIndex % 8u) == 0) {
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Core,
+                      "[CORE][SB][SKIP] netcfg settle VirtualQuery failed ptr=%p attempt=%u error=%lu",
+                      g_netCfgSettlePtr,
+                      static_cast<unsigned>(g_netCfgRetryIndex),
+                      GetLastError());
+            g_netCfgSettleLogged = true;
+        }
     }
 
     g_netCfgRetryNextTick = nowTick + kNetCfgSettleIntervalMs;
@@ -1146,6 +1307,163 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
                   "[CORE][SB] networkConfig settle timeout; continuing with fallback pivot");
         ScheduleScan("settle-timeout", true);
     }
+}
+
+static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
+{
+    const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
+
+    auto recordCandidate = [&](void* candidate, std::uint8_t slotIndex) {
+        if (!candidate)
+            return;
+        for (std::size_t j = 0; j < g_netCfgCandidates.count; ++j) {
+            if (g_netCfgCandidates.entries[j] == candidate)
+                return;
+        }
+        if (g_netCfgCandidates.count < (sizeof(g_netCfgCandidates.entries) / sizeof(g_netCfgCandidates.entries[0]))) {
+            g_netCfgCandidates.entries[g_netCfgCandidates.count] = candidate;
+            g_netCfgCandidates.slot[g_netCfgCandidates.count] = slotIndex;
+            ++g_netCfgCandidates.count;
+        }
+    };
+
+    auto adoptCandidate = [&](void* candidate,
+                              std::size_t slotIndex,
+                              const char* sourceLabel,
+                              bool allowRecord) -> bool {
+        if (!candidate || candidate == rawCfg || candidate == g_netCfgFallbackPtr)
+            return false;
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(candidate, &mbi, sizeof(mbi))) {
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[CORE][SB][ALT] candidate slot=%zu source=%s VirtualQuery failed ptr=%p error=%lu",
+                      slotIndex,
+                      sourceLabel ? sourceLabel : "?",
+                      candidate,
+                      GetLastError());
+            return false;
+        }
+
+        const bool committed = (mbi.State == MEM_COMMIT);
+        const bool guard = (mbi.Protect & PAGE_GUARD) != 0;
+        const bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
+        const bool readable = (mbi.Protect & readableMask) != 0;
+        if (!committed || guard || noAccess || !readable) {
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[CORE][SB][ALT] candidate slot=%zu source=%s rejected state=0x%08lX protect=0x%08lX guard=%d noaccess=%d readable=%d",
+                      slotIndex,
+                      sourceLabel ? sourceLabel : "?",
+                      static_cast<unsigned long>(mbi.State),
+                      static_cast<unsigned long>(mbi.Protect),
+                      guard ? 1 : 0,
+                      noAccess ? 1 : 0,
+                      readable ? 1 : 0);
+            return false;
+        }
+
+        if (allowRecord)
+            recordCandidate(candidate, static_cast<std::uint8_t>(slotIndex));
+
+        std::uintptr_t probe{};
+        if (!SafeCopy(&probe, candidate, sizeof(probe))) {
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[CORE][SB][ALT] candidate slot=%zu source=%s rejected (SafeCopy failed)",
+                      slotIndex,
+                      sourceLabel ? sourceLabel : "?");
+            return false;
+        }
+
+        StopNetCfgRetryLoop();
+        g_netCfgFallbackPtr = candidate;
+        g_lastNetCfgPtr = candidate;
+        g_lastNetCfgState = 0xFFFFFFFF;
+        g_lastNetCfgProtect = 0xFFFFFFFF;
+        g_lastNetCfgType = 0xFFFFFFFF;
+        g_lastNetCfgBase = nullptr;
+        g_lastNetCfgRegionSize = 0;
+        g_haveNetCfgSnapshot = false;
+        g_loggedNetScanFailure = false;
+        ResetNetCfgCandidates();
+        Util::RegionWatch::SetWatchPointer(candidate);
+
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB][ALT] networkConfig fallback slot=%zu source=%s ptr=%p base=%p size=0x%zx state=0x%08lX protect=0x%08lX type=0x%08lX",
+                  slotIndex,
+                  sourceLabel ? sourceLabel : "?",
+                  candidate,
+                  mbi.BaseAddress,
+                  static_cast<std::size_t>(mbi.RegionSize),
+                  static_cast<unsigned long>(mbi.State),
+                  static_cast<unsigned long>(mbi.Protect),
+                  static_cast<unsigned long>(mbi.Type));
+        rawCfg = candidate;
+        return true;
+    };
+
+    if (g_netCfgFallbackPtr && rawCfg != g_netCfgFallbackPtr) {
+        MEMORY_BASIC_INFORMATION fallbackMbi{};
+        if (VirtualQuery(g_netCfgFallbackPtr, &fallbackMbi, sizeof(fallbackMbi)) &&
+            fallbackMbi.State == MEM_COMMIT &&
+            !(fallbackMbi.Protect & PAGE_GUARD) &&
+            !(fallbackMbi.Protect & PAGE_NOACCESS) &&
+            (fallbackMbi.Protect & readableMask)) {
+            rawCfg = g_netCfgFallbackPtr;
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[CORE][SB][ALT] reuse fallback netcfg ptr=%p",
+                      g_netCfgFallbackPtr);
+            return true;
+        }
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[CORE][SB][ALT] dropping fallback ptr=%p state=0x%08lX protect=0x%08lX",
+                  g_netCfgFallbackPtr,
+                  static_cast<unsigned long>(fallbackMbi.State),
+                  static_cast<unsigned long>(fallbackMbi.Protect));
+        g_netCfgFallbackPtr = nullptr;
+    }
+
+    if (!g_netMgr) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[CORE][SB][ALT] no net manager available for fallback discovery");
+        return false;
+    }
+
+    if (g_netCfgCandidates.count > 0) {
+        for (std::size_t idx = 0; idx < g_netCfgCandidates.count; ++idx) {
+            void* candidate = g_netCfgCandidates.entries[idx];
+            if (adoptCandidate(candidate,
+                               g_netCfgCandidates.slot[idx],
+                               "cached",
+                               false)) {
+                return true;
+            }
+        }
+    }
+
+    uintptr_t slots[8]{};
+    if (!SafeCopy(slots, g_netMgr, sizeof(slots))) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[CORE][SB][ALT] unable to read manager slots at %p",
+                  g_netMgr);
+        return false;
+    }
+
+    ResetNetCfgCandidates();
+    for (std::size_t i = 0; i < (sizeof(slots) / sizeof(slots[0])); ++i) {
+        void* candidate = reinterpret_cast<void*>(slots[i]);
+        if (adoptCandidate(candidate, i, "live", true))
+            return true;
+    }
+
+    return false;
 }
 
 static void ScheduleSendBuilderWake(const char* sourceTag,
@@ -1262,10 +1580,16 @@ static void ScheduleScan(const char* reason, bool fallback)
                 updateLastWake(nowNs);
                 DWORD nowTick = GetTickCount();
                 g_stage3Controller.wake(nowTick);
-                Util::OwnerPump::RunOnOwner([]() {
+                const std::uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+                if (ownerTid == 0 || ownerTid == GetCurrentThreadId()) {
                     ScheduledScanInfo invocation = ConsumeScheduledInvocation();
                     RunScanOnce(invocation.fallback, invocation.reason.c_str());
-                });
+                } else {
+                    Util::OwnerPump::RunOnOwner([]() {
+                        ScheduledScanInfo invocation = ConsumeScheduledInvocation();
+                        RunScanOnce(invocation.fallback, invocation.reason.c_str());
+                    });
+                }
                 return;
             }
             snapshot = g_scanState.load(std::memory_order_acquire);
@@ -3421,6 +3745,8 @@ static void Stage3MaybeEmitWarmupSample()
     if (g_stage3WarmupSampleFired.exchange(true, std::memory_order_acq_rel))
         return;
 
+    g_stage3WarmupBypass.store(true, std::memory_order_release);
+
     void* frames[Net::SendSampleStore::kMaxFrames] = {};
     USHORT captured = RtlCaptureStackBackTrace(0, Net::SendSampleStore::kMaxFrames, frames, nullptr);
     if (captured == 0)
@@ -3579,13 +3905,18 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     void* manager = reinterpret_cast<void*>(target.owner);
     void* observedVtblPtr = nullptr;
     if (!ValidateManagerPointer(manager, &observedVtblPtr)) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB][SKIP] manager pointer invalid target_owner=%p pivot=%s",
+                  manager,
+                  Scanner::ToString(PivotSourceFromManagerKind(target.kind)));
         LogGuardInvalidManager(manager);
         return result;
     }
 
     const uintptr_t observedVtbl = reinterpret_cast<uintptr_t>(observedVtblPtr);
     if (observedVtbl != target.vtbl) {
-        Log::Logf(Log::Level::Debug,
+        Log::Logf(Log::Level::Info,
                   Log::Category::Core,
                   "[CORE][SB] manager vtbl mismatch kind=%s expected=%p actual=%p owner=%p",
                   ManagerKindName(target.kind),
@@ -3595,11 +3926,27 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
         return result;
     }
 
-    if (!IsInModuleRdata(observedVtbl))
+    if (!IsInModuleRdata(observedVtbl)) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB][SKIP] manager vtbl not in .rdata vtbl=%p pivot=%s",
+                  reinterpret_cast<void*>(observedVtbl),
+                  Scanner::ToString(PivotSourceFromManagerKind(target.kind)));
         return result;
+    }
 
-    if (!IsEngineStableForScanning())
+    if (!IsEngineStableForScanning()) {
+        Engine::Lua::StartupStatus status{};
+        Engine::Lua::GetStartupStatus(status);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB][SKIP] engine not stable yet ctx=%d lua=%d helpers=%d ownerTid=%u",
+                  status.engineContextDiscovered ? 1 : 0,
+                  status.luaStateDiscovered ? 1 : 0,
+                  status.helpersInstalled ? 1 : 0,
+                  status.ownerThreadId);
         return result;
+    }
 
     Scanner::PivotSource pivotSource = PivotSourceFromManagerKind(target.kind);
     const char* pivotLabel = Scanner::ToString(pivotSource);
@@ -3624,16 +3971,26 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     if (g_requireSendSample.load(std::memory_order_relaxed)) {
         const std::uint32_t pendingSamples = static_cast<std::uint32_t>(g_sendRing.size());
         if (pendingSamples == 0) {
-            const std::uint32_t baseDelay = std::max(1u, g_tuner.stepDelayMs());
-            const std::uint32_t deferDelay = baseDelay * 10u;
-            Log::Logf(Log::Level::Debug,
-                      Log::Category::Core,
-                      "[SB] no send samples, deferring scan delay=%ums",
-                      deferDelay);
-            result.deferred = true;
-            result.deferDelayMs = deferDelay;
-            result.telemetry = telemetry;
-            return result;
+            bool bypass = g_stage3WarmupBypass.exchange(false, std::memory_order_acq_rel);
+            if (!bypass) {
+                const std::uint32_t baseDelay = std::max(1u, g_tuner.stepDelayMs());
+                const std::uint32_t deferDelay = baseDelay * 10u;
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[CORE][SB][SKIP] send sample guard pivot=%s delay=%ums base=%u pending=%u",
+                          pivotLabel ? pivotLabel : "UNKNOWN",
+                          deferDelay,
+                          baseDelay,
+                          pendingSamples);
+                result.deferred = true;
+                result.deferDelayMs = deferDelay;
+                result.telemetry = telemetry;
+                return result;
+            } else {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[CORE][SB] warmup bypass: proceeding without send samples");
+            }
         }
     }
 
@@ -3642,15 +3999,40 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     DWORD dynamicDelay = std::max<DWORD>(kManagerScanCooldownMs, g_tuner.stepDelayMs());
     if (g_lastBuilderScanTick != 0 &&
         (DWORD)(now - g_lastBuilderScanTick) < dynamicDelay) {
+        static DWORD s_lastCooldownLogTick = 0;
+        if (now - s_lastCooldownLogTick > 500) {
+            s_lastCooldownLogTick = now;
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[CORE][SB][SKIP] scan cooldown active pivot=%s elapsed=%ums required=%ums",
+                      pivotLabel ? pivotLabel : "UNKNOWN",
+                      static_cast<unsigned>(now - g_lastBuilderScanTick),
+                      static_cast<unsigned>(dynamicDelay));
+        }
         return result;
     }
 
     if (manager == g_lastManagerScanPtr && (DWORD)(now - g_lastManagerScanTick) < 1000)
     {
+        static DWORD s_lastRapidRetryLogTick = 0;
+        if (now - s_lastRapidRetryLogTick > 500) {
+            s_lastRapidRetryLogTick = now;
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[CORE][SB][SKIP] manager retry suppressed pivot=%s elapsed=%ums budget=1000ms",
+                      pivotLabel ? pivotLabel : "UNKNOWN",
+                      static_cast<unsigned>(now - g_lastManagerScanTick));
+        }
         return result;
     }
 
     if (!SafeMem::IsReadable(manager, kScanLimit + sizeof(void*))) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB][SKIP] manager region unreadable manager=%p pivot=%s window=0x%zx",
+                  manager,
+                  pivotLabel ? pivotLabel : "UNKNOWN",
+                  kScanLimit);
         LogGuardInvalidManager(manager);
         return result;
     }
@@ -3760,6 +4142,33 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
         return run;
 
     DWORD nowTick = GetTickCount();
+    void* netCfgPtr = GetTrackedConfigPtr();
+    MEMORY_BASIC_INFORMATION cfgInfo{};
+    bool netReadable = netCfgPtr && IsReadableMemory(netCfgPtr, sizeof(void*), &cfgInfo);
+    if (!netCfgPtr)
+        cfgInfo = {};
+    std::string preconditions = BuildPreconditionsString(netReadable);
+
+    if (!netReadable) {
+        if (ctx.fallback) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[CORE][SB] networkConfig not-readable; running fallback scan (state=0x%08lX protect=0x%08lX)",
+                      static_cast<unsigned long>(cfgInfo.State),
+                      static_cast<unsigned long>(cfgInfo.Protect));
+        } else {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[CORE][SB] networkConfig not-readable; deferring scan (state=0x%08lX protect=0x%08lX)",
+                      static_cast<unsigned long>(cfgInfo.State),
+                      static_cast<unsigned long>(cfgInfo.Protect));
+            g_stage3Controller.defer(nowTick, SB_BACKOFF_MS_INITIAL, false);
+            return run;
+        }
+    }
+
+    Stage3MaybeEmitWarmupSample();
+
     auto passIdOpt = g_stage3Controller.beginPass(nowTick);
     if (!passIdOpt)
         return run;
@@ -3787,33 +4196,6 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
 
     ManagerTarget primary = g_managerTarget;
     summary.pivot = Stage3PivotFromKind(primary.kind);
-
-    void* netCfgPtr = GetTrackedConfigPtr();
-    MEMORY_BASIC_INFORMATION cfgInfo{};
-    bool netReadable = netCfgPtr && IsReadableMemory(netCfgPtr, sizeof(void*), &cfgInfo);
-    if (!netCfgPtr)
-        cfgInfo = {};
-    std::string preconditions = BuildPreconditionsString(netReadable);
-
-    if (!netReadable) {
-        if (ctx.fallback) {
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Core,
-                      "[CORE][SB] networkConfig not-readable; running fallback scan (state=0x%08lX protect=0x%08lX)",
-                      static_cast<unsigned long>(cfgInfo.State),
-                      static_cast<unsigned long>(cfgInfo.Protect));
-        } else {
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Core,
-                      "[CORE][SB] networkConfig not-readable; deferring scan (state=0x%08lX protect=0x%08lX)",
-                      static_cast<unsigned long>(cfgInfo.State),
-                      static_cast<unsigned long>(cfgInfo.Protect));
-            g_stage3Controller.defer(nowTick, SB_BACKOFF_MS_INITIAL, false);
-            return run;
-        }
-    }
-
-    Stage3MaybeEmitWarmupSample();
 
     std::uint64_t nowMs = GetTickCount64();
     if (IsVtblSuppressed(primary.vtbl, nowMs)) {
@@ -6126,6 +6508,26 @@ static void HookSendBuilderFromNetMgr()
     g_nextNetCfgProbeTick = 0;
 
     void* rawCfg = g_state->networkConfig;
+    if (g_netCfgFallbackPtr) {
+        if (!rawCfg || rawCfg == g_netCfgFallbackPtr) {
+            rawCfg = g_netCfgFallbackPtr;
+        } else {
+            MEMORY_BASIC_INFORMATION fallbackMbi{};
+            if (VirtualQuery(g_netCfgFallbackPtr, &fallbackMbi, sizeof(fallbackMbi)) &&
+                fallbackMbi.State == MEM_COMMIT &&
+                !(fallbackMbi.Protect & PAGE_GUARD) &&
+                !(fallbackMbi.Protect & PAGE_NOACCESS)) {
+                const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
+                if (fallbackMbi.Protect & readableMask) {
+                    rawCfg = g_netCfgFallbackPtr;
+                } else {
+                    g_netCfgFallbackPtr = nullptr;
+                }
+            } else {
+                g_netCfgFallbackPtr = nullptr;
+            }
+        }
+    }
     if (!rawCfg) {
         if (!g_loggedNetScanFailure) {
             g_loggedNetScanFailure = true;
@@ -6151,11 +6553,17 @@ static void HookSendBuilderFromNetMgr()
         g_lastLoggedManager = nullptr;
         g_lastLoggedEndpoint = nullptr;
         Util::RegionWatch::SetWatchPointer(rawCfg);
+        if (g_netCfgFallbackPtr && g_netCfgFallbackPtr != rawCfg)
+            g_netCfgFallbackPtr = nullptr;
+        ResetNetCfgCandidates();
+        g_loggedNetCfgBlockedSnapshot = false;
         char buf[128];
         sprintf_s(buf, sizeof(buf), "HookSendBuilderFromNetMgr: networkConfig pointer changed -> %p", rawCfg);
         WriteRawLog(buf);
     }
 
+    bool retriedFallback = false;
+RetryNetCfgSnapshot:
     uintptr_t snapshot[4]{};
     if (!SafeCopy(snapshot, rawCfg, sizeof(snapshot))) {
         MEMORY_BASIC_INFORMATION mbi{};
@@ -6199,6 +6607,11 @@ static void HookSendBuilderFromNetMgr()
         const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
         bool readable = (mbi.State == MEM_COMMIT) && !(mbi.Protect & PAGE_GUARD) && (mbi.Protect & readableMask);
         if (!readable) {
+            if (!retriedFallback && TryAdoptNetCfgFallback(rawCfg)) {
+                retriedFallback = true;
+                goto RetryNetCfgSnapshot;
+            }
+
             if (!g_loggedNetScanFailure) {
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
@@ -6247,6 +6660,8 @@ static void HookSendBuilderFromNetMgr()
         ScheduleScan("netcfg:ready", false);
     }
     g_loggedNetScanFailure = false;
+    if (g_netCfgFallbackPtr && g_state && rawCfg == g_state->networkConfig)
+        g_netCfgFallbackPtr = nullptr;
 
     if (g_netMgr) {
         EnsureManagerSelection(g_state);
