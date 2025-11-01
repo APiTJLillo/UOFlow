@@ -11,7 +11,10 @@ struct GlobalStateInfo {
     uint32_t initFlags;
     void*    networkConfig;
     void*    engineContext;
-    void*    globalFacetCache;
+    union {
+        void*    globalFacetCache;
+        void*    engineVtable; // alias: observed to hold the engine vtable pointer in recent client builds
+    };
     bool     shutdownInitiated;
     void*    resourceNodePtr;
     void*    coreResourceMgr;

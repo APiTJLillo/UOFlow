@@ -53,7 +53,7 @@ constexpr DWORD kManagerScanCooldownMs = 2500;
 constexpr size_t kEndpointScanWindow = 0x800;
 constexpr int kTailFollowMaxDepth = 4;
 constexpr size_t kTailScanWindow = 0x100;
-constexpr uintptr_t kCanonicalManagerVtbl = 0x4E4E9C5Cull;
+constexpr uintptr_t kCanonicalManagerVtbl = 0ull; // runtime-resolved via GlobalState when available
 static GlobalStateInfo* g_state = nullptr;
 static SendPacket_t g_sendPacket = nullptr;
 static void* g_sendPacketTarget = nullptr;
@@ -117,7 +117,6 @@ static std::uint64_t g_initTickMs64 = 0;
 static std::uint64_t g_firstScanTickMs64 = 0;
 static std::unordered_map<void*, std::uint64_t> g_endpointCallsiteHints;
 static std::mutex g_endpointCallsiteMutex;
-static thread_local std::vector<Scanner::SendSample> t_sendSampleBuffer;
 static thread_local bool t_debugNudgeCall = false;
 static Scanner::ModuleMap g_moduleMap;
 static Net::SendSampleStore g_sendSampleStore;
@@ -265,6 +264,37 @@ static bool LooksLikeAsciiDword(uintptr_t value)
     return printable >= 3;
 }
 
+static const Scanner::ModuleInfo* EnsurePrimaryModule()
+{
+    const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
+    if (!primary) {
+        g_moduleMap.refresh(true);
+        primary = g_moduleMap.primaryExecutable();
+    }
+    return primary;
+}
+
+static bool IsPrimaryModuleRdata(uintptr_t addr)
+{
+    const Scanner::ModuleInfo* primary = EnsurePrimaryModule();
+    return primary && primary->containsRdata(addr);
+}
+
+static void* ResolveStateEngineVtablePtr()
+{
+    if (!g_state)
+        return nullptr;
+
+    void* vtbl = nullptr;
+    if (g_state->engineVtable)
+        vtbl = g_state->engineVtable;
+    if ((!vtbl) && g_state->engineContext)
+        SafeCopy(&vtbl, g_state->engineContext, sizeof(vtbl));
+    if ((!vtbl) && g_state->databaseManager)
+        SafeCopy(&vtbl, g_state->databaseManager, sizeof(vtbl));
+    return vtbl;
+}
+
 static void EnsureSectionRanges()
 {
     std::call_once(g_sectionRangeOnce, []() {
@@ -295,21 +325,10 @@ static void EnsureSectionRanges()
             else if (strncmp(name, ".rdata", 8) == 0)
                 g_rdataSection = range;
         }
-        uintptr_t canonical = static_cast<uintptr_t>(kCanonicalManagerVtbl);
-        if (canonical != 0 && !g_rdataSection.Contains(canonical)) {
-            if (const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable()) {
-                if (primary->containsRdata(canonical)) {
-                    g_rdataSection.begin = primary->rdataBegin;
-                    g_rdataSection.end = primary->rdataEnd;
-                } else if (primary->containsText(canonical)) {
-                    g_rdataSection.begin = primary->textBegin;
-                    g_rdataSection.end = primary->textEnd;
-                }
-            }
-            if (!g_rdataSection.Contains(canonical)) {
-                uintptr_t page = canonical & ~static_cast<uintptr_t>(0xFFFu);
-                g_rdataSection.begin = page;
-                g_rdataSection.end = page + 0x1000;
+        if (const Scanner::ModuleInfo* primary = EnsurePrimaryModule()) {
+            if (primary->rdataBegin != 0 && primary->rdataEnd > primary->rdataBegin) {
+                g_rdataSection.begin = primary->rdataBegin;
+                g_rdataSection.end = primary->rdataEnd;
             }
         }
     });
@@ -317,15 +336,29 @@ static void EnsureSectionRanges()
 
 static uintptr_t ResolveCanonicalManagerVtbl()
 {
+    void* stateVtbl = ResolveStateEngineVtablePtr();
+    if (stateVtbl) {
+        uintptr_t candidate = reinterpret_cast<uintptr_t>(stateVtbl);
+        if (IsPrimaryModuleRdata(candidate))
+            return candidate;
+    }
+
     if (g_state) {
         void* manager = g_state->databaseManager ? g_state->databaseManager : g_netMgr;
         if (manager) {
             void* vtblPtr = nullptr;
-            if (SafeCopy(&vtblPtr, manager, sizeof(vtblPtr)) && vtblPtr)
-                return reinterpret_cast<uintptr_t>(vtblPtr);
+            if (SafeCopy(&vtblPtr, manager, sizeof(vtblPtr)) && vtblPtr) {
+                uintptr_t candidate = reinterpret_cast<uintptr_t>(vtblPtr);
+                if (IsPrimaryModuleRdata(candidate))
+                    return candidate;
+            }
         }
     }
-    return static_cast<uintptr_t>(kCanonicalManagerVtbl);
+
+    uintptr_t fallback = static_cast<uintptr_t>(kCanonicalManagerVtbl);
+    if (fallback != 0 && IsPrimaryModuleRdata(fallback))
+        return fallback;
+    return 0;
 }
 
 static void EnsureCanonicalVtblWhitelisted()
@@ -334,29 +367,19 @@ static void EnsureCanonicalVtblWhitelisted()
     if (canonical == 0)
         return;
     EnsureSectionRanges();
-    if (g_rdataSection.Contains(canonical))
+    if (!IsPrimaryModuleRdata(canonical))
         return;
-    if (const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable()) {
-        if (primary->containsRdata(canonical)) {
+    if (!g_rdataSection.Contains(canonical)) {
+        if (const Scanner::ModuleInfo* primary = EnsurePrimaryModule()) {
             g_rdataSection.begin = primary->rdataBegin;
             g_rdataSection.end = primary->rdataEnd;
-            return;
-        }
-        if (primary->containsText(canonical)) {
-            g_rdataSection.begin = primary->textBegin;
-            g_rdataSection.end = primary->textEnd;
-            return;
         }
     }
-    uintptr_t page = canonical & ~static_cast<uintptr_t>(0xFFFu);
-    g_rdataSection.begin = page;
-    g_rdataSection.end = page + 0x1000;
 }
 
 static bool IsInModuleRdata(uintptr_t addr)
 {
-    const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
-    return primary && primary->containsRdata(addr);
+    return IsPrimaryModuleRdata(addr);
 }
 
 static bool IsInManagerRegion(uintptr_t addr)
@@ -504,8 +527,7 @@ static bool ValidateManagerPointer(void* manager, void** outVtbl)
 
     EnsureCanonicalVtblWhitelisted();
     uintptr_t vtblAddr = reinterpret_cast<uintptr_t>(vtbl);
-    bool inRdata = IsInModuleRdata(vtblAddr) || g_rdataSection.Contains(vtblAddr);
-    if (!inRdata)
+    if (!IsInModuleRdata(vtblAddr))
         return false;
 
     if (outVtbl)
@@ -1937,8 +1959,15 @@ static bool TryDiscoverEndpointFromManager(void* manager)
         return false;
     }
     uintptr_t canonicalVtbl = ResolveCanonicalManagerVtbl();
+    bool canonicalInRdata = (canonicalVtbl != 0) && IsInModuleRdata(canonicalVtbl);
+    void* loggedVtbl = managerVtbl;
+    if (canonicalInRdata)
+        loggedVtbl = reinterpret_cast<void*>(canonicalVtbl);
     if (canonicalVtbl != 0 && reinterpret_cast<uintptr_t>(managerVtbl) == canonicalVtbl)
         EnsureCanonicalVtblWhitelisted();
+    uintptr_t loggedVtblAddr = loggedVtbl ? reinterpret_cast<uintptr_t>(loggedVtbl) : 0;
+    bool loggedInRdata = loggedVtblAddr != 0 && IsInModuleRdata(loggedVtblAddr);
+    const char* vtblSuffix = loggedInRdata ? " (.rdata)" : "";
 
     if (!IsEngineStableForScanning())
         return false;
@@ -1979,16 +2008,18 @@ static bool TryDiscoverEndpointFromManager(void* manager)
 
     char startBuf[160];
     sprintf_s(startBuf, sizeof(startBuf),
-              "DiscoverEndpoint: scan begin manager=%p vtbl=%p window=0x%zx depth=%d",
+              "DiscoverEndpoint: scan begin manager=%p vtbl=%p%s window=0x%zx depth=%d",
               manager,
-              managerVtbl,
+              loggedVtbl,
+              vtblSuffix,
               kScanLimit,
               kTailFollowMaxDepth);
     WriteRawLog(startBuf);
 
-    uint32_t ringLoadPct = 0;
-    Scanner::Sampler::drain(t_sendSampleBuffer, 0, &ringLoadPct);
-    const std::uint32_t drainedSamples = static_cast<std::uint32_t>(t_sendSampleBuffer.size());
+    auto samples = Scanner::Sampler::drain();
+    const std::uint32_t drainedSamples = static_cast<std::uint32_t>(samples.size());
+    const std::uint32_t ringLoadPct = Scanner::Sampler::ringLoadPercent();
+    g_lastRingLoad.store(ringLoadPct, std::memory_order_relaxed);
 
     std::vector<CandidateRaw> rawCandidates;
     rawCandidates.reserve(64);
@@ -2117,7 +2148,7 @@ static bool TryDiscoverEndpointFromManager(void* manager)
               ringLoadPct);
     WriteRawLog(summary);
 
-    bool attached = RunCandidatePass(rawCandidates, t_sendSampleBuffer, drainedSamples, ringLoadPct);
+    bool attached = RunCandidatePass(rawCandidates, samples, drainedSamples, ringLoadPct);
     if (attached) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,

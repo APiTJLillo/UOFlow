@@ -1317,7 +1317,13 @@ static void ClearHelperPending(lua_State* L, uint64_t generation, LuaStateInfo* 
             state.helper_flags &= ~HELPER_FLAG_SETTLE_ARMED;
             if ((state.flags & STATE_FLAG_HELPERS_INSTALLED) == 0) {
                 uint64_t now = GetTickCount64();
-                UpdateHelperStage(state, DetermineHelperStage(state, (state.flags & STATE_FLAG_CANON_READY) != 0), now, "clear-pending");
+                bool canonicalReady = (state.flags & STATE_FLAG_CANON_READY) != 0;
+                HelperInstallStage nextStage = DetermineHelperStage(state, canonicalReady);
+                if (nextStage == HelperInstallStage::ReadyToInstall && canonicalReady) {
+                    if (state.helper_rebind_attempts != 0 && state.helper_rebind_attempts <= 3)
+                        nextStage = HelperInstallStage::Installing;
+                }
+                UpdateHelperStage(state, nextStage, now, "clear-pending");
             }
         }
     }, infoOut);
@@ -4394,9 +4400,6 @@ static void EnsureScriptThread(DWORD tid, lua_State* L) {
         LogLuaQ("tid=%lu script-thread-discovered L=%p", tid, L);
     }
 
-    if (tid != 0)
-        Util::OwnerPump::SetOwnerThreadId(tid);
-
     if (g_scriptThreadId.load(std::memory_order_acquire) == tid && L) {
         lua_State* prev = g_mainLuaState.exchange(L, std::memory_order_acq_rel);
         if (prev != L) {
@@ -4696,17 +4699,6 @@ static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::functio
     DWORD from = GetCurrentThreadId();
     const char* name = taskName ? taskName : "<owner>";
 
-    if (owner && owner == from && haveInfo) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][Bind] owner-inline L=%p owner=%lu task=%s",
-                  L,
-                  owner,
-                  name);
-        fn();
-        return;
-    }
-
     std::string taskLabel = name;
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
@@ -4748,13 +4740,6 @@ static void PostBindToOwnerThread(lua_State* L,
         return;
 
     std::string reasonCopy = reason ? reason : "ctx-rebind";
-    if (ownerTid == GetCurrentThreadId()) {
-        PostToLuaThread(nullptr, "helpers", [L, generation, force, reasonCopy](lua_State*) {
-            BindHelpersTask(L, generation, force, reasonCopy.c_str());
-        });
-        return;
-    }
-
     PostToOwnerWithTask(L, "helpers", [L, generation, force, reasonCopy]() {
         BindHelpersTask(L, generation, force, reasonCopy.c_str());
     });

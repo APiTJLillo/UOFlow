@@ -20,9 +20,9 @@ std::mutex g_mutex;
 WatchState g_state{};
 Callback g_callback{};
 
-constexpr uintptr_t kPageMask = 0xFFFF;
+constexpr uintptr_t kPageMask = 0x0FFF;
 
-uintptr_t Align64k(uintptr_t value) noexcept
+uintptr_t AlignPage(uintptr_t value) noexcept
 {
     return value & ~kPageMask;
 }
@@ -55,7 +55,7 @@ void UpdateFromAfter(const MEMORY_BASIC_INFORMATION& info, WatchState& state) no
 {
     uintptr_t base = reinterpret_cast<uintptr_t>(info.BaseAddress);
     if (base != 0) {
-        state.base = Align64k(base);
+        state.base = AlignPage(base);
     }
     if (info.RegionSize != 0)
         state.span = info.RegionSize;
@@ -95,9 +95,8 @@ void SetWatchPointer(void* pointer) noexcept
 
     uintptr_t addr = reinterpret_cast<uintptr_t>(pointer);
     g_state.target = addr;
-    g_state.base = Align64k(addr);
-    if (g_state.span == 0)
-        g_state.span = 0x10000;
+    g_state.base = AlignPage(addr);
+    g_state.span = 0x1000;
     g_state.hasInfo = false;
 }
 
@@ -144,7 +143,7 @@ void NotifyRange(const char* source,
             if (afterState->State == MEM_COMMIT && IsReadableProtect(afterState->Protect)) {
                 cb = g_callback;
                 baseForLog = g_state.base ? g_state.base
-                                          : Align64k(reinterpret_cast<uintptr_t>(afterState->BaseAddress));
+                                          : AlignPage(reinterpret_cast<uintptr_t>(afterState->BaseAddress));
             }
         }
     }
@@ -153,7 +152,7 @@ void NotifyRange(const char* source,
         return;
 
     if (baseForLog == 0)
-        baseForLog = Align64k(rangeBase);
+        baseForLog = AlignPage(rangeBase);
 
     Log::Logf(Log::Level::Info,
               Log::Category::Hooks,

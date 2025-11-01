@@ -33,17 +33,8 @@ void RunOnOwner(std::function<void()> task)
     if (!task)
         return;
 
-    const std::uint32_t owner = g_ownerTid.load(std::memory_order_acquire);
-    const std::uint32_t current = GetCurrentThreadId();
-    if (owner != 0 && owner == current) {
-        task();
-        return;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(g_queueMutex);
-        g_queue.emplace_back(std::move(task));
-    }
+    std::lock_guard<std::mutex> lock(g_queueMutex);
+    g_queue.emplace_back(std::move(task));
 }
 
 void SetOwnerThreadId(std::uint32_t tid) noexcept
