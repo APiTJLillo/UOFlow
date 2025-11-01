@@ -14,6 +14,27 @@ namespace Net {
         Count
     };
 
+    enum class Stage3ScanState : std::uint8_t {
+        Idle = 0,
+        Running,
+        Backoff
+    };
+
+    struct Stage3ScanConfig {
+        std::uint32_t vtbl_scan_slots = 0;
+        std::uint32_t depth = 0;
+        std::uint32_t window = 0;
+    };
+
+    struct Stage3ScanStats {
+        std::uint32_t candidates = 0;
+        std::uint32_t accepted = 0;
+        std::uint32_t rejected = 0;
+        std::uint32_t ttfs_ms = 0;
+        void* firstCandidate = nullptr;
+        void* firstExecutable = nullptr;
+    };
+
     bool InitSendBuilder(GlobalStateInfo* state);
     void ShutdownSendBuilder();
     bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint = INVALID_SOCKET);
@@ -31,6 +52,9 @@ namespace Net {
     };
     SendBuilderStatus GetSendBuilderStatus();
     Scanner::ScanPassTelemetry DumpLastPassTelemetry();
+    Stage3ScanStats GetStage3ScanStats();
+    Stage3ScanConfig GetStage3ScanConfig();
+    Stage3ScanState GetStage3ScanState();
     void OnEngineReady();
     void NotifyCanonicalManagerDiscovered();
     void NotifyGlobalStateManager(void* netMgr);

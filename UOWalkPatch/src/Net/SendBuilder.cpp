@@ -126,6 +126,19 @@ static std::atomic<std::uint32_t> g_samplerWarmupRemaining{kSamplerWarmupSamples
 static std::atomic<bool> g_sbDebug{false};
 static std::atomic<bool> g_sbDebugNudge{false};
 static std::atomic<bool> g_debugNudgePending{false};
+static Stage3ScanConfig g_stage3ScanConfig{
+    SendBuilderTunables::VTBL_SCAN_SLOTS,
+    4u,
+    static_cast<std::uint32_t>(kEndpointScanWindow)
+};
+static Stage3ScanStats g_lastScanStats{};
+static std::atomic<bool> g_netCfgPendingWake{false};
+static std::atomic<int> g_stage3SettleBypassBudget{0};
+static std::atomic<bool> g_stage3WarmupSampleFired{false};
+static std::atomic<std::uint32_t> g_stage3QuickRetryCount{0};
+static std::atomic<bool> g_stage3RetryPending{false};
+static std::atomic<DWORD> g_stage3RetryDeadline{0};
+static constexpr std::uint32_t kStage3QuickRetryMax = 5;
 static std::atomic<bool> g_debugNudgeSent{false};
 static std::atomic<DWORD> g_lastSampleDropLogTick{0};
 static Scanner::EndpointTrustCache g_endpointTrust{};
@@ -182,6 +195,24 @@ enum class Stage3State : std::uint8_t { Idle = 0, Running, Backoff };
 
 enum class Stage3Pivot : std::uint8_t { None = 0, Engine, Database, Script, Neighbor };
 
+struct Stage3ScanContext {
+    void* ctx = nullptr;
+    void* vtbl = nullptr;
+};
+
+struct Stage3RejectRecord {
+    void* entry = nullptr;
+    const char* reason = nullptr;
+};
+
+struct CandidateRaw;
+
+struct Stage3ScanResult {
+    Stage3ScanStats stats{};
+    std::vector<CandidateRaw> candidates;
+    std::vector<Stage3RejectRecord> rejects;
+};
+
 struct Stage3PassSummary {
     Stage3Pivot pivot = Stage3Pivot::None;
     bool executed = false;
@@ -193,6 +224,7 @@ struct Stage3PassSummary {
     std::uint32_t ttfsMs = 0;
     std::uint32_t nextBackoffMs = 0;
     Scanner::ScanPassTelemetry telemetry{};
+    Stage3ScanStats scanStats{};
 };
 
 struct Stage3PivotResult {
@@ -203,6 +235,7 @@ struct Stage3PivotResult {
     bool accepted = false;
     bool scanned = false;
     Scanner::ScanPassTelemetry telemetry{};
+    Stage3ScanStats scanStats{};
 };
 
 struct ScanRunResult {
@@ -843,7 +876,7 @@ static void LogTelemetryPivot(const char* fromLabel, const char* typeLabel)
 {
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
-              "TELEMETRY[PIVOT] from=%s type=%s",
+              "[CORE][SB][PIVOT] from=%s type=%s",
               fromLabel ? fromLabel : "?",
               typeLabel ? typeLabel : "?");
 }
@@ -1055,6 +1088,7 @@ static void StartNetCfgRetryLoop(void* watchPtr, DWORD nowTick) noexcept
     g_netCfgSettlePtr = watchPtr;
     g_netCfgSettleLogged = false;
     g_sbReady.store(false, std::memory_order_release);
+    g_stage3SettleBypassBudget.store(2, std::memory_order_release);
 }
 
 static void ServiceNetCfgRetryLoop(DWORD nowTick)
@@ -1094,6 +1128,18 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
     g_nextNetCfgProbeTick = g_netCfgRetryNextTick;
 
     if (g_netCfgRetryStartTick != 0 && (nowTick - g_netCfgRetryStartTick) >= kNetCfgSettleTimeoutMs) {
+        int budget = g_stage3SettleBypassBudget.load(std::memory_order_acquire);
+        if (budget > 0) {
+            if (g_stage3SettleBypassBudget.compare_exchange_strong(budget,
+                                                                   budget - 1,
+                                                                   std::memory_order_acq_rel,
+                                                                   std::memory_order_relaxed)) {
+                g_netCfgRetryStartTick = nowTick;
+                g_netCfgRetryNextTick = nowTick + kNetCfgSettleIntervalMs;
+                g_nextNetCfgProbeTick = g_netCfgRetryNextTick;
+                return;
+            }
+        }
         StopNetCfgRetryLoop();
         Log::Logf(Log::Level::Warn,
                   Log::Category::Core,
@@ -1335,7 +1381,7 @@ static void RequestWake(WakeReason reason,
     const DWORD debounceValue = coalesceMs ? coalesceMs : (effectiveMax > effectiveMin ? effectiveMax : effectiveMin);
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
-              "TELEMETRY[WAKE] reason=%s debounce_ms=%u",
+              "[CORE][SB] WAKE reason=%s debounce_ms=%u",
               WakeReasonToString(reason),
               static_cast<unsigned>(debounceValue));
 }
@@ -3161,6 +3207,245 @@ static void LogNonExecSlotSnapshot(void* vtbl, int slotIndex, const char* pivotL
               entryHex[2]);
 }
 
+static Stage3ScanConfig ResolveStage3Config() noexcept
+{
+    Stage3ScanConfig cfg = g_stage3ScanConfig;
+    if (cfg.vtbl_scan_slots == 0)
+        cfg.vtbl_scan_slots = static_cast<std::uint32_t>(SendBuilderTunables::VTBL_SCAN_SLOTS);
+    if (cfg.depth == 0)
+        cfg.depth = 4u;
+    if (cfg.window == 0)
+        cfg.window = static_cast<std::uint32_t>(kEndpointScanWindow);
+    return cfg;
+}
+
+static bool HasPlausibleProlog(const void* entry)
+{
+    if (!entry)
+        return false;
+
+    std::uint8_t bytes[8] = {};
+    if (!SafeCopy(bytes, entry, sizeof(bytes)))
+        return false;
+
+    if (bytes[0] == 0x00 || bytes[0] == 0x90 || bytes[0] == 0xCC)
+        return false;
+
+    switch (bytes[0]) {
+    case 0x55: // push ebp
+    case 0x53: // push ebx
+    case 0x56: // push esi
+    case 0x57: // push edi
+    case 0x8B: // mov r/m
+    case 0x83: // add/sub immediate
+    case 0x81:
+    case 0x68: // push imm32
+    case 0x6A: // push imm8
+    case 0xB8: // mov eax, imm32
+    case 0xB9:
+    case 0xBA:
+    case 0xBB:
+    case 0xBE:
+    case 0xBF:
+    case 0xE8: // call
+    case 0xE9: // jmp
+    case 0xEB: // short jmp
+        return true;
+    default:
+        break;
+    }
+
+    if (bytes[0] == 0x48 && (bytes[1] == 0x81 || bytes[1] == 0x83 || bytes[1] == 0x89 || bytes[1] == 0x8B))
+        return true;
+
+    if (bytes[0] == 0x64 && bytes[1] == 0xA1) // mov eax, fs:[imm32]
+        return true;
+
+    return false;
+}
+static Stage3ScanResult Stage3ScanOnce(const Stage3ScanContext& ctx,
+                                       const char* pivotLabel,
+                                       Scanner::ScanPassTelemetry& telemetry)
+{
+    Stage3ScanResult result{};
+    Stage3ScanConfig cfg = ResolveStage3Config();
+    if (!ctx.ctx || !ctx.vtbl)
+        return result;
+
+    const std::uint32_t slotBudget = cfg.vtbl_scan_slots ? cfg.vtbl_scan_slots : static_cast<std::uint32_t>(SendBuilderTunables::VTBL_SCAN_SLOTS);
+    const std::uint32_t windowBytes = cfg.window ? cfg.window : static_cast<std::uint32_t>(kEndpointScanWindow);
+    const std::size_t maxBytes = std::min<std::size_t>(static_cast<std::size_t>(slotBudget) * sizeof(void*),
+                                                       static_cast<std::size_t>(windowBytes));
+    if (maxBytes == 0)
+        return result;
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[CORE][SB] SCAN_BEGIN ctx=%p vtbl=%p slots=%u depth=%u window=0x%X",
+              ctx.ctx,
+              ctx.vtbl,
+              static_cast<unsigned>(slotBudget),
+              static_cast<unsigned>(cfg.depth),
+              static_cast<unsigned>(windowBytes));
+
+    auto& rejectCache = Core::GetRejectCache();
+    std::unordered_set<void*> seenCandidates;
+    seenCandidates.reserve(SB_PASS_MAX_CANDIDATES);
+    result.candidates.reserve(SB_PASS_MAX_CANDIDATES);
+
+    const std::uint8_t* base = reinterpret_cast<const std::uint8_t*>(ctx.ctx);
+    const std::size_t kInvalidOffset = std::numeric_limits<std::size_t>::max();
+    std::size_t firstCandidateOffset = kInvalidOffset;
+    void* firstCandidateValue = nullptr;
+    void* firstExecutableEntry = nullptr;
+
+    for (std::size_t offset = 0; offset < maxBytes && result.candidates.size() < SB_PASS_MAX_CANDIDATES; offset += sizeof(void*)) {
+        void* slotPtr = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(ctx.ctx) + offset);
+        LARGE_INTEGER iterLi{};
+        QueryPerformanceCounter(&iterLi);
+        const std::uint64_t iterNowQpc = static_cast<std::uint64_t>(iterLi.QuadPart);
+        if (rejectCache.is_hot(slotPtr, iterNowQpc)) {
+            ++telemetry.rej_cache_hits;
+            ++telemetry.rejected_skipped;
+            continue;
+        }
+
+        void* candidate = nullptr;
+        if (!SafeCopy(&candidate, base + offset, sizeof(candidate)))
+            continue;
+        if (!candidate)
+            continue;
+
+        if (firstCandidateOffset == kInvalidOffset) {
+            firstCandidateOffset = offset;
+            firstCandidateValue = candidate;
+        }
+
+        MEMORY_BASIC_INFORMATION mbiCandidate{};
+        if (!VirtualQuery(candidate, &mbiCandidate, sizeof(mbiCandidate)))
+            continue;
+        if (mbiCandidate.State != MEM_COMMIT || (mbiCandidate.Protect & PAGE_GUARD)) {
+            result.rejects.push_back({candidate, "uncommitted"});
+            continue;
+        }
+
+        void* vtbl = nullptr;
+        if (!SafeCopy(&vtbl, candidate, sizeof(vtbl)) || !vtbl) {
+            result.rejects.push_back({candidate, "no_vtbl"});
+            continue;
+        }
+
+        bool inRdata = false;
+        if (!IsGameVtableAddress(vtbl, &inRdata)) {
+            result.rejects.push_back({vtbl, inRdata ? "foreign_vtbl" : "non_game"});
+            LogRejectTtl(reinterpret_cast<std::uintptr_t>(vtbl),
+                         static_cast<int>(offset / sizeof(void*)),
+                         kRejectReasonNonGame);
+            rejectCache.reject(slotPtr, kRejectReasonNonGame);
+            ++telemetry.rej_cache_inserted;
+            continue;
+        }
+
+        void* entry = nullptr;
+        if (!SafeCopy(&entry, vtbl, sizeof(entry)) || !entry) {
+            result.rejects.push_back({vtbl, "null_entry"});
+            LogRejectTtl(reinterpret_cast<std::uintptr_t>(vtbl),
+                         static_cast<int>(offset / sizeof(void*)),
+                         kRejectReasonNoChain);
+            rejectCache.reject(slotPtr, kRejectReasonNoChain);
+            ++telemetry.rej_cache_inserted;
+            continue;
+        }
+
+        if (!IsExecutableCodeAddress(entry)) {
+            result.rejects.push_back({entry, "nonexec"});
+            if (g_sbDebug.load(std::memory_order_acquire))
+                LogNonExecSlotSnapshot(vtbl, static_cast<int>(offset / sizeof(void*)), pivotLabel);
+            LogRejectTtl(reinterpret_cast<std::uintptr_t>(vtbl),
+                         static_cast<int>(offset / sizeof(void*)),
+                         kRejectReasonNotExec);
+            rejectCache.reject(slotPtr, kRejectReasonNotExec);
+            ++telemetry.rej_cache_inserted;
+            continue;
+        }
+
+        if (!HasPlausibleProlog(entry)) {
+            result.rejects.push_back({entry, "prolog"});
+            LogRejectTtl(reinterpret_cast<std::uintptr_t>(vtbl),
+                         static_cast<int>(offset / sizeof(void*)),
+                         kRejectReasonGeneric);
+            rejectCache.reject(slotPtr, kRejectReasonGeneric);
+            ++telemetry.rej_cache_inserted;
+            continue;
+        }
+
+        if (seenCandidates.insert(candidate).second) {
+            CandidateRaw raw{};
+            raw.endpoint = candidate;
+            raw.manager = ctx.ctx;
+            raw.vtbl = ctx.vtbl;
+            raw.offset = offset;
+            result.candidates.push_back(raw);
+            if (!firstExecutableEntry)
+                firstExecutableEntry = entry;
+        }
+    }
+
+    result.stats.candidates = static_cast<std::uint32_t>(result.candidates.size());
+    result.stats.firstCandidate = firstCandidateValue;
+    result.stats.firstExecutable = firstExecutableEntry;
+    result.stats.rejected = static_cast<std::uint32_t>(result.rejects.size());
+
+    const std::size_t rejectLogLimit = std::min<std::size_t>(result.rejects.size(), 8u);
+    for (std::size_t i = 0; i < rejectLogLimit; ++i) {
+        const auto& rec = result.rejects[i];
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[CORE][SB] REJECT vtbl=%p entry=%p reason=%s",
+                  ctx.vtbl,
+                  rec.entry,
+                  rec.reason ? rec.reason : "unknown");
+    }
+
+    return result;
+}
+
+static void Stage3MaybeEmitWarmupSample()
+{
+    if (g_stage3WarmupSampleFired.load(std::memory_order_acquire))
+        return;
+    if (g_sendRing.load_percent() != 0)
+        return;
+    if (Scanner::Sampler::ringLoadPercent() != 0)
+        return;
+    if (g_stage3WarmupSampleFired.exchange(true, std::memory_order_acq_rel))
+        return;
+
+    void* frames[Net::SendSampleStore::kMaxFrames] = {};
+    USHORT captured = RtlCaptureStackBackTrace(0, Net::SendSampleStore::kMaxFrames, frames, nullptr);
+    if (captured == 0)
+        return;
+
+    SubmitSendSample(nullptr, frames, captured, GetTickCount64());
+    Log::Logf(Log::Level::Debug,
+              Log::Category::Core,
+              "[CORE][SB] warmup SEND_SAMPLE captured=%u",
+              captured);
+}
+
+static void Stage3ScheduleQuickRetry()
+{
+    const DWORD deadline = GetTickCount() + 250u;
+    g_stage3RetryDeadline.store(deadline, std::memory_order_relaxed);
+    g_stage3RetryPending.store(true, std::memory_order_release);
+}
+
+static void Stage3ResetQuickRetry()
+{
+    g_stage3QuickRetryCount.store(0, std::memory_order_relaxed);
+    g_stage3RetryPending.store(false, std::memory_order_release);
+    g_stage3RetryDeadline.store(0, std::memory_order_relaxed);
+}
 static bool IsExecutableSendContext(void* candidate, void** outVtbl, void** outEntry0)
 {
     if (!candidate)
@@ -3321,37 +3606,7 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     telemetry.pivot_from = pivotSource;
     telemetry.manager_ptr = target.owner;
     telemetry.manager_vtbl = target.vtbl;
-    const char* reasonLabel = (wakeReasonLabel && *wakeReasonLabel) ? wakeReasonLabel : "unspecified";
-    bool loggedScanBegin = false;
-    auto ensureScanBegin = [&]() {
-        if (loggedScanBegin)
-            return;
-        loggedScanBegin = true;
-        const size_t slotBudget = kEndpointScanWindow / sizeof(void*);
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][SB][SCAN] begin slots=%zu depth=%d wake=%s pivot=%s",
-                  slotBudget,
-                  kTailFollowMaxDepth,
-                  reasonLabel,
-                  pivotLabel ? pivotLabel : "UNKNOWN");
-    };
-    auto emitScanEnd = [&](const Scanner::ScanPassTelemetry& stats) {
-        if (!loggedScanBegin)
-            return;
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][SB][SCAN] end candidates=%u accepted=%u rejected=%u avg_us=%llu max_us=%llu wake=%s",
-                  stats.candidates_considered,
-                  stats.accepted,
-                  stats.rejected,
-                  static_cast<unsigned long long>(stats.avg_us()),
-                  static_cast<unsigned long long>(stats.max_candidate_us),
-                  reasonLabel);
-    };
-
     result.ready = true;
-    ensureScanBegin();
 
     if (TryAttachTrustedEndpoint(target, manager, observedVtbl, passId, telemetry)) {
         if (g_firstScanTickMs64 == 0)
@@ -3363,7 +3618,6 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
         result.trustHit = true;
         result.accepted = true;
         result.telemetry = telemetry;
-        emitScanEnd(telemetry);
         return result;
     }
 
@@ -3379,7 +3633,6 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
             result.deferred = true;
             result.deferDelayMs = deferDelay;
             result.telemetry = telemetry;
-            emitScanEnd(telemetry);
             return result;
         }
     }
@@ -3389,19 +3642,16 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     DWORD dynamicDelay = std::max<DWORD>(kManagerScanCooldownMs, g_tuner.stepDelayMs());
     if (g_lastBuilderScanTick != 0 &&
         (DWORD)(now - g_lastBuilderScanTick) < dynamicDelay) {
-        emitScanEnd(telemetry);
         return result;
     }
 
     if (manager == g_lastManagerScanPtr && (DWORD)(now - g_lastManagerScanTick) < 1000)
     {
-        emitScanEnd(telemetry);
         return result;
     }
 
     if (!SafeMem::IsReadable(manager, kScanLimit + sizeof(void*))) {
         LogGuardInvalidManager(manager);
-        emitScanEnd(telemetry);
         return result;
     }
 
@@ -3412,7 +3662,7 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     const char* mgrName = ManagerKindName(target.kind);
     char startBuf[224];
     sprintf_s(startBuf, sizeof(startBuf),
-              "DiscoverEndpoint: scan begin manager=%p kind=%s pivot_from=%s vtbl=%p (.rdata) window=0x%zx depth=%d",
+              "[CORE][SB] DiscoverEndpoint scan begin manager=%p kind=%s pivot_from=%s vtbl=%p (.rdata) window=0x%zx depth=%d",
               manager,
               mgrName,
               pivotLabel,
@@ -3444,154 +3694,26 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
 
     auto stackSamples = Scanner::Sampler::drain();
 
-    std::vector<CandidateRaw> rawCandidates;
-    rawCandidates.reserve(SB_PASS_MAX_CANDIDATES);
-    std::unordered_set<void*> seenCandidates;
-    seenCandidates.reserve(SB_PASS_MAX_CANDIDATES);
+    Stage3ScanContext scanCtx{};
+    scanCtx.ctx = manager;
+    scanCtx.vtbl = reinterpret_cast<void*>(observedVtbl);
 
-    const size_t kInvalidOffset = std::numeric_limits<size_t>::max();
-    size_t slotsExamined = 0;
-    size_t firstCandidateOffset = kInvalidOffset;
-    void* firstCandidateValue = nullptr;
-    size_t firstCommittedOffset = kInvalidOffset;
-    void* firstCommittedValue = nullptr;
-    size_t firstGameOffset = kInvalidOffset;
-    void* firstGameValue = nullptr;
-    void* firstGameVtable = nullptr;
-    size_t firstNonGameOffset = kInvalidOffset;
-    void* firstNonGameValue = nullptr;
-    void* firstNonGameVtable = nullptr;
-    size_t firstExecOffset = kInvalidOffset;
-    void* firstExecValue = nullptr;
-    void* firstExecEntry = nullptr;
-    size_t firstNonExecOffset = kInvalidOffset;
-    void* firstNonExecValue = nullptr;
-    void* firstNonExecEntry = nullptr;
-
-    for (size_t offset = 0; offset <= kScanLimit; offset += sizeof(void*)) {
-        ++slotsExamined;
-        const int slotIndex = static_cast<int>(offset / sizeof(void*));
-        void* slotPtr = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(manager) + offset);
-        LARGE_INTEGER iterLi{};
-        QueryPerformanceCounter(&iterLi);
-        const std::uint64_t iterNowQpc = static_cast<std::uint64_t>(iterLi.QuadPart);
-        if (rejectCache.is_hot(slotPtr, iterNowQpc)) {
-            ++telemetry.rej_cache_hits;
-            ++telemetry.rejected_skipped;
-            continue;
-        }
-        void* candidate = nullptr;
-        if (!SafeCopy(&candidate, reinterpret_cast<const uint8_t*>(manager) + offset, sizeof(candidate)))
-            continue;
-        if (!candidate || candidate == manager)
-            continue;
-
-        if (firstCandidateOffset == kInvalidOffset) {
-            firstCandidateOffset = offset;
-            firstCandidateValue = candidate;
-        }
-
-        MEMORY_BASIC_INFORMATION mbiCandidate{};
-        if (!VirtualQuery(candidate, &mbiCandidate, sizeof(mbiCandidate)))
-            continue;
-        if (mbiCandidate.State != MEM_COMMIT || (mbiCandidate.Protect & PAGE_GUARD))
-            continue;
-
-        if (firstCommittedOffset == kInvalidOffset) {
-            firstCommittedOffset = offset;
-            firstCommittedValue = candidate;
-        }
-
-        void* vtbl = nullptr;
-        if (!SafeCopy(&vtbl, candidate, sizeof(vtbl)) || !vtbl)
-            continue;
-        bool inRdata = false;
-        if (!IsGameVtableAddress(vtbl, &inRdata)) {
-            if (firstNonGameOffset == kInvalidOffset) {
-                firstNonGameOffset = offset;
-                firstNonGameValue = candidate;
-                firstNonGameVtable = vtbl;
-                if (!inRdata) {
-                    Log::Logf(Log::Level::Debug,
-                              Log::Category::Core,
-                              "[CORE][SB] candidate=%p rejected reason=rdata-miss vtbl=%p offset=0x%zX",
-                              candidate,
-                              vtbl,
-                              offset);
-                }
-            }
-            LogRejectTtl(reinterpret_cast<std::uintptr_t>(vtbl), slotIndex, kRejectReasonNonGame);
-            rejectCache.reject(slotPtr, kRejectReasonNonGame);
-            ++telemetry.rej_cache_inserted;
-            continue;
-        }
-
-        if (firstGameOffset == kInvalidOffset) {
-            firstGameOffset = offset;
-            firstGameValue = candidate;
-            firstGameVtable = vtbl;
-        }
-
-        void* firstEntry = nullptr;
-        if (!SafeCopy(&firstEntry, vtbl, sizeof(firstEntry)))
-            continue;
-        if (!IsExecutableCodeAddress(firstEntry)) {
-            if (firstNonExecOffset == kInvalidOffset) {
-                firstNonExecOffset = offset;
-                firstNonExecValue = candidate;
-                firstNonExecEntry = firstEntry;
-            }
-            if (g_sbDebug.load(std::memory_order_acquire))
-                LogNonExecSlotSnapshot(vtbl, slotIndex, pivotLabel);
-            LogRejectTtl(reinterpret_cast<std::uintptr_t>(vtbl), slotIndex, kRejectReasonNotExec);
-            rejectCache.reject(slotPtr, kRejectReasonNotExec);
-            ++telemetry.rej_cache_inserted;
-            continue;
-        }
-
-        if (firstExecOffset == kInvalidOffset) {
-            firstExecOffset = offset;
-            firstExecValue = candidate;
-            firstExecEntry = firstEntry;
-        }
-
-        if (seenCandidates.insert(candidate).second) {
-            rawCandidates.push_back({candidate, manager, vtbl, offset});
-            if (rawCandidates.size() >= SB_PASS_MAX_CANDIDATES)
-                break;
-        }
-    }
-
+    Stage3ScanResult scanResult = Stage3ScanOnce(scanCtx, pivotLabel, telemetry);
+    std::vector<CandidateRaw> rawCandidates = std::move(scanResult.candidates);
+    result.scanStats = scanResult.stats;
     g_lastPassCandidateCount = rawCandidates.size();
     telemetry.rej_cache_size = static_cast<std::uint32_t>(rejectCache.size());
 
-    char candidateInfo[64];
-    char committedInfo[64];
-    char gameInfo[64];
-    char execInfo[64];
-    char nonExecInfo[64];
-    char nonGameInfo[64];
-    FormatDiscoverySlotInfo(candidateInfo, sizeof(candidateInfo), firstCandidateOffset, firstCandidateValue, kInvalidOffset);
-    FormatDiscoverySlotInfo(committedInfo, sizeof(committedInfo), firstCommittedOffset, firstCommittedValue, kInvalidOffset);
-    FormatDiscoverySlotInfo(gameInfo, sizeof(gameInfo), firstGameOffset, firstGameValue, kInvalidOffset);
-    FormatDiscoverySlotInfo(execInfo, sizeof(execInfo), firstExecOffset, firstExecValue, kInvalidOffset);
-    FormatDiscoverySlotInfo(nonExecInfo, sizeof(nonExecInfo), firstNonExecOffset, firstNonExecValue, kInvalidOffset);
-    FormatDiscoverySlotInfo(nonGameInfo, sizeof(nonGameInfo), firstNonGameOffset, firstNonGameValue, kInvalidOffset);
-
-    char summary[400];
-    sprintf_s(summary, sizeof(summary),
-              "DiscoverEndpoint: scan complete manager=%p kind=%s pivot_from=%s slots=%zu candidates=%zu firstCandidate=%s firstCommitted=%s firstGame=%s(vtbl=%p) firstExecutable=%s(entry=%p) sendSamples=%u ringLoad=%u",
+    char summary[256];
+    sprintf_s(summary,
+              sizeof(summary),
+              "[CORE][SB] Stage3ScanOnce manager=%p pivot=%s candidates=%zu rejected=%u firstCandidate=%p firstExec=%p sendSamples=%u ringLoad=%u",
               manager,
-              mgrName,
-              pivotLabel,
-              slotsExamined,
+              pivotLabel ? pivotLabel : "UNKNOWN",
               rawCandidates.size(),
-              candidateInfo,
-              committedInfo,
-              gameInfo,
-              firstGameVtable,
-              execInfo,
-              firstExecEntry,
+              scanResult.stats.rejected,
+              scanResult.stats.firstCandidate,
+              scanResult.stats.firstExecutable,
               static_cast<unsigned>(newRingSamples),
               ringLoadPct);
     WriteRawLog(summary);
@@ -3611,31 +3733,19 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     result.scanned = true;
     result.telemetry = telemetry;
     result.accepted = attached || telemetry.accepted > 0;
+    result.scanStats.candidates = static_cast<std::uint32_t>(rawCandidates.size());
+    result.scanStats.accepted = telemetry.accepted;
+    result.scanStats.rejected = telemetry.rejected;
 
     if (attached) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
                   "[CORE][SB] manager scan attached endpoint (candidates=%zu)",
                   rawCandidates.size());
-        emitScanEnd(telemetry);
         return result;
     }
 
-    if (firstNonGameValue || firstNonExecValue) {
-        char reason[256];
-        sprintf_s(reason, sizeof(reason),
-                  "DiscoverEndpoint: rejection details pivot_from=%s nonGame=%s vtbl=%p nonExec=%s entry=%p lastEndpoint=%p",
-                  pivotLabel,
-                  nonGameInfo,
-                  firstNonGameVtable,
-                  nonExecInfo,
-                  firstNonExecEntry,
-                  g_lastLoggedEndpoint);
-        WriteRawLog(reason);
-    }
-
     g_lastBuilderScanTick = GetTickCount();
-    emitScanEnd(telemetry);
     return result;
 }
 
@@ -3685,38 +3795,6 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
         cfgInfo = {};
     std::string preconditions = BuildPreconditionsString(netReadable);
 
-    bool beginLogged = false;
-    auto logBegin = [&]() {
-        if (beginLogged)
-            return;
-        beginLogged = true;
-        const char* settleLabel = ctx.fallback ? "fallback" : "normal";
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "TELEMETRY[SCAN_BEGIN] window=0x%zX depth=%d vtbl=%p settle=%s wake=%s",
-                  kEndpointScanWindow,
-                  kTailFollowMaxDepth,
-                  reinterpret_cast<void*>(primary.vtbl),
-                  settleLabel,
-                  wakeReasonLabel ? wakeReasonLabel : "none");
-    };
-    auto logDone = [&](const Scanner::ScanPassTelemetry& telemetry) {
-        if (!beginLogged)
-            return;
-        beginLogged = false;
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "TELEMETRY[SCAN_DONE] slots=%u candidates=%u accepted=%u rejected=%u send_samples=%u ring_load=%u avg_us=%llu max_us=%llu",
-                  static_cast<unsigned>(SendBuilderTunables::VTBL_SCAN_SLOTS),
-                  telemetry.candidates_considered,
-                  telemetry.accepted,
-                  telemetry.rejected,
-                  telemetry.send_samples,
-                  telemetry.ring_load_pct,
-                  static_cast<unsigned long long>(telemetry.avg_us()),
-                  static_cast<unsigned long long>(telemetry.max_candidate_us));
-    };
-
     if (!netReadable) {
         if (ctx.fallback) {
             Log::Logf(Log::Level::Info,
@@ -3735,7 +3813,7 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
         }
     }
 
-    logBegin();
+    Stage3MaybeEmitWarmupSample();
 
     std::uint64_t nowMs = GetTickCount64();
     if (IsVtblSuppressed(primary.vtbl, nowMs)) {
@@ -3743,7 +3821,6 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
                   Log::Category::Core,
                   "[CORE][SB] vtbl unchanged: skipping redundant scan (ttl active)");
         g_stage3Controller.defer(nowTick, SB_BACKOFF_MS_INITIAL, false);
-        logDone(summary.telemetry);
         return run;
     }
 
@@ -3752,7 +3829,6 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
     Stage3PivotResult primaryResult = TryDiscoverEndpointFromManager(primary, preconditions, summary.passId, wakeReasonLabel);
     if (primaryResult.deferred) {
         g_stage3Controller.defer(nowTick, primaryResult.deferDelayMs, false);
-        logDone(primaryResult.telemetry);
         return run;
     }
 
@@ -3778,7 +3854,8 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
         SendBuilderTunables::FALLBACK_PIVOT_ENABLED &&
         primary.kind == ManagerKind::Database &&
         primaryResult.ready &&
-        primaryResult.telemetry.candidates_considered == 0) {
+        primaryResult.telemetry.candidates_considered == 0 &&
+        g_stage3QuickRetryCount.load(std::memory_order_acquire) >= kStage3QuickRetryMax) {
         ManagerTarget engineFallback{};
         if (BuildManagerTarget(ManagerKind::Engine, state, engineFallback) && engineFallback.vtbl != 0 && engineFallback.owner != 0) {
             Log::Logf(Log::Level::Info,
@@ -3790,7 +3867,6 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
                 Stage3PivotResult engineFallbackResult = TryDiscoverEndpointFromManager(engineFallback, preconditions, summary.passId, wakeReasonLabel);
                 if (engineFallbackResult.deferred) {
                     g_stage3Controller.defer(nowTick, engineFallbackResult.deferDelayMs, false);
-                    logDone(engineFallbackResult.telemetry);
                     return run;
                 }
                 if (engineFallbackResult.ready) {
@@ -3818,7 +3894,6 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
                 Stage3PivotResult dbResult = TryDiscoverEndpointFromManager(dbTarget, preconditions, summary.passId, wakeReasonLabel);
                 if (dbResult.deferred) {
                     g_stage3Controller.defer(nowTick, dbResult.deferDelayMs, false);
-                    logDone(dbResult.telemetry);
                     return run;
                 }
                 if (dbResult.ready) {
@@ -3849,6 +3924,28 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
     summary.accepted = finalResult.accepted;
     summary.telemetry = finalResult.telemetry;
     summary.telemetry.id = summary.passId;
+    summary.scanStats = finalResult.scanStats;
+    if (summary.executed) {
+        summary.scanStats.ttfs_ms = summary.ttfsMs;
+        summary.scanStats.accepted = summary.telemetry.accepted;
+        summary.scanStats.rejected = summary.telemetry.rejected;
+        if (summary.scanStats.candidates == 0 && !summary.accepted && !summary.trustHit) {
+            std::uint32_t retries = g_stage3QuickRetryCount.load(std::memory_order_acquire);
+            while (retries < kStage3QuickRetryMax) {
+                if (g_stage3QuickRetryCount.compare_exchange_weak(retries,
+                                                                  retries + 1,
+                                                                  std::memory_order_acq_rel,
+                                                                  std::memory_order_relaxed)) {
+                    Stage3ScheduleQuickRetry();
+                    break;
+                }
+            }
+        } else {
+            Stage3ResetQuickRetry();
+        }
+    } else {
+        summary.scanStats = {};
+    }
     if (!summary.executed)
         summary.pivot = Stage3Pivot::None;
 
@@ -3859,6 +3956,7 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
         std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
         g_lastTelemetry = summary.telemetry;
     }
+    g_lastScanStats = summary.scanStats;
 
     const char* pivotLabel = "none";
     switch (summary.pivot) {
@@ -3907,7 +4005,17 @@ static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx
                   pivotSourceLabel);
     }
 
-    logDone(summary.telemetry);
+    if (summary.executed) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] SCAN_DONE candidates=%u accepted=%u rejected=%u ttfs_ms=%u firstCandidate=%p firstExec=%p",
+                  summary.scanStats.candidates,
+                  summary.scanStats.accepted,
+                  summary.scanStats.rejected,
+                  summary.scanStats.ttfs_ms,
+                  summary.scanStats.firstCandidate,
+                  summary.scanStats.firstExecutable);
+    }
 
     run.executed = summary.executed;
     run.telemetry = summary.telemetry;
@@ -3939,7 +4047,7 @@ static bool TryDiscoverFromEngineContext()
     const size_t kScanLimit = kEndpointScanWindow;
     char startBuf[160];
     sprintf_s(startBuf, sizeof(startBuf),
-              "EngineCtx scan begin ctx=%p window=0x%zx depth=%d",
+              "[CORE][SB] EngineCtx scan begin ctx=%p window=0x%zx depth=%d",
               engineCtx,
               kScanLimit,
               kTailFollowMaxDepth);
@@ -3970,24 +4078,24 @@ static bool TryDiscoverFromEngineContext()
         temp.vtbl = vtblAddr;
 
         Stage3PivotResult pivotResult = TryDiscoverEndpointFromManager(temp, preconditions, 0, nullptr);
-        if (pivotResult.accepted) {
-            g_managerTarget = temp;
-            g_managerTargetValid = true;
-            g_netMgr = candidate;
-            char successBuf[160];
-            sprintf_s(successBuf, sizeof(successBuf),
-                      "EngineCtx scan success manager=%p offset=0x%02zx",
+    if (pivotResult.accepted) {
+        g_managerTarget = temp;
+        g_managerTargetValid = true;
+        g_netMgr = candidate;
+        char successBuf[160];
+        sprintf_s(successBuf, sizeof(successBuf),
+                      "[CORE][SB] EngineCtx scan success manager=%p offset=0x%02zx",
                       candidate,
                       offset);
-            WriteRawLog(successBuf);
-            return true;
-        }
+        WriteRawLog(successBuf);
+        return true;
+    }
         ++attempted;
     }
 
     char summary[160];
     sprintf_s(summary, sizeof(summary),
-              "EngineCtx scan complete ctx=%p entries=%zu attempts=%zu builderScanned=%d",
+              "[CORE][SB] EngineCtx scan complete ctx=%p entries=%zu attempts=%zu builderScanned=%d",
               engineCtx,
               scanned,
               attempted,
@@ -6099,6 +6207,8 @@ static void HookSendBuilderFromNetMgr()
                           static_cast<unsigned long>(mbi.State));
             }
             g_loggedNetScanFailure = true;
+            g_stage3SettleBypassBudget.store(2, std::memory_order_release);
+            g_netCfgPendingWake.store(true, std::memory_order_release);
             StartNetCfgRetryLoop(rawCfg, now);
             return;
         }
@@ -6111,6 +6221,8 @@ static void HookSendBuilderFromNetMgr()
                           "[CORE][SB] networkConfig access fault; deferring scan");
             }
             g_loggedNetScanFailure = true;
+            g_stage3SettleBypassBudget.store(2, std::memory_order_release);
+            g_netCfgPendingWake.store(true, std::memory_order_release);
             StartNetCfgRetryLoop(rawCfg, now);
             return;
         }
@@ -6130,6 +6242,10 @@ static void HookSendBuilderFromNetMgr()
         g_haveNetCfgSnapshot = true;
     }
     StopNetCfgRetryLoop();
+    g_stage3SettleBypassBudget.store(2, std::memory_order_release);
+    if (g_netCfgPendingWake.exchange(false, std::memory_order_acq_rel)) {
+        ScheduleScan("netcfg:ready", false);
+    }
     g_loggedNetScanFailure = false;
 
     if (g_netMgr) {
@@ -6329,6 +6445,15 @@ bool InitSendBuilder(GlobalStateInfo* state)
             g_tailFollowBudget.store(0, std::memory_order_release);
             g_tailFollowFallback.store(false, std::memory_order_release);
             g_lastWakeNs.store(0, std::memory_order_release);
+            g_stage3QuickRetryCount.store(0, std::memory_order_relaxed);
+            g_stage3RetryPending.store(false, std::memory_order_release);
+            g_stage3RetryDeadline.store(0, std::memory_order_relaxed);
+            g_stage3WarmupSampleFired.store(false, std::memory_order_release);
+            g_netCfgPendingWake.store(false, std::memory_order_release);
+            g_stage3SettleBypassBudget.store(0, std::memory_order_release);
+            g_lastScanStats = {};
+    g_lastScanStats = {};
+
             g_missingPrereqMaskLogged.store(0, std::memory_order_release);
             ResetScheduledScanState();
             g_sbReady.store(false, std::memory_order_release);
@@ -6425,6 +6550,20 @@ void PollSendBuilder()
 
     DWORD now = GetTickCount();
     ServiceNetCfgRetryLoop(now);
+    if (g_stage3RetryPending.load(std::memory_order_acquire)) {
+        DWORD deadline = g_stage3RetryDeadline.load(std::memory_order_relaxed);
+        if (deadline == 0 || TickHasElapsed(now, deadline)) {
+            ScanState beforeState = g_scanState.load(std::memory_order_acquire);
+            if (g_stage3RetryPending.exchange(false, std::memory_order_acq_rel)) {
+                ScheduleScan("stage3:retry", false);
+                ScanState afterState = g_scanState.load(std::memory_order_acquire);
+                if (beforeState == ScanState::Idle && afterState == ScanState::Idle) {
+                    g_stage3RetryPending.store(true, std::memory_order_release);
+                    g_stage3RetryDeadline.store(now + SendBuilderTunables::WAKE_DEBOUNCE_MS, std::memory_order_relaxed);
+                }
+            }
+        }
+    }
     if (g_sendRingDebug.load(std::memory_order_relaxed)) {
         DWORD last = g_lastSendRingDebugTick.load(std::memory_order_relaxed);
         if (last == 0 || (now - last) >= 5000) {
@@ -6527,6 +6666,14 @@ void ShutdownSendBuilder()
     g_tailFollowBudget.store(0, std::memory_order_release);
     g_tailFollowFallback.store(false, std::memory_order_release);
     g_lastWakeNs.store(0, std::memory_order_release);
+    g_stage3QuickRetryCount.store(0, std::memory_order_relaxed);
+    g_stage3RetryPending.store(false, std::memory_order_release);
+    g_stage3RetryDeadline.store(0, std::memory_order_relaxed);
+    g_stage3WarmupSampleFired.store(false, std::memory_order_release);
+    g_netCfgPendingWake.store(false, std::memory_order_release);
+    g_stage3SettleBypassBudget.store(0, std::memory_order_release);
+    g_lastScanStats = {};
+
     g_missingPrereqMaskLogged.store(0, std::memory_order_release);
     ResetScheduledScanState();
     g_sbReady.store(false, std::memory_order_release);
@@ -6671,6 +6818,29 @@ Scanner::ScanPassTelemetry DumpLastPassTelemetry()
     return g_lastTelemetry;
 }
 
+Stage3ScanStats GetStage3ScanStats()
+{
+    return g_lastScanStats;
+}
+
+Stage3ScanConfig GetStage3ScanConfig()
+{
+    return ResolveStage3Config();
+}
+
+Stage3ScanState GetStage3ScanState()
+{
+    Stage3State internal = g_stage3Controller.state();
+    switch (internal) {
+    case Stage3State::Idle:
+        return Stage3ScanState::Idle;
+    case Stage3State::Backoff:
+        return Stage3ScanState::Backoff;
+    case Stage3State::Running:
+    default:
+        return Stage3ScanState::Running;
+    }
+}
 
 bool IsSendBuilderAttached()
 {
@@ -6701,3 +6871,12 @@ void NotifyGlobalStateManager(void* netMgr)
 
 
 } // namespace Net\n
+
+
+
+
+
+
+
+
+
