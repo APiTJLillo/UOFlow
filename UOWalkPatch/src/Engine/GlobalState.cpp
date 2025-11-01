@@ -265,6 +265,8 @@ static void* FindGlobalStateInfo() {
                             "  Resource Mgr: %p",
                             info, info->luaState, info->databaseManager, info->resourceManager);
                         WriteRawLog(buffer);
+                        if (info->databaseManager)
+                            Net::NotifyGlobalStateManager(info->databaseManager);
                         return info;
                     }
                     if (!info)
@@ -405,6 +407,8 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
                 candidate->scriptContext,
                 candidate->resourceManager);
             WriteRawLog(buffer);
+            if (candidate->databaseManager)
+                Net::NotifyGlobalStateManager(candidate->databaseManager);
             InterlockedExchange(&g_flags.lua_slot_seen, 1);
 
             void* engineCtx = candidate->engineContext;

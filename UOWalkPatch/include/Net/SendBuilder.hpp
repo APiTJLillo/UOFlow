@@ -27,11 +27,13 @@ namespace Net {
         bool hooked = false;
         bool probing = false;
         void* sendPacket = nullptr;
+        void* netMgr = nullptr;
     };
     SendBuilderStatus GetSendBuilderStatus();
     Scanner::ScanPassTelemetry DumpLastPassTelemetry();
     void OnEngineReady();
     void NotifyCanonicalManagerDiscovered();
+    void NotifyGlobalStateManager(void* netMgr);
     void SubmitSendSample(void* endpoint, void** frames, USHORT captured, std::uint64_t nowMs);
     bool IsSendSamplingEnabled();
 }

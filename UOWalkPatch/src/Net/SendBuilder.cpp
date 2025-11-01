@@ -149,6 +149,7 @@ static std::atomic<uint32_t> g_pendingWakeMask{0};
 enum class ScanReason : std::uint8_t {
     Wake = 0,
     NetCfgReady,
+    NetCfgTimeout,
     Manual,
     Count
 };
@@ -157,6 +158,7 @@ static constexpr DWORD kScanDebounceMs = 500;
 static std::atomic<bool> g_scanRequested{false};
 static std::atomic<bool> g_scanInFlight{false};
 static std::atomic<DWORD> g_lastScanCompleteTick{0};
+static std::atomic<DWORD> g_lastScanScheduleTick{0};
 static std::atomic<uint32_t> g_scanReasonMask{0};
 static std::atomic<bool> g_allowEarlyScan{false};
 static std::atomic<bool> g_sbReady{false};
@@ -164,6 +166,7 @@ static void* g_netCfgSettlePtr = nullptr;
 static bool g_netCfgSettleLogged = false;
 static constexpr DWORD kNetCfgSettleIntervalMs = 250;
 static constexpr DWORD kNetCfgSettleTimeoutMs = 10'000;
+static std::once_flag g_missingManagerLogOnce;
 
 static bool IsExecutableCodeAddress(void* addr);
 static std::atomic<std::uint64_t> g_guardWarnPass{0};
@@ -211,7 +214,7 @@ struct ScanRunResult {
     Scanner::ScanPassTelemetry telemetry{};
 };
 
-static void ScheduleScan(ScanReason reason);
+static bool ScheduleScan(ScanReason reason);
 static bool RunScan();
 static constexpr std::uint32_t ScanReasonBit(ScanReason reason) noexcept;
 static std::string BuildScanReasonLabel(std::uint32_t mask);
@@ -1042,7 +1045,7 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
         Log::Logf(Log::Level::Warn,
                   Log::Category::Core,
                   "[CORE][SB] networkConfig settle timeout; continuing with fallback pivot");
-        ScheduleScan(ScanReason::Wake);
+        ScheduleScan(ScanReason::NetCfgTimeout);
     }
 }
 
@@ -1082,15 +1085,24 @@ static void ScheduleSendBuilderWake(const char* sourceTag,
               WakeReasonToString(reason));
 }
 
-static void ScheduleScan(ScanReason reason)
+static bool ScheduleScan(ScanReason reason)
 {
     DWORD now = GetTickCount();
     DWORD lastFinish = g_lastScanCompleteTick.load(std::memory_order_acquire);
-    if (lastFinish != 0 && (now - lastFinish) < kScanDebounceMs)
-        return;
+    if (lastFinish != 0) {
+        const DWORD elapsed = now - lastFinish;
+        if (elapsed < kScanDebounceMs) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[CORE][SB] scan debounced (%lu ms since last)",
+                      static_cast<unsigned long>(elapsed));
+            return false;
+        }
+    }
     if (g_scanInFlight.load(std::memory_order_acquire))
-        return;
+        return false;
 
+    g_lastScanScheduleTick.store(now, std::memory_order_release);
     g_scanReasonMask.fetch_or(ScanReasonBit(reason), std::memory_order_acq_rel);
 
     Engine::Lua::StartupStatus status{};
@@ -1100,6 +1112,7 @@ static void ScheduleScan(ScanReason reason)
 
     g_scanRequested.store(true, std::memory_order_release);
     g_stage3Controller.wake(now);
+    return true;
 }
 
 static bool RunScan()
@@ -1108,15 +1121,34 @@ static bool RunScan()
         return false;
     if (g_builderScanned)
         return false;
-    if (!g_state)
+
+    const GlobalStateInfo* state = g_state;
+    void* engineCtx = state ? state->engineContext : nullptr;
+    void* luaState = state ? state->luaState : nullptr;
+    if (!engineCtx || !luaState) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] scan skip reason=no_state ctx=%p lua=%p",
+                  engineCtx,
+                  luaState);
         return false;
-    if (!g_netMgr)
-        return false;
+    }
+
+    if (!g_netMgr) {
+        std::call_once(g_missingManagerLogOnce, []() {
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Core,
+                      "[CORE][SB] manager pointer is null; falling back to vtbl-only pivot");
+        });
+    }
 
     DWORD now = GetTickCount();
     DWORD lastFinish = g_lastScanCompleteTick.load(std::memory_order_acquire);
-    if (lastFinish != 0 && (now - lastFinish) < kScanDebounceMs)
-        return false;
+    if (lastFinish != 0) {
+        const DWORD elapsed = now - lastFinish;
+        if (elapsed < kScanDebounceMs)
+            return false;
+    }
 
     if (g_scanInFlight.exchange(true, std::memory_order_acq_rel))
         return false;
@@ -1127,7 +1159,7 @@ static bool RunScan()
         std::atomic<bool>& flag;
     } resetGuard(g_scanInFlight);
 
-    DWORD startTick = GetTickCount();
+    DWORD startTick = now;
     std::uint32_t reasonMask = g_scanReasonMask.exchange(0u, std::memory_order_acq_rel);
 
     ScanRunResult run = ExecuteManagerScanSequence();
@@ -1255,6 +1287,8 @@ static const char* ScanReasonToString(ScanReason reason) noexcept
         return "Wake";
     case ScanReason::NetCfgReady:
         return "NetCfgReady";
+    case ScanReason::NetCfgTimeout:
+        return "NetCfgTimeout";
     case ScanReason::Manual:
         return "Manual";
     default:
@@ -1279,6 +1313,7 @@ static std::string BuildScanReasonLabel(std::uint32_t mask)
 
     append(ScanReason::Wake);
     append(ScanReason::NetCfgReady);
+    append(ScanReason::NetCfgTimeout);
     append(ScanReason::Manual);
 
     return label.empty() ? ScanReasonToString(ScanReason::Manual) : label;
@@ -1595,18 +1630,15 @@ static bool IsEngineStableForScanning()
     Engine::Lua::GetStartupStatus(status);
     DWORD now = GetTickCount();
 
-    if (!status.engineContextDiscovered || !status.luaStateDiscovered)
-    {
+    if (!status.engineContextDiscovered || !status.luaStateDiscovered) {
         g_helperWaitStartTick = 0;
         g_helperBypassWarningLogged = false;
-        if (!g_loggedEngineUnstable || (DWORD)(now - g_lastEngineUnstableLogTick) >= kEngineUnstableLogCooldownMs)
-        {
+        if (!g_loggedEngineUnstable || (DWORD)(now - g_lastEngineUnstableLogTick) >= kEngineUnstableLogCooldownMs) {
             char buf[192];
             sprintf_s(buf, sizeof(buf),
-                      "SendBuilder scan deferred: engineContext=%d luaState=%d helpers=%d",
+                      "SendBuilder scan deferred: engineContext=%d luaState=%d",
                       status.engineContextDiscovered ? 1 : 0,
-                      status.luaStateDiscovered ? 1 : 0,
-                      status.helpersInstalled ? 1 : 0);
+                      status.luaStateDiscovered ? 1 : 0);
             WriteRawLog(buf);
             g_loggedEngineUnstable = true;
             g_lastEngineUnstableLogTick = now;
@@ -1614,56 +1646,10 @@ static bool IsEngineStableForScanning()
         return false;
     }
 
-    if (g_helperWaitStartTick == 0)
-        g_helperWaitStartTick = now;
-
-#if !defined(UOWALK_NO_HELPERS)
-    if (g_allowEarlyScan.load(std::memory_order_acquire))
-    {
-        g_loggedEngineUnstable = false;
-        g_helperBypassWarningLogged = false;
-        return true;
-    }
-#endif
-
-#if defined(UOWALK_NO_HELPERS)
     g_loggedEngineUnstable = false;
+    g_helperWaitStartTick = 0;
+    g_helperBypassWarningLogged = false;
     return true;
-#else
-    if (status.helpersInstalled)
-    {
-        g_loggedEngineUnstable = false;
-        g_helperBypassWarningLogged = false;
-        return true;
-    }
-
-    DWORD elapsed = now - g_helperWaitStartTick;
-    if (elapsed >= 2000)
-    {
-        if (!g_helperBypassWarningLogged)
-        {
-            Log::Logf(Log::Level::Warn,
-                      Log::Category::Core,
-                      "SendBuilder helper wait exceeded elapsedMs=%lu proceeding without helpers",
-                      static_cast<unsigned long>(elapsed));
-            g_helperBypassWarningLogged = true;
-        }
-        g_loggedEngineUnstable = false;
-        return true;
-    }
-
-    if (!g_loggedEngineUnstable || (DWORD)(now - g_lastEngineUnstableLogTick) >= kEngineUnstableLogCooldownMs)
-    {
-        char buf[224];
-        sprintf_s(buf, sizeof(buf),
-                  "SendBuilder scan deferred: engineContext=1 luaState=1 helpers=0 waitMs=%lu",
-                  static_cast<unsigned long>(2000 - elapsed));
-        WriteRawLog(buf);
-        g_loggedEngineUnstable = true;
-        g_lastEngineUnstableLogTick = now;
-    }
-    return false;
-#endif
 }
 
 static bool SafeCopy(void* dst, const void* src, size_t bytes)
@@ -3906,17 +3892,23 @@ static void CaptureNetManager(void* candidate, const char* sourceTag)
 
     if (!g_netMgr) {
         g_netMgr = candidate;
-        char buf[128];
-        sprintf_s(buf, sizeof(buf), "NetMgr captured via %s = %p", sourceTag, g_netMgr);
-        WriteRawLog(buf);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] NetMgr captured via %s = %p",
+                  sourceTag,
+                  g_netMgr);
         g_lastManagerScanPtr = nullptr;
         g_lastManagerScanTick = 0;
         g_lastLoggedEndpoint = nullptr;
     } else if (g_netMgr != candidate) {
-        char buf[160];
-        sprintf_s(buf, sizeof(buf), "NetMgr pointer updated via %s %p -> %p", sourceTag, g_netMgr, candidate);
-        WriteRawLog(buf);
+        void* previous = g_netMgr;
         g_netMgr = candidate;
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] NetMgr pointer updated via %s %p -> %p",
+                  sourceTag,
+                  previous,
+                  g_netMgr);
         g_lastManagerScanPtr = nullptr;
         g_lastManagerScanTick = 0;
         g_lastLoggedEndpoint = nullptr;
@@ -6347,7 +6339,7 @@ void PollSendBuilder()
     if (!g_netMgr && !gatingActive)
         TryDiscoverFromEngineContext();
 
-    if (g_netMgr && !g_builderScanned && !gatingActive) {
+    if (!g_builderScanned && !gatingActive) {
         EnsureManagerSelection(g_state);
         RunScan();
     }
@@ -6515,6 +6507,7 @@ SendBuilderStatus GetSendBuilderStatus()
     SendBuilderStatus status{};
     status.hooked = g_sendBuilderHooked;
     status.sendPacket = g_sendPacketTarget;
+    status.netMgr = g_netMgr;
     bool haveManager = g_netMgr != nullptr || g_sendCtx != nullptr;
     bool activelyScanning = !g_builderScanned || HasEndpointBackoff() || g_nextNetCfgProbeTick != 0;
     status.probing = !status.hooked && (haveManager || activelyScanning);
@@ -6582,6 +6575,13 @@ void OnEngineReady()
 void NotifyCanonicalManagerDiscovered()
 {
     EnsureCanonicalVtblWhitelisted();
+}
+
+void NotifyGlobalStateManager(void* netMgr)
+{
+    if (!netMgr)
+        return;
+    CaptureNetManager(netMgr, "globalState.databaseManager");
 }
 
 
