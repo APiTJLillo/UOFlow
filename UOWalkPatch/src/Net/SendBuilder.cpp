@@ -290,8 +290,6 @@ static void* ResolveStateEngineVtablePtr()
         vtbl = g_state->engineVtable;
     if ((!vtbl) && g_state->engineContext)
         SafeCopy(&vtbl, g_state->engineContext, sizeof(vtbl));
-    if ((!vtbl) && g_state->databaseManager)
-        SafeCopy(&vtbl, g_state->databaseManager, sizeof(vtbl));
     return vtbl;
 }
 
@@ -341,18 +339,6 @@ static uintptr_t ResolveCanonicalManagerVtbl()
         uintptr_t candidate = reinterpret_cast<uintptr_t>(stateVtbl);
         if (IsPrimaryModuleRdata(candidate))
             return candidate;
-    }
-
-    if (g_state) {
-        void* manager = g_state->databaseManager ? g_state->databaseManager : g_netMgr;
-        if (manager) {
-            void* vtblPtr = nullptr;
-            if (SafeCopy(&vtblPtr, manager, sizeof(vtblPtr)) && vtblPtr) {
-                uintptr_t candidate = reinterpret_cast<uintptr_t>(vtblPtr);
-                if (IsPrimaryModuleRdata(candidate))
-                    return candidate;
-            }
-        }
     }
 
     uintptr_t fallback = static_cast<uintptr_t>(kCanonicalManagerVtbl);
@@ -520,6 +506,9 @@ static bool ValidateManagerPointer(void* manager, void** outVtbl)
         if (!IsInImageSection(g_dataSection, managerAddr) && !IsInImageSection(g_rdataSection, managerAddr))
             return false;
     }
+
+    if (!outVtbl)
+        return true;
 
     void* vtbl = nullptr;
     if (!SafeCopy(&vtbl, manager, sizeof(vtbl)) || !vtbl)
@@ -973,6 +962,36 @@ static uint8_t* LocateFunctionStart(uint8_t* ret,
     return ret;
 }
 
+static uint8_t* NormalizeSampleStart(uint8_t* func,
+                                     const Scanner::ModuleInfo& module)
+{
+    if (!func)
+        return nullptr;
+
+    uint8_t* normalized = LocateFunctionStart(func, module);
+    if (normalized && func >= normalized && static_cast<std::size_t>(func - normalized) <= 0x40)
+        return normalized;
+
+    const std::uintptr_t moduleBegin = module.textBegin ? module.textBegin : module.base;
+    if (func <= reinterpret_cast<uint8_t*>(moduleBegin))
+        return func;
+
+    uint8_t* cursor = func;
+    std::size_t scanned = 0;
+    while (cursor > reinterpret_cast<uint8_t*>(moduleBegin) && scanned < 0x40) {
+        --cursor;
+        ++scanned;
+        uint8_t byte = 0;
+        if (!SafeMem::SafeReadBytes(cursor, &byte, sizeof(byte)))
+            continue;
+        if (byte == 0xCC || byte == 0xC3 || byte == 0x90) {
+            return cursor < func ? cursor : func;
+        }
+    }
+
+    return normalized ? normalized : func;
+}
+
 static Scanner::EdgeType ClassifyEdgeFromReturn(uint8_t* ret)
 {
     if (!ret)
@@ -1366,14 +1385,18 @@ static bool ProcessSendSamplesFast(const std::vector<Scanner::SendSample>& sampl
     visitedEndpoints.reserve(samples.size());
 
     const Scanner::ModuleInfo* primary = g_moduleMap.primaryExecutable();
-    const std::uintptr_t primaryBase = primary ? primary->base : 0;
+    if (!primary)
+        return false;
+    const std::uintptr_t primaryBase = primary->base;
 
     for (const auto& sample : samples) {
+        const bool hasPrimaryRva = (primaryBase != 0 && sample.moduleBase == primaryBase && sample.rva != 0);
+        if (!hasPrimaryRva)
+            continue;
         if (examined >= 16)
             break;
         ++examined;
 
-        const bool hasPrimaryRva = (primaryBase != 0 && sample.moduleBase == primaryBase && sample.rva != 0);
         Scanner::EndpointTrustCache::CodeKey codeKey{};
         if (hasPrimaryRva)
             codeKey = {sample.rva};
@@ -1387,7 +1410,10 @@ static bool ProcessSendSamplesFast(const std::vector<Scanner::SendSample>& sampl
         ResetTraceResult(trace);
         uint8_t* visited[kTailFollowMaxDepth] = {};
         size_t visitedCount = 0;
-        bool matched = TraceSendPacketFrom(reinterpret_cast<uint8_t*>(sample.func),
+        uint8_t* normalizedStart = NormalizeSampleStart(reinterpret_cast<uint8_t*>(sample.func), *primary);
+        if (!normalizedStart)
+            continue;
+        bool matched = TraceSendPacketFrom(normalizedStart,
                                            kEndpointScanWindow,
                                            kTailFollowMaxDepth,
                                            trace,
@@ -1953,21 +1979,23 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     if (!manager || g_builderScanned)
         return false;
 
-    void* managerVtbl = nullptr;
-    if (!ValidateManagerPointer(manager, &managerVtbl)) {
+    if (!ValidateManagerPointer(manager, nullptr)) {
         LogGuardInvalidManager(manager);
         return false;
     }
+
     uintptr_t canonicalVtbl = ResolveCanonicalManagerVtbl();
-    bool canonicalInRdata = (canonicalVtbl != 0) && IsInModuleRdata(canonicalVtbl);
-    void* loggedVtbl = managerVtbl;
-    if (canonicalInRdata)
-        loggedVtbl = reinterpret_cast<void*>(canonicalVtbl);
-    if (canonicalVtbl != 0 && reinterpret_cast<uintptr_t>(managerVtbl) == canonicalVtbl)
-        EnsureCanonicalVtblWhitelisted();
-    uintptr_t loggedVtblAddr = loggedVtbl ? reinterpret_cast<uintptr_t>(loggedVtbl) : 0;
-    bool loggedInRdata = loggedVtblAddr != 0 && IsInModuleRdata(loggedVtblAddr);
-    const char* vtblSuffix = loggedInRdata ? " (.rdata)" : "";
+    if (canonicalVtbl == 0 || !IsInModuleRdata(canonicalVtbl)) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[CORE][SB] canonical manager vtbl unavailable or not in .rdata (vtbl=%p)",
+                  reinterpret_cast<void*>(canonicalVtbl));
+        return false;
+    }
+
+    EnsureCanonicalVtblWhitelisted();
+    void* managerVtbl = reinterpret_cast<void*>(canonicalVtbl);
+    const char* vtblSuffix = " (.rdata)";
 
     if (!IsEngineStableForScanning())
         return false;
@@ -2010,7 +2038,7 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     sprintf_s(startBuf, sizeof(startBuf),
               "DiscoverEndpoint: scan begin manager=%p vtbl=%p%s window=0x%zx depth=%d",
               manager,
-              loggedVtbl,
+              managerVtbl,
               vtblSuffix,
               kScanLimit,
               kTailFollowMaxDepth);
@@ -4008,13 +4036,6 @@ static void HookSendBuilderFromNetMgr()
         return;
     g_nextNetCfgProbeTick = 0;
 
-    if (g_state->databaseManager) {
-        void* expectedManager = g_state->databaseManager;
-        CaptureNetManager(expectedManager, "globalState.databaseManager");
-        if (!g_builderScanned)
-            TryDiscoverEndpointFromManager(expectedManager);
-    }
-
     void* rawCfg = g_state->networkConfig;
     if (!rawCfg) {
         if (!g_loggedNetScanFailure) {
@@ -4324,10 +4345,11 @@ bool InitSendBuilder(GlobalStateInfo* state)
     Util::RegionWatch::SetCallback([]() {
         ScanSendBuilder();
     });
+    const void* defaultNetCfgPage = reinterpret_cast<void*>(0x310A0000);
     if (state && state->networkConfig) {
         Util::RegionWatch::SetWatchPointer(state->networkConfig);
-    } else if (!state || !state->networkConfig) {
-        Util::RegionWatch::ClearWatch();
+    } else {
+        Util::RegionWatch::SetWatchPointer(const_cast<void*>(defaultNetCfgPage));
     }
 
     bool samplingEnabled = ResolveSendBuilderFlag("SB_SEND_SAMPLING", "sb.sendSampling", true);
