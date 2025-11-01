@@ -211,6 +211,7 @@ static std::atomic<uint32_t> g_helperProbeAttempted{0};
 static std::atomic<uint32_t> g_helperProbeSuccess{0};
 static std::atomic<uint32_t> g_helperProbeSkipped{0};
 static std::atomic<bool> g_helpersInstalledAny{false};
+static std::atomic<uint64_t> g_ownerPumpUnstickLoggedGen{0};
 static std::atomic<DWORD> g_lastHelperOwnerThread{0};
 static std::atomic<uint64_t> g_lastHelperRetryScanTick{0};
 static std::atomic<uint64_t> g_lastHeartbeatTick{0};
@@ -347,6 +348,47 @@ static void SafeRefreshLuaStateFromSlot() noexcept {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         // no-op
     }
+}
+
+static HelperInstallStage DetermineHelperStage(const LuaStateInfo& state, bool canonicalReadyFlag);
+static HelperInstallStage CurrentHelperStage(const LuaStateInfo& state);
+static void UpdateHelperStage(LuaStateInfo& state, HelperInstallStage nextStage, uint64_t now, const char* reason);
+
+static void PostOwnerPumpUnstick(lua_State* L, uint64_t generation)
+{
+    if (!L || generation == 0)
+        return;
+
+    uint64_t logged = g_ownerPumpUnstickLoggedGen.load(std::memory_order_acquire);
+    while (generation > logged) {
+        if (g_ownerPumpUnstickLoggedGen.compare_exchange_weak(logged, generation, std::memory_order_acq_rel))
+            break;
+    }
+    if (generation <= logged)
+        return;
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Hooks,
+              "[HOOKS] helpers owner-pump unstick gen=%llu",
+              static_cast<unsigned long long>(generation));
+
+    Util::OwnerPump::RunOnOwner([L, generation]() {
+        g_stateRegistry.UpdateByPointer(L, [generation](LuaStateInfo& state) {
+            if (state.gen != generation)
+                return;
+            if ((state.flags & STATE_FLAG_HELPERS_INSTALLED) != 0)
+                return;
+            uint64_t now = GetTickCount64();
+            bool canonicalReady = (state.flags & STATE_FLAG_CANON_READY) != 0;
+            HelperInstallStage desired = DetermineHelperStage(state, canonicalReady);
+            if (desired != HelperInstallStage::ReadyToInstall)
+                return;
+            HelperInstallStage current = CurrentHelperStage(state);
+            if (current == HelperInstallStage::ReadyToInstall || current == HelperInstallStage::Installed)
+                return;
+            UpdateHelperStage(state, HelperInstallStage::ReadyToInstall, now, "owner-unstick");
+        });
+    });
 }
 
 static bool IsValidCtx(HCTX ctx) {
@@ -1315,6 +1357,7 @@ static void ClearHelperPending(lua_State* L, uint64_t generation, LuaStateInfo* 
     if (!L)
         return;
     bool scheduleWake = false;
+    bool scheduleOwnerPump = false;
     g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
         if (generation == 0 || state.helper_pending_generation == generation) {
             bool wasPending = (state.flags & STATE_FLAG_HELPERS_PENDING) != 0;
@@ -1334,13 +1377,18 @@ static void ClearHelperPending(lua_State* L, uint64_t generation, LuaStateInfo* 
                 UpdateHelperStage(state, nextStage, now, "clear-pending");
                 HelperInstallStage currentStage = CurrentHelperStage(state);
                 if (wasPending && currentStage == HelperInstallStage::ReadyToInstall)
+                {
                     scheduleWake = true;
+                    scheduleOwnerPump = true;
+                }
             }
             else if (wasPending) {
                 scheduleWake = true;
             }
         }
     }, infoOut);
+    if (scheduleOwnerPump)
+        PostOwnerPumpUnstick(L, generation);
     if (scheduleWake)
         Net::ForceScan(Net::WakeReason::OwnerPumpClear);
 }

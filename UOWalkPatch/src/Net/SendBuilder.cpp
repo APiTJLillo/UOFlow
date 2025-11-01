@@ -146,6 +146,25 @@ static std::uint32_t g_netCfgRetryIndex = 0;
 static std::array<std::atomic<DWORD>, static_cast<size_t>(WakeReason::Count)> g_wakeReasonDebounce{};
 static std::atomic<uint32_t> g_pendingWakeMask{0};
 
+enum class ScanReason : std::uint8_t {
+    Wake = 0,
+    NetCfgReady,
+    Manual,
+    Count
+};
+
+static constexpr DWORD kScanDebounceMs = 500;
+static std::atomic<bool> g_scanRequested{false};
+static std::atomic<bool> g_scanInFlight{false};
+static std::atomic<DWORD> g_lastScanCompleteTick{0};
+static std::atomic<uint32_t> g_scanReasonMask{0};
+static std::atomic<bool> g_allowEarlyScan{false};
+static std::atomic<bool> g_sbReady{false};
+static void* g_netCfgSettlePtr = nullptr;
+static bool g_netCfgSettleLogged = false;
+static constexpr DWORD kNetCfgSettleIntervalMs = 250;
+static constexpr DWORD kNetCfgSettleTimeoutMs = 10'000;
+
 static bool IsExecutableCodeAddress(void* addr);
 static std::atomic<std::uint64_t> g_guardWarnPass{0};
 static std::atomic<std::uint64_t> g_asciiWarnLastPass{0};
@@ -185,6 +204,18 @@ struct Stage3PivotResult {
     bool scanned = false;
     Scanner::ScanPassTelemetry telemetry{};
 };
+
+struct ScanRunResult {
+    bool passStarted = false;
+    bool executed = false;
+    Scanner::ScanPassTelemetry telemetry{};
+};
+
+static void ScheduleScan(ScanReason reason);
+static bool RunScan();
+static constexpr std::uint32_t ScanReasonBit(ScanReason reason) noexcept;
+static std::string BuildScanReasonLabel(std::uint32_t mask);
+static ScanRunResult ExecuteManagerScanSequence();
 
 class Stage3Controller {
 public:
@@ -950,40 +981,69 @@ static void StopNetCfgRetryLoop() noexcept
     g_netCfgRetryIndex = 0;
     g_netCfgRetryStartTick = 0;
     g_nextNetCfgProbeTick = 0;
+    g_netCfgSettlePtr = nullptr;
+    g_netCfgSettleLogged = false;
 }
 
-static void StartNetCfgRetryLoop(DWORD nowTick) noexcept
+static void StartNetCfgRetryLoop(void* watchPtr, DWORD nowTick) noexcept
 {
-    if (g_netCfgRetryActive)
+    if (!watchPtr)
+        return;
+    if (g_netCfgRetryActive && g_netCfgSettlePtr == watchPtr)
         return;
     g_netCfgRetryActive = true;
     g_netCfgRetryIndex = 0;
     g_netCfgRetryStartTick = nowTick;
-    g_netCfgRetryNextTick = nowTick + kNetCfgRetryDelays[0];
+    g_netCfgRetryNextTick = nowTick + kNetCfgSettleIntervalMs;
     g_nextNetCfgProbeTick = g_netCfgRetryNextTick;
+    g_netCfgSettlePtr = watchPtr;
+    g_netCfgSettleLogged = false;
+    g_sbReady.store(false, std::memory_order_release);
 }
 
 static void ServiceNetCfgRetryLoop(DWORD nowTick)
 {
     if (!g_netCfgRetryActive)
         return;
+    if (!g_netCfgSettlePtr)
+        return;
     if (!TickHasElapsed(nowTick, g_netCfgRetryNextTick))
         return;
 
     MEMORY_BASIC_INFORMATION mbi{};
-    if (IsNetworkConfigReadable(&mbi)) {
-        StopNetCfgRetryLoop();
-        ForceScan(WakeReason::NetCfgSettled);
-        return;
+    if (VirtualQuery(g_netCfgSettlePtr, &mbi, sizeof(mbi))) {
+        const bool committed = (mbi.State == MEM_COMMIT);
+        const bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
+        const bool guard = (mbi.Protect & PAGE_GUARD) != 0;
+        if (committed && !noAccess && !guard) {
+            StopNetCfgRetryLoop();
+            g_sbReady.store(true, std::memory_order_release);
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[CORE][SB] networkConfig settled; scheduling scan");
+            ScheduleScan(ScanReason::NetCfgReady);
+            return;
+        }
     }
 
-    if (g_netCfgRetryIndex + 1 < kNetCfgRetryStepCount)
-        ++g_netCfgRetryIndex;
-    g_netCfgRetryNextTick = nowTick + kNetCfgRetryDelays[g_netCfgRetryIndex];
+    if (!g_netCfgSettleLogged) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[CORE][SB] networkConfig settle watcher polling ptr=%p",
+                  g_netCfgSettlePtr);
+        g_netCfgSettleLogged = true;
+    }
+
+    g_netCfgRetryNextTick = nowTick + kNetCfgSettleIntervalMs;
     g_nextNetCfgProbeTick = g_netCfgRetryNextTick;
 
-    if (g_netCfgRetryStartTick != 0 && (nowTick - g_netCfgRetryStartTick) >= 5000u)
+    if (g_netCfgRetryStartTick != 0 && (nowTick - g_netCfgRetryStartTick) >= kNetCfgSettleTimeoutMs) {
         StopNetCfgRetryLoop();
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[CORE][SB] networkConfig settle timeout; continuing with fallback pivot");
+        ScheduleScan(ScanReason::Wake);
+    }
 }
 
 static void ScheduleSendBuilderWake(const char* sourceTag,
@@ -1022,6 +1082,87 @@ static void ScheduleSendBuilderWake(const char* sourceTag,
               WakeReasonToString(reason));
 }
 
+static void ScheduleScan(ScanReason reason)
+{
+    DWORD now = GetTickCount();
+    DWORD lastFinish = g_lastScanCompleteTick.load(std::memory_order_acquire);
+    if (lastFinish != 0 && (now - lastFinish) < kScanDebounceMs)
+        return;
+    if (g_scanInFlight.load(std::memory_order_acquire))
+        return;
+
+    g_scanReasonMask.fetch_or(ScanReasonBit(reason), std::memory_order_acq_rel);
+
+    Engine::Lua::StartupStatus status{};
+    Engine::Lua::GetStartupStatus(status);
+    if (status.engineContextDiscovered && status.luaStateDiscovered)
+        g_allowEarlyScan.store(true, std::memory_order_release);
+
+    g_scanRequested.store(true, std::memory_order_release);
+    g_stage3Controller.wake(now);
+}
+
+static bool RunScan()
+{
+    if (!g_scanRequested.load(std::memory_order_acquire))
+        return false;
+    if (g_builderScanned)
+        return false;
+    if (!g_state)
+        return false;
+    if (!g_netMgr)
+        return false;
+
+    DWORD now = GetTickCount();
+    DWORD lastFinish = g_lastScanCompleteTick.load(std::memory_order_acquire);
+    if (lastFinish != 0 && (now - lastFinish) < kScanDebounceMs)
+        return false;
+
+    if (g_scanInFlight.exchange(true, std::memory_order_acq_rel))
+        return false;
+
+    struct FlightReset {
+        explicit FlightReset(std::atomic<bool>& flagRef) : flag(flagRef) {}
+        ~FlightReset() { flag.store(false, std::memory_order_release); }
+        std::atomic<bool>& flag;
+    } resetGuard(g_scanInFlight);
+
+    DWORD startTick = GetTickCount();
+    std::uint32_t reasonMask = g_scanReasonMask.exchange(0u, std::memory_order_acq_rel);
+
+    ScanRunResult run = ExecuteManagerScanSequence();
+    if (!run.passStarted) {
+        if (reasonMask != 0)
+            g_scanReasonMask.fetch_or(reasonMask, std::memory_order_acq_rel);
+        g_scanRequested.store(true, std::memory_order_release);
+        return false;
+    }
+
+    if (reasonMask == 0)
+        reasonMask = ScanReasonBit(ScanReason::Manual);
+
+    std::string reasonLabel = BuildScanReasonLabel(reasonMask);
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "TELEMETRY[SCAN_BEGIN] reason=%s",
+              reasonLabel.c_str());
+
+    DWORD elapsedMs = GetTickCount() - startTick;
+
+    Scanner::ScanPassTelemetry telemetry = run.telemetry;
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "TELEMETRY[SCAN_END] candidates=%u accepted=%u rejected=%u elapsed_ms=%u",
+              telemetry.candidates_considered,
+              telemetry.accepted,
+              telemetry.rejected,
+              static_cast<unsigned>(elapsedMs));
+
+    g_lastScanCompleteTick.store(GetTickCount(), std::memory_order_release);
+    g_scanRequested.store(false, std::memory_order_release);
+    return true;
+}
+
 static void RequestWake(WakeReason reason,
                         DWORD minDelayMs,
                         DWORD maxDelayMs,
@@ -1049,6 +1190,13 @@ static void RequestWake(WakeReason reason,
         std::swap(effectiveMax, effectiveMin);
 
     ScheduleSendBuilderWake(WakeReasonToString(reason), effectiveMin, effectiveMax, reason);
+
+    ScanReason scanReason = ScanReason::Wake;
+    if (reason == WakeReason::NetCfgSettled)
+        scanReason = ScanReason::NetCfgReady;
+    else if (reason == WakeReason::Manual)
+        scanReason = ScanReason::Manual;
+    ScheduleScan(scanReason);
 
     const DWORD debounceValue = coalesceMs ? coalesceMs : (effectiveMax > effectiveMin ? effectiveMax : effectiveMin);
     Log::Logf(Log::Level::Info,
@@ -1093,6 +1241,47 @@ static std::string BuildWakeReasonLabel(std::uint32_t mask)
     }
 
     return label;
+}
+
+static constexpr std::uint32_t ScanReasonBit(ScanReason reason) noexcept
+{
+    return 1u << static_cast<std::uint32_t>(reason);
+}
+
+static const char* ScanReasonToString(ScanReason reason) noexcept
+{
+    switch (reason) {
+    case ScanReason::Wake:
+        return "Wake";
+    case ScanReason::NetCfgReady:
+        return "NetCfgReady";
+    case ScanReason::Manual:
+        return "Manual";
+    default:
+        return "Unknown";
+    }
+}
+
+static std::string BuildScanReasonLabel(std::uint32_t mask)
+{
+    if (mask == 0)
+        return ScanReasonToString(ScanReason::Manual);
+
+    std::string label;
+    auto append = [&](ScanReason reason) {
+        const std::uint32_t bit = ScanReasonBit(reason);
+        if ((mask & bit) == 0)
+            return;
+        if (!label.empty())
+            label.push_back('|');
+        label.append(ScanReasonToString(reason));
+    };
+
+    append(ScanReason::Wake);
+    append(ScanReason::NetCfgReady);
+    append(ScanReason::Manual);
+
+    return label.empty() ? ScanReasonToString(ScanReason::Manual) : label;
 }
 static bool LooksLikeAsciiDword(uintptr_t value)
 {
@@ -1427,6 +1616,15 @@ static bool IsEngineStableForScanning()
 
     if (g_helperWaitStartTick == 0)
         g_helperWaitStartTick = now;
+
+#if !defined(UOWALK_NO_HELPERS)
+    if (g_allowEarlyScan.load(std::memory_order_acquire))
+    {
+        g_loggedEngineUnstable = false;
+        g_helperBypassWarningLogged = false;
+        return true;
+    }
+#endif
 
 #if defined(UOWALK_NO_HELPERS)
     g_loggedEngineUnstable = false;
@@ -3087,7 +3285,7 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
         const size_t slotBudget = kEndpointScanWindow / sizeof(void*);
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "TELEMETRY[SCAN_BEGIN] slots=%zu depth=%d reason=%s pivot=%s",
+                  "[CORE][SB][SCAN] begin slots=%zu depth=%d wake=%s pivot=%s",
                   slotBudget,
                   kTailFollowMaxDepth,
                   reasonLabel,
@@ -3098,7 +3296,7 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
             return;
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "TELEMETRY[SCAN_END] candidates=%u accepted=%u rejected=%u avg_us=%llu max_us=%llu reason=%s",
+                  "[CORE][SB][SCAN] end candidates=%u accepted=%u rejected=%u avg_us=%llu max_us=%llu wake=%s",
                   stats.candidates_considered,
                   stats.accepted,
                   stats.rejected,
@@ -3396,19 +3594,22 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     return result;
 }
 
-static void ExecuteManagerScanSequence()
+static ScanRunResult ExecuteManagerScanSequence()
 {
+    ScanRunResult run{};
     if (g_builderScanned)
-        return;
+        return run;
 
     const GlobalStateInfo* state = g_state;
     if (!EnsureManagerSelection(state))
-        return;
+        return run;
 
     DWORD nowTick = GetTickCount();
     auto passIdOpt = g_stage3Controller.beginPass(nowTick);
     if (!passIdOpt)
-        return;
+        return run;
+
+    run.passStarted = true;
 
     StopNetCfgRetryLoop();
 
@@ -3440,7 +3641,7 @@ static void ExecuteManagerScanSequence()
                   static_cast<unsigned long>(cfgInfo.State),
                   static_cast<unsigned long>(cfgInfo.Protect));
         g_stage3Controller.defer(nowTick, SB_BACKOFF_MS_INITIAL, false);
-        return;
+        return run;
     }
 
     std::uint64_t nowMs = GetTickCount64();
@@ -3449,7 +3650,7 @@ static void ExecuteManagerScanSequence()
                   Log::Category::Core,
                   "[CORE][SB] vtbl unchanged: skipping redundant scan (ttl active)");
         g_stage3Controller.defer(nowTick, SB_BACKOFF_MS_INITIAL, false);
-        return;
+        return run;
     }
 
     LogPivotAttempt(primary, false);
@@ -3457,7 +3658,7 @@ static void ExecuteManagerScanSequence()
     Stage3PivotResult primaryResult = TryDiscoverEndpointFromManager(primary, preconditions, summary.passId, wakeReasonLabel);
     if (primaryResult.deferred) {
         g_stage3Controller.defer(nowTick, primaryResult.deferDelayMs, false);
-        return;
+        return run;
     }
 
     auto hasSampleHit = [](const Stage3PivotResult& result) noexcept {
@@ -3494,7 +3695,7 @@ static void ExecuteManagerScanSequence()
                 Stage3PivotResult engineFallbackResult = TryDiscoverEndpointFromManager(engineFallback, preconditions, summary.passId, wakeReasonLabel);
                 if (engineFallbackResult.deferred) {
                     g_stage3Controller.defer(nowTick, engineFallbackResult.deferDelayMs, false);
-                    return;
+                    return run;
                 }
                 if (engineFallbackResult.ready) {
                     finalResult = engineFallbackResult;
@@ -3521,7 +3722,7 @@ static void ExecuteManagerScanSequence()
                 Stage3PivotResult dbResult = TryDiscoverEndpointFromManager(dbTarget, preconditions, summary.passId, wakeReasonLabel);
                 if (dbResult.deferred) {
                     g_stage3Controller.defer(nowTick, dbResult.deferDelayMs, false);
-                    return;
+                    return run;
                 }
                 if (dbResult.ready) {
                     pivotUsed = Stage3Pivot::Database;
@@ -3608,6 +3809,10 @@ static void ExecuteManagerScanSequence()
                   pivotLabel,
                   pivotSourceLabel);
     }
+
+    run.executed = summary.executed;
+    run.telemetry = summary.telemetry;
+    return run;
 }
 
 static bool TryDiscoverFromEngineContext()
@@ -3718,7 +3923,7 @@ static void CaptureNetManager(void* candidate, const char* sourceTag)
     }
 
     EnsureManagerSelection(g_state);
-    ExecuteManagerScanSequence();
+    ScheduleScan(ScanReason::Manual);
 }
 
 static bool CallsSendPacket(uint8_t* fn, size_t maxScan, uintptr_t send, uint8_t* offsetOut) {
@@ -5715,11 +5920,14 @@ static void HookSendBuilderFromNetMgr()
         }
         Util::RegionWatch::ClearWatch();
         StopNetCfgRetryLoop();
+        g_sbReady.store(false, std::memory_order_release);
         TryDiscoverFromEngineContext();
         return;
     }
 
     if (rawCfg != g_lastNetCfgPtr) {
+        StopNetCfgRetryLoop();
+        g_sbReady.store(false, std::memory_order_release);
         g_lastNetCfgPtr = rawCfg;
         g_lastNetCfgState = 0xFFFFFFFF;
         g_lastNetCfgProtect = 0xFFFFFFFF;
@@ -5786,7 +5994,7 @@ static void HookSendBuilderFromNetMgr()
                           static_cast<unsigned long>(mbi.State));
             }
             g_loggedNetScanFailure = true;
-            StartNetCfgRetryLoop(now);
+            StartNetCfgRetryLoop(rawCfg, now);
             return;
         }
 
@@ -5798,7 +6006,7 @@ static void HookSendBuilderFromNetMgr()
                           "[CORE][SB] networkConfig access fault; deferring scan");
             }
             g_loggedNetScanFailure = true;
-            StartNetCfgRetryLoop(now);
+            StartNetCfgRetryLoop(rawCfg, now);
             return;
         }
     }
@@ -5821,7 +6029,7 @@ static void HookSendBuilderFromNetMgr()
 
     if (g_netMgr) {
         EnsureManagerSelection(g_state);
-        ExecuteManagerScanSequence();
+        ScheduleScan(ScanReason::Manual);
     }
 
     MEMORY_BASIC_INFORMATION mbiCurrent{};
@@ -5897,6 +6105,7 @@ static void HookSendBuilderFromNetMgr()
 static void ScanSendBuilder()
 {
     ScheduleSendBuilderWake("RegionWatch", 100, 200);
+    ScheduleScan(ScanReason::Manual);
     DWORD now = GetTickCount();
     if (g_nextNetCfgProbeTick == 0 || TickHasElapsed(now, g_nextNetCfgProbeTick))
         HookSendBuilderFromNetMgr();
@@ -6011,6 +6220,14 @@ bool InitSendBuilder(GlobalStateInfo* state)
             g_firstScanTickMs64 = 0;
             g_managerTargetValid = false;
             ResetVtblSuppressions();
+            g_scanRequested.store(false, std::memory_order_release);
+            g_scanInFlight.store(false, std::memory_order_release);
+            g_lastScanCompleteTick.store(0, std::memory_order_release);
+            g_scanReasonMask.store(0, std::memory_order_release);
+            g_allowEarlyScan.store(false, std::memory_order_release);
+            g_sbReady.store(false, std::memory_order_release);
+            g_netCfgSettlePtr = nullptr;
+            g_netCfgSettleLogged = false;
         }
         else {
             g_initTickMs64 = 0;
@@ -6132,7 +6349,7 @@ void PollSendBuilder()
 
     if (g_netMgr && !g_builderScanned && !gatingActive) {
         EnsureManagerSelection(g_state);
-        ExecuteManagerScanSequence();
+        RunScan();
     }
 
     if (!g_sendPacketTarget)
@@ -6200,6 +6417,15 @@ void ShutdownSendBuilder()
     Util::RegionWatch::ClearWatch();
     g_stage3Controller.reset();
     g_lastWakeScheduleTick = 0;
+    g_scanRequested.store(false, std::memory_order_release);
+    g_scanInFlight.store(false, std::memory_order_release);
+    g_lastScanCompleteTick.store(0, std::memory_order_release);
+    g_scanReasonMask.store(0, std::memory_order_release);
+    g_allowEarlyScan.store(false, std::memory_order_release);
+    g_sbReady.store(false, std::memory_order_release);
+    g_netCfgSettlePtr = nullptr;
+    g_netCfgSettleLogged = false;
+    StopNetCfgRetryLoop();
 }
 
 bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint)
