@@ -12,6 +12,8 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
+#include <array>
+#include <string>
 #include <optional>
 #include <cstdlib>
 #include <ws2tcpip.h>
@@ -121,6 +123,31 @@ static thread_local bool t_debugNudgeCall = false;
 static Scanner::ModuleMap g_moduleMap;
 static Net::SendSampleStore g_sendSampleStore;
 
+enum class ManagerKind : std::uint8_t {
+    Engine,
+    Database,
+    ScriptCtx
+};
+
+struct ManagerTarget {
+    ManagerKind kind = ManagerKind::Engine;
+    uintptr_t vtbl = 0;
+    uintptr_t owner = 0;
+};
+
+struct VtblSuppressEntry {
+    uintptr_t vtbl = 0;
+    std::uint64_t expiryMs = 0;
+};
+
+static ManagerTarget g_managerTarget{};
+static bool g_managerTargetValid = false;
+static bool g_allowDbProbe = false;
+static size_t g_lastPassCandidateCount = 0;
+static uint32_t g_lastPassSampleHits = 0;
+static std::array<VtblSuppressEntry, 8> g_vtblSuppress{};
+static size_t g_vtblSuppressIndex = 0;
+
 struct EndpointBackoffState {
     DWORD nextTick = 0;
     DWORD delayMs = 0;
@@ -182,6 +209,226 @@ static bool ResolveSendBuilderFlag(const char* envName, const char* cfgKey, bool
 }
 
 static bool SafeCopy(void* dst, const void* src, size_t bytes);
+
+static const char* ManagerKindName(ManagerKind kind) noexcept
+{
+    switch (kind) {
+    case ManagerKind::Engine:
+        return "engine";
+    case ManagerKind::Database:
+        return "db";
+    case ManagerKind::ScriptCtx:
+        return "script";
+    default:
+        return "?";
+    }
+}
+
+static bool IsInModuleRdata(uintptr_t addr);
+
+static bool IsReadableMemory(const void* address, SIZE_T minimum, MEMORY_BASIC_INFORMATION* outMbi = nullptr)
+{
+    if (!address)
+        return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(address, &mbi, sizeof(mbi)) == 0)
+        return false;
+    if (outMbi)
+        *outMbi = mbi;
+    if (mbi.State != MEM_COMMIT)
+        return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))
+        return false;
+    constexpr DWORD kReadableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                                    PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if ((mbi.Protect & kReadableMask) == 0)
+        return false;
+    SIZE_T span = mbi.RegionSize;
+    const auto begin = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    const auto offset = reinterpret_cast<uintptr_t>(address) - begin;
+    if (offset >= span)
+        return false;
+    span -= offset;
+    return span >= minimum;
+}
+
+static void ResetVtblSuppressions() noexcept
+{
+    for (auto& entry : g_vtblSuppress) {
+        entry.vtbl = 0;
+        entry.expiryMs = 0;
+    }
+}
+
+static bool IsVtblSuppressed(uintptr_t vtbl, std::uint64_t nowMs) noexcept
+{
+    if (vtbl == 0)
+        return false;
+    for (const auto& entry : g_vtblSuppress) {
+        if (entry.vtbl == vtbl && entry.expiryMs != 0 && nowMs < entry.expiryMs)
+            return true;
+    }
+    return false;
+}
+
+static void SuppressVtbl(uintptr_t vtbl, std::uint64_t nowMs) noexcept
+{
+    if (vtbl == 0)
+        return;
+    constexpr std::uint64_t kTtlMs = 5ull * 60ull * 1000ull;
+    for (auto& entry : g_vtblSuppress) {
+        if (entry.vtbl == vtbl) {
+            entry.expiryMs = nowMs + kTtlMs;
+            return;
+        }
+        if (entry.expiryMs == 0 || nowMs >= entry.expiryMs) {
+            entry.vtbl = vtbl;
+            entry.expiryMs = nowMs + kTtlMs;
+            return;
+        }
+    }
+    g_vtblSuppress[g_vtblSuppressIndex] = {vtbl, nowMs + kTtlMs};
+    g_vtblSuppressIndex = (g_vtblSuppressIndex + 1) % g_vtblSuppress.size();
+}
+
+static void ClearVtblSuppression(uintptr_t vtbl) noexcept
+{
+    if (vtbl == 0)
+        return;
+    for (auto& entry : g_vtblSuppress) {
+        if (entry.vtbl == vtbl) {
+            entry.vtbl = 0;
+            entry.expiryMs = 0;
+        }
+    }
+}
+
+static std::string BuildPreconditionsString(bool netReadable)
+{
+    std::string result = netReadable ? "netReadable" : "netPending";
+    const char* helperStage = Engine::Lua::GetHelperStageSummary();
+    if (helperStage && helperStage[0] != '\0') {
+        std::string stage(helperStage);
+        result += ";helpers=" + stage;
+        if (_stricmp(helperStage, "installed") == 0)
+            ResetVtblSuppressions();
+    } else {
+        result += ";helpers=unknown";
+    }
+    return result;
+}
+
+static uint64_t TimeToFirstScanMs() noexcept
+{
+    if (g_initTickMs64 == 0 || g_firstScanTickMs64 == 0 || g_firstScanTickMs64 < g_initTickMs64)
+        return 0;
+    return g_firstScanTickMs64 - g_initTickMs64;
+}
+
+static bool BuildManagerTarget(ManagerKind kind, const GlobalStateInfo* state, ManagerTarget& out)
+{
+    if (!state)
+        return false;
+
+    void* owner = nullptr;
+    uintptr_t vtblAddr = 0;
+
+    switch (kind) {
+    case ManagerKind::Engine:
+        owner = state->engineContext;
+        if (owner) {
+            if (state->engineVtable)
+                vtblAddr = reinterpret_cast<uintptr_t>(state->engineVtable);
+            if (vtblAddr == 0) {
+                void* vtblPtr = nullptr;
+                if (SafeCopy(&vtblPtr, owner, sizeof(vtblPtr)) && vtblPtr)
+                    vtblAddr = reinterpret_cast<uintptr_t>(vtblPtr);
+            }
+        }
+        break;
+    case ManagerKind::Database:
+        owner = state->databaseManager;
+        if (owner) {
+            void* vtblPtr = nullptr;
+            if (SafeCopy(&vtblPtr, owner, sizeof(vtblPtr)) && vtblPtr)
+                vtblAddr = reinterpret_cast<uintptr_t>(vtblPtr);
+        }
+        break;
+    case ManagerKind::ScriptCtx:
+        owner = state->scriptContext;
+        if (owner) {
+            void* vtblPtr = nullptr;
+            if (SafeCopy(&vtblPtr, owner, sizeof(vtblPtr)) && vtblPtr)
+                vtblAddr = reinterpret_cast<uintptr_t>(vtblPtr);
+        }
+        break;
+    default:
+        break;
+    }
+
+    if (!owner || vtblAddr == 0)
+        return false;
+    if (!IsInModuleRdata(vtblAddr))
+        return false;
+
+    out.kind = kind;
+    out.owner = reinterpret_cast<uintptr_t>(owner);
+    out.vtbl = vtblAddr;
+    return true;
+}
+
+static bool EnsureManagerSelection(const GlobalStateInfo* state)
+{
+    // NOTE: Engine manager vtbl must be preferred. DB/ScriptCtx are fallbacks used only when
+    // sb.allow_db_probe=1 and engine yields zero candidates. This reduces false positives.
+    ManagerTarget candidate{};
+    if (!BuildManagerTarget(ManagerKind::Engine, state, candidate)) {
+        if (!BuildManagerTarget(ManagerKind::Database, state, candidate) &&
+            !BuildManagerTarget(ManagerKind::ScriptCtx, state, candidate))
+            return false;
+    }
+
+    if (!g_managerTargetValid ||
+        g_managerTarget.owner != candidate.owner ||
+        g_managerTarget.vtbl != candidate.vtbl ||
+        g_managerTarget.kind != candidate.kind) {
+        g_managerTarget = candidate;
+        g_managerTargetValid = true;
+        g_netMgr = reinterpret_cast<void*>(candidate.owner);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] manager_select kind=%s vtbl=%p owner=%p from GlobalState",
+                  ManagerKindName(candidate.kind),
+                  reinterpret_cast<void*>(candidate.vtbl),
+                  reinterpret_cast<void*>(candidate.owner));
+    }
+
+    return true;
+}
+
+static void LogTelemetryNoScan(const ManagerTarget& target,
+                               bool guard,
+                               const std::string& preconditions,
+                               uint32_t ringLoadPct = 0)
+{
+    std::uint64_t passId = g_passSeq.fetch_add(1) + 1;
+    g_guardWarnPass.store(passId, std::memory_order_relaxed);
+    uint64_t ttfsMs = TimeToFirstScanMs();
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=%d preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=0 accepted=0 rejected=0 send_samples=0 sample_hits=0 sample_rejects=0 ring_load=%u avg_us=0 max_us=0",
+              static_cast<unsigned long long>(passId),
+              ManagerKindName(target.kind),
+              reinterpret_cast<void*>(target.vtbl),
+              guard ? 1 : 0,
+              preconditions.c_str(),
+              g_builderScanned ? 1 : 0,
+              static_cast<unsigned long long>(ttfsMs),
+              ringLoadPct);
+}
+
+
 
 using VirtualProtect_t = BOOL(WINAPI*)(LPVOID, SIZE_T, DWORD, PDWORD);
 static VirtualProtect_t g_origVirtualProtect = nullptr;
@@ -1472,12 +1719,17 @@ static void UpdateNextScanDelay(const Scanner::ScanPassTelemetry& telemetry)
 static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
                              const std::vector<Scanner::SendSample>& samples,
                              uint32_t sendSampleCount,
-                             uint32_t ringLoadPct)
+                             uint32_t ringLoadPct,
+                             Scanner::ScanPassTelemetry& telemetry,
+                             const ManagerTarget& managerTarget,
+                             const std::string& preconditions)
 {
-    Scanner::ScanPassTelemetry telemetry{};
+    telemetry = {};
     telemetry.id = g_passSeq.fetch_add(1) + 1;
     telemetry.send_samples = sendSampleCount;
     telemetry.ring_load_pct = ringLoadPct;
+    const char* mgrName = ManagerKindName(managerTarget.kind);
+    const void* vtblPtr = reinterpret_cast<void*>(managerTarget.vtbl);
 
     if (g_firstScanTickMs64 == 0)
         g_firstScanTickMs64 = GetTickCount64();
@@ -1497,8 +1749,11 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
 
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "TELEMETRY[PASS] id=%llu builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
+                  "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
                   static_cast<unsigned long long>(telemetry.id),
+                  mgrName,
+                  vtblPtr,
+                  preconditions.c_str(),
                   g_builderScanned ? 1 : 0,
                   static_cast<unsigned long long>(timeToFirstScanMs),
                   telemetry.candidates_considered,
@@ -1531,8 +1786,11 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
         }
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "TELEMETRY[PASS] id=%llu builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
+                  "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
                   static_cast<unsigned long long>(telemetry.id),
+                  mgrName,
+                  vtblPtr,
+                  preconditions.c_str(),
                   g_builderScanned ? 1 : 0,
                   static_cast<unsigned long long>(timeToFirstScanMs),
                   telemetry.candidates_considered,
@@ -1629,21 +1887,24 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
         g_lastTelemetry = telemetry;
     }
 
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "TELEMETRY[PASS] id=%llu builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
-                  static_cast<unsigned long long>(telemetry.id),
-                  g_builderScanned ? 1 : 0,
-                  static_cast<unsigned long long>(timeToFirstScanMs),
-                  telemetry.candidates_considered,
-                  telemetry.accepted,
-                  telemetry.rejected,
-                  telemetry.send_samples,
-                  telemetry.sample_hits,
-                  telemetry.sample_rejects,
-                  telemetry.ring_load_pct,
-                  telemetry.avg_us(),
-                  telemetry.max_candidate_us);
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
+              static_cast<unsigned long long>(telemetry.id),
+              mgrName,
+              vtblPtr,
+              preconditions.c_str(),
+              g_builderScanned ? 1 : 0,
+              static_cast<unsigned long long>(timeToFirstScanMs),
+              telemetry.candidates_considered,
+              telemetry.accepted,
+              telemetry.rejected,
+              telemetry.send_samples,
+              telemetry.sample_hits,
+              telemetry.sample_rejects,
+              telemetry.ring_load_pct,
+              telemetry.avg_us(),
+              telemetry.max_candidate_us);
 
     Log::Logf(Log::Level::Debug,
               Log::Category::Core,
@@ -1847,7 +2108,11 @@ static int SendPacketExceptionFilter(unsigned code, EXCEPTION_POINTERS* info)
 }
 
 static void TryHookSendBuilder(void* endpoint);
-static bool TryDiscoverEndpointFromManager(void* manager);
+static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
+                                           const std::string& preconditions,
+                                           Scanner::ScanPassTelemetry& telemetry);
+static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
+                                           const std::string& preconditions);
 static bool TryDiscoverFromEngineContext();
 
 static void FormatDiscoverySlotInfo(char* dest,
@@ -1974,33 +2239,43 @@ static void MaybeSendDebugNudge()
     }
 }
 
-static bool TryDiscoverEndpointFromManager(void* manager)
+static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
+                                           const std::string& preconditions,
+                                           Scanner::ScanPassTelemetry& telemetry)
 {
-    if (!manager || g_builderScanned)
+    g_lastPassCandidateCount = 0;
+    g_lastPassSampleHits = 0;
+
+    if (g_builderScanned)
+        return false;
+    if (target.owner == 0 || target.vtbl == 0)
         return false;
 
-    if (!ValidateManagerPointer(manager, nullptr)) {
+    void* manager = reinterpret_cast<void*>(target.owner);
+    void* observedVtblPtr = nullptr;
+    if (!ValidateManagerPointer(manager, &observedVtblPtr)) {
         LogGuardInvalidManager(manager);
         return false;
     }
 
-    uintptr_t canonicalVtbl = ResolveCanonicalManagerVtbl();
-    if (canonicalVtbl == 0 || !IsInModuleRdata(canonicalVtbl)) {
+    const uintptr_t observedVtbl = reinterpret_cast<uintptr_t>(observedVtblPtr);
+    if (observedVtbl != target.vtbl) {
         Log::Logf(Log::Level::Debug,
                   Log::Category::Core,
-                  "[CORE][SB] canonical manager vtbl unavailable or not in .rdata (vtbl=%p)",
-                  reinterpret_cast<void*>(canonicalVtbl));
+                  "[CORE][SB] manager vtbl mismatch kind=%s expected=%p actual=%p owner=%p",
+                  ManagerKindName(target.kind),
+                  reinterpret_cast<void*>(target.vtbl),
+                  observedVtblPtr,
+                  manager);
         return false;
     }
 
-    EnsureCanonicalVtblWhitelisted();
-    void* managerVtbl = reinterpret_cast<void*>(canonicalVtbl);
-    const char* vtblSuffix = " (.rdata)";
+    if (!IsInModuleRdata(observedVtbl))
+        return false;
 
     if (!IsEngineStableForScanning())
         return false;
 
-    // Stage-3: require live send samples before paying full scan cost.
     if (g_requireSendSample.load(std::memory_order_relaxed)) {
         const std::uint32_t pendingSamples = g_sendSampleRing.size();
         if (pendingSamples == 0) {
@@ -2034,12 +2309,13 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     g_lastManagerScanPtr = manager;
     g_lastManagerScanTick = now;
 
-    char startBuf[160];
+    const char* mgrName = ManagerKindName(target.kind);
+    char startBuf[192];
     sprintf_s(startBuf, sizeof(startBuf),
-              "DiscoverEndpoint: scan begin manager=%p vtbl=%p%s window=0x%zx depth=%d",
+              "DiscoverEndpoint: scan begin manager=%p kind=%s vtbl=%p (.rdata) window=0x%zx depth=%d",
               manager,
-              managerVtbl,
-              vtblSuffix,
+              mgrName,
+              reinterpret_cast<void*>(observedVtbl),
               kScanLimit,
               kTailFollowMaxDepth);
     WriteRawLog(startBuf);
@@ -2147,6 +2423,8 @@ static bool TryDiscoverEndpointFromManager(void* manager)
             rawCandidates.push_back({candidate, manager, vtbl, offset});
     }
 
+    g_lastPassCandidateCount = rawCandidates.size();
+
     char candidateInfo[64];
     char committedInfo[64];
     char gameInfo[64];
@@ -2162,8 +2440,9 @@ static bool TryDiscoverEndpointFromManager(void* manager)
 
     char summary[360];
     sprintf_s(summary, sizeof(summary),
-              "DiscoverEndpoint: scan complete manager=%p slots=%zu candidates=%zu firstCandidate=%s firstCommitted=%s firstGame=%s(vtbl=%p) firstExecutable=%s(entry=%p) sendSamples=%u ringLoad=%u",
+              "DiscoverEndpoint: scan complete manager=%p kind=%s slots=%zu candidates=%zu firstCandidate=%s firstCommitted=%s firstGame=%s(vtbl=%p) firstExecutable=%s(entry=%p) sendSamples=%u ringLoad=%u",
               manager,
+              mgrName,
               slotsExamined,
               rawCandidates.size(),
               candidateInfo,
@@ -2176,7 +2455,15 @@ static bool TryDiscoverEndpointFromManager(void* manager)
               ringLoadPct);
     WriteRawLog(summary);
 
-    bool attached = RunCandidatePass(rawCandidates, samples, drainedSamples, ringLoadPct);
+    bool attached = RunCandidatePass(rawCandidates,
+                                     samples,
+                                     drainedSamples,
+                                     ringLoadPct,
+                                     telemetry,
+                                     target,
+                                     preconditions);
+    g_lastPassSampleHits = telemetry.sample_hits;
+
     if (attached) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
@@ -2201,6 +2488,127 @@ static bool TryDiscoverEndpointFromManager(void* manager)
     return false;
 }
 
+static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
+                                           const std::string& preconditions)
+{
+    Scanner::ScanPassTelemetry telemetry{};
+    return TryDiscoverEndpointFromManager(target, preconditions, telemetry);
+}
+
+static void ExecuteManagerScanSequence()
+{
+    if (g_builderScanned)
+        return;
+
+    const GlobalStateInfo* state = g_state;
+    if (!EnsureManagerSelection(state))
+        return;
+
+    ManagerTarget primary = g_managerTarget;
+
+    void* netCfgPtr = GetTrackedConfigPtr();
+    MEMORY_BASIC_INFORMATION cfgInfo{};
+    bool netReadable = netCfgPtr && IsReadableMemory(netCfgPtr, sizeof(void*), &cfgInfo);
+    if (!netCfgPtr)
+        cfgInfo = {};
+    std::string preconditions = BuildPreconditionsString(netReadable);
+
+    if (!netReadable) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] networkConfig not-readable; deferring scan (state=0x%08lX protect=0x%08lX)",
+                  static_cast<unsigned long>(cfgInfo.State),
+                  static_cast<unsigned long>(cfgInfo.Protect));
+        LogTelemetryNoScan(primary, true, preconditions);
+        return;
+    }
+
+    std::uint64_t nowMs = GetTickCount64();
+    if (IsVtblSuppressed(primary.vtbl, nowMs)) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] vtbl unchanged: skipping redundant scan (ttl active)");
+        LogTelemetryNoScan(primary, false, preconditions);
+        return;
+    }
+
+    Scanner::ScanPassTelemetry engineTelemetry{};
+    bool engineAttached = TryDiscoverEndpointFromManager(primary, preconditions, engineTelemetry);
+    bool engineCandidatesZero = (g_lastPassCandidateCount == 0);
+    bool engineSampleHit = (engineTelemetry.sample_hits > 0) || (engineTelemetry.accepted > 0);
+
+    if (engineAttached || engineSampleHit)
+        ClearVtblSuppression(primary.vtbl);
+    else if (engineCandidatesZero)
+        SuppressVtbl(primary.vtbl, nowMs);
+
+    if (engineAttached)
+        return;
+
+    if (!g_allowDbProbe || !engineCandidatesZero)
+        return;
+
+    ManagerTarget dbTarget{};
+    if (!BuildManagerTarget(ManagerKind::Database, state, dbTarget) || dbTarget.vtbl == 0 || dbTarget.owner == 0)
+        return;
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[CORE][SB] fallback to dbMgr vtbl=%p (engine yielded 0)",
+              reinterpret_cast<void*>(dbTarget.vtbl));
+
+    if (IsVtblSuppressed(dbTarget.vtbl, nowMs)) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] vtbl unchanged: skipping redundant scan (ttl active)");
+        LogTelemetryNoScan(dbTarget, false, preconditions);
+        return;
+    }
+
+    Scanner::ScanPassTelemetry dbTelemetry{};
+    bool dbAttached = TryDiscoverEndpointFromManager(dbTarget, preconditions, dbTelemetry);
+    bool dbCandidatesZero = (g_lastPassCandidateCount == 0);
+    bool dbSampleHit = (dbTelemetry.sample_hits > 0) || (dbTelemetry.accepted > 0);
+
+    if (dbAttached || dbSampleHit)
+        ClearVtblSuppression(dbTarget.vtbl);
+    else if (dbCandidatesZero)
+        SuppressVtbl(dbTarget.vtbl, nowMs);
+
+    if (dbAttached)
+        return;
+
+    if (!dbCandidatesZero)
+        return;
+
+    ManagerTarget scriptTarget{};
+    if (!BuildManagerTarget(ManagerKind::ScriptCtx, state, scriptTarget) ||
+        scriptTarget.vtbl == 0 || scriptTarget.owner == 0)
+        return;
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[CORE][SB] fallback to scriptCtx vtbl=%p (engine/db yielded 0)",
+              reinterpret_cast<void*>(scriptTarget.vtbl));
+
+    if (IsVtblSuppressed(scriptTarget.vtbl, nowMs)) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB] vtbl unchanged: skipping redundant scan (ttl active)");
+        LogTelemetryNoScan(scriptTarget, false, preconditions);
+        return;
+    }
+
+    Scanner::ScanPassTelemetry scriptTelemetry{};
+    bool scriptAttached = TryDiscoverEndpointFromManager(scriptTarget, preconditions, scriptTelemetry);
+    bool scriptSampleHit = (scriptTelemetry.sample_hits > 0) || (scriptTelemetry.accepted > 0);
+    bool scriptCandidatesZero = (g_lastPassCandidateCount == 0);
+    if (scriptAttached || scriptSampleHit)
+        ClearVtblSuppression(scriptTarget.vtbl);
+    else if (scriptCandidatesZero)
+        SuppressVtbl(scriptTarget.vtbl, nowMs);
+}
+
 static bool TryDiscoverFromEngineContext()
 {
     if (g_builderScanned || !g_state)
@@ -2208,6 +2616,13 @@ static bool TryDiscoverFromEngineContext()
 
     void* engineCtx = g_state->engineContext;
     if (!engineCtx)
+        return false;
+
+    void* netCfgPtr = GetTrackedConfigPtr();
+    MEMORY_BASIC_INFORMATION cfgInfo{};
+    bool netReadable = netCfgPtr && IsReadableMemory(netCfgPtr, sizeof(void*), &cfgInfo);
+    std::string preconditions = BuildPreconditionsString(netReadable);
+    if (!netReadable)
         return false;
 
     DWORD now = GetTickCount();
@@ -2237,8 +2652,22 @@ static bool TryDiscoverFromEngineContext()
             continue;
         ++scanned;
 
-        if (TryDiscoverEndpointFromManager(candidate))
-        {
+        void* targetVtbl = nullptr;
+        if (!SafeCopy(&targetVtbl, candidate, sizeof(targetVtbl)) || !targetVtbl)
+            continue;
+        uintptr_t vtblAddr = reinterpret_cast<uintptr_t>(targetVtbl);
+        if (!IsInModuleRdata(vtblAddr))
+            continue;
+
+        ManagerTarget temp{};
+        temp.kind = ManagerKind::Engine;
+        temp.owner = reinterpret_cast<uintptr_t>(candidate);
+        temp.vtbl = vtblAddr;
+
+        Scanner::ScanPassTelemetry telemetry{};
+        if (TryDiscoverEndpointFromManager(temp, preconditions, telemetry)) {
+            g_managerTarget = temp;
+            g_managerTargetValid = true;
             g_netMgr = candidate;
             char successBuf[160];
             sprintf_s(successBuf, sizeof(successBuf),
@@ -2287,7 +2716,8 @@ static void CaptureNetManager(void* candidate, const char* sourceTag)
         g_lastLoggedEndpoint = nullptr;
     }
 
-    TryDiscoverEndpointFromManager(g_netMgr);
+    EnsureManagerSelection(g_state);
+    ExecuteManagerScanSequence();
 }
 
 static bool CallsSendPacket(uint8_t* fn, size_t maxScan, uintptr_t send, uint8_t* offsetOut) {
@@ -4148,8 +4578,10 @@ static void HookSendBuilderFromNetMgr()
     }
     g_loggedNetScanFailure = false;
 
-    if (g_netMgr)
-        TryDiscoverEndpointFromManager(g_netMgr);
+    if (g_netMgr) {
+        EnsureManagerSelection(g_state);
+        ExecuteManagerScanSequence();
+    }
 
     MEMORY_BASIC_INFORMATION mbiCurrent{};
     if (VirtualQuery(rawCfg, &mbiCurrent, sizeof(mbiCurrent))) {
@@ -4320,6 +4752,8 @@ bool InitSendBuilder(GlobalStateInfo* state)
             g_debugNudgeSent.store(false, std::memory_order_relaxed);
             g_initTickMs64 = GetTickCount64();
             g_firstScanTickMs64 = 0;
+            g_managerTargetValid = false;
+            ResetVtblSuppressions();
         }
         else {
             g_initTickMs64 = 0;
@@ -4361,6 +4795,7 @@ bool InitSendBuilder(GlobalStateInfo* state)
 
     bool requireSamples = ResolveSendBuilderFlag("SB_REQUIRE_SAMPLE", "sb.requireSendSample", true);
     g_requireSendSample.store(requireSamples, std::memory_order_relaxed);
+    g_allowDbProbe = ResolveSendBuilderFlag("SB_ALLOW_DB_PROBE", "sb.allow_db_probe", false);
 
     if (!g_initLogged || stateChanged) {
         char initBuf[160];
@@ -4371,6 +4806,8 @@ bool InitSendBuilder(GlobalStateInfo* state)
         WriteRawLog(initBuf);
         g_initLogged = true;
     }
+
+    EnsureManagerSelection(g_state);
 
     EnsureMemoryHooks();
 
@@ -4404,8 +4841,10 @@ void PollSendBuilder()
     if (!g_netMgr && !gatingActive)
         TryDiscoverFromEngineContext();
 
-    if (g_netMgr && !g_builderScanned && !gatingActive)
-        TryDiscoverEndpointFromManager(g_netMgr);
+    if (g_netMgr && !g_builderScanned && !gatingActive) {
+        EnsureManagerSelection(g_state);
+        ExecuteManagerScanSequence();
+    }
 
     if (!g_sendPacketTarget)
         FindSendPacket();
