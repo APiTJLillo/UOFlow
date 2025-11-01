@@ -35,6 +35,7 @@ static std::atomic<uint64_t> g_fastWalkLastMissLogTick{0};
 static constexpr int kFastWalkReserveDepth = 2;
 static volatile LONG g_ackPayloadLogBudget = 4;
 static std::atomic<std::uint32_t> g_wsasendWarmupRemaining{64};
+static std::atomic<bool> g_loggedAckOkSignature{false};
 
 struct WalkAckStatusInfo {
     uint8_t code;
@@ -139,6 +140,18 @@ static bool HandleWalkAckMessage(SOCKET sock,
     switch (ackResult.action) {
     case Engine::MovementAckAction::Ok:
         Walk::Controller::NotifyAckOk();
+        {
+            bool expected = false;
+            if (!g_loggedAckOkSignature.load(std::memory_order_relaxed) &&
+                g_loggedAckOkSignature.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Walk,
+                          "[WALK] ack.ok signature observed seq=0x%02X status=%s socket=%llu",
+                          static_cast<unsigned>(seq),
+                          statusLabel,
+                          static_cast<unsigned long long>(effectiveSocket));
+            }
+        }
         actionStr = "ok";
         break;
     case Engine::MovementAckAction::Drop:

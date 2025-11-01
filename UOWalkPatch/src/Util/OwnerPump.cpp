@@ -56,8 +56,16 @@ std::uint32_t GetOwnerThreadId() noexcept
     return g_ownerTid.load(std::memory_order_acquire);
 }
 
-std::size_t Drain(std::uint32_t runnerTid) noexcept
+std::size_t DrainOnOwnerThread() noexcept
 {
+    const std::uint32_t ownerTid = g_ownerTid.load(std::memory_order_acquire);
+    if (ownerTid == 0)
+        return 0;
+
+    const std::uint32_t currentTid = GetCurrentThreadId();
+    if (currentTid != ownerTid)
+        return 0;
+
     std::size_t ran = 0;
 
     for (std::size_t iteration = 0; iteration < kMaxDrainIterations; ++iteration) {
@@ -96,11 +104,6 @@ std::size_t Drain(std::uint32_t runnerTid) noexcept
             break;
     }
 
-    if (ran > 0 && runnerTid != 0) {
-        std::uint32_t expected = 0;
-        g_ownerTid.compare_exchange_strong(expected, runnerTid, std::memory_order_acq_rel);
-    }
-
     return ran;
 }
 
@@ -114,4 +117,3 @@ void Reset() noexcept
 }
 
 } // namespace Util::OwnerPump
-

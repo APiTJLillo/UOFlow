@@ -313,9 +313,22 @@ static void EnsureSectionRanges()
     });
 }
 
+static uintptr_t ResolveCanonicalManagerVtbl()
+{
+    if (g_state) {
+        void* manager = g_state->databaseManager ? g_state->databaseManager : g_netMgr;
+        if (manager) {
+            void* vtblPtr = nullptr;
+            if (SafeCopy(&vtblPtr, manager, sizeof(vtblPtr)) && vtblPtr)
+                return reinterpret_cast<uintptr_t>(vtblPtr);
+        }
+    }
+    return static_cast<uintptr_t>(kCanonicalManagerVtbl);
+}
+
 static void EnsureCanonicalVtblWhitelisted()
 {
-    uintptr_t canonical = static_cast<uintptr_t>(kCanonicalManagerVtbl);
+    uintptr_t canonical = ResolveCanonicalManagerVtbl();
     if (canonical == 0)
         return;
     EnsureSectionRanges();
@@ -1870,7 +1883,8 @@ static bool TryDiscoverEndpointFromManager(void* manager)
         LogGuardInvalidManager(manager);
         return false;
     }
-    if (reinterpret_cast<uintptr_t>(managerVtbl) == kCanonicalManagerVtbl)
+    uintptr_t canonicalVtbl = ResolveCanonicalManagerVtbl();
+    if (canonicalVtbl != 0 && reinterpret_cast<uintptr_t>(managerVtbl) == canonicalVtbl)
         EnsureCanonicalVtblWhitelisted();
 
     if (!IsEngineStableForScanning())

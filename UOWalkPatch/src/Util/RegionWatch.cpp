@@ -62,6 +62,15 @@ void UpdateFromAfter(const MEMORY_BASIC_INFORMATION& info, WatchState& state) no
     state.hasInfo = true;
 }
 
+bool IsReadableProtect(DWORD protect) noexcept
+{
+    constexpr DWORD kAccessMask = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                                  PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if (protect & PAGE_GUARD)
+        return false;
+    return (protect & kAccessMask) != 0;
+}
+
 } // namespace
 
 void SetEnabled(bool enabled) noexcept
@@ -132,7 +141,7 @@ void NotifyRange(const char* source,
 
         if (afterState) {
             UpdateFromAfter(*afterState, g_state);
-            if (afterState->State == MEM_COMMIT && afterState->Protect == PAGE_READWRITE) {
+            if (afterState->State == MEM_COMMIT && IsReadableProtect(afterState->Protect)) {
                 cb = g_callback;
                 baseForLog = g_state.base ? g_state.base
                                           : Align64k(reinterpret_cast<uintptr_t>(afterState->BaseAddress));
@@ -148,8 +157,8 @@ void NotifyRange(const char* source,
 
     Log::Logf(Log::Level::Info,
               Log::Category::Hooks,
-              "[SB][WATCH] netcfg %p -> RW/COMMIT; scanning now.",
-              reinterpret_cast<void*>(baseForLog));
+              "[SB][WATCH] netcfg %08llX -> RW/COMMIT; scanning now",
+              static_cast<unsigned long long>(baseForLog));
 
     cb();
 }

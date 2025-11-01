@@ -14,12 +14,12 @@ void RunOnOwner(std::function<void()> task);
 void SetOwnerThreadId(std::uint32_t tid) noexcept;
 std::uint32_t GetOwnerThreadId() noexcept;
 
-// Drain pending tasks. Should only be invoked from the owner thread.
+// Drain pending tasks. Only processes work when invoked by the canonical owner
+// thread; other callers simply leave the queue untouched.
 // Returns the number of tasks actually executed.
-std::size_t Drain(std::uint32_t runnerTid) noexcept;
+std::size_t DrainOnOwnerThread() noexcept;
 
 // Clear queued work. Intended for shutdown paths.
 void Reset() noexcept;
 
 } // namespace Util::OwnerPump
-
