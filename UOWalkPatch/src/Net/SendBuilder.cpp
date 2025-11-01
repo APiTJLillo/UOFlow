@@ -487,11 +487,10 @@ static bool ValidateManagerPointer(void* manager, void** outVtbl)
     if (!SafeCopy(&vtbl, manager, sizeof(vtbl)) || !vtbl)
         return false;
 
+    EnsureCanonicalVtblWhitelisted();
     uintptr_t vtblAddr = reinterpret_cast<uintptr_t>(vtbl);
-    bool inKnownRegion = IsInImageSection(g_rdataSection, vtblAddr) ||
-                         IsInImageSection(g_dataSection, vtblAddr) ||
-                         IsInModuleRdata(vtblAddr);
-    if (!inKnownRegion && vtblAddr != kCanonicalManagerVtbl)
+    bool inRdata = IsInModuleRdata(vtblAddr) || g_rdataSection.Contains(vtblAddr);
+    if (!inRdata)
         return false;
 
     if (outVtbl)
@@ -1186,6 +1185,37 @@ void reset(std::uint64_t nowMs)
 } // namespace Sampler
 } // namespace Scanner
 
+bool IsSendSamplingEnabled()
+{
+    return g_sendSamplingEnabled.load(std::memory_order_relaxed);
+}
+
+void SubmitSendSample(void* endpoint, void** frames, USHORT captured, std::uint64_t nowMs)
+{
+    if (!IsSendSamplingEnabled())
+        return;
+    if (!frames || captured == 0)
+        return;
+
+    const std::uint16_t count = static_cast<std::uint16_t>(captured);
+    std::uint64_t fingerprint = Net::SendSampleStore::HashFrames(g_moduleMap,
+                                                                 frames,
+                                                                 count);
+    if (endpoint && fingerprint != 0)
+        g_sendSampleStore.Add(endpoint, fingerprint);
+
+    Scanner::SendSample firstSample{};
+    std::uint32_t produced = Scanner::Sampler::enqueueFrames(frames,
+                                                             captured,
+                                                             nowMs,
+                                                             endpoint,
+                                                             &firstSample);
+    if (produced > 0 && endpoint) {
+        std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
+        g_endpointCallsiteHints[endpoint] = firstSample.rva;
+    }
+}
+
 static bool IsExecutableSendContext(void* candidate, void** outVtbl, void** outEntry0);
 static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* outTrace = nullptr);
 static void CaptureSendContext(void* candidate, const char* sourceTag);
@@ -1840,6 +1870,8 @@ static bool TryDiscoverEndpointFromManager(void* manager)
         LogGuardInvalidManager(manager);
         return false;
     }
+    if (reinterpret_cast<uintptr_t>(managerVtbl) == kCanonicalManagerVtbl)
+        EnsureCanonicalVtblWhitelisted();
 
     if (!IsEngineStableForScanning())
         return false;
@@ -1865,8 +1897,9 @@ static bool TryDiscoverEndpointFromManager(void* manager)
 
     char startBuf[160];
     sprintf_s(startBuf, sizeof(startBuf),
-              "DiscoverEndpoint: scan begin manager=%p window=0x%zx depth=%d",
+              "DiscoverEndpoint: scan begin manager=%p vtbl=%p window=0x%zx depth=%d",
               manager,
+              managerVtbl,
               kScanLimit,
               kTailFollowMaxDepth);
     WriteRawLog(startBuf);
@@ -3841,6 +3874,13 @@ static void HookSendBuilderFromNetMgr()
         return;
     g_nextNetCfgProbeTick = 0;
 
+    if (g_state->databaseManager) {
+        void* expectedManager = g_state->databaseManager;
+        CaptureNetManager(expectedManager, "globalState.databaseManager");
+        if (!g_builderScanned)
+            TryDiscoverEndpointFromManager(expectedManager);
+    }
+
     void* rawCfg = g_state->networkConfig;
     if (!rawCfg) {
         if (!g_loggedNetScanFailure) {
@@ -4035,25 +4075,13 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
 {
     const bool isDebugNudge = t_debugNudgeCall;
 
-    if (pkt && len > 0 && g_sendSamplingEnabled.load(std::memory_order_relaxed)) {
+    if (pkt && len > 0 && Net::IsSendSamplingEnabled()) {
         const std::uint64_t nowMs = static_cast<std::uint64_t>(GetTickCount64());
         if (Scanner::Sampler::shouldSample(nowMs)) {
             void* frames[kMaxFingerprintFrames] = {};
             USHORT captured = RtlCaptureStackBackTrace(0, kMaxFingerprintFrames, frames, nullptr);
-            if (captured > 0 && thisPtr) {
-                std::uint64_t fingerprint = Net::SendSampleStore::HashFrames(
-                    g_moduleMap,
-                    frames,
-                    static_cast<std::uint16_t>(captured));
-                if (fingerprint != 0)
-                    g_sendSampleStore.Add(thisPtr, fingerprint);
-            }
-            Scanner::SendSample firstSample{};
-            std::uint32_t produced = Scanner::Sampler::enqueueFrames(frames, captured, nowMs, thisPtr, &firstSample);
-            if (produced > 0 && thisPtr) {
-                std::lock_guard<std::mutex> lock(g_endpointCallsiteMutex);
-                g_endpointCallsiteHints[thisPtr] = firstSample.rva;
-            }
+            if (captured > 0)
+                Net::SubmitSendSample(thisPtr, frames, captured, nowMs);
         }
     }
 

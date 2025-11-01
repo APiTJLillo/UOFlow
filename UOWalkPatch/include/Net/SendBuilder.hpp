@@ -21,4 +21,6 @@ namespace Net {
     Scanner::ScanPassTelemetry DumpLastPassTelemetry();
     void OnEngineReady();
     void NotifyCanonicalManagerDiscovered();
+    void SubmitSendSample(void* endpoint, void** frames, USHORT captured, std::uint64_t nowMs);
+    bool IsSendSamplingEnabled();
 }

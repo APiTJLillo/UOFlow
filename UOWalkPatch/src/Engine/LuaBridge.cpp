@@ -5871,28 +5871,70 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
 
         uint32_t attempts = info.helper_rebind_attempts;
         if (!canonicalValid) {
-            if (attempts >= kCanonicalNullRetryBudget) {
+            const bool canonicalAvailable = canonicalCtx != nullptr;
+            uint64_t nowTick = GetTickCount64();
+            if (!canonicalAvailable) {
+                if (attempts >= kCanonicalNullRetryBudget) {
+                    Log::Logf(Log::Level::Warn,
+                              Log::Category::Hooks,
+                              "[HOOKS] helpers canonical unresolved ctx old=%p attempts=%u",
+                              previousCtx,
+                              static_cast<unsigned>(attempts));
+                    return false;
+                }
+
+                g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+                    state.ctx_reported = canonicalCtx;
+                    state.helper_passive_since_ms = 0;
+                    UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, reason ? reason : "canonical-missing");
+                    if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
+                        ++state.helper_rebind_attempts;
+                    attempts = state.helper_rebind_attempts;
+                    if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms > nowTick + 200)
+                        state.helper_next_retry_ms = nowTick + 200;
+                }, &info);
+                info.ctx_reported = canonicalCtx;
+                info.helper_rebind_attempts = attempts;
+
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Hooks,
+                          "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u (pending)",
+                          previousCtx,
+                          canonicalCtx,
+                          static_cast<unsigned>(canonicalOwner));
+                MarkHelperRebindPending();
+                PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-missing");
+                return true;
+            }
+
+            if (attempts >= kMaxHelperRebindAttempts) {
                 Log::Logf(Log::Level::Warn,
                           Log::Category::Hooks,
-                          "[HOOKS] helpers canonical unresolved ctx old=%p attempts=%u",
+                          "[HOOKS] helpers rebind limit ctx old=0x%p attempts=%u",
                           previousCtx,
                           static_cast<unsigned>(attempts));
                 return false;
             }
 
-            uint64_t nowTick = GetTickCount64();
             g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
                 state.ctx_reported = canonicalCtx;
                 state.helper_passive_since_ms = 0;
-                UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, reason ? reason : "canonical-missing");
+                UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, reason ? reason : "canonical-pending");
+                if (canonicalOwner) {
+                    state.owner_tid = canonicalOwner;
+                    state.last_tid = canonicalOwner;
+                    state.flags |= STATE_FLAG_OWNER_READY;
+                    if (state.owner_ready_tick_ms == 0)
+                        state.owner_ready_tick_ms = nowTick;
+                }
                 if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
                     ++state.helper_rebind_attempts;
                 attempts = state.helper_rebind_attempts;
-                if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms > nowTick + 200)
-                    state.helper_next_retry_ms = nowTick + 200;
             }, &info);
             info.ctx_reported = canonicalCtx;
             info.helper_rebind_attempts = attempts;
+            if (canonicalOwner)
+                info.owner_tid = canonicalOwner;
 
             Log::Logf(Log::Level::Info,
                       Log::Category::Hooks,
@@ -5900,13 +5942,8 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                       previousCtx,
                       canonicalCtx,
                       static_cast<unsigned>(canonicalOwner));
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Hooks,
-                      "helpers rebind defer ctx=%p reason=canonical-missing attempts=%u",
-                      canonicalCtx,
-                      static_cast<unsigned>(attempts));
             MarkHelperRebindPending();
-            PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-missing");
+            PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-pending");
             return true;
         }
 

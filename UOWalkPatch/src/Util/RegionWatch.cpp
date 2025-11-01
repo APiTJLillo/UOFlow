@@ -121,9 +121,7 @@ void NotifyRange(const char* source,
 {
     (void)source;
     Callback cb;
-    uintptr_t logBase = 0;
-    DWORD protect = 0;
-    DWORD state = 0;
+    uintptr_t baseForLog = 0;
 
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -136,10 +134,8 @@ void NotifyRange(const char* source,
             UpdateFromAfter(*afterState, g_state);
             if (afterState->State == MEM_COMMIT && afterState->Protect == PAGE_READWRITE) {
                 cb = g_callback;
-                logBase = reinterpret_cast<uintptr_t>(afterState->BaseAddress ? afterState->BaseAddress
-                                                                               : reinterpret_cast<void*>(g_state.base));
-                protect = afterState->Protect;
-                state = afterState->State;
+                baseForLog = g_state.base ? g_state.base
+                                          : Align64k(reinterpret_cast<uintptr_t>(afterState->BaseAddress));
             }
         }
     }
@@ -147,12 +143,13 @@ void NotifyRange(const char* source,
     if (!cb)
         return;
 
+    if (baseForLog == 0)
+        baseForLog = Align64k(rangeBase);
+
     Log::Logf(Log::Level::Info,
               Log::Category::Hooks,
-              "[SB][WATCH] netcfg region=%p -> protect=0x%08lX state=0x%08lX; scanning now.",
-              reinterpret_cast<void*>(logBase),
-              static_cast<unsigned long>(protect),
-              static_cast<unsigned long>(state));
+              "[SB][WATCH] netcfg %p -> RW/COMMIT; scanning now.",
+              reinterpret_cast<void*>(baseForLog));
 
     cb();
 }

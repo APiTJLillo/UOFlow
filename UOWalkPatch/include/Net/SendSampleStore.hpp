@@ -12,7 +12,7 @@ namespace Net {
 
 class SendSampleStore {
 public:
-    static constexpr std::uint16_t kMaxFrames = 5;
+    static constexpr std::uint16_t kMaxFrames = 12;
 
     struct EndpointStats {
         std::uint64_t lastFingerprint = 0;

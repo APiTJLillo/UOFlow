@@ -11,6 +11,7 @@
 #include "Core/Utils.hpp"
 #include "Net/PacketTrace.hpp"
 #include "Net/SendBuilder.hpp"
+#include "Net/SendSampleStore.hpp"
 #include "Engine/Movement.hpp"
 #include "Walk/WalkController.hpp"
 
@@ -33,6 +34,7 @@ static std::atomic<uint64_t> g_fastWalkLastMissLogTick{0};
 
 static constexpr int kFastWalkReserveDepth = 2;
 static volatile LONG g_ackPayloadLogBudget = 4;
+static std::atomic<std::uint32_t> g_wsasendWarmupRemaining{64};
 
 struct WalkAckStatusInfo {
     uint8_t code;
@@ -189,6 +191,25 @@ static bool HandleWalkAckMessage(SOCKET sock,
 static bool ShouldTracePackets()
 {
     return Walk::Controller::DebugEnabled() || Log::IsEnabled(Log::Category::Walk, Log::Level::Debug);
+}
+
+static bool ShouldSampleWsasend(std::uint64_t nowMs)
+{
+    if (!Net::IsSendSamplingEnabled())
+        return false;
+    if (Net::Scanner::Sampler::shouldSample(nowMs))
+        return true;
+
+    std::uint32_t remaining = g_wsasendWarmupRemaining.load(std::memory_order_relaxed);
+    while (remaining > 0) {
+        if (g_wsasendWarmupRemaining.compare_exchange_weak(remaining,
+                                                           remaining - 1,
+                                                           std::memory_order_acq_rel,
+                                                           std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool EvaluateFastWalkGate(const char* buf, int len, bool& suppressOut, int& depthOut)
@@ -635,6 +656,19 @@ static int WSAAPI H_WSASend(
     LPWSAOVERLAPPED ov,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
+    if (cnt && wsa && wsa[0].buf && wsa[0].len) {
+        const std::uint64_t nowMs = GetTickCount64();
+        if (ShouldSampleWsasend(nowMs)) {
+            void* frames[Net::SendSampleStore::kMaxFrames] = {};
+            USHORT captured = RtlCaptureStackBackTrace(0,
+                                                       static_cast<ULONG>(Net::SendSampleStore::kMaxFrames),
+                                                       frames,
+                                                       nullptr);
+            if (captured > 0)
+                Net::SubmitSendSample(nullptr, frames, captured, nowMs);
+        }
+    }
+
     if (cnt) {
         bool suppress = false;
         int depth = 0;
