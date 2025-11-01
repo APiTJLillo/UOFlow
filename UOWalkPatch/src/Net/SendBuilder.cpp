@@ -138,6 +138,13 @@ static std::atomic<bool> g_sendRingDebug{false};
 static std::atomic<DWORD> g_lastSendRingDebugTick{0};
 static std::atomic<std::uint32_t> g_guardWarnBudget{0};
 static bool g_tunablesLogged = false;
+static constexpr DWORD kNetCfgRetryDelays[] = {250u, 500u, 1000u, 2000u, 2000u};
+static bool g_netCfgRetryActive = false;
+static DWORD g_netCfgRetryNextTick = 0;
+static DWORD g_netCfgRetryStartTick = 0;
+static std::uint32_t g_netCfgRetryIndex = 0;
+static std::array<std::atomic<DWORD>, static_cast<size_t>(WakeReason::Count)> g_wakeReasonDebounce{};
+static std::atomic<uint32_t> g_pendingWakeMask{0};
 
 static bool IsExecutableCodeAddress(void* addr);
 static std::atomic<std::uint64_t> g_guardWarnPass{0};
@@ -257,6 +264,7 @@ public:
     }
 
     Stage3State state() const { return m_state; }
+    bool passInFlight() const { return m_passActive; }
 
     void wake(DWORD nowMs)
     {
@@ -744,7 +752,16 @@ static void BuildNeighborTargets(const ManagerTarget& engineTarget,
     }
 }
 
-static void LogPivotAttempt(const ManagerTarget& target)
+static void LogTelemetryPivot(const char* fromLabel, const char* typeLabel)
+{
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "TELEMETRY[PIVOT] from=%s type=%s",
+              fromLabel ? fromLabel : "?",
+              typeLabel ? typeLabel : "?");
+}
+
+static void LogPivotAttempt(const ManagerTarget& target, bool fallbackAttempt)
 {
     if (target.kind == ManagerKind::Neighbor) {
         Log::Logf(Log::Level::Info,
@@ -752,6 +769,11 @@ static void LogPivotAttempt(const ManagerTarget& target)
                   "[SB][PIVOT] trying manager=neighbor@%u vtbl=%p",
                   target.neighborIndex,
                   reinterpret_cast<void*>(target.vtbl));
+        if (fallbackAttempt) {
+            char fromBuf[64];
+            sprintf_s(fromBuf, sizeof(fromBuf), "%p", reinterpret_cast<void*>(target.vtbl));
+            LogTelemetryPivot(fromBuf, "vtable");
+        }
         return;
     }
 
@@ -760,6 +782,11 @@ static void LogPivotAttempt(const ManagerTarget& target)
               "[SB][PIVOT] trying manager=%s vtbl=%p",
               ManagerKindName(target.kind),
               reinterpret_cast<void*>(target.vtbl));
+    if (fallbackAttempt) {
+        char fromBuf[64];
+        sprintf_s(fromBuf, sizeof(fromBuf), "%p", reinterpret_cast<void*>(target.vtbl));
+        LogTelemetryPivot(fromBuf, "vtable");
+    }
 }
 
 static bool EnsureManagerSelection(const GlobalStateInfo* state)
@@ -859,17 +886,121 @@ static bool TickHasElapsed(DWORD now, DWORD target)
     return static_cast<int32_t>(now - target) >= 0;
 }
 
-static void ScheduleSendBuilderWake(const char* sourceTag)
+static constexpr size_t kNetCfgRetryStepCount = sizeof(kNetCfgRetryDelays) / sizeof(kNetCfgRetryDelays[0]);
+
+static size_t WakeReasonIndex(WakeReason reason) noexcept
+{
+    const std::uint8_t raw = static_cast<std::uint8_t>(reason);
+    if (raw >= static_cast<std::uint8_t>(WakeReason::Count))
+        return static_cast<size_t>(WakeReason::Manual);
+    return static_cast<size_t>(raw);
+}
+
+static const char* WakeReasonToString(WakeReason reason) noexcept
+{
+    switch (reason) {
+    case WakeReason::LoginTransition:
+        return "LoginTransition";
+    case WakeReason::NetCfgSettled:
+        return "NetCfgSettled";
+    case WakeReason::AckNudge:
+        return "AckNudge";
+    case WakeReason::OwnerPumpClear:
+        return "OwnerPumpClear";
+    case WakeReason::Manual:
+        return "Manual";
+    default:
+        return "Unknown";
+    }
+}
+
+static void TrackWakeReason(WakeReason reason) noexcept
+{
+    if (reason == WakeReason::Manual || reason == WakeReason::Count)
+        return;
+    const std::uint32_t bit = 1u << static_cast<std::uint32_t>(reason);
+    g_pendingWakeMask.fetch_or(bit, std::memory_order_relaxed);
+}
+
+static bool IsNetworkConfigReadable(MEMORY_BASIC_INFORMATION* mbiOut = nullptr)
+{
+    void* cfg = GetTrackedConfigPtr();
+    if (!cfg)
+        return false;
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(cfg, &mbi, sizeof(mbi)))
+        return false;
+
+    if (mbiOut)
+        *mbiOut = mbi;
+
+    const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
+    const bool committed = (mbi.State == MEM_COMMIT);
+    const bool guard = (mbi.Protect & PAGE_GUARD) != 0;
+    const bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
+    const bool readable = (mbi.Protect & readableMask) != 0;
+    return committed && !guard && !noAccess && readable;
+}
+
+static void StopNetCfgRetryLoop() noexcept
+{
+    g_netCfgRetryActive = false;
+    g_netCfgRetryNextTick = 0;
+    g_netCfgRetryIndex = 0;
+    g_netCfgRetryStartTick = 0;
+    g_nextNetCfgProbeTick = 0;
+}
+
+static void StartNetCfgRetryLoop(DWORD nowTick) noexcept
+{
+    if (g_netCfgRetryActive)
+        return;
+    g_netCfgRetryActive = true;
+    g_netCfgRetryIndex = 0;
+    g_netCfgRetryStartTick = nowTick;
+    g_netCfgRetryNextTick = nowTick + kNetCfgRetryDelays[0];
+    g_nextNetCfgProbeTick = g_netCfgRetryNextTick;
+}
+
+static void ServiceNetCfgRetryLoop(DWORD nowTick)
+{
+    if (!g_netCfgRetryActive)
+        return;
+    if (!TickHasElapsed(nowTick, g_netCfgRetryNextTick))
+        return;
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (IsNetworkConfigReadable(&mbi)) {
+        StopNetCfgRetryLoop();
+        ForceScan(WakeReason::NetCfgSettled);
+        return;
+    }
+
+    if (g_netCfgRetryIndex + 1 < kNetCfgRetryStepCount)
+        ++g_netCfgRetryIndex;
+    g_netCfgRetryNextTick = nowTick + kNetCfgRetryDelays[g_netCfgRetryIndex];
+    g_nextNetCfgProbeTick = g_netCfgRetryNextTick;
+
+    if (g_netCfgRetryStartTick != 0 && (nowTick - g_netCfgRetryStartTick) >= 5000u)
+        StopNetCfgRetryLoop();
+}
+
+static void ScheduleSendBuilderWake(const char* sourceTag,
+                                    DWORD minDelayMs,
+                                    DWORD maxDelayMs,
+                                    WakeReason reason = WakeReason::Manual)
 {
     DWORD now = GetTickCount();
     if (g_lastWakeScheduleTick != 0 &&
         static_cast<DWORD>(now - g_lastWakeScheduleTick) < SendBuilderTunables::WAKE_DEBOUNCE_MS)
         return;
 
-    constexpr DWORD kWakeMinDelayMs = 100;
-    constexpr DWORD kWakeSpreadMs = 100;
-    DWORD jitter = (kWakeSpreadMs > 0) ? (now % (kWakeSpreadMs + 1u)) : 0u;
-    DWORD delayMs = kWakeMinDelayMs + jitter;
+    if (maxDelayMs < minDelayMs)
+        std::swap(maxDelayMs, minDelayMs);
+    DWORD range = (maxDelayMs > minDelayMs) ? (maxDelayMs - minDelayMs) : 0;
+    DWORD jitter = (range > 0) ? (now % (range + 1u)) : 0u;
+    DWORD delayMs = minDelayMs + jitter;
     DWORD targetTick = now + delayMs;
 
     if (g_nextNetCfgProbeTick == 0 ||
@@ -884,12 +1015,85 @@ static void ScheduleSendBuilderWake(const char* sourceTag)
 
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
-              "[CORE][SB] wake scheduled source=%s delay_ms=%u target_tick=%lu",
+              "[CORE][SB] wake scheduled source=%s delay_ms=%u target_tick=%lu reason=%s",
               sourceTag ? sourceTag : "?",
               static_cast<unsigned>(delayMs),
-              static_cast<unsigned long>(targetTick));
+              static_cast<unsigned long>(targetTick),
+              WakeReasonToString(reason));
 }
 
+static void RequestWake(WakeReason reason,
+                        DWORD minDelayMs,
+                        DWORD maxDelayMs,
+                        DWORD coalesceMs)
+{
+    if (reason == WakeReason::Count)
+        reason = WakeReason::Manual;
+
+    if (maxDelayMs < minDelayMs)
+        std::swap(maxDelayMs, minDelayMs);
+
+    DWORD now = GetTickCount();
+    const size_t index = WakeReasonIndex(reason);
+    DWORD lastTick = g_wakeReasonDebounce[index].load(std::memory_order_relaxed);
+    if (coalesceMs > 0 && lastTick != 0 && static_cast<DWORD>(now - lastTick) < coalesceMs)
+        return;
+
+    g_wakeReasonDebounce[index].store(now, std::memory_order_relaxed);
+
+    TrackWakeReason(reason);
+
+    DWORD effectiveMin = (minDelayMs != 0) ? minDelayMs : 100;
+    DWORD effectiveMax = (maxDelayMs != 0) ? maxDelayMs : effectiveMin;
+    if (effectiveMax < effectiveMin)
+        std::swap(effectiveMax, effectiveMin);
+
+    ScheduleSendBuilderWake(WakeReasonToString(reason), effectiveMin, effectiveMax, reason);
+
+    const DWORD debounceValue = coalesceMs ? coalesceMs : (effectiveMax > effectiveMin ? effectiveMax : effectiveMin);
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "TELEMETRY[WAKE] reason=%s debounce_ms=%u",
+              WakeReasonToString(reason),
+              static_cast<unsigned>(debounceValue));
+}
+
+static std::string BuildWakeReasonLabel(std::uint32_t mask)
+{
+    if (mask == 0)
+        return "unspecified";
+
+    std::string label;
+    auto append = [&](WakeReason reason) {
+        const std::uint32_t bit = 1u << static_cast<std::uint32_t>(reason);
+        if ((mask & bit) == 0)
+            return;
+        if (!label.empty())
+            label.push_back('|');
+        label.append(WakeReasonToString(reason));
+    };
+
+    append(WakeReason::LoginTransition);
+    append(WakeReason::NetCfgSettled);
+    append(WakeReason::AckNudge);
+    append(WakeReason::OwnerPumpClear);
+    append(WakeReason::Manual);
+
+    constexpr std::uint32_t knownMask =
+        (1u << static_cast<std::uint32_t>(WakeReason::LoginTransition)) |
+        (1u << static_cast<std::uint32_t>(WakeReason::NetCfgSettled)) |
+        (1u << static_cast<std::uint32_t>(WakeReason::AckNudge)) |
+        (1u << static_cast<std::uint32_t>(WakeReason::OwnerPumpClear)) |
+        (1u << static_cast<std::uint32_t>(WakeReason::Manual));
+
+    if ((mask & ~knownMask) != 0) {
+        if (!label.empty())
+            label.push_back('|');
+        label.append("Unknown");
+    }
+
+    return label;
+}
 static bool LooksLikeAsciiDword(uintptr_t value)
 {
     std::uint32_t lower = static_cast<std::uint32_t>(value & 0xFFFFFFFFu);
@@ -2625,7 +2829,8 @@ static bool TryAttachTrustedEndpoint(const ManagerTarget& target,
 }
 static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& target,
                                                         const std::string& preconditions,
-                                                        std::uint64_t passId);
+                                                        std::uint64_t passId,
+                                                        const char* wakeReasonLabel);
 static bool TryDiscoverFromEngineContext();
 
 static void FormatDiscoverySlotInfo(char* dest,
@@ -2827,7 +3032,8 @@ static void MaybeSendDebugNudge()
 
 static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& target,
                                                         const std::string& preconditions,
-                                                        std::uint64_t passId)
+                                                        std::uint64_t passId,
+                                                        const char* wakeReasonLabel)
 {
     Stage3PivotResult result{};
     result.telemetry.id = passId;
@@ -2872,8 +3078,37 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     telemetry.pivot_from = pivotSource;
     telemetry.manager_ptr = target.owner;
     telemetry.manager_vtbl = target.vtbl;
+    const char* reasonLabel = (wakeReasonLabel && *wakeReasonLabel) ? wakeReasonLabel : "unspecified";
+    bool loggedScanBegin = false;
+    auto ensureScanBegin = [&]() {
+        if (loggedScanBegin)
+            return;
+        loggedScanBegin = true;
+        const size_t slotBudget = kEndpointScanWindow / sizeof(void*);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "TELEMETRY[SCAN_BEGIN] slots=%zu depth=%d reason=%s pivot=%s",
+                  slotBudget,
+                  kTailFollowMaxDepth,
+                  reasonLabel,
+                  pivotLabel ? pivotLabel : "UNKNOWN");
+    };
+    auto emitScanEnd = [&](const Scanner::ScanPassTelemetry& stats) {
+        if (!loggedScanBegin)
+            return;
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "TELEMETRY[SCAN_END] candidates=%u accepted=%u rejected=%u avg_us=%llu max_us=%llu reason=%s",
+                  stats.candidates_considered,
+                  stats.accepted,
+                  stats.rejected,
+                  static_cast<unsigned long long>(stats.avg_us()),
+                  static_cast<unsigned long long>(stats.max_candidate_us),
+                  reasonLabel);
+    };
 
     result.ready = true;
+    ensureScanBegin();
 
     if (TryAttachTrustedEndpoint(target, manager, observedVtbl, passId, telemetry)) {
         if (g_firstScanTickMs64 == 0)
@@ -2885,6 +3120,7 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
         result.trustHit = true;
         result.accepted = true;
         result.telemetry = telemetry;
+        emitScanEnd(telemetry);
         return result;
     }
 
@@ -2900,6 +3136,7 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
             result.deferred = true;
             result.deferDelayMs = deferDelay;
             result.telemetry = telemetry;
+            emitScanEnd(telemetry);
             return result;
         }
     }
@@ -2908,14 +3145,20 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     DWORD now = GetTickCount();
     DWORD dynamicDelay = std::max<DWORD>(kManagerScanCooldownMs, g_tuner.stepDelayMs());
     if (g_lastBuilderScanTick != 0 &&
-        (DWORD)(now - g_lastBuilderScanTick) < dynamicDelay)
+        (DWORD)(now - g_lastBuilderScanTick) < dynamicDelay) {
+        emitScanEnd(telemetry);
         return result;
+    }
 
     if (manager == g_lastManagerScanPtr && (DWORD)(now - g_lastManagerScanTick) < 1000)
+    {
+        emitScanEnd(telemetry);
         return result;
+    }
 
     if (!SafeMem::IsReadable(manager, kScanLimit + sizeof(void*))) {
         LogGuardInvalidManager(manager);
+        emitScanEnd(telemetry);
         return result;
     }
 
@@ -3131,6 +3374,7 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
                   Log::Category::Core,
                   "[CORE][SB] manager scan attached endpoint (candidates=%zu)",
                   rawCandidates.size());
+        emitScanEnd(telemetry);
         return result;
     }
 
@@ -3148,6 +3392,7 @@ static Stage3PivotResult TryDiscoverEndpointFromManager(const ManagerTarget& tar
     }
 
     g_lastBuilderScanTick = GetTickCount();
+    emitScanEnd(telemetry);
     return result;
 }
 
@@ -3165,9 +3410,15 @@ static void ExecuteManagerScanSequence()
     if (!passIdOpt)
         return;
 
+    StopNetCfgRetryLoop();
+
     Stage3PassSummary summary{};
     summary.passId = *passIdOpt;
     summary.telemetry.id = summary.passId;
+
+    std::uint32_t wakeMask = g_pendingWakeMask.exchange(0u, std::memory_order_acq_rel);
+    std::string wakeLabel = BuildWakeReasonLabel(wakeMask);
+    const char* wakeReasonLabel = wakeLabel.c_str();
 
     LARGE_INTEGER passStart{};
     QueryPerformanceCounter(&passStart);
@@ -3201,9 +3452,9 @@ static void ExecuteManagerScanSequence()
         return;
     }
 
-    LogPivotAttempt(primary);
+    LogPivotAttempt(primary, false);
 
-    Stage3PivotResult primaryResult = TryDiscoverEndpointFromManager(primary, preconditions, summary.passId);
+    Stage3PivotResult primaryResult = TryDiscoverEndpointFromManager(primary, preconditions, summary.passId, wakeReasonLabel);
     if (primaryResult.deferred) {
         g_stage3Controller.defer(nowTick, primaryResult.deferDelayMs, false);
         return;
@@ -3239,8 +3490,8 @@ static void ExecuteManagerScanSequence()
                       "[CORE][SB] fallback to engineCtx vtbl=%p (db yielded zero candidates)",
                       reinterpret_cast<void*>(engineFallback.vtbl));
             if (!IsVtblSuppressed(engineFallback.vtbl, nowMs)) {
-                LogPivotAttempt(engineFallback);
-                Stage3PivotResult engineFallbackResult = TryDiscoverEndpointFromManager(engineFallback, preconditions, summary.passId);
+                LogPivotAttempt(engineFallback, true);
+                Stage3PivotResult engineFallbackResult = TryDiscoverEndpointFromManager(engineFallback, preconditions, summary.passId, wakeReasonLabel);
                 if (engineFallbackResult.deferred) {
                     g_stage3Controller.defer(nowTick, engineFallbackResult.deferDelayMs, false);
                     return;
@@ -3266,8 +3517,8 @@ static void ExecuteManagerScanSequence()
                       "[CORE][SB] fallback to dbMgr vtbl=%p (primary yielded no accept)",
                       reinterpret_cast<void*>(dbTarget.vtbl));
             if (!IsVtblSuppressed(dbTarget.vtbl, nowMs)) {
-                LogPivotAttempt(dbTarget);
-                Stage3PivotResult dbResult = TryDiscoverEndpointFromManager(dbTarget, preconditions, summary.passId);
+                LogPivotAttempt(dbTarget, true);
+                Stage3PivotResult dbResult = TryDiscoverEndpointFromManager(dbTarget, preconditions, summary.passId, wakeReasonLabel);
                 if (dbResult.deferred) {
                     g_stage3Controller.defer(nowTick, dbResult.deferDelayMs, false);
                     return;
@@ -3414,7 +3665,7 @@ static bool TryDiscoverFromEngineContext()
         temp.owner = reinterpret_cast<uintptr_t>(candidate);
         temp.vtbl = vtblAddr;
 
-        Stage3PivotResult pivotResult = TryDiscoverEndpointFromManager(temp, preconditions, 0);
+        Stage3PivotResult pivotResult = TryDiscoverEndpointFromManager(temp, preconditions, 0, nullptr);
         if (pivotResult.accepted) {
             g_managerTarget = temp;
             g_managerTargetValid = true;
@@ -3828,6 +4079,16 @@ static bool TraceHandleHop(TraceResult& trace,
     trace.hops[trace.hopCount].slot = slot;
     trace.hops[trace.hopCount].slotValue = slotValue;
     ++trace.hopCount;
+
+    if (isRoot) {
+        const char* typeLabel = (slot && slotValue) ? "iat" : "tail_follow";
+        char fromBuf[64];
+        if (slot && slotValue)
+            sprintf_s(fromBuf, sizeof(fromBuf), "%p", slot);
+        else
+            sprintf_s(fromBuf, sizeof(fromBuf), "%p", from);
+        LogTelemetryPivot(fromBuf, typeLabel);
+    }
 
     bool matched = false;
     uint8_t* resolved = nullptr;
@@ -5020,7 +5281,7 @@ static NTSTATUS NTAPI Hook_NtProtectVirtualMemory(HANDLE processHandle,
                                        outputSize,
                                        haveAfter ? &mbiAfter : nullptr);
         if (haveAfter && MbiCommittedReadable(mbiAfter))
-            ScheduleSendBuilderWake("NtProtectVirtualMemory");
+            ScheduleSendBuilderWake("NtProtectVirtualMemory", 100, 200);
     }
 
     return status;
@@ -5098,7 +5359,7 @@ static NTSTATUS NTAPI Hook_NtAllocateVirtualMemory(HANDLE processHandle,
                                        outputSize,
                                        haveAfter ? &mbiAfter : nullptr);
         if (haveAfter && MbiCommittedReadable(mbiAfter))
-            ScheduleSendBuilderWake("NtAllocateVirtualMemory");
+            ScheduleSendBuilderWake("NtAllocateVirtualMemory", 100, 200);
     }
 
     return status;
@@ -5179,7 +5440,7 @@ static NTSTATUS NTAPI Hook_NtMapViewOfSection(HANDLE sectionHandle,
                                        actualSize,
                                        haveInfo ? &info : nullptr);
         if (haveInfo && MbiCommittedReadable(info))
-            ScheduleSendBuilderWake("NtMapViewOfSection");
+            ScheduleSendBuilderWake("NtMapViewOfSection", 100, 200);
     }
 
     return status;
@@ -5453,6 +5714,7 @@ static void HookSendBuilderFromNetMgr()
             WriteRawLog("HookSendBuilderFromNetMgr: networkConfig pointer is null");
         }
         Util::RegionWatch::ClearWatch();
+        StopNetCfgRetryLoop();
         TryDiscoverFromEngineContext();
         return;
     }
@@ -5524,8 +5786,7 @@ static void HookSendBuilderFromNetMgr()
                           static_cast<unsigned long>(mbi.State));
             }
             g_loggedNetScanFailure = true;
-            DWORD jitter = 50u + (now % 51u);
-            g_nextNetCfgProbeTick = now + jitter;
+            StartNetCfgRetryLoop(now);
             return;
         }
 
@@ -5537,8 +5798,7 @@ static void HookSendBuilderFromNetMgr()
                           "[CORE][SB] networkConfig access fault; deferring scan");
             }
             g_loggedNetScanFailure = true;
-            DWORD jitter = 50u + ((now >> 1) % 51u);
-            g_nextNetCfgProbeTick = now + jitter;
+            StartNetCfgRetryLoop(now);
             return;
         }
     }
@@ -5556,6 +5816,7 @@ static void HookSendBuilderFromNetMgr()
         memcpy(g_lastNetCfgSnapshot, snapshot, sizeof(g_lastNetCfgSnapshot));
         g_haveNetCfgSnapshot = true;
     }
+    StopNetCfgRetryLoop();
     g_loggedNetScanFailure = false;
 
     if (g_netMgr) {
@@ -5635,7 +5896,7 @@ static void HookSendBuilderFromNetMgr()
 
 static void ScanSendBuilder()
 {
-    ScheduleSendBuilderWake("RegionWatch");
+    ScheduleSendBuilderWake("RegionWatch", 100, 200);
     DWORD now = GetTickCount();
     if (g_nextNetCfgProbeTick == 0 || TickHasElapsed(now, g_nextNetCfgProbeTick))
         HookSendBuilderFromNetMgr();
@@ -5715,6 +5976,7 @@ bool InitSendBuilder(GlobalStateInfo* state)
 {
     bool stateChanged = state != g_state;
     if (stateChanged) {
+        StopNetCfgRetryLoop();
         g_state = state;
         if (state) {
             g_netMgr = nullptr;
@@ -5839,6 +6101,7 @@ void PollSendBuilder()
         return;
 
     DWORD now = GetTickCount();
+    ServiceNetCfgRetryLoop(now);
     if (g_sendRingDebug.load(std::memory_order_relaxed)) {
         DWORD last = g_lastSendRingDebugTick.load(std::memory_order_relaxed);
         if (last == 0 || (now - last) >= 5000) {
@@ -6030,6 +6293,42 @@ SendBuilderStatus GetSendBuilderStatus()
     bool activelyScanning = !g_builderScanned || HasEndpointBackoff() || g_nextNetCfgProbeTick != 0;
     status.probing = !status.hooked && (haveManager || activelyScanning);
     return status;
+}
+
+void ForceScan(WakeReason reason)
+{
+    switch (reason) {
+    case WakeReason::LoginTransition:
+        RequestWake(reason, 500, 750, 750);
+        break;
+    case WakeReason::NetCfgSettled:
+        RequestWake(reason, 150, 300, 500);
+        break;
+    case WakeReason::AckNudge:
+        RequestWake(reason, 300, 500, 500);
+        break;
+    case WakeReason::OwnerPumpClear:
+        RequestWake(reason, 200, 400, 500);
+        break;
+    case WakeReason::Manual:
+    default:
+        RequestWake(reason, 100, 200, SendBuilderTunables::WAKE_DEBOUNCE_MS);
+        break;
+    }
+}
+
+void SoftNudgeBuilder(std::uint32_t minDelayMs, std::uint32_t maxDelayMs)
+{
+    if (minDelayMs == 0 && maxDelayMs == 0) {
+        minDelayMs = 300;
+        maxDelayMs = 500;
+    }
+    if (maxDelayMs < minDelayMs)
+        std::swap(maxDelayMs, minDelayMs);
+    if (g_stage3Controller.passInFlight())
+        return;
+    DWORD coalesce = maxDelayMs != 0 ? maxDelayMs : SendBuilderTunables::WAKE_DEBOUNCE_MS;
+    RequestWake(WakeReason::AckNudge, minDelayMs, maxDelayMs, coalesce);
 }
 
 Scanner::ScanPassTelemetry DumpLastPassTelemetry()

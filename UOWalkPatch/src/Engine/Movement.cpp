@@ -2067,6 +2067,7 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
                   static_cast<unsigned>(ranOwnerTasks),
                   static_cast<unsigned>(runnerTid),
                   static_cast<unsigned>(ownerTid));
+        Net::ForceScan(Net::WakeReason::OwnerPumpClear);
     }
     Engine::Lua::ProcessLuaQueue();
     if (!g_moveCandidate && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0) {

@@ -949,6 +949,7 @@ static int __cdecl Hook_WindowRegisterEventHandler(lua_State* L) {
               window ? window : "<nil>",
               static_cast<unsigned long long>(static_cast<std::uint64_t>(eventId)),
               callback ? callback : "<nil>");
+    Net::ForceScan(Net::WakeReason::LoginTransition);
     return g_origWindowRegisterEventHandler ? g_origWindowRegisterEventHandler(L) : 0;
 }
 
@@ -971,6 +972,7 @@ static int __cdecl Hook_RegisterEventHandler(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][EVT] register_global args=%s",
               args.c_str());
+    Net::ForceScan(Net::WakeReason::LoginTransition);
     return g_origRegisterEventHandler ? g_origRegisterEventHandler(L) : 0;
 }
 
@@ -1007,6 +1009,7 @@ static int __cdecl Hook_TryLogin(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][LOGIN] TryLogin args=%s",
               args.c_str());
+    Net::ForceScan(Net::WakeReason::LoginTransition);
     return g_origTryLogin ? g_origTryLogin(L) : 0;
 }
 
@@ -1017,6 +1020,7 @@ static int __cdecl Hook_SelectShard(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][LOGIN] SelectShard args=%s",
               args.c_str());
+    Net::ForceScan(Net::WakeReason::LoginTransition);
     return g_origSelectShard ? g_origSelectShard(L) : 0;
 }
 
@@ -1027,6 +1031,7 @@ static int __cdecl Hook_SelectCharacter(lua_State* L) {
               Log::Category::LuaGuard,
               "[LUA][LOGIN] SelectCharacter args=%s",
               args.c_str());
+    Net::ForceScan(Net::WakeReason::LoginTransition);
     return g_origSelectCharacter ? g_origSelectCharacter(L) : 0;
 }
 
@@ -1309,8 +1314,11 @@ static lua_CFunction MaybeWrapLuaFunction(const char* name, lua_CFunction func) 
 static void ClearHelperPending(lua_State* L, uint64_t generation, LuaStateInfo* infoOut = nullptr) {
     if (!L)
         return;
+    bool scheduleWake = false;
     g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
         if (generation == 0 || state.helper_pending_generation == generation) {
+            bool wasPending = (state.flags & STATE_FLAG_HELPERS_PENDING) != 0;
+            HelperInstallStage previousStage = CurrentHelperStage(state);
             state.flags &= ~STATE_FLAG_HELPERS_PENDING;
             state.helper_pending_generation = 0;
             state.helper_pending_tick_ms = 0;
@@ -1324,9 +1332,17 @@ static void ClearHelperPending(lua_State* L, uint64_t generation, LuaStateInfo* 
                         nextStage = HelperInstallStage::Installing;
                 }
                 UpdateHelperStage(state, nextStage, now, "clear-pending");
+                HelperInstallStage currentStage = CurrentHelperStage(state);
+                if (wasPending && currentStage == HelperInstallStage::ReadyToInstall)
+                    scheduleWake = true;
+            }
+            else if (wasPending) {
+                scheduleWake = true;
             }
         }
     }, infoOut);
+    if (scheduleWake)
+        Net::ForceScan(Net::WakeReason::OwnerPumpClear);
 }
 
 static void MaybeEmitHelperSummary(uint64_t now, bool force = false) {

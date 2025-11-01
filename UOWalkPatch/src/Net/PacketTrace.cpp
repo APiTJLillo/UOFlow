@@ -173,6 +173,12 @@ static bool HandleWalkAckMessage(SOCKET sock,
         break;
     }
 
+    bool shouldNudge = forcedFailure ||
+                       ackResult.action == Engine::MovementAckAction::Drop ||
+                       ackResult.action == Engine::MovementAckAction::Resync;
+    if (shouldNudge)
+        Net::SoftNudgeBuilder(350, 500);
+
     if (opcode == 0x22) {
         Engine::RecordMovementAck(seq, rawStatus);
         Engine::SetActiveFastWalkSocket(effectiveSocket);
