@@ -27,6 +27,9 @@
 #include "Net/PacketTrace.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Net/ScannerStage3.hpp"
+#include "Net/SendSampleStore.hpp"
+#include "Util/OwnerPump.hpp"
+#include "Util/RegionWatch.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/LuaBridge.hpp"
 
@@ -89,6 +92,7 @@ static std::unordered_set<void*> g_skipWarnedVtables;
 static DWORD g_nextNetCfgProbeTick = 0;
 static Scanner::SendSampleRing g_sendSampleRing{};
 static Scanner::SampleDeduper g_sendSampleDeduper{};
+static std::atomic<bool> g_sendSamplingEnabled{true};
 static Scanner::TokenBucket g_sendSampleBucket(100, 200);
 static constexpr std::uint32_t kSamplerWarmupSamples = 128;
 static std::atomic<std::uint32_t> g_samplerWarmupRemaining{kSamplerWarmupSamples};
@@ -107,11 +111,14 @@ static std::atomic<std::uint32_t> g_lastRingLoad{0};
 static std::atomic<std::uint32_t> g_guardWarnBudget{0};
 static std::atomic<std::uint64_t> g_guardWarnPass{0};
 static std::atomic<std::uint64_t> g_asciiWarnLastPass{0};
+static std::uint64_t g_initTickMs64 = 0;
+static std::uint64_t g_firstScanTickMs64 = 0;
 static std::unordered_map<void*, std::uint64_t> g_endpointCallsiteHints;
 static std::mutex g_endpointCallsiteMutex;
 static thread_local std::vector<Scanner::SendSample> t_sendSampleBuffer;
 static thread_local bool t_debugNudgeCall = false;
 static Scanner::ModuleMap g_moduleMap;
+static Net::SendSampleStore g_sendSampleStore;
 
 struct EndpointBackoffState {
     DWORD nextTick = 0;
@@ -606,7 +613,7 @@ static bool IsExecutableCodeAddress(void* addr)
     return sp::is_executable_code_ptr(addr);
 }
 
-static bool IsGameVtableAddress(void* addr)
+static bool IsGameVtableAddress(void* addr, bool* outInRdata = nullptr)
 {
     if (!addr)
         return false;
@@ -615,11 +622,23 @@ static bool IsGameVtableAddress(void* addr)
         return false;
     if (mbi.State != MEM_COMMIT || (mbi.Protect & PAGE_GUARD))
         return false;
-    HMODULE gameModule = GetGameModule();
-    if (!gameModule)
+    const auto* primary = g_moduleMap.primaryExecutable();
+    if (!primary)
         return false;
-    if (mbi.AllocationBase != gameModule)
+    if (mbi.AllocationBase != reinterpret_cast<void*>(primary->base))
         return false;
+
+    std::uintptr_t address = reinterpret_cast<std::uintptr_t>(addr);
+    bool inRdata = false;
+    if (primary->rdataBegin != 0 && primary->rdataEnd > primary->rdataBegin)
+        inRdata = address >= primary->rdataBegin && address < primary->rdataEnd;
+
+    if (outInRdata)
+        *outInRdata = inRdata;
+
+    if (!inRdata)
+        return false;
+
     DWORD protect = mbi.Protect & 0xFF;
     return protect == PAGE_READONLY ||
            protect == PAGE_READWRITE ||
@@ -1014,6 +1033,8 @@ static bool BuildSendSample(void* retPtr,
     return true;
 }
 
+static constexpr USHORT kMaxFingerprintFrames =
+    static_cast<USHORT>(Net::SendSampleStore::kMaxFrames);
 static void FormatSampleLabel(const Scanner::ModuleInfo* module,
                               const Scanner::SendSample& sample,
                               char* buffer,
@@ -1076,7 +1097,7 @@ std::uint32_t enqueueFrames(void** frames,
     if (!frames || frameCount == 0)
         return 0;
 
-    const USHORT limit = frameCount > 12 ? 12 : frameCount;
+    const USHORT limit = frameCount > kMaxFingerprintFrames ? kMaxFingerprintFrames : frameCount;
     std::uint32_t produced = 0;
     SendSample firstSample{};
 
@@ -1159,6 +1180,7 @@ void reset(std::uint64_t nowMs)
     g_sendSampleBucket.reset(nowMs);
     g_lastRingLoad.store(0, std::memory_order_relaxed);
     g_lastSampleDropLogTick.store(0, std::memory_order_relaxed);
+    g_sendSampleStore.Reset();
 }
 
 } // namespace Sampler
@@ -1350,6 +1372,13 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
     telemetry.send_samples = sendSampleCount;
     telemetry.ring_load_pct = ringLoadPct;
 
+    if (g_firstScanTickMs64 == 0)
+        g_firstScanTickMs64 = GetTickCount64();
+
+    uint64_t timeToFirstScanMs = 0;
+    if (g_initTickMs64 != 0 && g_firstScanTickMs64 != 0 && g_firstScanTickMs64 >= g_initTickMs64)
+        timeToFirstScanMs = g_firstScanTickMs64 - g_initTickMs64;
+
     g_guardWarnPass.store(telemetry.id, std::memory_order_relaxed);
     g_guardWarnBudget.store(1, std::memory_order_relaxed);
 
@@ -1361,14 +1390,17 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
 
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "TELEMETRY[PASS] id=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u avg_us=%llu max_us=%llu",
+                  "TELEMETRY[PASS] id=%llu builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
                   static_cast<unsigned long long>(telemetry.id),
+                  g_builderScanned ? 1 : 0,
+                  static_cast<unsigned long long>(timeToFirstScanMs),
                   telemetry.candidates_considered,
                   telemetry.accepted,
                   telemetry.rejected,
                   telemetry.send_samples,
                   telemetry.sample_hits,
                   telemetry.sample_rejects,
+                  telemetry.ring_load_pct,
                   telemetry.avg_us(),
                   telemetry.max_candidate_us);
 
@@ -1389,14 +1421,23 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
             std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
             g_lastTelemetry = telemetry;
         }
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "TELEMETRY[PASS] id=%llu builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
+                  static_cast<unsigned long long>(telemetry.id),
+                  g_builderScanned ? 1 : 0,
+                  static_cast<unsigned long long>(timeToFirstScanMs),
+                  telemetry.candidates_considered,
+                  telemetry.accepted,
+                  telemetry.rejected,
+                  telemetry.send_samples,
+                  telemetry.sample_hits,
+                  telemetry.sample_rejects,
+                  telemetry.ring_load_pct,
+                  telemetry.avg_us(),
+                  telemetry.max_candidate_us);
+        g_tuner.applyTelemetry(telemetry);
         return false;
-    }
-
-    std::unordered_map<std::uint32_t, std::uint32_t> sampleCounts;
-    sampleCounts.reserve(samples.size());
-    for (const auto& sample : samples) {
-        if (sample.rva != 0)
-            ++sampleCounts[sample.rva];
     }
 
     std::vector<Scanner::CandidateDescriptor> descriptors;
@@ -1429,13 +1470,13 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
                 descriptor.trusted = true;
         }
 
-        if (hintRva != 0) {
-            auto it = sampleCounts.find(static_cast<std::uint32_t>(hintRva));
-            if (it != sampleCounts.end()) {
-                descriptor.sampleReferenced = true;
-                descriptor.sampleCount = it->second;
-            }
+        Net::SendSampleStore::EndpointStats endpointStats{};
+        if (g_sendSampleStore.TryGetStats(raw.endpoint, endpointStats) && endpointStats.total > 0) {
+            descriptor.sampleReferenced = true;
+            descriptor.sampleCount = endpointStats.total;
+        }
 
+        if (hintRva != 0) {
             Scanner::EndpointTrustCache::CodeKey codeKey{static_cast<std::uint32_t>(hintRva)};
             if (auto codeTrust = g_endpointTrust.lookup(codeKey, descriptorNowMs)) {
                 if (codeTrust->accepted)
@@ -1478,18 +1519,21 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
         g_lastTelemetry = telemetry;
     }
 
-    Log::Logf(Log::Level::Info,
-              Log::Category::Core,
-              "TELEMETRY[PASS] id=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u avg_us=%llu max_us=%llu",
-              static_cast<unsigned long long>(telemetry.id),
-              telemetry.candidates_considered,
-              telemetry.accepted,
-              telemetry.rejected,
-              telemetry.send_samples,
-              telemetry.sample_hits,
-              telemetry.sample_rejects,
-              telemetry.avg_us(),
-              telemetry.max_candidate_us);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "TELEMETRY[PASS] id=%llu builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
+                  static_cast<unsigned long long>(telemetry.id),
+                  g_builderScanned ? 1 : 0,
+                  static_cast<unsigned long long>(timeToFirstScanMs),
+                  telemetry.candidates_considered,
+                  telemetry.accepted,
+                  telemetry.rejected,
+                  telemetry.send_samples,
+                  telemetry.sample_hits,
+                  telemetry.sample_rejects,
+                  telemetry.ring_load_pct,
+                  telemetry.avg_us(),
+                  telemetry.max_candidate_us);
 
     Log::Logf(Log::Level::Debug,
               Log::Category::Core,
@@ -1883,11 +1927,20 @@ static bool TryDiscoverEndpointFromManager(void* manager)
         void* vtbl = nullptr;
         if (!SafeCopy(&vtbl, candidate, sizeof(vtbl)) || !vtbl)
             continue;
-        if (!IsGameVtableAddress(vtbl)) {
+        bool inRdata = false;
+        if (!IsGameVtableAddress(vtbl, &inRdata)) {
             if (firstNonGameOffset == kInvalidOffset) {
                 firstNonGameOffset = offset;
                 firstNonGameValue = candidate;
                 firstNonGameVtable = vtbl;
+                if (!inRdata) {
+                    Log::Logf(Log::Level::Debug,
+                              Log::Category::Core,
+                              "[CORE][SB] candidate=%p rejected reason=rdata-miss vtbl=%p offset=0x%zX",
+                              candidate,
+                              vtbl,
+                              offset);
+                }
             }
             continue;
         }
@@ -2663,6 +2716,17 @@ static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* out
         return false;
     }
 
+    bool vtblInRdata = false;
+    if (!IsGameVtableAddress(vtbl, &vtblInRdata) || !vtblInRdata) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[CORE][SB] endpoint=%p rejected reason=rdata-miss vtbl=%p",
+                  endpoint,
+                  vtbl);
+        g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
+        return false;
+    }
+
 
     uintptr_t vtblAddr = reinterpret_cast<uintptr_t>(vtbl);
     bool anyNewSlot = false;
@@ -3352,6 +3416,10 @@ static NTSTATUS NTAPI Hook_NtProtectVirtualMemory(HANDLE processHandle,
                   static_cast<unsigned long>(haveAfter ? mbiAfter.Protect : 0xFFFFFFFF),
                   static_cast<unsigned long>(haveAfter ? mbiAfter.Type : 0xFFFFFFFF));
         WriteRawLog(buf);
+        Util::RegionWatch::NotifyRange("NtProtectVirtualMemory",
+                                       outputBase,
+                                       outputSize,
+                                       haveAfter ? &mbiAfter : nullptr);
     }
 
     return status;
@@ -3424,6 +3492,10 @@ static NTSTATUS NTAPI Hook_NtAllocateVirtualMemory(HANDLE processHandle,
                   static_cast<unsigned long>(haveAfter ? mbiAfter.Protect : 0xFFFFFFFF),
                   static_cast<unsigned long>(haveAfter ? mbiAfter.Type : 0xFFFFFFFF));
         WriteRawLog(buf);
+        Util::RegionWatch::NotifyRange("NtAllocateVirtualMemory",
+                                       outputBase,
+                                       outputSize,
+                                       haveAfter ? &mbiAfter : nullptr);
     }
 
     return status;
@@ -3499,6 +3571,10 @@ static NTSTATUS NTAPI Hook_NtMapViewOfSection(HANDLE sectionHandle,
                   static_cast<unsigned long>(haveInfo ? info.Protect : 0xFFFFFFFF),
                   static_cast<unsigned long>(haveInfo ? info.Type : 0xFFFFFFFF));
         WriteRawLog(buf);
+        Util::RegionWatch::NotifyRange("NtMapViewOfSection",
+                                       mappedBase,
+                                       actualSize,
+                                       haveInfo ? &info : nullptr);
     }
 
     return status;
@@ -3540,6 +3616,7 @@ static NTSTATUS NTAPI Hook_NtUnmapViewOfSection(HANDLE processHandle, PVOID base
                   static_cast<unsigned long>(infoBefore.Protect),
                   static_cast<unsigned long>(infoBefore.Type));
         WriteRawLog(buf);
+        Util::RegionWatch::NotifyUnmap("NtUnmapViewOfSection", &infoBefore);
 
         if (NT_SUCCESS(status))
         {
@@ -3770,6 +3847,7 @@ static void HookSendBuilderFromNetMgr()
             g_loggedNetScanFailure = true;
             WriteRawLog("HookSendBuilderFromNetMgr: networkConfig pointer is null");
         }
+        Util::RegionWatch::ClearWatch();
         TryDiscoverFromEngineContext();
         return;
     }
@@ -3784,6 +3862,7 @@ static void HookSendBuilderFromNetMgr()
         g_haveNetCfgSnapshot = false;
         g_lastLoggedManager = nullptr;
         g_lastLoggedEndpoint = nullptr;
+        Util::RegionWatch::SetWatchPointer(rawCfg);
         char buf[128];
         sprintf_s(buf, sizeof(buf), "HookSendBuilderFromNetMgr: networkConfig pointer changed -> %p", rawCfg);
         WriteRawLog(buf);
@@ -3811,6 +3890,7 @@ static void HookSendBuilderFromNetMgr()
                             (mbi.Type != g_lastNetCfgType) ||
                             (mbi.BaseAddress != g_lastNetCfgBase) ||
                             (mbi.RegionSize != g_lastNetCfgRegionSize);
+        Util::RegionWatch::UpdateRegionInfo(mbi);
         if (stateChanged) {
             char buf[256];
             sprintf_s(buf, sizeof(buf),
@@ -3883,6 +3963,7 @@ static void HookSendBuilderFromNetMgr()
                        (mbiCurrent.Type != g_lastNetCfgType) ||
                        (mbiCurrent.BaseAddress != g_lastNetCfgBase) ||
                        (mbiCurrent.RegionSize != g_lastNetCfgRegionSize);
+        Util::RegionWatch::UpdateRegionInfo(mbiCurrent);
         if (changed) {
             char buf[256];
             sprintf_s(buf, sizeof(buf),
@@ -3945,15 +4026,28 @@ static void HookSendBuilderFromNetMgr()
     }
 }
 
+static void ScanSendBuilder()
+{
+    HookSendBuilderFromNetMgr();
+}
+
 static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int len)
 {
     const bool isDebugNudge = t_debugNudgeCall;
 
-    if (pkt && len > 0) {
+    if (pkt && len > 0 && g_sendSamplingEnabled.load(std::memory_order_relaxed)) {
         const std::uint64_t nowMs = static_cast<std::uint64_t>(GetTickCount64());
         if (Scanner::Sampler::shouldSample(nowMs)) {
-            void* frames[12] = {};
-            USHORT captured = RtlCaptureStackBackTrace(0, 12, frames, nullptr);
+            void* frames[kMaxFingerprintFrames] = {};
+            USHORT captured = RtlCaptureStackBackTrace(0, kMaxFingerprintFrames, frames, nullptr);
+            if (captured > 0 && thisPtr) {
+                std::uint64_t fingerprint = Net::SendSampleStore::HashFrames(
+                    g_moduleMap,
+                    frames,
+                    static_cast<std::uint16_t>(captured));
+                if (fingerprint != 0)
+                    g_sendSampleStore.Add(thisPtr, fingerprint);
+            }
             Scanner::SendSample firstSample{};
             std::uint32_t produced = Scanner::Sampler::enqueueFrames(frames, captured, nowMs, thisPtr, &firstSample);
             if (produced > 0 && thisPtr) {
@@ -4041,8 +4135,15 @@ bool InitSendBuilder(GlobalStateInfo* state)
             g_managerRegionSize = 0;
             g_debugNudgePending.store(false, std::memory_order_relaxed);
             g_debugNudgeSent.store(false, std::memory_order_relaxed);
+            g_initTickMs64 = GetTickCount64();
+            g_firstScanTickMs64 = 0;
+        }
+        else {
+            g_initTickMs64 = 0;
+            g_firstScanTickMs64 = 0;
         }
         Scanner::Sampler::reset(GetTickCount64());
+        g_sendSampleStore.Reset();
     }
 
     bool sbDebug = ResolveSendBuilderFlag("SB_DEBUG", "sb.debug", false);
@@ -4052,6 +4153,24 @@ bool InitSendBuilder(GlobalStateInfo* state)
     g_sbDebugNudge.store(sbDebugNudge, std::memory_order_relaxed);
     if (!sbDebugNudge) {
         g_debugNudgePending.store(false, std::memory_order_relaxed);
+    }
+
+    bool regionWatchEnabled = ResolveSendBuilderFlag("SB_REGION_WATCH", "sb.regionWatch", true);
+    Util::RegionWatch::SetEnabled(regionWatchEnabled);
+    Util::RegionWatch::SetCallback([]() {
+        ScanSendBuilder();
+    });
+    if (state && state->networkConfig) {
+        Util::RegionWatch::SetWatchPointer(state->networkConfig);
+    } else if (!state || !state->networkConfig) {
+        Util::RegionWatch::ClearWatch();
+    }
+
+    bool samplingEnabled = ResolveSendBuilderFlag("SB_SEND_SAMPLING", "sb.sendSampling", true);
+    g_sendSamplingEnabled.store(samplingEnabled, std::memory_order_relaxed);
+    if (!samplingEnabled) {
+        Scanner::Sampler::reset(GetTickCount64());
+        g_sendSampleStore.Reset();
     }
 
     if (!g_initLogged || stateChanged) {
@@ -4149,6 +4268,8 @@ void ShutdownSendBuilder()
     g_managerRegionBase = 0;
     g_managerRegionSize = 0;
     Scanner::Sampler::reset(GetTickCount64());
+    g_sendSampleStore.Reset();
+    Util::RegionWatch::ClearWatch();
 }
 
 bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint)

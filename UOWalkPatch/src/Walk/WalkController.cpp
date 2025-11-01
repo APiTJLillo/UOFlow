@@ -516,6 +516,25 @@ std::uint32_t GetInflightCount() {
     return g_state.inflight;
 }
 
+void NotifyAckOk() {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    if (!g_state.active)
+        return;
+    if (g_state.inflight > 0)
+        --g_state.inflight;
+    std::uint32_t nowTick = GetTickMs();
+    g_state.lastProgressTick = nowTick;
+    g_lastDecayTick = nowTick;
+    if (g_tunedStepDelayMs > g_stepDelayFloor) {
+        std::uint32_t diff = g_tunedStepDelayMs - g_stepDelayFloor;
+        std::uint32_t decay = std::max<std::uint32_t>(kDelayDecayMs, diff / 4u);
+        std::uint32_t target = (diff > decay) ? g_tunedStepDelayMs - decay : g_stepDelayFloor;
+        UpdateStepDelay(target, "ack");
+    } else if (g_tunedStepDelayMs < g_stepDelayFloor) {
+        UpdateStepDelay(g_stepDelayFloor, "ack-floor");
+    }
+}
+
 void NotifyAckSoftFail() {
     std::lock_guard<std::mutex> lock(g_stateMutex);
     g_state.inflight = 0;
@@ -532,6 +551,11 @@ void NotifyResync(const char* reason) {
             target = g_stepDelayCeil;
         UpdateStepDelay(target, "delay");
     }
+}
+
+std::uint32_t GetStepDelayMs() {
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    return g_tunedStepDelayMs;
 }
 
 void ApplyInflightOverride(std::uint32_t maxInflight, std::uint32_t cycleBudget) {

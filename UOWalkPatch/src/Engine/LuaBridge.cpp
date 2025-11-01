@@ -35,6 +35,7 @@
 #include "Engine/LuaBridge.hpp"
 #include "Engine/LuaStateRegistry.hpp"
 #include "Engine/Movement.hpp"
+#include "Util/OwnerPump.hpp"
 #include "Walk/WalkController.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/lua_safe.h"
@@ -311,6 +312,8 @@ static HelpersRuntimeState g_helpers{};
 
 static void SetCanonicalHelperCtx(HCTX ctx, DWORD ownerTid) noexcept {
     g_helpers.SetCanonicalCtx(ctx, ownerTid);
+    if (ownerTid)
+        Util::OwnerPump::SetOwnerThreadId(ownerTid);
     if (ctx)
         Net::NotifyCanonicalManagerDiscovered();
 }
@@ -4391,6 +4394,9 @@ static void EnsureScriptThread(DWORD tid, lua_State* L) {
         LogLuaQ("tid=%lu script-thread-discovered L=%p", tid, L);
     }
 
+    if (tid != 0)
+        Util::OwnerPump::SetOwnerThreadId(tid);
+
     if (g_scriptThreadId.load(std::memory_order_acquire) == tid && L) {
         lua_State* prev = g_mainLuaState.exchange(L, std::memory_order_acq_rel);
         if (prev != L) {
@@ -4709,13 +4715,14 @@ static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::functio
               from,
               owner,
               taskLabel.c_str());
-    PostToLuaThread(L, name, [fn = std::move(fn), taskLabel = std::move(taskLabel), owner, L](lua_State*) mutable {
+    Util::OwnerPump::RunOnOwner([fn = std::move(fn), taskLabel = std::move(taskLabel), owner, L]() mutable {
+        DWORD runner = GetCurrentThreadId();
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
                   "[CORE][Bind] owner-run L=%p owner=%lu runner=%lu task=%s",
                   L,
                   owner,
-                  GetCurrentThreadId(),
+                  runner,
                   taskLabel.c_str());
         fn();
     });
@@ -7362,6 +7369,7 @@ void ShutdownLuaBridge() {
     g_mainLuaState.store(nullptr, std::memory_order_release);
     g_mainLuaPlusState.store(nullptr, std::memory_order_release);
     g_scriptThreadId.store(0, std::memory_order_release);
+    Util::OwnerPump::Reset();
     g_engineContext.store(nullptr, std::memory_order_release);
     g_latestScriptCtx.store(nullptr, std::memory_order_release);
     NoteContextMutation();

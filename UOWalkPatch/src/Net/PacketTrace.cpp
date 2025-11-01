@@ -34,6 +34,158 @@ static std::atomic<uint64_t> g_fastWalkLastMissLogTick{0};
 static constexpr int kFastWalkReserveDepth = 2;
 static volatile LONG g_ackPayloadLogBudget = 4;
 
+struct WalkAckStatusInfo {
+    uint8_t code;
+    const char* label;
+    bool ok;
+};
+
+static constexpr WalkAckStatusInfo kWalkAckStatusTable[] = {
+    {0x00, "OK", true},
+    {0x01, "BUSY", false},
+    {0x02, "RETRY", false},
+    {0x03, "RESYNC", false},
+};
+
+static const WalkAckStatusInfo* LookupWalkAckStatus(uint8_t code)
+{
+    for (const auto& entry : kWalkAckStatusTable) {
+        if (entry.code == code)
+            return &entry;
+    }
+    return nullptr;
+}
+
+static void LogAckPayloadBytes(const char* context, const char* buf, int len, bool traceEnabled)
+{
+    if (!traceEnabled || !buf || len <= 0)
+        return;
+    LONG remaining = InterlockedDecrement(&g_ackPayloadLogBudget);
+    if (remaining < 0)
+        return;
+
+    char payloadBuf[192];
+    int offset = sprintf_s(payloadBuf, sizeof(payloadBuf), "%s:", context ? context : "WalkACK");
+    int dumpLen = (len < 8) ? len : 8;
+    for (int i = 0; i < dumpLen && offset > 0; ++i) {
+        offset += sprintf_s(payloadBuf + offset,
+                            sizeof(payloadBuf) - offset,
+                            " %02X",
+                            static_cast<unsigned>(static_cast<unsigned char>(buf[i])));
+    }
+    if (offset > 0)
+        Log::Logf(Log::Level::Debug, Log::Category::Walk, "%s", payloadBuf);
+}
+
+static bool HandleWalkAckMessage(SOCKET sock,
+                                 SOCKET effectiveSocket,
+                                 uint8_t opcode,
+                                 const char* buf,
+                                 int len,
+                                 bool traceEnabled)
+{
+    if (opcode != 0x22 && opcode != 0x21)
+        return false;
+
+    if (!buf || len < 2) {
+        LogAckPayloadBytes("[WALK] ack malformed", buf, len, traceEnabled);
+        return true;
+    }
+
+    const uint8_t seq = static_cast<uint8_t>(buf[1]);
+    const uint8_t rawStatus = (len >= 3) ? static_cast<uint8_t>(buf[2]) : 0;
+    uint8_t statusForTracker = rawStatus;
+    if (opcode == 0x21 && statusForTracker == 0)
+        statusForTracker = 1;
+
+    const WalkAckStatusInfo* statusInfo = LookupWalkAckStatus(rawStatus);
+    char statusBuf[16];
+    const char* statusLabel = nullptr;
+    if (statusInfo) {
+        statusLabel = statusInfo->label;
+    } else {
+        if (sprintf_s(statusBuf, sizeof(statusBuf), "0x%02X", static_cast<unsigned>(rawStatus)) > 0)
+            statusLabel = statusBuf;
+        else
+            statusLabel = "UNKNOWN";
+    }
+
+    bool statusOk = statusInfo ? statusInfo->ok : (rawStatus == 0);
+    if (opcode == 0x21) {
+        statusOk = false;
+        if (!statusInfo || statusInfo->ok) {
+            strcpy_s(statusBuf, sizeof(statusBuf), "FAIL");
+            statusLabel = statusBuf;
+        }
+    }
+
+    if (!statusInfo && rawStatus != 0)
+        LogAckPayloadBytes("[WALK] ack raw", buf, len, traceEnabled);
+
+    Engine::MovementAckResult ackResult =
+        Engine::ProcessMovementAck(effectiveSocket, seq, statusForTracker);
+
+    const bool forcedFailure = (opcode == 0x21) || !statusOk;
+    if (forcedFailure &&
+        ackResult.action != Engine::MovementAckAction::Drop &&
+        ackResult.action != Engine::MovementAckAction::Resync) {
+        Engine::NoteAckDrop();
+        ackResult.action = Engine::MovementAckAction::Drop;
+    }
+
+    const char* actionStr = "ignore";
+    switch (ackResult.action) {
+    case Engine::MovementAckAction::Ok:
+        Walk::Controller::NotifyAckOk();
+        actionStr = "ok";
+        break;
+    case Engine::MovementAckAction::Drop:
+        Walk::Controller::ApplyInflightOverride(1, 4);
+        Walk::Controller::NotifyAckSoftFail();
+        Walk::Controller::NotifyResync("ack");
+        Engine::ResyncFastWalk(effectiveSocket, "ack_drop", 1);
+        actionStr = "drop";
+        break;
+    case Engine::MovementAckAction::Resync:
+        Walk::Controller::ApplyInflightOverride(1, 4);
+        Walk::Controller::NotifyAckSoftFail();
+        Walk::Controller::NotifyResync("ack");
+        Engine::ResyncFastWalk(effectiveSocket, "ack_mismatch", 1);
+        actionStr = "resync";
+        break;
+    default:
+        actionStr = "ignore";
+        break;
+    }
+
+    if (opcode == 0x22) {
+        Engine::RecordMovementAck(seq, rawStatus);
+        Engine::SetActiveFastWalkSocket(effectiveSocket);
+    } else {
+        Engine::RecordMovementReject(seq, rawStatus);
+    }
+    Net::SetPreferredSocket(sock);
+
+    const uint32_t inflightCount = Walk::Controller::GetInflightCount();
+    const uint32_t stepDelayMs = Walk::Controller::GetStepDelayMs();
+    const uint8_t expectedSeq = ackResult.expected
+                                    ? ackResult.expected
+                                    : static_cast<uint8_t>(seq + 1);
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Walk,
+              "[WALK] ack seq=0x%02X status=%s inflight=%u stepDelay=%ums expected=0x%02X action=%s op=0x%02X",
+              static_cast<unsigned>(seq),
+              statusLabel,
+              inflightCount,
+              stepDelayMs,
+              static_cast<unsigned>(expectedSeq),
+              actionStr,
+              opcode);
+
+    return true;
+}
+
 static bool ShouldTracePackets()
 {
     return Walk::Controller::DebugEnabled() || Log::IsEnabled(Log::Category::Walk, Log::Level::Debug);
@@ -401,100 +553,7 @@ static void TraceInbound(SOCKET s, const char* buf, int len)
 
     Net::PollSendBuilder();
 
-    if (opcode == 0x22 && len >= 3) {
-        uint8_t seq = static_cast<uint8_t>(buf[1]);
-        uint8_t status = static_cast<uint8_t>(buf[2]);
-        Engine::MovementAckResult ackResult = Engine::ProcessMovementAck(effectiveSocket, seq, status);
-        uint8_t expectedSeq = ackResult.expected ? ackResult.expected : static_cast<uint8_t>(seq + 1);
-        uint32_t inflightCount = Walk::Controller::GetInflightCount();
-        const char* actionStr = "ok";
-        switch (ackResult.action) {
-        case Engine::MovementAckAction::Drop:
-            actionStr = "drop";
-            Walk::Controller::ApplyInflightOverride(1, 4);
-            Walk::Controller::NotifyAckSoftFail();
-            Walk::Controller::NotifyResync("ack");
-            break;
-        case Engine::MovementAckAction::Resync:
-            actionStr = "resync";
-            Walk::Controller::ApplyInflightOverride(1, 4);
-            Walk::Controller::NotifyAckSoftFail();
-            Engine::ResyncFastWalk(effectiveSocket, "ack_mismatch", 1);
-            break;
-        case Engine::MovementAckAction::Ok:
-        case Engine::MovementAckAction::Ignore:
-        default:
-            actionStr = "ok";
-            break;
-        }
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Walk,
-                  "[WALK] ack id=0x22 sock=%p seq=0x%02X status=0x%02X inflight=%u expected=0x%02X action=%s",
-                  reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
-                  static_cast<unsigned>(seq),
-                  static_cast<unsigned>(status),
-                  inflightCount,
-                  static_cast<unsigned>(expectedSeq),
-                  actionStr);
-        if (traceEnabled && g_ackPayloadLogBudget > 0 && InterlockedDecrement(&g_ackPayloadLogBudget) >= 0) {
-            int dumpLen = (len < 8) ? len : 8;
-            char payloadBuf[192];
-            int offset = sprintf_s(payloadBuf, sizeof(payloadBuf), "WalkACK bytes:");
-            for (int i = 0; i < dumpLen && offset > 0; ++i) {
-                offset += sprintf_s(payloadBuf + offset,
-                                    sizeof(payloadBuf) - offset,
-                                    " %02X",
-                                    static_cast<unsigned>(static_cast<unsigned char>(buf[i])));
-                if (offset <= 0)
-                    break;
-            }
-            if (offset > 0)
-                Log::Logf(Log::Level::Debug, Log::Category::Walk, "%s", payloadBuf);
-        }
-        Engine::RecordMovementAck(seq, status);
-        Engine::SetActiveFastWalkSocket(s);
-        Net::SetPreferredSocket(s);
-    } else if (opcode == 0x21 && len >= 2) {
-        uint8_t seq = static_cast<uint8_t>(buf[1]);
-        uint8_t status = (len >= 3) ? static_cast<uint8_t>(buf[2]) : 0;
-        Engine::MovementAckResult nackResult = Engine::ProcessMovementAck(effectiveSocket, seq, status ? status : 1);
-        uint8_t expectedSeq = nackResult.expected ? nackResult.expected : static_cast<uint8_t>(seq + 1);
-        uint32_t inflightCount = Walk::Controller::GetInflightCount();
-        const char* nackAction = (nackResult.action == Engine::MovementAckAction::Resync) ? "resync" : "drop";
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Walk,
-                  "[WALK] ack id=0x21 sock=%p seq=0x%02X status=0x%02X inflight=%u expected=0x%02X action=%s",
-                  reinterpret_cast<void*>(static_cast<uintptr_t>(s)),
-                  static_cast<unsigned>(seq),
-                  static_cast<unsigned>(status),
-                  inflightCount,
-                  static_cast<unsigned>(expectedSeq),
-                  nackAction);
-        if (nackResult.action != Engine::MovementAckAction::Resync &&
-            nackResult.action != Engine::MovementAckAction::Drop) {
-            Engine::NoteAckDrop();
-        }
-        Walk::Controller::ApplyInflightOverride(1, 4);
-        Walk::Controller::NotifyAckSoftFail();
-        Engine::ResyncFastWalk(effectiveSocket, "ack_mismatch", 1);
-        if (traceEnabled && g_ackPayloadLogBudget > 0 && InterlockedDecrement(&g_ackPayloadLogBudget) >= 0) {
-            int dumpLen = (len < 8) ? len : 8;
-            char payloadBuf[192];
-            int offset = sprintf_s(payloadBuf, sizeof(payloadBuf), "WalkNACK bytes:");
-            for (int i = 0; i < dumpLen && offset > 0; ++i) {
-                offset += sprintf_s(payloadBuf + offset,
-                                    sizeof(payloadBuf) - offset,
-                                    " %02X",
-                                    static_cast<unsigned>(static_cast<unsigned char>(buf[i])));
-                if (offset <= 0)
-                    break;
-            }
-            if (offset > 0)
-                Log::Logf(Log::Level::Debug, Log::Category::Walk, "%s", payloadBuf);
-        }
-        Engine::RecordMovementReject(seq, status);
-        Net::SetPreferredSocket(s);
-    }
+    HandleWalkAckMessage(s, effectiveSocket, opcode, buf, len, traceEnabled);
 
     if (opcode == 0xB8)
     {

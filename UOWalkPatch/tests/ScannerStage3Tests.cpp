@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <vector>
 #include "Net/ScannerStage3.hpp"
+#include "Net/SendSampleStore.hpp"
 
 using Net::Scanner::CandidateDescriptor;
 using Net::Scanner::PrioritizeCandidates;
@@ -15,6 +16,11 @@ using Net::Scanner::TokenBucket;
 using Net::Scanner::EndpointTrustCache;
 using Net::Scanner::RejectStore;
 using Net::Scanner::Tuner;
+
+static void* ToVoidPtr(void (*fn)())
+{
+    return reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(fn));
+}
 
 static void TestSamplePrioritization()
 {
@@ -113,6 +119,54 @@ static void TestTunerAdjustments()
     assert(tuner.maxInflight() == beforeInflight - 1);
 }
 
+static void TestSendSampleStoreHashFrames()
+{
+    Net::Scanner::ModuleMap map;
+    map.refresh(true);
+
+    void* framesA[Net::SendSampleStore::kMaxFrames] = {
+        ToVoidPtr(&TestSamplePrioritization),
+        ToVoidPtr(&TestSampleDeduper),
+        ToVoidPtr(&TestEndpointTrustCache),
+        ToVoidPtr(&TestRejectStoreTtl),
+        ToVoidPtr(&TestTunerAdjustments),
+    };
+
+    std::uint64_t hash1 = Net::SendSampleStore::HashFrames(map,
+                                                           framesA,
+                                                           Net::SendSampleStore::kMaxFrames);
+    assert(hash1 != 0);
+
+    std::uint64_t hash2 = Net::SendSampleStore::HashFrames(map,
+                                                           framesA,
+                                                           Net::SendSampleStore::kMaxFrames);
+    assert(hash1 == hash2);
+
+    void* framesExtended[Net::SendSampleStore::kMaxFrames + 1] = {};
+    for (std::size_t i = 0; i < Net::SendSampleStore::kMaxFrames; ++i)
+        framesExtended[i] = framesA[i];
+    framesExtended[Net::SendSampleStore::kMaxFrames] = framesA[0];
+
+    std::uint64_t hash3 = Net::SendSampleStore::HashFrames(map,
+                                                           framesExtended,
+                                                           static_cast<std::uint16_t>(Net::SendSampleStore::kMaxFrames + 1));
+    assert(hash1 == hash3);
+
+    void* framesReordered[Net::SendSampleStore::kMaxFrames] = {
+        framesA[0],
+        framesA[2],
+        framesA[1],
+        framesA[3],
+        framesA[4],
+    };
+
+    std::uint64_t hash4 = Net::SendSampleStore::HashFrames(map,
+                                                           framesReordered,
+                                                           Net::SendSampleStore::kMaxFrames);
+    assert(hash4 != 0);
+    assert(hash4 != hash1);
+}
+
 int main()
 {
     TestSamplePrioritization();
@@ -120,5 +174,6 @@ int main()
     TestEndpointTrustCache();
     TestRejectStoreTtl();
     TestTunerAdjustments();
+    TestSendSampleStoreHashFrames();
     return 0;
 }

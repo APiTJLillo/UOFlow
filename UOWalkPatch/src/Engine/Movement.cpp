@@ -23,6 +23,7 @@
 #include "Net/SendBuilder.hpp"
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
+#include "Util/OwnerPump.hpp"
 #include "Walk/WalkController.hpp"
 
 // Move variable definition to global scope
@@ -2056,6 +2057,19 @@ static bool ReadVec3Safe(void* ptr, Vec3& out)
 }
 
 static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr, uint32_t dir, int runFlag) {
+    DWORD runnerTid = GetCurrentThreadId();
+    std::size_t ranOwnerTasks = Util::OwnerPump::Drain(runnerTid);
+    if (ranOwnerTasks > 0) {
+        DWORD ownerTid = Util::OwnerPump::GetOwnerThreadId();
+        if (ownerTid == 0)
+            ownerTid = runnerTid;
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HELPERS] owner-pump: ran %zu tasks (runner=%lu owner=%lu)",
+                  ranOwnerTasks,
+                  static_cast<unsigned long>(runnerTid),
+                  static_cast<unsigned long>(ownerTid));
+    }
     Engine::Lua::ProcessLuaQueue();
     if (!g_moveCandidate && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0) {
         g_moveCandidate = thisPtr;

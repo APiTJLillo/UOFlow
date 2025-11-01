@@ -84,12 +84,15 @@ add_library(UOWalkPatchDLL SHARED
     src/Win32/SafeProbe.cpp
     src/Net/PacketTrace.cpp
     src/Net/SendBuilder.cpp
+    src/Net/SendSampleStore.cpp
     src/Engine/GlobalState.cpp
     src/Engine/Movement.cpp
     src/Engine/LuaBridge.cpp
     src/Engine/lua_safe.cpp
     src/Engine/LuaStateRegistry.cpp
     src/Walk/WalkController.cpp
+    src/Util/OwnerPump.cpp
+    src/Util/RegionWatch.cpp
 )
 
 target_compile_definitions(UOWalkPatchDLL PRIVATE SAFE_LUA_API_GUARD=1)
@@ -246,3 +249,4 @@ target_include_directories(UOWalkPatchTests PRIVATE
 set_target_properties(UOWalkPatchTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+target_link_libraries(UOWalkPatchTests PRIVATE UOWalkPatchDLL)

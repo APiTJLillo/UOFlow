@@ -541,12 +541,15 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Win32\SafeProbe.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Net\PacketTrace.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Net\SendBuilder.cpp" />
+    <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Net\SendSampleStore.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\GlobalState.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\Movement.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\LuaBridge.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\lua_safe.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\LuaStateRegistry.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Walk\WalkController.cpp" />
+    <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Util\OwnerPump.cpp" />
+    <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Util\RegionWatch.cpp" />
   </ItemGroup>
   <ItemGroup />
   <ItemGroup>
