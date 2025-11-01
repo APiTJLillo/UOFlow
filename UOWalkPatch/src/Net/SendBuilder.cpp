@@ -25,6 +25,9 @@
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
 #include "Core/SafeMem.h"
+#include "Core/RejectCache.hpp"
+#include "Core/TrustedEndpointCache.hpp"
+#include "Core/SendRing.hpp"
 #include "Win32/SafeProbe.h"
 #include "Net/PacketTrace.hpp"
 #include "Net/SendBuilder.hpp"
@@ -43,6 +46,7 @@ typedef LONG NTSTATUS;
 #endif
 
 // Define the global variable that was previously only declared as extern
+extern "C" IMAGE_DOS_HEADER __ImageBase;
 volatile LONG g_needWalkReg = 0;
 
 namespace Net {
@@ -56,6 +60,12 @@ constexpr size_t kEndpointScanWindow = 0x800;
 constexpr int kTailFollowMaxDepth = 4;
 constexpr size_t kTailScanWindow = 0x100;
 constexpr uintptr_t kCanonicalManagerVtbl = 0ull; // runtime-resolved via GlobalState when available
+constexpr std::uint32_t kRingSnapshotAgeMs = 3000;
+constexpr std::uint32_t kRingHitThreshold = 3;
+constexpr std::uint32_t kRingMatchLeewayBytes = 32;
+constexpr std::uint32_t kTrustedEndpointTtlMs = 15u * 60u * 1000u;
+constexpr std::uint32_t kRejectCacheTtlMs = 5u * 60u * 1000u;
+
 static GlobalStateInfo* g_state = nullptr;
 static SendPacket_t g_sendPacket = nullptr;
 static void* g_sendPacketTarget = nullptr;
@@ -111,8 +121,13 @@ static std::mutex g_lastTelemetryMutex;
 static std::atomic<std::uint64_t> g_passSeq{0};
 static std::atomic<std::uint32_t> g_lastRingLoad{0};
 static std::atomic<bool> g_requireSendSample{true};
+static std::atomic<std::uint32_t> g_backoffMs{0};
 static std::atomic<std::uint32_t> g_nextScanDelayMs{0};
+static std::atomic<bool> g_sendRingDebug{false};
+static std::atomic<DWORD> g_lastSendRingDebugTick{0};
 static std::atomic<std::uint32_t> g_guardWarnBudget{0};
+
+static bool IsExecutableCodeAddress(void* addr);
 static std::atomic<std::uint64_t> g_guardWarnPass{0};
 static std::atomic<std::uint64_t> g_asciiWarnLastPass{0};
 static std::uint64_t g_initTickMs64 = 0;
@@ -120,19 +135,71 @@ static std::uint64_t g_firstScanTickMs64 = 0;
 static std::unordered_map<void*, std::uint64_t> g_endpointCallsiteHints;
 static std::mutex g_endpointCallsiteMutex;
 static thread_local bool t_debugNudgeCall = false;
+static thread_local std::uint32_t t_ringHitsForAttach = 0;
 static Scanner::ModuleMap g_moduleMap;
 static Net::SendSampleStore g_sendSampleStore;
+static Core::SendRing& g_sendRing = Core::GetSendRing();
+
+struct RingHitStats {
+    std::uint32_t hits = 0;
+    std::uint32_t selfHits = 0;
+    std::uint32_t offModuleHits = 0;
+    std::uint32_t considered = 0;
+};
+
+struct TraceResult;
+
+enum : std::uint8_t {
+    kRejectReasonGeneric = 0,
+    kRejectReasonNotExec = 1,
+    kRejectReasonNonGame = 2,
+    kRejectReasonNoChain = 3,
+    kRejectReasonSelf = 4,
+    kRejectReasonOffText = 5,
+};
+
+static const char* RejectReasonLabel(std::uint8_t reason) noexcept
+{
+    switch (reason) {
+    case kRejectReasonNotExec:
+        return "nonexec";
+    case kRejectReasonNoChain:
+        return "nochain";
+    case kRejectReasonSelf:
+        return "self";
+    case kRejectReasonNonGame:
+        return "offtext";
+    case kRejectReasonOffText:
+        return "offtext";
+    default:
+        return "generic";
+    }
+}
+
+static void LogRejectTtl(uintptr_t vtbl, int slotIndex, std::uint8_t reason)
+{
+    if (vtbl == 0 || slotIndex < 0)
+        return;
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[SB][REJ] ttl vtbl=%p slot=%u reason=%s",
+              reinterpret_cast<void*>(vtbl),
+              static_cast<unsigned>(slotIndex),
+              RejectReasonLabel(reason));
+}
 
 enum class ManagerKind : std::uint8_t {
     Engine,
     Database,
-    ScriptCtx
+    ScriptCtx,
+    Neighbor
 };
 
 struct ManagerTarget {
     ManagerKind kind = ManagerKind::Engine;
     uintptr_t vtbl = 0;
     uintptr_t owner = 0;
+    std::uint32_t neighborIndex = std::numeric_limits<std::uint32_t>::max();
 };
 
 struct VtblSuppressEntry {
@@ -219,10 +286,79 @@ static const char* ManagerKindName(ManagerKind kind) noexcept
         return "db";
     case ManagerKind::ScriptCtx:
         return "script";
+    case ManagerKind::Neighbor:
+        return "neighbor";
     default:
         return "?";
     }
 }
+
+static std::uint32_t HashPointer(const void* ptr) noexcept
+{
+    if (!ptr)
+        return 0;
+    std::uintptr_t value = reinterpret_cast<std::uintptr_t>(ptr);
+    std::uint32_t hash = 2166136261u;
+    constexpr std::uint32_t kPrime = 16777619u;
+    for (std::size_t i = 0; i < sizeof(value); ++i) {
+        const std::uint8_t byte = static_cast<std::uint8_t>(value & 0xFFu);
+        hash ^= byte;
+        hash *= kPrime;
+        value >>= 8;
+    }
+    return hash;
+}
+
+static bool IsInPrimaryText(const void* address)
+{
+    if (!address)
+        return false;
+    const auto* primary = g_moduleMap.primaryExecutable();
+    if (!primary)
+        return false;
+    const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(address);
+    if (primary->containsText(addr))
+        return true;
+    return false;
+}
+
+static bool IsInSelfModule(const void* address)
+{
+    if (!address)
+        return false;
+    const auto* module = g_moduleMap.findByAddress(address);
+    if (!module)
+        return false;
+    return module->module == reinterpret_cast<HMODULE>(&__ImageBase);
+}
+
+static void FormatModuleOffset(const void* address, char* buffer, size_t bufferLen)
+{
+    if (!buffer || bufferLen == 0)
+        return;
+    if (!address) {
+        std::snprintf(buffer, bufferLen, "null");
+        return;
+    }
+    const auto* module = g_moduleMap.findByAddress(address);
+    if (!module) {
+        std::snprintf(buffer, bufferLen, "%p", address);
+        return;
+    }
+    char moduleName[MAX_PATH] = {};
+    if (GetModuleBaseNameA(GetCurrentProcess(),
+                           module->module,
+                           moduleName,
+                           static_cast<DWORD>(sizeof(moduleName))) == 0) {
+        std::snprintf(moduleName, sizeof(moduleName), "%p", module->module);
+    }
+    const std::uintptr_t offset = reinterpret_cast<std::uintptr_t>(address) - module->base;
+    std::snprintf(buffer, bufferLen, "%s!0x%X", moduleName, static_cast<unsigned>(offset));
+}
+
+static RingHitStats EvaluateRingHits(const std::vector<Core::SendRing::Entry>& samples,
+                                     void* candidateEntry,
+                                     const TraceResult& trace);
 
 static bool IsInModuleRdata(uintptr_t addr);
 
@@ -377,6 +513,79 @@ static bool BuildManagerTarget(ManagerKind kind, const GlobalStateInfo* state, M
     return true;
 }
 
+static bool ValidateNeighborVtbl(void* vtblPtr)
+{
+    if (!vtblPtr)
+        return false;
+
+    const int kCheckSlots = 4;
+    for (int i = 0; i < kCheckSlots; ++i) {
+        void* entry = nullptr;
+        if (!SafeCopy(&entry, reinterpret_cast<void* const*>(vtblPtr) + i, sizeof(entry)) || !entry)
+            return false;
+        if (!IsExecutableCodeAddress(entry))
+            return false;
+        if (!IsInPrimaryText(entry))
+            return false;
+    }
+    return true;
+}
+
+static void BuildNeighborTargets(const ManagerTarget& engineTarget,
+                                 std::vector<ManagerTarget>& out)
+{
+    if (engineTarget.vtbl == 0 || engineTarget.owner == 0)
+        return;
+
+    void* const* engineVtbl = reinterpret_cast<void* const*>(engineTarget.vtbl);
+    std::unordered_set<std::uintptr_t> seen;
+
+    for (int i = 0; i < 32; ++i) {
+        void* candidate = nullptr;
+        if (!SafeCopy(&candidate, engineVtbl + i, sizeof(candidate)) || !candidate)
+            continue;
+        if (candidate == reinterpret_cast<void*>(engineTarget.owner))
+            continue;
+
+        void* neighborVtbl = nullptr;
+        if (!SafeCopy(&neighborVtbl, candidate, sizeof(neighborVtbl)) || !neighborVtbl)
+            continue;
+
+        const std::uintptr_t neighborVtblAddr = reinterpret_cast<std::uintptr_t>(neighborVtbl);
+        if (!IsInModuleRdata(neighborVtblAddr))
+            continue;
+        if (!seen.insert(neighborVtblAddr).second)
+            continue;
+        if (!ValidateNeighborVtbl(neighborVtbl))
+            continue;
+
+        ManagerTarget neighbor{};
+        neighbor.kind = ManagerKind::Neighbor;
+        neighbor.vtbl = neighborVtblAddr;
+        neighbor.owner = reinterpret_cast<std::uintptr_t>(candidate);
+        neighbor.neighborIndex = static_cast<std::uint32_t>(i);
+        out.push_back(neighbor);
+    }
+}
+
+static void LogPivotAttempt(const ManagerTarget& target)
+{
+    if (target.kind == ManagerKind::Neighbor) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[SB][PIVOT] trying manager=neighbor@%u vtbl=%p",
+                  target.neighborIndex,
+                  reinterpret_cast<void*>(target.vtbl));
+        return;
+    }
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[SB][PIVOT] trying manager=%s vtbl=%p",
+              ManagerKindName(target.kind),
+              reinterpret_cast<void*>(target.vtbl));
+}
+
 static bool EnsureManagerSelection(const GlobalStateInfo* state)
 {
     // NOTE: Engine manager vtbl must be preferred. DB/ScriptCtx are fallbacks used only when
@@ -414,10 +623,11 @@ static void LogTelemetryNoScan(const ManagerTarget& target,
     std::uint64_t passId = g_passSeq.fetch_add(1) + 1;
     g_guardWarnPass.store(passId, std::memory_order_relaxed);
     uint64_t ttfsMs = TimeToFirstScanMs();
+    const unsigned cacheSize = static_cast<unsigned>(Core::GetRejectCache().size());
 
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
-              "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=%d preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=0 accepted=0 rejected=0 send_samples=0 sample_hits=0 sample_rejects=0 ring_load=%u avg_us=0 max_us=0",
+              "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=%d preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=0 accepted=0 rejected=0 send_samples=0 sample_hits=0 sample_rejects=0 ring_load=%u rej_skipped=0 backoff_ms=0 elapsed_ms=0 rej_hits=0 rej_ins=0 rej_size=%u avg_us=0 max_us=0",
               static_cast<unsigned long long>(passId),
               ManagerKindName(target.kind),
               reinterpret_cast<void*>(target.vtbl),
@@ -425,7 +635,8 @@ static void LogTelemetryNoScan(const ManagerTarget& target,
               preconditions.c_str(),
               g_builderScanned ? 1 : 0,
               static_cast<unsigned long long>(ttfsMs),
-              ringLoadPct);
+              ringLoadPct,
+              cacheSize);
 }
 
 
@@ -1000,6 +1211,71 @@ struct TraceResult
     TraceHop hops[kTailFollowMaxDepth] = {};
 };
 
+static RingHitStats EvaluateRingHits(const std::vector<Core::SendRing::Entry>& samples,
+                                     void* candidateEntry,
+                                     const TraceResult& trace)
+{
+    RingHitStats stats{};
+    if (samples.empty())
+        return stats;
+
+    std::vector<std::uintptr_t> addresses;
+    addresses.reserve(16);
+
+    auto pushAddress = [&addresses](const void* addr) {
+        if (!addr)
+            return;
+        addresses.push_back(reinterpret_cast<std::uintptr_t>(addr));
+    };
+
+    pushAddress(candidateEntry);
+    pushAddress(trace.finalTarget);
+    pushAddress(trace.site);
+    for (size_t i = 0; i < trace.hopCount; ++i) {
+        pushAddress(trace.hops[i].from);
+        pushAddress(trace.hops[i].to);
+        pushAddress(trace.hops[i].slotValue);
+    }
+
+    const auto* primary = g_moduleMap.primaryExecutable();
+
+    for (const auto& sample : samples) {
+        if (!sample.func)
+            continue;
+        ++stats.considered;
+
+        const std::uintptr_t pc = reinterpret_cast<std::uintptr_t>(sample.func);
+        bool matched = false;
+        for (const auto addr : addresses) {
+            if (addr == 0)
+                continue;
+            const std::uintptr_t lower = (addr > kRingMatchLeewayBytes) ? (addr - kRingMatchLeewayBytes) : 0;
+            const std::uintptr_t upper = addr + kRingMatchLeewayBytes;
+            if (pc >= lower && pc <= upper) {
+                matched = true;
+                break;
+            }
+        }
+
+        if (!matched)
+            continue;
+
+        if (IsInSelfModule(sample.func)) {
+            ++stats.selfHits;
+            continue;
+        }
+
+        if (!primary || !primary->containsText(pc)) {
+            ++stats.offModuleHits;
+            continue;
+        }
+
+        ++stats.hits;
+    }
+
+    return stats;
+}
+
 static void ResetTraceResult(TraceResult& trace);
 static bool TraceSendPacketUse(uint8_t* fn, TraceResult& trace, uint8_t slotIndex, void* vtable);
 static bool TraceSendPacketFrom(uint8_t* fn,
@@ -1152,10 +1428,12 @@ static bool AttachSendBuilderFromTrace(void* matchedFn,
                   haveBytes ? byteSample[3] : 0xFF);
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket; attached",
+                  "[CORE][SB] matched vtbl[%02X]=%p via %s -> SendPacket (hits=%u) ATTACHED",
                   displaySlot,
                   matchedFn,
-                  chain[0] ? chain : "?");
+                  chain[0] ? chain : "?",
+                  t_ringHitsForAttach);
+        Core::StartupSummary::NotifySendBuilderReady();
         Core::StartupSummary::NotifySendBuilderReady();
         return true;
     }
@@ -1520,7 +1798,11 @@ void SubmitSendSample(void* endpoint, void** frames, USHORT captured, std::uint6
 }
 
 static bool IsExecutableSendContext(void* candidate, void** outVtbl, void** outEntry0);
-static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* outTrace = nullptr);
+static bool ScanEndpointVTable(void* endpoint,
+                               bool& outNoPath,
+                               const std::vector<Core::SendRing::Entry>* ringSamples,
+                               RingHitStats* ringStats,
+                               TraceResult* outTrace = nullptr);
 static void CaptureSendContext(void* candidate, const char* sourceTag);
 static void MaybeSendDebugNudge();
 static bool IsExecutablePtr(const void* p);
@@ -1530,6 +1812,7 @@ static bool ProcessSendSamplesFast(const std::vector<Scanner::SendSample>& sampl
 static std::optional<std::uint32_t> ResolveRva(void* addr);
 
 static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateDescriptor& descriptor,
+                                                       const std::vector<Core::SendRing::Entry>& ringSamples,
                                                        Scanner::ScanPassTelemetry& telemetry,
                                                        uint64_t perfFreq);
 
@@ -1582,7 +1865,11 @@ static bool AttachSampleViaEndpoint(const Scanner::SendSample& sample, std::uint
     bool noPath = false;
     TraceResult endpointTrace{};
     ResetTraceResult(endpointTrace);
-    if (!ScanEndpointVTable(sample.thisPtr, noPath, &endpointTrace))
+    if (!ScanEndpointVTable(sample.thisPtr,
+                           noPath,
+                           nullptr,
+                           nullptr,
+                           &endpointTrace))
         return false;
 
     ApplySuccessfulAttach(sample.thisPtr, nullptr, endpointTrace, nowMs);
@@ -1703,31 +1990,42 @@ static bool ProcessSendSamplesFast(const std::vector<Scanner::SendSample>& sampl
 }
 
 // Stage-3: adaptively space scans based on recent pass outcomes.
-static void UpdateNextScanDelay(const Scanner::ScanPassTelemetry& telemetry)
+static std::uint32_t UpdateNextScanDelay(const Scanner::ScanPassTelemetry& telemetry,
+                                         bool hadCandidates)
 {
-    if (telemetry.accepted == 0 && telemetry.sample_hits == 0) {
-        const std::uint32_t previous = g_nextScanDelayMs.load(std::memory_order_relaxed);
-        const std::uint64_t doubled = static_cast<std::uint64_t>(previous) * 2ull;
-        const std::uint32_t newDelay =
-            static_cast<std::uint32_t>(std::max<std::uint64_t>(5000ull, doubled));
-        g_nextScanDelayMs.store(newDelay, std::memory_order_relaxed);
-    } else {
-        g_nextScanDelayMs.store(g_tuner.stepDelayMs(), std::memory_order_relaxed);
+    const bool shouldBackoff = !hadCandidates && telemetry.accepted == 0 && telemetry.sample_hits == 0;
+    if (!shouldBackoff) {
+        g_backoffMs.store(0, std::memory_order_relaxed);
+        const std::uint32_t delay = std::max<std::uint32_t>(g_tuner.stepDelayMs(), 100u);
+        g_nextScanDelayMs.store(delay, std::memory_order_relaxed);
+        return 0;
     }
+
+    const std::uint32_t previous = g_backoffMs.load(std::memory_order_relaxed);
+    const std::uint32_t next = previous == 0 ? 500u : std::min<std::uint32_t>(previous * 2u, 5000u);
+    g_backoffMs.store(next, std::memory_order_relaxed);
+    g_nextScanDelayMs.store(next, std::memory_order_relaxed);
+    return next;
 }
 
 static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
-                             const std::vector<Scanner::SendSample>& samples,
-                             uint32_t sendSampleCount,
+                             const std::vector<Scanner::SendSample>& stackSamples,
+                             const std::vector<Core::SendRing::Entry>& ringSamples,
+                             uint32_t ringSampleCount,
                              uint32_t ringLoadPct,
                              Scanner::ScanPassTelemetry& telemetry,
                              const ManagerTarget& managerTarget,
                              const std::string& preconditions)
 {
+    const std::uint32_t preRejHits = telemetry.rej_cache_hits;
+    const std::uint32_t preRejInserted = telemetry.rej_cache_inserted;
     telemetry = {};
+    telemetry.rej_cache_hits = preRejHits;
+    telemetry.rej_cache_inserted = preRejInserted;
     telemetry.id = g_passSeq.fetch_add(1) + 1;
-    telemetry.send_samples = sendSampleCount;
+    telemetry.send_samples = ringSampleCount;
     telemetry.ring_load_pct = ringLoadPct;
+    const std::uint64_t passStartMs = GetTickCount64();
     const char* mgrName = ManagerKindName(managerTarget.kind);
     const void* vtblPtr = reinterpret_cast<void*>(managerTarget.vtbl);
 
@@ -1741,7 +2039,14 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
     g_guardWarnPass.store(telemetry.id, std::memory_order_relaxed);
     g_guardWarnBudget.store(1, std::memory_order_relaxed);
 
-    if (ProcessSendSamplesFast(samples, telemetry)) {
+    if (ProcessSendSamplesFast(stackSamples, telemetry)) {
+        telemetry.rej_cache_size = static_cast<std::uint32_t>(Core::GetRejectCache().size());
+        const std::uint64_t passElapsed = GetTickCount64() - passStartMs;
+        telemetry.elapsed_ms = static_cast<std::uint32_t>(std::min<std::uint64_t>(passElapsed, std::numeric_limits<std::uint32_t>::max()));
+
+        g_tuner.applyTelemetry(telemetry);
+        telemetry.backoff_ms = UpdateNextScanDelay(telemetry, false);
+
         {
             std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
             g_lastTelemetry = telemetry;
@@ -1749,7 +2054,7 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
 
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
+                  "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u rej_skipped=%u backoff_ms=%u elapsed_ms=%u rej_hits=%u rej_ins=%u rej_size=%u avg_us=%llu max_us=%llu",
                   static_cast<unsigned long long>(telemetry.id),
                   mgrName,
                   vtblPtr,
@@ -1763,16 +2068,20 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
                   telemetry.sample_hits,
                   telemetry.sample_rejects,
                   telemetry.ring_load_pct,
+                  telemetry.rejected_skipped,
+                  telemetry.backoff_ms,
+                  telemetry.elapsed_ms,
+                  telemetry.rej_cache_hits,
+                  telemetry.rej_cache_inserted,
+                  telemetry.rej_cache_size,
                   telemetry.avg_us(),
                   telemetry.max_candidate_us);
 
-        g_tuner.applyTelemetry(telemetry);
-        UpdateNextScanDelay(telemetry);
-
         Log::Logf(Log::Level::Debug,
                   Log::Category::Core,
-                  "[BACKOFF] stepDelay=%ums inflight=%u escalation=%u",
+                  "[BACKOFF] stepDelay=%ums backoff=%ums inflight=%u escalation=%u",
                   g_tuner.stepDelayMs(),
+                  telemetry.backoff_ms,
                   g_tuner.maxInflight(),
                   g_tuner.escalationLevel());
 
@@ -1780,13 +2089,18 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
     }
 
     if (rawCandidates.empty()) {
+        telemetry.rej_cache_size = static_cast<std::uint32_t>(Core::GetRejectCache().size());
+        const std::uint64_t passElapsed = GetTickCount64() - passStartMs;
+        telemetry.elapsed_ms = static_cast<std::uint32_t>(std::min<std::uint64_t>(passElapsed, std::numeric_limits<std::uint32_t>::max()));
+        g_tuner.applyTelemetry(telemetry);
+        telemetry.backoff_ms = UpdateNextScanDelay(telemetry, false);
         {
             std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
             g_lastTelemetry = telemetry;
         }
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
+                  "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u rej_skipped=%u backoff_ms=%u elapsed_ms=%u rej_hits=%u rej_ins=%u rej_size=%u avg_us=%llu max_us=%llu",
                   static_cast<unsigned long long>(telemetry.id),
                   mgrName,
                   vtblPtr,
@@ -1800,10 +2114,14 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
                   telemetry.sample_hits,
                   telemetry.sample_rejects,
                   telemetry.ring_load_pct,
+                  telemetry.rejected_skipped,
+                  telemetry.backoff_ms,
+                  telemetry.elapsed_ms,
+                  telemetry.rej_cache_hits,
+                  telemetry.rej_cache_inserted,
+                  telemetry.rej_cache_size,
                   telemetry.avg_us(),
                   telemetry.max_candidate_us);
-        g_tuner.applyTelemetry(telemetry);
-        UpdateNextScanDelay(telemetry);
         return false;
     }
 
@@ -1856,10 +2174,21 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
         descriptors.push_back(descriptor);
     }
 
-    if (descriptors.empty()) {
+if (descriptors.empty()) {
+        telemetry.rej_cache_size = static_cast<std::uint32_t>(Core::GetRejectCache().size());
+        const std::uint64_t passElapsed = GetTickCount64() - passStartMs;
+        telemetry.elapsed_ms = static_cast<std::uint32_t>(std::min<std::uint64_t>(passElapsed, std::numeric_limits<std::uint32_t>::max()));
+        g_tuner.applyTelemetry(telemetry);
+        telemetry.backoff_ms = UpdateNextScanDelay(telemetry, false);
         std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
         g_lastTelemetry = telemetry;
-        UpdateNextScanDelay(telemetry);
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[BACKOFF] stepDelay=%ums backoff=%ums inflight=%u escalation=%u",
+                  g_tuner.stepDelayMs(),
+                  telemetry.backoff_ms,
+                  g_tuner.maxInflight(),
+                  g_tuner.escalationLevel());
         return false;
     }
 
@@ -1872,7 +2201,10 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
     for (const auto& descriptor : descriptors) {
         if (g_builderScanned)
             break;
-        CandidateProcessOutcome outcome = ProcessScannerCandidate(descriptor, telemetry, freq);
+        CandidateProcessOutcome outcome = ProcessScannerCandidate(descriptor,
+                                        ringSamples,
+                                        telemetry,
+                                        freq);
         if (outcome.accepted)
             break;
         if (outcome.attempted) {
@@ -1882,6 +2214,13 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
         }
     }
 
+    telemetry.rej_cache_size = static_cast<std::uint32_t>(Core::GetRejectCache().size());
+    const std::uint64_t passElapsed = GetTickCount64() - passStartMs;
+    telemetry.elapsed_ms = static_cast<std::uint32_t>(std::min<std::uint64_t>(passElapsed, std::numeric_limits<std::uint32_t>::max()));
+
+    g_tuner.applyTelemetry(telemetry);
+    telemetry.backoff_ms = UpdateNextScanDelay(telemetry, !descriptors.empty());
+
     {
         std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
         g_lastTelemetry = telemetry;
@@ -1889,7 +2228,7 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
 
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
-              "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u avg_us=%llu max_us=%llu",
+              "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u rej_skipped=%u backoff_ms=%u elapsed_ms=%u rej_hits=%u rej_ins=%u rej_size=%u avg_us=%llu max_us=%llu",
               static_cast<unsigned long long>(telemetry.id),
               mgrName,
               vtblPtr,
@@ -1903,31 +2242,39 @@ static bool RunCandidatePass(const std::vector<CandidateRaw>& rawCandidates,
               telemetry.sample_hits,
               telemetry.sample_rejects,
               telemetry.ring_load_pct,
+              telemetry.rejected_skipped,
+              telemetry.backoff_ms,
+              telemetry.elapsed_ms,
+              telemetry.rej_cache_hits,
+              telemetry.rej_cache_inserted,
+              telemetry.rej_cache_size,
               telemetry.avg_us(),
               telemetry.max_candidate_us);
 
     Log::Logf(Log::Level::Debug,
               Log::Category::Core,
-              "[SB] pass: candidates=%zu trusted=%u sendSamples=%u ringLoad=%u",
+              "[SB] pass: candidates=%zu trusted=%u sendSamples=%u ringLoad=%u rejHits=%u rejIns=%u rejSkipped=%u",
               descriptors.size(),
               trustedCandidates,
-              sendSampleCount,
-              ringLoadPct);
-
-    g_tuner.applyTelemetry(telemetry);
+              ringSampleCount,
+              ringLoadPct,
+              telemetry.rej_cache_hits,
+              telemetry.rej_cache_inserted,
+              telemetry.rejected_skipped);
 
     Log::Logf(Log::Level::Debug,
               Log::Category::Core,
-              "[BACKOFF] stepDelay=%ums inflight=%u escalation=%u",
+              "[BACKOFF] stepDelay=%ums backoff=%ums inflight=%u escalation=%u",
               g_tuner.stepDelayMs(),
+              telemetry.backoff_ms,
               g_tuner.maxInflight(),
               g_tuner.escalationLevel());
 
-    UpdateNextScanDelay(telemetry);
     return g_builderScanned;
 }
 
 static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateDescriptor& descriptor,
+                                                       const std::vector<Core::SendRing::Entry>& ringSamples,
                                                        Scanner::ScanPassTelemetry& telemetry,
                                                        uint64_t perfFreq)
 {
@@ -1936,10 +2283,17 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
         return outcome;
 
     const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(descriptor.endpoint);
+    const int slotIndex = (descriptor.offset != std::numeric_limits<std::size_t>::max())
+                              ? static_cast<int>(descriptor.offset / sizeof(void*))
+                              : -1;
     const uint64_t nowMs = GetTickCount64();
+    void* slotKey = nullptr;
+    if (descriptor.vtbl && descriptor.offset != std::numeric_limits<std::size_t>::max())
+        slotKey = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(descriptor.vtbl) + descriptor.offset);
+    std::uint8_t rejectReason = kRejectReasonGeneric;
 
     if (g_rejectStore.isRejectedAndActive(addr, nowMs)) {
-        ++telemetry.skipped;
+        ++telemetry.rejected_skipped;
         Log::Logf(Log::Level::Debug,
                   Log::Category::Core,
                   "[REJECT] skip addr=%p active=1",
@@ -1950,7 +2304,7 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
     void* trustManager = descriptor.manager ? descriptor.manager : descriptor.endpoint;
     if (trustManager) {
         if (auto cached = g_endpointTrust.lookupByManager(trustManager, nowMs)) {
-            ++telemetry.skipped;
+            ++telemetry.rejected_skipped;
             Log::Logf(Log::Level::Debug,
                       Log::Category::Core,
                       "[SB] skip candidate manager=%p endpoint=%p reason=manager-cache accepted=%u",
@@ -1961,22 +2315,17 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
         }
     }
 
-    if (descriptor.vtbl && descriptor.offset != std::numeric_limits<std::size_t>::max()) {
-        const std::size_t slotIndexRaw = descriptor.offset / sizeof(void*);
-        if (slotIndexRaw <= static_cast<std::size_t>(std::numeric_limits<int>::max()) &&
-            (descriptor.offset % sizeof(void*)) == 0) {
-            const int slotIndex = static_cast<int>(slotIndexRaw);
-            Scanner::EndpointTrustCache::SlotKey slotKey{trustManager, descriptor.vtbl, slotIndex};
-            if (g_endpointTrust.shouldSkip(slotKey, nowMs)) {
-                ++telemetry.skipped;
-                Log::Logf(Log::Level::Debug,
-                          Log::Category::Core,
-                          "[SB] skip candidate manager=%p endpoint=%p reason=slot-cache slot=%d",
-                          trustManager,
-                          descriptor.endpoint,
-                          slotIndex);
-                return outcome;
-            }
+    if (slotIndex >= 0) {
+        Scanner::EndpointTrustCache::SlotKey slotTrustKey{trustManager, descriptor.vtbl, slotIndex};
+        if (g_endpointTrust.shouldSkip(slotTrustKey, nowMs)) {
+            ++telemetry.rejected_skipped;
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[SB] skip candidate manager=%p endpoint=%p reason=slot-cache slot=%d",
+                      trustManager,
+                      descriptor.endpoint,
+                      slotIndex);
+            return outcome;
         }
     }
 
@@ -1988,14 +2337,28 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
     bool accepted = false;
     bool rejected = false;
     bool noPath = false;
+    RingHitStats ringStats{};
     TraceResult trace{};
     ResetTraceResult(trace);
 
-    if (ScanEndpointVTable(descriptor.endpoint, noPath, &trace)) {
+    if (ScanEndpointVTable(descriptor.endpoint,
+                           noPath,
+                           &ringSamples,
+                           &ringStats,
+                           &trace)) {
         accepted = true;
     } else {
         rejected = true;
+        if (noPath)
+            rejectReason = kRejectReasonNoChain;
+        else if (ringStats.selfHits > 0 && ringStats.hits == 0)
+            rejectReason = kRejectReasonSelf;
+        else if (ringStats.offModuleHits > 0 && ringStats.hits == 0)
+            rejectReason = kRejectReasonOffText;
     }
+
+    telemetry.sample_hits += ringStats.hits;
+    telemetry.sample_rejects += ringStats.selfHits + ringStats.offModuleHits;
 
     QueryPerformanceCounter(&end);
     const uint64_t elapsed = static_cast<uint64_t>(end.QuadPart - start.QuadPart);
@@ -2010,6 +2373,11 @@ static CandidateProcessOutcome ProcessScannerCandidate(const Scanner::CandidateD
     }
 
     if (rejected) {
+        if (slotIndex >= 0 && descriptor.vtbl && rejectReason != kRejectReasonGeneric) {
+            LogRejectTtl(reinterpret_cast<std::uintptr_t>(descriptor.vtbl), slotIndex, rejectReason);
+        }
+        Core::GetRejectCache().reject(slotKey ? slotKey : descriptor.endpoint, rejectReason);
+        ++telemetry.rej_cache_inserted;
         auto rejectInfo = g_rejectStore.incrementReject(addr, nowMs);
         Log::Logf(Log::Level::Warn,
                   Log::Category::Core,
@@ -2108,6 +2476,104 @@ static int SendPacketExceptionFilter(unsigned code, EXCEPTION_POINTERS* info)
 }
 
 static void TryHookSendBuilder(void* endpoint);
+static bool TryAttachTrustedEndpoint(const ManagerTarget& target,
+                                     void* manager,
+                                     uintptr_t observedVtbl,
+                                     Scanner::ScanPassTelemetry& telemetry)
+{
+    if (!manager || observedVtbl == 0 || g_sendBuilderHooked || g_builderScanned)
+        return g_builderScanned;
+
+    LARGE_INTEGER nowLi{};
+    QueryPerformanceCounter(&nowLi);
+    const std::uint64_t nowQpc = static_cast<std::uint64_t>(nowLi.QuadPart);
+
+    auto& trustedCache = Core::GetTrustedEndpointCache();
+    trustedCache.Purge(nowQpc);
+
+    constexpr int kMaxTrustedSlots = 32;
+    void* const* vtbl = reinterpret_cast<void* const*>(observedVtbl);
+
+    Core::TrustedEndpoint cached{};
+    if (!trustedCache.TryGetValid(observedVtbl, cached, nowQpc))
+        return false;
+    if (cached.slot >= static_cast<std::uint32_t>(kMaxTrustedSlots))
+        return false;
+
+    void* entry = nullptr;
+    if (!SafeCopy(&entry, vtbl + cached.slot, sizeof(entry)) || !entry)
+        return false;
+
+    if (reinterpret_cast<std::uintptr_t>(entry) != cached.entry) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[SB][CACHE] miss vtbl=%p slot=%u entry=%p cached=%p",
+                  reinterpret_cast<void*>(observedVtbl),
+                  cached.slot,
+                  entry,
+                  reinterpret_cast<void*>(cached.entry));
+        return false;
+    }
+
+    std::uint64_t ttlMs = 0;
+    const std::uint64_t freq = Core::TrustedEndpointCache::QpcFrequency();
+    if (cached.expires_qpc > nowQpc && freq != 0)
+        ttlMs = ((cached.expires_qpc - nowQpc) * 1000ull) / freq;
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[SB][CACHE] hit vtbl=%p slot=%u entry=%p hits=%u",
+              reinterpret_cast<void*>(observedVtbl),
+              cached.slot,
+              entry,
+              cached.hits);
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[CORE][SB] using trusted endpoint vtbl=%p slot=%u entry=%p ttl=%llu ms",
+              reinterpret_cast<void*>(observedVtbl),
+              cached.slot,
+              entry,
+              static_cast<unsigned long long>(ttlMs));
+
+    t_ringHitsForAttach = cached.hits;
+    bool attached = AttachSendBuilderFromTrace(entry,
+                                               static_cast<uint8_t>(cached.slot & 0xFF),
+                                               reinterpret_cast<void*>(observedVtbl),
+                                               nullptr,
+                                               "trusted-cache",
+                                               reinterpret_cast<const uint8_t*>(entry));
+    t_ringHitsForAttach = 0;
+
+    if (!attached)
+        return false;
+
+    const auto refreshed = trustedCache.InsertOrBump(observedVtbl,
+                                                     cached.slot,
+                                                     cached.entry,
+                                                     kTrustedEndpointTtlMs);
+    Log::Logf(Log::Level::Debug,
+              Log::Category::Core,
+              "[SB][CACHE] refresh vtbl=%p slot=%u hits=%u",
+              reinterpret_cast<void*>(observedVtbl),
+              refreshed.slot,
+              refreshed.hits);
+
+    g_builderScanned = g_sendBuilderHooked;
+    telemetry = {};
+    telemetry.id = g_passSeq.fetch_add(1) + 1;
+    telemetry.candidates_considered = 1;
+    telemetry.accepted = 1;
+    telemetry.send_samples = 0;
+    telemetry.ring_load_pct = g_lastRingLoad.load(std::memory_order_relaxed);
+    telemetry.rej_cache_size = static_cast<std::uint32_t>(Core::GetRejectCache().size());
+    {
+        std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
+        g_lastTelemetry = telemetry;
+    }
+
+    return true;
+}
 static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
                                            const std::string& preconditions,
                                            Scanner::ScanPassTelemetry& telemetry);
@@ -2276,8 +2742,61 @@ static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
     if (!IsEngineStableForScanning())
         return false;
 
+    if (TryAttachTrustedEndpoint(target, manager, observedVtbl, telemetry)) {
+        if (g_firstScanTickMs64 == 0)
+            g_firstScanTickMs64 = GetTickCount64();
+
+        uint64_t timeToFirstScanMs = 0;
+        if (g_initTickMs64 != 0 && g_firstScanTickMs64 != 0 && g_firstScanTickMs64 >= g_initTickMs64)
+            timeToFirstScanMs = g_firstScanTickMs64 - g_initTickMs64;
+
+        g_tuner.applyTelemetry(telemetry);
+        telemetry.backoff_ms = UpdateNextScanDelay(telemetry, true);
+        {
+            std::lock_guard<std::mutex> lock(g_lastTelemetryMutex);
+            g_lastTelemetry = telemetry;
+        }
+
+        const char* mgrName = ManagerKindName(target.kind);
+        const void* vtblPtr = reinterpret_cast<void*>(target.vtbl);
+
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "TELEMETRY[PASS] id=%llu mgr=%s vtbl=%p guard=0 preconditions=%s builderScanned=%d ttfs_ms=%llu candidates=%u accepted=%u rejected=%u send_samples=%u sample_hits=%u sample_rejects=%u ring_load=%u rej_skipped=%u backoff_ms=%u elapsed_ms=%u rej_hits=%u rej_ins=%u rej_size=%u avg_us=%llu max_us=%llu",
+                  static_cast<unsigned long long>(telemetry.id),
+                  mgrName,
+                  vtblPtr,
+                  preconditions.c_str(),
+                  g_builderScanned ? 1 : 0,
+                  static_cast<unsigned long long>(timeToFirstScanMs),
+                  telemetry.candidates_considered,
+                  telemetry.accepted,
+                  telemetry.rejected,
+                  telemetry.send_samples,
+                  telemetry.sample_hits,
+                  telemetry.sample_rejects,
+                  telemetry.ring_load_pct,
+                  telemetry.rejected_skipped,
+                  telemetry.backoff_ms,
+                  telemetry.elapsed_ms,
+                  telemetry.rej_cache_hits,
+                  telemetry.rej_cache_inserted,
+                  telemetry.rej_cache_size,
+                  telemetry.avg_us(),
+                  telemetry.max_candidate_us);
+
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[BACKOFF] stepDelay=%ums backoff=%ums inflight=%u escalation=%u",
+                  g_tuner.stepDelayMs(),
+                  telemetry.backoff_ms,
+                  g_tuner.maxInflight(),
+                  g_tuner.escalationLevel());
+        return true;
+    }
+
     if (g_requireSendSample.load(std::memory_order_relaxed)) {
-        const std::uint32_t pendingSamples = g_sendSampleRing.size();
+        const std::uint32_t pendingSamples = static_cast<std::uint32_t>(g_sendRing.size());
         if (pendingSamples == 0) {
             const std::uint32_t baseDelay = std::max(1u, g_tuner.stepDelayMs());
             const std::uint32_t deferDelay = baseDelay * 10u;
@@ -2319,11 +2838,29 @@ static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
               kScanLimit,
               kTailFollowMaxDepth);
     WriteRawLog(startBuf);
+    auto& rejectCache = Core::GetRejectCache();
+    LARGE_INTEGER cacheSweepLi{};
+    QueryPerformanceCounter(&cacheSweepLi);
+    rejectCache.sweep(static_cast<std::uint64_t>(cacheSweepLi.QuadPart));
 
-    auto samples = Scanner::Sampler::drain();
-    const std::uint32_t drainedSamples = static_cast<std::uint32_t>(samples.size());
-    const std::uint32_t ringLoadPct = Scanner::Sampler::ringLoadPercent();
+    std::vector<Core::SendRing::Entry> ringSamples;
+    const std::size_t ringOccupancy = g_sendRing.size();
+    const std::size_t newRingSamples = g_sendRing.snapshot(ringSamples,
+                                                           static_cast<std::uint64_t>(kRingSnapshotAgeMs) * 1000ull);
+    const std::uint32_t ringLoadPct = g_sendRing.load_percent();
     g_lastRingLoad.store(ringLoadPct, std::memory_order_relaxed);
+
+    if (Log::IsEnabled(Log::Level::Debug)) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[SB][RING] snapshot count=%llu new=%llu age<=%ums load=%u%%",
+                  static_cast<unsigned long long>(ringOccupancy),
+                  static_cast<unsigned long long>(newRingSamples),
+                  static_cast<unsigned>(kRingSnapshotAgeMs),
+                  ringLoadPct);
+    }
+
+    auto stackSamples = Scanner::Sampler::drain();
 
     std::vector<CandidateRaw> rawCandidates;
     rawCandidates.reserve(64);
@@ -2349,9 +2886,18 @@ static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
     void* firstNonExecValue = nullptr;
     void* firstNonExecEntry = nullptr;
 
-    for (size_t offset = 0; offset <= kScanLimit; offset += sizeof(void*))
-    {
+    for (size_t offset = 0; offset <= kScanLimit; offset += sizeof(void*)) {
         ++slotsExamined;
+        const int slotIndex = static_cast<int>(offset / sizeof(void*));
+        void* slotPtr = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(manager) + offset);
+        LARGE_INTEGER iterLi{};
+        QueryPerformanceCounter(&iterLi);
+        const std::uint64_t iterNowQpc = static_cast<std::uint64_t>(iterLi.QuadPart);
+        if (rejectCache.is_hot(slotPtr, iterNowQpc)) {
+            ++telemetry.rej_cache_hits;
+            ++telemetry.rejected_skipped;
+            continue;
+        }
         void* candidate = nullptr;
         if (!SafeCopy(&candidate, reinterpret_cast<const uint8_t*>(manager) + offset, sizeof(candidate)))
             continue;
@@ -2392,6 +2938,9 @@ static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
                               offset);
                 }
             }
+            LogRejectTtl(reinterpret_cast<std::uintptr_t>(vtbl), slotIndex, kRejectReasonNonGame);
+            rejectCache.reject(slotPtr, kRejectReasonNonGame);
+            ++telemetry.rej_cache_inserted;
             continue;
         }
 
@@ -2410,6 +2959,9 @@ static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
                 firstNonExecValue = candidate;
                 firstNonExecEntry = firstEntry;
             }
+            LogRejectTtl(reinterpret_cast<std::uintptr_t>(vtbl), slotIndex, kRejectReasonNotExec);
+            rejectCache.reject(slotPtr, kRejectReasonNotExec);
+            ++telemetry.rej_cache_inserted;
             continue;
         }
 
@@ -2424,6 +2976,7 @@ static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
     }
 
     g_lastPassCandidateCount = rawCandidates.size();
+    telemetry.rej_cache_size = static_cast<std::uint32_t>(rejectCache.size());
 
     char candidateInfo[64];
     char committedInfo[64];
@@ -2451,13 +3004,14 @@ static bool TryDiscoverEndpointFromManager(const ManagerTarget& target,
               firstGameVtable,
               execInfo,
               firstExecEntry,
-              drainedSamples,
+              static_cast<unsigned>(newRingSamples),
               ringLoadPct);
     WriteRawLog(summary);
 
     bool attached = RunCandidatePass(rawCandidates,
-                                     samples,
-                                     drainedSamples,
+                                     stackSamples,
+                                     ringSamples,
+                                     static_cast<std::uint32_t>(newRingSamples),
                                      ringLoadPct,
                                      telemetry,
                                      target,
@@ -2532,6 +3086,8 @@ static void ExecuteManagerScanSequence()
         return;
     }
 
+    LogPivotAttempt(primary);
+
     Scanner::ScanPassTelemetry engineTelemetry{};
     bool engineAttached = TryDiscoverEndpointFromManager(primary, preconditions, engineTelemetry);
     bool engineCandidatesZero = (g_lastPassCandidateCount == 0);
@@ -2544,6 +3100,15 @@ static void ExecuteManagerScanSequence()
 
     if (engineAttached)
         return;
+
+    std::vector<ManagerTarget> neighborTargets;
+    BuildNeighborTargets(primary, neighborTargets);
+    for (const auto& neighbor : neighborTargets) {
+        LogPivotAttempt(neighbor);
+        Scanner::ScanPassTelemetry neighborTelemetry{};
+        if (TryDiscoverEndpointFromManager(neighbor, preconditions, neighborTelemetry))
+            return;
+    }
 
     if (!g_allowDbProbe || !engineCandidatesZero)
         return;
@@ -2558,12 +3123,11 @@ static void ExecuteManagerScanSequence()
               reinterpret_cast<void*>(dbTarget.vtbl));
 
     if (IsVtblSuppressed(dbTarget.vtbl, nowMs)) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][SB] vtbl unchanged: skipping redundant scan (ttl active)");
-        LogTelemetryNoScan(dbTarget, false, preconditions);
+        LogTelemetryNoScan(dbTarget, false, preconditions, static_cast<uint32_t>(g_lastRingLoad.load(std::memory_order_relaxed)));
         return;
     }
+
+    LogPivotAttempt(dbTarget);
 
     Scanner::ScanPassTelemetry dbTelemetry{};
     bool dbAttached = TryDiscoverEndpointFromManager(dbTarget, preconditions, dbTelemetry);
@@ -2592,12 +3156,11 @@ static void ExecuteManagerScanSequence()
               reinterpret_cast<void*>(scriptTarget.vtbl));
 
     if (IsVtblSuppressed(scriptTarget.vtbl, nowMs)) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][SB] vtbl unchanged: skipping redundant scan (ttl active)");
-        LogTelemetryNoScan(scriptTarget, false, preconditions);
+        LogTelemetryNoScan(scriptTarget, false, preconditions, static_cast<uint32_t>(g_lastRingLoad.load(std::memory_order_relaxed)));
         return;
     }
+
+    LogPivotAttempt(scriptTarget);
 
     Scanner::ScanPassTelemetry scriptTelemetry{};
     bool scriptAttached = TryDiscoverEndpointFromManager(scriptTarget, preconditions, scriptTelemetry);
@@ -3326,7 +3889,11 @@ static void* __fastcall Hook_SendBuilder(void* thisPtr, void* /*unused*/, void* 
     return fpSendBuilder ? fpSendBuilder(thisPtr, builder) : nullptr;
 }
 
-static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* outTrace)
+static bool ScanEndpointVTable(void* endpoint,
+                               bool& outNoPath,
+                               const std::vector<Core::SendRing::Entry>* ringSamples,
+                               RingHitStats* ringStats,
+                               TraceResult* outTrace)
 {
     outNoPath = false;
     if (outTrace)
@@ -3563,15 +4130,54 @@ static bool ScanEndpointVTable(void* endpoint, bool& outNoPath, TraceResult* out
     }
 
     const TraceResult* tracePtr = tracedMatched ? &trace : nullptr;
+    RingHitStats localRingStats{};
+    if (ringStats)
+        *ringStats = localRingStats;
+
+    if (ringSamples && matchedFn) {
+        localRingStats = EvaluateRingHits(*ringSamples, matchedFn, trace);
+        if (ringStats)
+            *ringStats = localRingStats;
+        if (!ringSamples->empty()) {
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[SB][RING] match hits=%u self=%u off=%u threshold=%u",
+                      localRingStats.hits,
+                      localRingStats.selfHits,
+                      localRingStats.offModuleHits,
+                      kRingHitThreshold);
+            if (localRingStats.hits < kRingHitThreshold)
+                return false;
+        }
+    } else if (ringStats) {
+        *ringStats = {};
+    }
     if (tracedMatched && outTrace)
         *outTrace = trace;
 
-    if (AttachSendBuilderFromTrace(matchedFn,
-                                   static_cast<uint8_t>(matchedIndex & 0xFF),
-                                   vtbl,
-                                   tracePtr,
-                                   "direct",
-                                   tracedMatched ? nullptr : reinterpret_cast<const uint8_t*>(matchedFn))) {
+    t_ringHitsForAttach = localRingStats.hits;
+    bool attached = AttachSendBuilderFromTrace(matchedFn,
+                                               static_cast<uint8_t>(matchedIndex & 0xFF),
+                                               vtbl,
+                                               tracePtr,
+                                               "direct",
+                                               tracedMatched ? nullptr : reinterpret_cast<const uint8_t*>(matchedFn));
+    t_ringHitsForAttach = 0;
+
+    if (attached) {
+        if (ringSamples && localRingStats.hits >= kRingHitThreshold) {
+            auto trusted = Core::GetTrustedEndpointCache().InsertOrBump(reinterpret_cast<std::uintptr_t>(vtbl),
+                                                                        static_cast<std::uint32_t>(matchedIndex & 0xFF),
+                                                                        reinterpret_cast<std::uintptr_t>(matchedFn),
+                                                                        kTrustedEndpointTtlMs);
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[SB][CACHE] insert vtbl=%p slot=%u entry=%p hits=%u",
+                      vtbl,
+                      matchedIndex,
+                      matchedFn,
+                      trusted.hits);
+        }
         return true;
     }
 
@@ -3592,7 +4198,11 @@ static void TryHookSendBuilder(void* endpoint)
         return;
 
     bool noPath = false;
-    if (ScanEndpointVTable(endpoint, noPath, nullptr))
+    if (ScanEndpointVTable(endpoint,
+                           noPath,
+                           nullptr,
+                           nullptr,
+                           nullptr))
     {
         g_builderScanned = true;
         ClearEndpointBackoff(endpoint);
@@ -4660,6 +5270,18 @@ static void ScanSendBuilder()
 
 static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int len)
 {
+    void* returnPc = _ReturnAddress();
+    g_sendRing.push(returnPc, HashPointer(returnPc));
+    if (Log::IsEnabled(Log::Level::Debug)) {
+        char pcLabel[128];
+        FormatModuleOffset(returnPc, pcLabel, sizeof(pcLabel));
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Core,
+                  "[SB][RING] push tid=%lu pc=%s",
+                  static_cast<unsigned long>(GetCurrentThreadId()),
+                  pcLabel);
+    }
+
     const bool isDebugNudge = t_debugNudgeCall;
 
     if (pkt && len > 0 && Net::IsSendSamplingEnabled()) {
@@ -4760,6 +5382,8 @@ bool InitSendBuilder(GlobalStateInfo* state)
             g_firstScanTickMs64 = 0;
         }
         Scanner::Sampler::reset(GetTickCount64());
+        g_sendRing.clear();
+        g_lastRingLoad.store(0, std::memory_order_relaxed);
         g_sendSampleStore.Reset();
         g_nextScanDelayMs.store(0, std::memory_order_relaxed);
         g_lastPollTick = 0;
@@ -4767,6 +5391,10 @@ bool InitSendBuilder(GlobalStateInfo* state)
 
     bool sbDebug = ResolveSendBuilderFlag("SB_DEBUG", "sb.debug", false);
     g_sbDebug.store(sbDebug, std::memory_order_relaxed);
+    bool sendRingDebug = ResolveSendBuilderFlag("UOWP_SENDRING_DEBUG", "sb.sendRingDebug", false);
+    g_sendRingDebug.store(sendRingDebug, std::memory_order_relaxed);
+    if (!sendRingDebug)
+        g_lastSendRingDebugTick.store(0, std::memory_order_relaxed);
 
     bool sbDebugNudge = ResolveSendBuilderFlag("SB_DEBUG_NUDGE", "sb.debug_nudge", false);
     g_sbDebugNudge.store(sbDebugNudge, std::memory_order_relaxed);
@@ -4790,6 +5418,8 @@ bool InitSendBuilder(GlobalStateInfo* state)
     g_sendSamplingEnabled.store(samplingEnabled, std::memory_order_relaxed);
     if (!samplingEnabled) {
         Scanner::Sampler::reset(GetTickCount64());
+        g_sendRing.clear();
+        g_lastRingLoad.store(0, std::memory_order_relaxed);
         g_sendSampleStore.Reset();
     }
 
@@ -4824,6 +5454,19 @@ void PollSendBuilder()
         return;
 
     DWORD now = GetTickCount();
+    if (g_sendRingDebug.load(std::memory_order_relaxed)) {
+        DWORD last = g_lastSendRingDebugTick.load(std::memory_order_relaxed);
+        if (last == 0 || (now - last) >= 5000) {
+            g_lastSendRingDebugTick.store(now, std::memory_order_relaxed);
+            const std::uint32_t ringSize = static_cast<std::uint32_t>(g_sendRing.size());
+            const std::uint64_t ageUs = g_sendRing.newest_age_us();
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Core,
+                      "[CORE][SR] size=%u age_us=%llu",
+                      ringSize,
+                      static_cast<unsigned long long>(ageUs));
+        }
+    }
     // Stage-3: dynamic poll delay driven by last scan outcome.
     DWORD delay = g_nextScanDelayMs.load(std::memory_order_relaxed);
     if (delay == 0)
@@ -4880,6 +5523,8 @@ void ShutdownSendBuilder()
     g_sendCtx = nullptr;
     g_netMgr = nullptr;
     g_state = nullptr;
+    g_sendRingDebug.store(false, std::memory_order_relaxed);
+    g_lastSendRingDebugTick.store(0, std::memory_order_relaxed);
     g_lastManagerScanPtr = nullptr;
     g_lastManagerScanTick = 0;
     g_loggedEngineUnstable = false;
@@ -4903,6 +5548,8 @@ void ShutdownSendBuilder()
     g_nextScanDelayMs.store(0, std::memory_order_relaxed);
     g_lastPollTick = 0;
     Scanner::Sampler::reset(GetTickCount64());
+    g_sendRing.clear();
+    g_lastRingLoad.store(0, std::memory_order_relaxed);
     g_sendSampleStore.Reset();
     Util::RegionWatch::ClearWatch();
 }
@@ -5029,3 +5676,4 @@ void NotifyCanonicalManagerDiscovered()
 
 
 } // namespace Net
+
