@@ -32,6 +32,10 @@ namespace Core::Config {
     uint32_t GetSendBuilderSettleTimeoutMs();
     bool SendBuilderAllowCallsitePivot();
     bool SendBuilderAllowDbMgrPivot();
+    uint32_t HelpersPostAckTimeoutMs();
+    bool HelpersAllowApcFallback();
+    bool HelpersAllowRemoteThreadFallback();
+    bool HelpersIgnoreGlobalSettleIfSbReady();
 
     std::string ConfigSourcePath();
 

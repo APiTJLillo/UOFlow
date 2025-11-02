@@ -29,6 +29,7 @@
 #include "Core/Config.hpp"
 #include "Core/CoreFlags.hpp"
 #include "Core/EarlyTrace.hpp"
+#include "Core/Bind.hpp"
 #include "Core/Logging.hpp"
 #include "Core/Startup.hpp"
 #include "Engine/GlobalState.hpp"
@@ -310,6 +311,13 @@ struct HelpersRuntimeState {
 };
 
 static HelpersRuntimeState g_helpers{};
+
+struct HelperInstallMetrics {
+    uint64_t startTick = 0;
+    uint64_t endTick = 0;
+    uint32_t hookSuccess = 0;
+    uint32_t hookFailure = 0;
+};
 
 static void SetCanonicalHelperCtx(HCTX ctx, DWORD ownerTid) noexcept {
     g_helpers.SetCanonicalCtx(ctx, ownerTid);
@@ -1979,7 +1987,7 @@ static void MaybeAdoptOwnerThread(lua_State* L, LuaStateInfo& info);
 static void MaybeRunMaintenance();
 static void RequestBindForState(const LuaStateInfo& info, const char* reason, bool force);
 static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const char* reason);
-static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& info, uint64_t generation, bool force);
+static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& info, uint64_t generation, bool force, HelperInstallMetrics* metrics);
 static void MaybeProcessHelperRetryQueue();
 static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info);
 static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn, uint64_t generation);
@@ -4771,7 +4779,8 @@ static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::functio
               from,
               owner,
               taskLabel.c_str());
-    Util::OwnerPump::RunOnOwner([fn = std::move(fn), taskLabel = std::move(taskLabel), owner, L]() mutable {
+
+    std::function<void()> taskWrapper = [fn = std::move(fn), taskLabel, owner, L]() mutable {
         DWORD runner = GetCurrentThreadId();
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
@@ -4781,7 +4790,23 @@ static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::functio
                   runner,
                   taskLabel.c_str());
         fn();
-    });
+    };
+
+    bool dispatched = false;
+    if (taskLabel == "helpers") {
+        dispatched = Core::Bind::DispatchWithFallback(owner, std::move(taskWrapper), taskLabel.c_str());
+    } else {
+        dispatched = Core::Bind::PostToOwner(owner, std::move(taskWrapper), taskLabel.c_str());
+    }
+
+    if (!dispatched) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[CORE][Bind] dispatch incomplete L=%p owner=%lu task=%s",
+                  L,
+                  owner,
+                  taskLabel.c_str());
+    }
 }
 
 static void PostToOwner(lua_State* L, std::function<void()> fn) {
@@ -4909,7 +4934,21 @@ static void MaybeEmitHeartbeat() {
     bool haveInfo = canonical && g_stateRegistry.GetByPointer(canonical, info);
     HelperInstallStage stage = haveInfo ? static_cast<HelperInstallStage>(info.helper_state)
                                         : HelperInstallStage::WaitingForGlobalState;
-    const char* helperLabel = HelperStageName(stage);
+    const char* helperLabel = "waiting_for_global_state";
+    switch (stage) {
+    case HelperInstallStage::Installed:
+        helperLabel = "installed";
+        break;
+    case HelperInstallStage::Installing:
+    case HelperInstallStage::ReadyToInstall:
+        helperLabel = "installing";
+        break;
+    case HelperInstallStage::WaitingForGlobalState:
+    case HelperInstallStage::WaitingForOwnerThread:
+    default:
+        helperLabel = "waiting_for_global_state";
+        break;
+    }
     uint64_t ageMs = (haveInfo && info.helper_state_since_ms && now >= info.helper_state_since_ms)
                          ? (now - info.helper_state_since_ms)
                          : 0;
@@ -5414,6 +5453,18 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         }
     }
 
+    if (!allowNow && Core::Config::HelpersIgnoreGlobalSettleIfSbReady() && Net::IsReady()) {
+        allowNow = true;
+        passiveMode = false;
+        gateReason = nullptr;
+        logOverride = true;
+        overrideReason = "sb-ready";
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] helpers forcing proceed: sb=ready(%s)",
+                  Net::ReadyModeString());
+    }
+
     if (!allowNow) {
         g_helperProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         uint64_t backoff = HelperRetryDelay(retry, nextAttemptIndex);
@@ -5713,7 +5764,14 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
 
     DWORD panicSeh = 0;
     bool panicChanged = false;
+    Log::Logf(Log::Level::Info,
+              Log::Category::Hooks,
+              "[HOOKS][step] name=panic_hook phase=pre");
     bool panicOk = EnsurePanicHookOnOwner(L, info, &panicChanged, &panicSeh);
+    Log::Logf(Log::Level::Info,
+              Log::Category::Hooks,
+              "[HOOKS][step] name=panic_hook phase=post ok=%d",
+              panicOk ? 1 : 0);
 
     bool sentinelCreated = false;
     DWORD sentinelSeh = 0;
@@ -5726,6 +5784,9 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
     const char* sentinelFailureReason = nullptr;
     const uint64_t nowTick = GetDebugTickNow();
     DebugInstallRetryInfo pendingRetry{};
+    Log::Logf(Log::Level::Info,
+              Log::Category::Hooks,
+              "[HOOKS][step] name=sentinel phase=pre");
     bool sentinelRetryPending = false;
     uint64_t retryRemaining = 0;
     if (IsDebugInstallRetryPending(L, nowTick, &pendingRetry) && pendingRetry.generation == info.gen) {
@@ -5802,6 +5863,16 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
             ScheduleDebugInstallRetry(L);
         }
     }
+
+    int sentinelPhaseOk = 0;
+    if (sentinelAttempted)
+        sentinelPhaseOk = sentinelOk ? 1 : 0;
+    else if (sentinelInstalled)
+        sentinelPhaseOk = 1;
+    Log::Logf(Log::Level::Info,
+              Log::Category::Hooks,
+              "[HOOKS][step] name=sentinel phase=post ok=%d",
+              sentinelPhaseOk);
 
     const bool sentinelSatisfied = sentinelInstalled ||
                                    (sentinelAttempted && sentinelOk) ||
@@ -5940,7 +6011,7 @@ static void HandleProbeFailure(lua_State* L, LuaStateInfo& info, Engine::Lua::Lu
     }, &info);
 }
 
-static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, uint64_t generation, bool force) {
+static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, uint64_t generation, bool force, HelperInstallMetrics* metrics) {
     if (!L)
         return false;
 
@@ -6214,6 +6285,15 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
     if (probeOk) {
         bool helpersBound = (info.flags & STATE_FLAG_HELPERS_BOUND) && info.gen == generation;
         if (force || !helpersBound) {
+            if (metrics) {
+                metrics->startTick = GetTickCount64();
+            }
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS] helpers install-begin mode=%s tid=%u",
+                      Net::ReadyModeString(),
+                      static_cast<unsigned>(GetCurrentThreadId()));
+
             bool walkOk = RegisterHelper(L, info, kHelperWalkName, Lua_UOWalk, generation);
             bool dumpOk = RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation);
             bool inspectOk = RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation);
@@ -6222,6 +6302,19 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
             bool debugCfgOk = RegisterHelper(L, info, kHelperDebugName, Lua_UOWDebug, generation);
             bool debugStatusOk = RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOWDebugStatus, generation);
             bool debugPingOk = RegisterHelper(L, info, kHelperDebugPingName, Lua_UOWDebugPing, generation);
+            if (metrics) {
+                uint32_t successCount = 0;
+                successCount += walkOk ? 1u : 0u;
+                successCount += dumpOk ? 1u : 0u;
+                successCount += inspectOk ? 1u : 0u;
+                successCount += rebindOk ? 1u : 0u;
+                successCount += selfTestOk ? 1u : 0u;
+                successCount += debugCfgOk ? 1u : 0u;
+                successCount += debugStatusOk ? 1u : 0u;
+                successCount += debugPingOk ? 1u : 0u;
+                metrics->hookSuccess = successCount;
+                metrics->hookFailure = 8u > successCount ? (8u - successCount) : 0u;
+            }
             bool allOk = walkOk && dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk && debugPingOk;
             if (allOk) {
                 uint64_t installTick = GetTickCount64();
@@ -6273,10 +6366,14 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                           static_cast<unsigned long long>(generation),
                           missing.empty() ? "unknown" : missing.c_str());
             }
+            if (metrics && metrics->endTick == 0)
+                metrics->endTick = GetTickCount64();
         }
     }
 
     InstallPanicAndDebug(L, info);
+    if (metrics && metrics->endTick == 0)
+        metrics->endTick = GetTickCount64();
     return ok;
 }
 
@@ -6285,13 +6382,16 @@ static bool BindHelpersWithSeh(lua_State* L,
                                uint64_t generation,
                                bool force,
                                bool& attemptedOut,
-                               DWORD& sehCodeOut) noexcept {
+                               DWORD& sehCodeOut,
+                               HelperInstallMetrics* metrics) noexcept {
     bool ok = false;
     bool attempted = false;
     DWORD sehCode = 0;
     attempted = true;
+    HelperInstallMetrics localMetrics{};
+    HelperInstallMetrics* metricsPtr = metrics ? metrics : &localMetrics;
     bool probeOk = sp::seh_probe([&]() {
-        ok = BindHelpersOnThread(L, info, generation, force);
+        ok = BindHelpersOnThread(L, info, generation, force, metricsPtr);
     }, &sehCode);
     if (!probeOk)
         ok = false;
@@ -6383,6 +6483,7 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     DWORD sehCode = 0;
     bool reentrancyBlocked = false;
     bool guardEngaged = TryEnterHelperInstall();
+    HelperInstallMetrics metrics{};
 
     if (!guardEngaged) {
         reentrancyBlocked = true;
@@ -6393,9 +6494,24 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
                   static_cast<unsigned long>(info.owner_tid));
     } else {
         g_helperProbeAttempted.fetch_add(1u, std::memory_order_relaxed);
-        ok = BindHelpersWithSeh(L, info, generation, force, attempted, sehCode);
+        ok = BindHelpersWithSeh(L, info, generation, force, attempted, sehCode, &metrics);
     }
     LeaveHelperInstall(guardEngaged);
+
+    if (attempted) {
+        uint64_t endTick = metrics.endTick ? metrics.endTick : GetTickCount64();
+        uint64_t startTick = metrics.startTick;
+        unsigned long tookMs = 0;
+        if (startTick != 0 && endTick >= startTick)
+            tookMs = static_cast<unsigned long>(endTick - startTick);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] helpers installed ok=%d hooks_ok=%u hooks_fail=%u took=%lums",
+                  ok ? 1 : 0,
+                  static_cast<unsigned>(metrics.hookSuccess),
+                  static_cast<unsigned>(metrics.hookFailure),
+                  tookMs);
+    }
 
     ReleaseBindingSlot(L);
     uint64_t summaryTick = GetTickCount64();

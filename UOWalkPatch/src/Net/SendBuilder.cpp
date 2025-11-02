@@ -7582,6 +7582,19 @@ bool IsPivotReady()
     return g_sb_pivot_ready.load(std::memory_order_acquire);
 }
 
+const char* ReadyModeString()
+{
+    switch (g_ready_mode.load(std::memory_order_acquire)) {
+    case ReadyMode::Callsite:
+        return "callsite";
+    case ReadyMode::DbMgr:
+        return "dbmgr";
+    case ReadyMode::None:
+    default:
+        return "scan";
+    }
+}
+
 SendBuilderStatus GetSendBuilderStatus()
 {
     SendBuilderStatus status{};

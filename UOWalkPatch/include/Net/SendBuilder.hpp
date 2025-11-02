@@ -73,4 +73,5 @@ namespace Net {
     bool IsSendSamplingEnabled();
     void OnSendPacketEnter(void* netMgrThis);
     void PivotFromDbMgr(void* dbMgr);
+    const char* ReadyModeString();
 }

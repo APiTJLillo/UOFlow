@@ -387,6 +387,49 @@ bool SendBuilderAllowDbMgrPivot() {
     return true;
 }
 
+uint32_t HelpersPostAckTimeoutMs() {
+    constexpr uint32_t kDefaultTimeoutMs = 750;
+    uint32_t timeoutMs = kDefaultTimeoutMs;
+
+    if (auto cfgTimeout = TryGetMilliseconds("Helpers.post_ack_timeout_ms"))
+        timeoutMs = *cfgTimeout;
+
+    if (auto envTimeout = TryGetEnv("HELPERS_POST_ACK_TIMEOUT_MS")) {
+        int64_t parsed = 0;
+        if (StrToInt64(*envTimeout, parsed) && parsed >= 0) {
+            if (parsed > static_cast<int64_t>(UINT32_MAX))
+                parsed = static_cast<int64_t>(UINT32_MAX);
+            timeoutMs = static_cast<uint32_t>(parsed);
+        }
+    }
+
+    return timeoutMs;
+}
+
+bool HelpersAllowApcFallback() {
+    if (auto env = TryGetEnvBool("HELPERS_ALLOW_APC_FALLBACK"))
+        return *env;
+    if (auto cfg = TryGetBool("Helpers.allow_apc_fallback"))
+        return *cfg;
+    return true;
+}
+
+bool HelpersAllowRemoteThreadFallback() {
+    if (auto env = TryGetEnvBool("HELPERS_ALLOW_REMOTE_THREAD_FALLBACK"))
+        return *env;
+    if (auto cfg = TryGetBool("Helpers.allow_remote_thread_fallback"))
+        return *cfg;
+    return true;
+}
+
+bool HelpersIgnoreGlobalSettleIfSbReady() {
+    if (auto env = TryGetEnvBool("HELPERS_IGNORE_GLOBAL_SETTLE_IF_SB_READY"))
+        return *env;
+    if (auto cfg = TryGetBool("Helpers.ignore_global_settle_if_sb_ready"))
+        return *cfg;
+    return true;
+}
+
 std::string ConfigSourcePath() {
     EnsureLoaded();
     return g_state.sourcePath;
