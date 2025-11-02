@@ -2714,18 +2714,30 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
                   reinterpret_cast<void*>(static_cast<uintptr_t>(movementSocket)));
     }
 
+    uint32_t key = Engine::PeekFastWalkKey(movementSocket);
+    if (key == 0) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Walk,
+                  "SendWalk aborted: fast-walk queue underflow on peek socket=%p depth=%d",
+                  reinterpret_cast<void*>(static_cast<uintptr_t>(movementSocket)),
+                  fastWalkDepth);
+        return false;
+    }
+
     if (Engine::Movement::IsReady() &&
         Engine::Movement::EnqueueMove(static_cast<Engine::Movement::Dir>(normalizedDir & 0x7), shouldRun)) {
         uint8_t nextSeq = NextMovementSequence();
-        Engine::TrackMovementTx(nextSeq, normalizedDir, shouldRun, movementSocket, 0u, "engine");
+        Engine::TrackMovementTx(nextSeq, normalizedDir, shouldRun, movementSocket, key, "engine");
+        Engine::PopFastWalkKey(movementSocket);
         Engine::RecordMovementSent(nextSeq);
         g_lastMovementSendTickMs.store(GetTickCount(), std::memory_order_relaxed);
         if (detailedLog) {
             Log::Logf(Log::Level::Debug,
                       Log::Category::Walk,
-                      "SendWalk(engine) accepted dir=%d run=%d",
+                      "SendWalk(engine) accepted dir=%d run=%d key=0x%08X",
                       normalizedDir,
-                      shouldRun ? 1 : 0);
+                      shouldRun ? 1 : 0,
+                      key);
         }
         return true;
     }
@@ -2735,16 +2747,6 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     pkt[1] = static_cast<uint8_t>(normalizedDir) | (shouldRun ? 0x80 : 0);
     uint8_t nextSeq = NextMovementSequence();
     pkt[2] = nextSeq;
-
-    uint32_t key = Engine::PeekFastWalkKey(movementSocket);
-    if (!key) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Walk,
-                  "SendWalk aborted: fast-walk queue underflow on peek socket=%p depth=%d",
-                  reinterpret_cast<void*>(static_cast<uintptr_t>(movementSocket)),
-                  fastWalkDepth);
-        return false;
-    }
 
     *reinterpret_cast<uint32_t*>(pkt + 3) = htonl(key);
 

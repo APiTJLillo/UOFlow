@@ -6434,51 +6434,6 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
     return success;
 }
 
-static bool RegisterHelperViaOwnerPump(lua_State* ownerState,
-                                       lua_State* target,
-                                       LuaStateInfo info,
-                                       const char* name,
-                                       lua_CFunction fn,
-                                       uint64_t generation,
-                                       WORD flag,
-                                       LuaStateInfo& latestOut) {
-    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
-    if (!flag || scriptTid == 0)
-        return false;
-
-    lua_State* scriptState = ownerState ? ownerState : g_mainLuaState.load(std::memory_order_acquire);
-    if (!scriptState)
-        scriptState = target;
-    if (!scriptState)
-        return false;
-
-    std::string helperName = (name && name[0] != '\0') ? name : "";
-    Util::OwnerPump::RunOnOwner([scriptState, target, info, helperName, fn, generation]() mutable {
-        const char* runName = helperName.empty() ? nullptr : helperName.c_str();
-        DoRegisterHelperOnScriptThread(scriptState,
-                                       target,
-                                       info,
-                                       runName,
-                                       fn,
-                                       generation,
-                                       /*allowForeignThread*/ true);
-    });
-
-    const DWORD deadline = GetTickCount() + 1000;
-    while (static_cast<LONG>(deadline - GetTickCount()) > 0) {
-        LuaStateInfo latest{};
-        if (g_stateRegistry.GetByPointer(target, latest) ||
-            (scriptState != target && g_stateRegistry.GetByPointer(scriptState, latest))) {
-            if ((latest.helper_flags & flag) != 0) {
-                latestOut = latest;
-                return true;
-            }
-        }
-        Sleep(10);
-    }
-    return false;
-}
-
 static bool ScriptThreadRegisterHelper(lua_State* ownerState,
                                        lua_State* target,
                                        LuaStateInfo info,
@@ -6598,15 +6553,31 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
     if (!installed) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "[HOOKS] helper-register pending name=%s; scheduling owner-pump fallback",
+                  "[HOOKS] helper-register pending name=%s; attempting inline fallback",
                   safeName);
-        if (RegisterHelperViaOwnerPump(scriptState, L, info, name, fn, generation, flag, latest)) {
-            installed = true;
-            Log::Logf(Log::Level::Info,
+        if (DoRegisterHelperOnScriptThread(scriptState,
+                                           L,
+                                           info,
+                                           name,
+                                           fn,
+                                           generation,
+                                           /*allowForeignThread*/ true)) {
+            LuaStateInfo refreshed{};
+            if (g_stateRegistry.GetByPointer(L, refreshed) ||
+                (scriptState != L && g_stateRegistry.GetByPointer(scriptState, refreshed)))
+                latest = refreshed;
+            installed = (latest.helper_flags & flag) != 0;
+            Log::Logf(installed ? Log::Level::Info : Log::Level::Warn,
                       Log::Category::Hooks,
-                      "[HOOKS] helper-register owner-pump name=%s ok flags=0x%04X",
+                      "[HOOKS] helper-register inline-fallback name=%s ok=%d flags=0x%04X",
                       safeName,
+                      installed ? 1 : 0,
                       latest.helper_flags);
+        } else {
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "[HOOKS] helper-register inline-fallback failed name=%s",
+                      safeName);
         }
     }
 
