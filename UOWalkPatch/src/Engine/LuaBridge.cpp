@@ -6072,36 +6072,6 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
     return registered;
 }
 
-static void HandleProbeFailure(lua_State* L, LuaStateInfo& info, Engine::Lua::LuaGuardFailure reason) {
-    const HelperRetryPolicy& retry = GetHelperRetryPolicy();
-    const uint64_t now = GetTickCount64();
-
-    g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-        if (reason == Engine::Lua::LuaGuardFailure::OwnerMismatch) {
-            state.flags &= ~STATE_FLAG_OWNER_READY;
-            state.owner_tid = 0;
-            uint64_t deadline = retry.ownerConfirmMs ? (now + retry.ownerConfirmMs) : now;
-            state.helper_owner_deadline_ms = deadline;
-            UpdateHelperStage(state, HelperInstallStage::WaitingForOwnerThread, now, "probe-owner-mismatch");
-        } else {
-            state.flags &= ~(STATE_FLAG_VALID | STATE_FLAG_CANON_READY);
-            if (reason == Engine::Lua::LuaGuardFailure::GenerationMismatch)
-                state.gc_gen = 0;
-            UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, "probe-invalid");
-            uint64_t penalty = retry.retryBackoffMs;
-            if (reason == Engine::Lua::LuaGuardFailure::Seh) {
-                // Treat hard faults as a reset so we do not immediately force retries.
-                state.helper_retry_count = 0;
-                state.helper_first_attempt_ms = now;
-                penalty = std::max<uint64_t>(retry.retryWindowMs ? retry.retryWindowMs : 2000u, retry.retryBackoffMs << 2);
-            }
-            uint64_t minNext = now + penalty;
-            if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < minNext)
-                state.helper_next_retry_ms = minNext;
-        }
-    }, &info);
-}
-
 static bool BindHelpersOnThread(lua_State* L,
                                 const LuaStateInfo& originalInfo,
                                 uint64_t generation,
@@ -6136,6 +6106,55 @@ static bool BindHelpersOnThread(lua_State* L,
               sbFallback ? 1 : 0);
 
     MaybeAdoptOwnerThread(L, info);
+
+    Net::SendBuilderStatus bindStatusSnapshot = Net::GetSendBuilderStatus();
+    Net::ReadyMode helperReadyMode = bindStatusSnapshot.ready ? bindStatusSnapshot.readyMode : Net::ReadyMode::None;
+    const GlobalStateInfo* globalInfo = Engine::Info();
+    void* scriptCtx = globalInfo ? globalInfo->scriptContext : nullptr;
+    void* engineCtx = globalInfo ? globalInfo->engineContext : nullptr;
+    void* dbMgrCtx = globalInfo ? globalInfo->databaseManager : nullptr;
+
+    void* bindCtx = info.ctx_reported;
+    const char* bindTargetLabel = "reported";
+
+    if (helperReadyMode == Net::ReadyMode::DbMgr && dbMgrCtx) {
+        bindCtx = dbMgrCtx;
+        bindTargetLabel = "dbmgr";
+    } else if (scriptCtx) {
+        bindCtx = scriptCtx;
+        bindTargetLabel = "script";
+    } else if (engineCtx) {
+        bindCtx = engineCtx;
+        bindTargetLabel = "engine";
+    } else if (!bindCtx) {
+        bindTargetLabel = "none";
+    }
+
+    if (bindCtx && info.ctx_reported != bindCtx) {
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            state.ctx_reported = bindCtx;
+        }, &info);
+        info.ctx_reported = bindCtx;
+    }
+
+    if (bindCtx) {
+        DWORD ownerHint = info.owner_tid ? info.owner_tid : GetCurrentThreadId();
+        SetCanonicalHelperCtx(bindCtx, ownerHint);
+    }
+
+    CtxValidationResult bindCtxStatus = ValidateCtxLoose(bindCtx);
+    void* bindVtable = nullptr;
+    if (bindCtx && bindCtxStatus == CtxValidationResult::Ok && sp::is_readable(bindCtx, sizeof(void*))) {
+        std::memcpy(&bindVtable, bindCtx, sizeof(void*));
+    }
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Hooks,
+              "[HOOKS] helpers bind target=%s ctx=%p vtbl=%p status=%s",
+              bindTargetLabel,
+              bindCtx,
+              bindVtable,
+              DescribeCtxValidation(bindCtxStatus));
 
     HCTX canonicalCtx = nullptr;
     DWORD canonicalOwner = 0;
@@ -6328,143 +6347,109 @@ static bool BindHelpersOnThread(lua_State* L,
         }
     }
 
-    const bool probeOk = ProbeLua(L);
     g_stateRegistry.GetByPointer(L, info);
 
-    bool ok = probeOk;
-    if (!probeOk) {
-        Engine::Lua::LuaGuardFailure failure = Engine::Lua::GetLastLuaGuardFailure();
-        const char* guardName = DescribeGuardFailure(failure);
-        HandleProbeFailure(L, info, failure);
-        LogLuaBind("bind-helpers probe-failed L=%p guard=%s", L, guardName);
-        if (failure == Engine::Lua::LuaGuardFailure::Seh) {
-            unsigned long sehCode = Engine::Lua::GetLastLuaGuardSehCode();
-            char moduleName[MAX_PATH] = {};
-            void* moduleBase = nullptr;
-            DWORD protect = 0;
-            DescribeAddressForLog(L, moduleName, ARRAYSIZE(moduleName), &moduleBase, &protect);
-            g_sehTrapCount.fetch_add(1u, std::memory_order_relaxed);
-            const char* stageName = HelperStageName(CurrentHelperStage(info));
-            Log::Logf(Log::Level::Warn,
-                      Log::Category::Hooks,
-                      "[HOOKS][SAFE] probe AV: target=%p module=%s base=%p prot=0x%08lX exc=0x%08lX stage=%s",
-                      L,
-                      moduleName,
-                      moduleBase,
-                      static_cast<unsigned long>(protect),
-                      sehCode,
-                      stageName ? stageName : "unknown");
+    bool ok = true;
+    bool helpersBound = (info.flags & STATE_FLAG_HELPERS_BOUND) && info.gen == generation;
+    if (force || !helpersBound) {
+        if (metrics) {
+            metrics->startTick = GetTickCount64();
         }
-        Log::Logf(Log::Level::Warn,
+        Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "helpers install probe failed L=%p owner=%lu gen=%llu guard=%s",
-                  L,
-                  static_cast<unsigned long>(info.owner_tid),
-                  static_cast<unsigned long long>(generation),
-                  guardName ? guardName : "unknown");
-    }
-    if (probeOk) {
-        bool helpersBound = (info.flags & STATE_FLAG_HELPERS_BOUND) && info.gen == generation;
-        if (force || !helpersBound) {
-            if (metrics) {
-                metrics->startTick = GetTickCount64();
-            }
+                  "[HOOKS] helpers install-begin mode=%s tid=%u",
+                  Net::ReadyModeString(),
+                  static_cast<unsigned>(GetCurrentThreadId()));
+
+        auto logStep = [&](const char* name, auto&& fn) -> bool {
             Log::Logf(Log::Level::Info,
                       Log::Category::Hooks,
-                      "[HOOKS] helpers install-begin mode=%s tid=%u",
-                      Net::ReadyModeString(),
-                      static_cast<unsigned>(GetCurrentThreadId()));
+                      "[HOOKS][step] name=%s phase=pre",
+                      name);
+            bool stepOk = fn();
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS][step] name=%s phase=post ok=%d",
+                      name,
+                      stepOk ? 1 : 0);
+            return stepOk;
+        };
 
-            auto logStep = [&](const char* name, auto&& fn) -> bool {
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Hooks,
-                          "[HOOKS][step] name=%s phase=pre",
-                          name);
-                bool ok = fn();
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Hooks,
-                          "[HOOKS][step] name=%s phase=post ok=%d",
-                          name,
-                          ok ? 1 : 0);
-                return ok;
-            };
-
-            bool walkOk = logStep(kHelperWalkName, [&]() { return RegisterHelper(L, info, kHelperWalkName, Lua_UOWalk, generation); });
-            bool dumpOk = logStep(kHelperDumpName, [&]() { return RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation); });
-            bool inspectOk = logStep(kHelperInspectName, [&]() { return RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation); });
-            bool rebindOk = logStep(kHelperRebindName, [&]() { return RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation); });
-            bool selfTestOk = logStep(kHelperSelfTestName, [&]() { return RegisterHelper(L, info, kHelperSelfTestName, Lua_UOWSelfTest, generation); });
-            bool debugCfgOk = logStep(kHelperDebugName, [&]() { return RegisterHelper(L, info, kHelperDebugName, Lua_UOWDebug, generation); });
-            bool debugStatusOk = logStep(kHelperDebugStatusName, [&]() { return RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOWDebugStatus, generation); });
-            bool debugPingOk = logStep(kHelperDebugPingName, [&]() { return RegisterHelper(L, info, kHelperDebugPingName, Lua_UOWDebugPing, generation); });
-            if (metrics) {
-                uint32_t successCount = 0;
-                successCount += walkOk ? 1u : 0u;
-                successCount += dumpOk ? 1u : 0u;
-                successCount += inspectOk ? 1u : 0u;
-                successCount += rebindOk ? 1u : 0u;
-                successCount += selfTestOk ? 1u : 0u;
-                successCount += debugCfgOk ? 1u : 0u;
-                successCount += debugStatusOk ? 1u : 0u;
-                successCount += debugPingOk ? 1u : 0u;
-                metrics->hookSuccess = successCount;
-                metrics->hookFailure = 8u > successCount ? (8u - successCount) : 0u;
-            }
-            bool allOk = walkOk && dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk && debugPingOk;
-            if (allOk) {
-                uint64_t installTick = GetTickCount64();
-        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-            state.flags |= STATE_FLAG_HELPERS_BOUND;
-            state.flags |= STATE_FLAG_HELPERS_INSTALLED;
-            state.gen = generation;
-            state.helper_installed_tick_ms = installTick;
-            state.helper_retry_count = 0;
-            state.helper_first_attempt_ms = 0;
-            state.helper_next_retry_ms = 0;
-            state.helper_last_attempt_ms = installTick;
-            state.helper_last_mutation_tick_ms = g_lastContextMutationTick.load(std::memory_order_acquire);
-            UpdateHelperStage(state, HelperInstallStage::Installed, installTick, "success");
-        }, &info);
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Hooks,
-                          "[HOOKS] helpers install-success tag=%s L=%p owner=%lu gen=%llu thread=%lu",
-                          tagLabel,
-                          L,
-                          static_cast<unsigned long>(info.owner_tid),
-                          static_cast<unsigned long long>(generation),
-                          static_cast<unsigned long>(GetCurrentThreadId()));
-                g_helpersInstalledAny.store(true, std::memory_order_release);
-                g_lastHelperOwnerThread.store(static_cast<DWORD>(info.owner_tid), std::memory_order_relaxed);
-                Core::StartupSummary::NotifyHelpersReady();
-            } else {
-                ok = false;
-                std::string missing;
-                auto appendMissing = [&](bool valueOk, const char* name) {
-                    if (valueOk)
-                        return;
-                    if (!missing.empty())
-                        missing.append(",");
-                    missing.append(name);
-                };
-                appendMissing(walkOk, kHelperWalkName);
-                appendMissing(dumpOk, kHelperDumpName);
-                appendMissing(inspectOk, kHelperInspectName);
-                appendMissing(rebindOk, kHelperRebindName);
-                appendMissing(selfTestOk, kHelperSelfTestName);
-                appendMissing(debugCfgOk, kHelperDebugName);
-                appendMissing(debugStatusOk, kHelperDebugStatusName);
-                appendMissing(debugPingOk, kHelperDebugPingName);
-                Log::Logf(Log::Level::Warn,
-                          Log::Category::Hooks,
-                          "helpers install failed L=%p owner=%lu gen=%llu missing=[%s]",
-                          L,
-                          static_cast<unsigned long>(info.owner_tid),
-                          static_cast<unsigned long long>(generation),
-                          missing.empty() ? "unknown" : missing.c_str());
-            }
-            if (metrics && metrics->endTick == 0)
-                metrics->endTick = GetTickCount64();
+        bool walkOk = logStep(kHelperWalkName, [&]() { return RegisterHelper(L, info, kHelperWalkName, Lua_UOWalk, generation); });
+        bool dumpOk = logStep(kHelperDumpName, [&]() { return RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation); });
+        bool inspectOk = logStep(kHelperInspectName, [&]() { return RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation); });
+        bool rebindOk = logStep(kHelperRebindName, [&]() { return RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation); });
+        bool selfTestOk = logStep(kHelperSelfTestName, [&]() { return RegisterHelper(L, info, kHelperSelfTestName, Lua_UOWSelfTest, generation); });
+        bool debugCfgOk = logStep(kHelperDebugName, [&]() { return RegisterHelper(L, info, kHelperDebugName, Lua_UOWDebug, generation); });
+        bool debugStatusOk = logStep(kHelperDebugStatusName, [&]() { return RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOWDebugStatus, generation); });
+        bool debugPingOk = logStep(kHelperDebugPingName, [&]() { return RegisterHelper(L, info, kHelperDebugPingName, Lua_UOWDebugPing, generation); });
+        if (metrics) {
+            uint32_t successCount = 0;
+            successCount += walkOk ? 1u : 0u;
+            successCount += dumpOk ? 1u : 0u;
+            successCount += inspectOk ? 1u : 0u;
+            successCount += rebindOk ? 1u : 0u;
+            successCount += selfTestOk ? 1u : 0u;
+            successCount += debugCfgOk ? 1u : 0u;
+            successCount += debugStatusOk ? 1u : 0u;
+            successCount += debugPingOk ? 1u : 0u;
+            metrics->hookSuccess = successCount;
+            metrics->hookFailure = 8u > successCount ? (8u - successCount) : 0u;
         }
+        bool allOk = walkOk && dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk && debugPingOk;
+        if (allOk) {
+            uint64_t installTick = GetTickCount64();
+            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+                state.flags |= STATE_FLAG_HELPERS_BOUND;
+                state.flags |= STATE_FLAG_HELPERS_INSTALLED;
+                state.gen = generation;
+                state.helper_installed_tick_ms = installTick;
+                state.helper_retry_count = 0;
+                state.helper_first_attempt_ms = 0;
+                state.helper_next_retry_ms = 0;
+                state.helper_last_attempt_ms = installTick;
+                state.helper_last_mutation_tick_ms = g_lastContextMutationTick.load(std::memory_order_acquire);
+                UpdateHelperStage(state, HelperInstallStage::Installed, installTick, "success");
+            }, &info);
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS] helpers install-success tag=%s L=%p owner=%lu gen=%llu thread=%lu",
+                      tagLabel,
+                      L,
+                      static_cast<unsigned long>(info.owner_tid),
+                      static_cast<unsigned long long>(generation),
+                      static_cast<unsigned long>(GetCurrentThreadId()));
+            g_helpersInstalledAny.store(true, std::memory_order_release);
+            g_lastHelperOwnerThread.store(static_cast<DWORD>(info.owner_tid), std::memory_order_relaxed);
+            Core::StartupSummary::NotifyHelpersReady();
+        } else {
+            ok = false;
+            std::string missing;
+            auto appendMissing = [&](bool valueOk, const char* name) {
+                if (valueOk)
+                    return;
+                if (!missing.empty())
+                    missing.append(",");
+                missing.append(name);
+            };
+            appendMissing(walkOk, kHelperWalkName);
+            appendMissing(dumpOk, kHelperDumpName);
+            appendMissing(inspectOk, kHelperInspectName);
+            appendMissing(rebindOk, kHelperRebindName);
+            appendMissing(selfTestOk, kHelperSelfTestName);
+            appendMissing(debugCfgOk, kHelperDebugName);
+            appendMissing(debugStatusOk, kHelperDebugStatusName);
+            appendMissing(debugPingOk, kHelperDebugPingName);
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "helpers install failed L=%p owner=%lu gen=%llu missing=[%s]",
+                      L,
+                      static_cast<unsigned long>(info.owner_tid),
+                      static_cast<unsigned long long>(generation),
+                      missing.empty() ? "unknown" : missing.c_str());
+        }
+        if (metrics && metrics->endTick == 0)
+            metrics->endTick = GetTickCount64();
     }
 
     InstallPanicAndDebug(L, info);
