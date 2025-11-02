@@ -213,6 +213,57 @@ static std::atomic<uint32_t> g_helperProbeSuccess{0};
 static std::atomic<uint32_t> g_helperProbeSkipped{0};
 static std::atomic<bool> g_helpersInstalledAny{false};
 static std::atomic<int> g_helperInstallInFlight{0};
+
+enum class CtxValidationResult {
+    Ok = 0,
+    Null,
+    QueryFailed,
+    NotCommitted,
+    NoAccess,
+    Guarded
+};
+
+static const char* DescribeCtxValidation(CtxValidationResult result)
+{
+    switch (result) {
+    case CtxValidationResult::Ok:
+        return "ok";
+    case CtxValidationResult::Null:
+        return "null";
+    case CtxValidationResult::QueryFailed:
+        return "query-failed";
+    case CtxValidationResult::NotCommitted:
+        return "not-committed";
+    case CtxValidationResult::NoAccess:
+        return "no-access";
+    case CtxValidationResult::Guarded:
+        return "guard-page";
+    default:
+        return "unknown";
+    }
+}
+
+static CtxValidationResult ValidateCtxLoose(const void* ctx) noexcept
+{
+    if (!ctx)
+        return CtxValidationResult::Null;
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(ctx, &mbi, sizeof(mbi)))
+        return CtxValidationResult::QueryFailed;
+
+    if (mbi.State != MEM_COMMIT)
+        return CtxValidationResult::NotCommitted;
+
+    if (mbi.Protect & PAGE_NOACCESS)
+        return CtxValidationResult::NoAccess;
+
+    if (mbi.Protect & PAGE_GUARD)
+        return CtxValidationResult::Guarded;
+
+    return CtxValidationResult::Ok;
+}
+
 static std::atomic<uint64_t> g_ownerPumpUnstickLoggedGen{0};
 static std::atomic<DWORD> g_lastHelperOwnerThread{0};
 static std::atomic<uint64_t> g_lastHelperRetryScanTick{0};
@@ -271,11 +322,21 @@ struct HelpersRuntimeState {
         if (!ctx)
             return;
 
-        HCTX expected = nullptr;
-        if (canonical_ctx.compare_exchange_strong(expected,
-                                                  ctx,
-                                                  std::memory_order_acq_rel,
-                                                  std::memory_order_acquire)) {
+        HCTX current = canonical_ctx.load(std::memory_order_acquire);
+        HCTX engineCtx = g_engineContext.load(std::memory_order_acquire);
+        if (current == ctx) {
+            if (owner) {
+                owner_tid.store(owner, std::memory_order_release);
+                g_lastHelperOwnerThread.store(owner, std::memory_order_relaxed);
+            }
+            return;
+        }
+
+        bool currentValid = ValidateCtxLoose(current) == CtxValidationResult::Ok;
+        bool preferNew = (current == nullptr) || !currentValid || current == engineCtx;
+
+        if (preferNew) {
+            canonical_ctx.store(ctx, std::memory_order_release);
             if (owner) {
                 owner_tid.store(owner, std::memory_order_release);
                 g_lastHelperOwnerThread.store(owner, std::memory_order_relaxed);
@@ -284,8 +345,8 @@ struct HelpersRuntimeState {
         }
 
         if (owner) {
-            DWORD current = owner_tid.load(std::memory_order_acquire);
-            if (current != owner) {
+            DWORD currentOwner = owner_tid.load(std::memory_order_acquire);
+            if (currentOwner != owner) {
                 owner_tid.store(owner, std::memory_order_release);
                 g_lastHelperOwnerThread.store(owner, std::memory_order_relaxed);
             }
@@ -405,7 +466,7 @@ static void PostOwnerPumpUnstick(lua_State* L, uint64_t generation)
 }
 
 static bool IsValidCtx(HCTX ctx) {
-    return ctx && IsPlausibleContextPointer(ctx);
+    return ValidateCtxLoose(ctx) == CtxValidationResult::Ok;
 }
 
 static void* ResolveCanonicalEngineContext() noexcept {
@@ -719,13 +780,7 @@ static bool DescribeAddressForLog(const void* address, char* moduleBuf, size_t m
 }
 
 static bool IsPlausibleContextPointer(const void* ctx) {
-    if (!ctx)
-        return false;
-    void* vtbl = nullptr;
-    if (!sp::is_readable(ctx, sizeof(void*)))
-        return false;
-    std::memcpy(&vtbl, ctx, sizeof(void*));
-    return vtbl && sp::is_plausible_vtbl_entry(vtbl);
+    return ValidateCtxLoose(ctx) == CtxValidationResult::Ok;
 }
 
 static const HelperRetryPolicy& GetHelperRetryPolicy() {
@@ -2629,6 +2684,9 @@ static LuaStateInfo RefreshCanonical(lua_State* lookupPtr, const char* sourceTag
 static LuaStateInfo ObserveReportedState(lua_State* reported, void* ctx, DWORD tid, uint64_t gen, const char* sourceTag, bool* outIsNew, bool* outReady, bool* outCoalesced) {
     if (!reported)
         return {};
+
+    if (ctx)
+        SetCanonicalHelperCtx(ctx, tid);
 
     auto result = g_stateRegistry.AddOrUpdate(reported, ctx, tid, gen);
     if (outIsNew)
@@ -6082,14 +6140,43 @@ static bool BindHelpersOnThread(lua_State* L,
     HCTX canonicalCtx = nullptr;
     DWORD canonicalOwner = 0;
     bool canonicalValid = false;
+    CtxValidationResult canonicalStatus = CtxValidationResult::Null;
     auto refreshCanonical = [&]() {
         canonicalCtx = GetCanonicalHelperCtx();
         canonicalOwner = GetCanonicalHelperOwnerTid();
-        canonicalValid = canonicalCtx && IsValidCtx(canonicalCtx);
+        canonicalStatus = ValidateCtxLoose(canonicalCtx);
+        canonicalValid = (canonicalStatus == CtxValidationResult::Ok);
     };
     refreshCanonical();
 
     static void* s_lastRebindCtx = nullptr;
+
+    CtxValidationResult reportedCtxStatus = ValidateCtxLoose(info.ctx_reported);
+    if (info.ctx_reported && reportedCtxStatus != CtxValidationResult::Ok) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] ctx validation result=%s ctx=%p L=%p owner=%lu",
+                  DescribeCtxValidation(reportedCtxStatus),
+                  info.ctx_reported,
+                  L,
+                  static_cast<unsigned long>(info.owner_tid));
+    }
+
+    if (!canonicalValid && reportedCtxStatus == CtxValidationResult::Ok && info.ctx_reported) {
+        SetCanonicalHelperCtx(info.ctx_reported, info.owner_tid);
+        refreshCanonical();
+        canonicalStatus = ValidateCtxLoose(canonicalCtx);
+        canonicalValid = (canonicalStatus == CtxValidationResult::Ok);
+    }
+
+    if (canonicalCtx && canonicalStatus != CtxValidationResult::Ok) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] canonical ctx pending validation=%s ctx=%p owner=%lu",
+                  DescribeCtxValidation(canonicalStatus),
+                  canonicalCtx,
+                  static_cast<unsigned long>(canonicalOwner));
+    }
 
     auto rebindToCanonical = [&](HCTX previousCtx, const char* reason) {
         refreshCanonical();
@@ -6161,6 +6248,7 @@ static bool BindHelpersOnThread(lua_State* L,
                    static_cast<unsigned long>(previousOwner),
                    static_cast<unsigned long>(currentTid));
         refreshCanonical();
+        reportedCtxStatus = ValidateCtxLoose(info.ctx_reported);
     }
 
     Log::Logf(Log::Level::Info,
@@ -6172,19 +6260,18 @@ static bool BindHelpersOnThread(lua_State* L,
               static_cast<unsigned long>(canonicalOwner),
               static_cast<unsigned long>(GetCurrentThreadId()));
 
-    if (!canonicalValid) {
-        rebindToCanonical(info.ctx_reported, "canonical-invalid");
-        refreshCanonical();
-    }
-
-    if (canonicalOwner && canonicalOwner != GetCurrentThreadId()) {
+    if (canonicalValid && canonicalOwner && canonicalOwner != GetCurrentThreadId()) {
         rebindToCanonical(info.ctx_reported, "owner-mismatch");
         refreshCanonical();
+        reportedCtxStatus = ValidateCtxLoose(info.ctx_reported);
     }
 
     if (canonicalValid && info.ctx_reported != canonicalCtx) {
-        rebindToCanonical(info.ctx_reported, "ctx-mismatch");
-        refreshCanonical();
+        if (reportedCtxStatus != CtxValidationResult::Ok || !info.ctx_reported) {
+            rebindToCanonical(info.ctx_reported, "ctx-mismatch");
+            refreshCanonical();
+            reportedCtxStatus = ValidateCtxLoose(info.ctx_reported);
+        }
     }
 
     Log::Logf(Log::Level::Info,
@@ -6206,38 +6293,39 @@ static bool BindHelpersOnThread(lua_State* L,
         return false;
     }
 
-    if (info.ctx_reported && !IsValidCtx(info.ctx_reported)) {
+    reportedCtxStatus = ValidateCtxLoose(info.ctx_reported);
+    if (info.ctx_reported && reportedCtxStatus != CtxValidationResult::Ok) {
         HCTX attemptedCtx = info.ctx_reported;
         SafeRefreshLuaStateFromSlot();
         refreshCanonical();
-        rebindToCanonical(attemptedCtx, "ctx-invalid");
-
-        g_stateRegistry.GetByPointer(L, info);
-
-        if (!IsValidCtx(info.ctx_reported)) {
-            constexpr uint32_t kCtxInvalidDemoteThreshold = 3;
-            if (info.helper_retry_count < kCtxInvalidDemoteThreshold) {
-                Log::Logf(Log::Level::Debug,
-                          Log::Category::Hooks,
-                          "helpers ctx invalid rebind pending L=%p ctx=%p retries=%u",
-                          L,
-                          attemptedCtx,
-                          static_cast<unsigned>(info.helper_retry_count));
-                return false;
-            }
-
-            Log::Logf(Log::Level::Warn,
-                      Log::Category::Hooks,
-                      "helpers bind abort L=%p reason=ctx-invalid ctx=%p attempts=%u",
-                      L,
-                      info.ctx_reported,
-                      static_cast<unsigned>(info.helper_retry_count));
-            return false;
+        if (canonicalValid && canonicalCtx && canonicalCtx != attemptedCtx) {
+            rebindToCanonical(attemptedCtx, "ctx-invalid");
+            refreshCanonical();
+            reportedCtxStatus = ValidateCtxLoose(info.ctx_reported);
         }
-    } else if (!info.ctx_reported) {
+    }
+
+    if (info.ctx_reported && reportedCtxStatus != CtxValidationResult::Ok) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] ctx dropped ctx=%p reason=%s L=%p",
+                  info.ctx_reported,
+                  DescribeCtxValidation(reportedCtxStatus),
+                  L);
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            state.ctx_reported = nullptr;
+        }, &info);
+        info.ctx_reported = nullptr;
+        reportedCtxStatus = CtxValidationResult::Null;
+    }
+
+    if (!info.ctx_reported) {
         refreshCanonical();
-        if (canonicalValid)
+        if (canonicalValid && canonicalCtx) {
             rebindToCanonical(nullptr, "ctx-missing");
+            refreshCanonical();
+            reportedCtxStatus = ValidateCtxLoose(info.ctx_reported);
+        }
     }
 
     const bool probeOk = ProbeLua(L);
@@ -7790,6 +7878,8 @@ void ScheduleWalkBinding() {
             uint64_t gen = g_generation.load(std::memory_order_acquire);
             DWORD tid = g_scriptThreadId.load(std::memory_order_acquire);
             void* ctx = g_latestScriptCtx.load(std::memory_order_acquire);
+            if (ctx)
+                SetCanonicalHelperCtx(ctx, tid);
             bool isNew = false;
             bool ready = false;
             bool coalesced = false;
@@ -7820,6 +7910,8 @@ void OnStateObserved(lua_State* L, void* scriptCtx, std::uint32_t ownerTid, bool
         EnsureScriptThread(tid, L);
     if (scriptCtx)
         g_latestScriptCtx.store(scriptCtx, std::memory_order_release);
+    if (scriptCtx)
+        SetCanonicalHelperCtx(scriptCtx, tid);
 
     bool isNew = false;
     bool ready = false;
