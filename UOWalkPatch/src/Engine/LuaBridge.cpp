@@ -212,7 +212,7 @@ static std::atomic<uint32_t> g_helperProbeAttempted{0};
 static std::atomic<uint32_t> g_helperProbeSuccess{0};
 static std::atomic<uint32_t> g_helperProbeSkipped{0};
 static std::atomic<bool> g_helpersInstalledAny{false};
-static std::atomic<bool> g_helperInstallSingleFlight{false};
+static std::atomic<int> g_helperInstallInFlight{0};
 static std::atomic<uint64_t> g_ownerPumpUnstickLoggedGen{0};
 static std::atomic<DWORD> g_lastHelperOwnerThread{0};
 static std::atomic<uint64_t> g_lastHelperRetryScanTick{0};
@@ -243,8 +243,6 @@ static thread_local bool g_processingLuaQueue = false;
 static std::atomic<bool> g_queueLoggedDuringInit{false};
 static std::atomic<DWORD> g_lastQueueLogTick{0};
 
-static std::mutex g_bindingMutex;
-static std::unordered_set<lua_State*> g_bindingInFlight;
 static thread_local bool g_helperInstallActive = false;
 
 static bool TryEnterHelperInstall() noexcept {
@@ -320,28 +318,19 @@ struct HelperInstallMetrics {
     uint32_t hookFailure = 0;
 };
 
-class HelperInstallFlightGuard {
-public:
-    HelperInstallFlightGuard()
-    {
-        bool expected = false;
-        acquired = g_helperInstallSingleFlight.compare_exchange_strong(expected,
-                                                                       true,
-                                                                       std::memory_order_acq_rel,
-                                                                       std::memory_order_acquire);
-    }
+static inline bool HelperSingleFlightTryAcquire()
+{
+    int expected = 0;
+    return g_helperInstallInFlight.compare_exchange_strong(expected,
+                                                           1,
+                                                           std::memory_order_acq_rel,
+                                                           std::memory_order_acquire);
+}
 
-    ~HelperInstallFlightGuard()
-    {
-        if (acquired)
-            g_helperInstallSingleFlight.store(false, std::memory_order_release);
-    }
-
-    explicit operator bool() const { return acquired; }
-
-private:
-    bool acquired = false;
-};
+static inline void HelperSingleFlightRelease()
+{
+    g_helperInstallInFlight.store(0, std::memory_order_release);
+}
 
 static void SetCanonicalHelperCtx(HCTX ctx, DWORD ownerTid) noexcept {
     g_helpers.SetCanonicalCtx(ctx, ownerTid);
@@ -357,14 +346,6 @@ static HCTX GetCanonicalHelperCtx() noexcept {
 
 static DWORD GetCanonicalHelperOwnerTid() noexcept {
     return g_helpers.GetOwnerTid();
-}
-
-static void MarkHelperRebindPending() noexcept {
-    g_helpers.MarkRebindPending();
-}
-
-static bool ConsumeHelperRebindPending() noexcept {
-    return g_helpers.ConsumeRebindPending();
 }
 
 static void StartHelperPumpThread();
@@ -3697,16 +3678,6 @@ static bool ProbeLua(lua_State* L) {
     return SafeLuaProbeStack(L, nullptr, &probeSeh);
 }
 
-static bool AcquireBindingSlot(lua_State* L) {
-    std::lock_guard<std::mutex> lock(g_bindingMutex);
-    return g_bindingInFlight.insert(L).second;
-}
-
-static void ReleaseBindingSlot(lua_State* L) {
-    std::lock_guard<std::mutex> lock(g_bindingMutex);
-    g_bindingInFlight.erase(L);
-}
-
 static void LogSentinelStackFailure(lua_State* L, const LuaStateInfo& info, int initialTop, DWORD stackSeh) {
     if (!L)
         return;
@@ -5223,9 +5194,11 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
     }
 
     lua_State* target = current.L_canonical;
-    const bool sbReadyNow = Net::IsReady();
-    const bool sbPivotNow = Net::IsPivotReady();
+    Net::SendBuilderStatus sbStatus = Net::GetSendBuilderStatus();
+    const bool sbReadyNow = sbStatus.ready;
+    const bool sbPivotNow = sbStatus.pivotReady;
     const bool sbFallbackNow = Net::HasFallbackPivot();
+    const bool sbDbMgrMode = sbStatus.ready && sbStatus.readyMode == Net::ReadyMode::DbMgr;
     HelperInstallStage stage = DetermineHelperStage(current, canonicalReadyFlag);
     void* engineCtxSnapshot = g_engineContext.load(std::memory_order_acquire);
     if (engineCtxSnapshot && current.helper_settle_start_ms == 0) {
@@ -5479,13 +5452,20 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         }
     }
 
-        if (allowNow && !(sbReadyNow || sbPivotNow || sbFallbackNow)) {
+    if (allowNow && !(sbReadyNow || sbPivotNow || sbFallbackNow)) {
         allowNow = false;
         gateReason = "sendbuilder";
         desiredNextMs = std::max<uint64_t>(desiredNextMs, now + retry.retryBackoffMs);
     }
 
-    if (!allowNow && Core::Config::HelpersIgnoreGlobalSettleIfSbReady() && (sbReadyNow || sbPivotNow || sbFallbackNow)) {
+    if (sbDbMgrMode) {
+        allowNow = true;
+        passiveMode = false;
+        gateReason = nullptr;
+        desiredNextMs = 0;
+        logOverride = true;
+        overrideReason = "sb-ready";
+    } else if (!allowNow && Core::Config::HelpersIgnoreGlobalSettleIfSbReady() && (sbReadyNow || sbPivotNow || sbFallbackNow)) {
         allowNow = true;
         passiveMode = false;
         gateReason = nullptr;
@@ -6109,120 +6089,27 @@ static bool BindHelpersOnThread(lua_State* L,
     };
     refreshCanonical();
 
-    auto rebindToCanonical = [&](HCTX previousCtx, const char* reason) -> bool {
+    static void* s_lastRebindCtx = nullptr;
+
+    auto rebindToCanonical = [&](HCTX previousCtx, const char* reason) {
         refreshCanonical();
 
-        constexpr uint32_t kCanonicalNullRetryBudget = 3;
+        if (!canonicalCtx)
+            return;
 
-        uint32_t attempts = info.helper_rebind_attempts;
         bool ctxChanged = (canonicalCtx != previousCtx);
-        if (!ctxChanged) {
-            attempts = 0;
-            info.helper_rebind_attempts = 0;
-        }
-        if (!canonicalValid) {
-            const bool canonicalAvailable = canonicalCtx != nullptr;
-            uint64_t nowTick = GetTickCount64();
-            if (!canonicalAvailable) {
-                if (attempts >= kCanonicalNullRetryBudget) {
-                    Log::Logf(Log::Level::Warn,
-                              Log::Category::Hooks,
-                              "[HOOKS] helpers canonical unresolved ctx old=%p attempts=%u",
-                              previousCtx,
-                              static_cast<unsigned>(attempts));
-                    return false;
-                }
+        if (!ctxChanged && canonicalCtx == s_lastRebindCtx)
+            return;
 
-                g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-                    state.ctx_reported = canonicalCtx;
-                    state.helper_passive_since_ms = 0;
-                    UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, reason ? reason : "canonical-missing");
-                    if (ctxChanged) {
-                        if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
-                            ++state.helper_rebind_attempts;
-                    } else {
-                        state.helper_rebind_attempts = 0;
-                    }
-                    attempts = state.helper_rebind_attempts;
-                    if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms > nowTick + 200)
-                        state.helper_next_retry_ms = nowTick + 200;
-                }, &info);
-                info.ctx_reported = canonicalCtx;
-                info.helper_rebind_attempts = attempts;
-
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Hooks,
-                          "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u (pending)",
-                          previousCtx,
-                          canonicalCtx,
-                          static_cast<unsigned>(canonicalOwner));
-                MarkHelperRebindPending();
-                if (!Core::Bind::IsCurrentDispatchTag("helpers"))
-                    PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-missing");
-                return true;
-            }
-
-            if (ctxChanged && attempts >= kMaxHelperRebindAttempts) {
-                Log::Logf(Log::Level::Warn,
-                          Log::Category::Hooks,
-                          "[HOOKS] helpers rebind limit ctx old=0x%p attempts=%u",
-                          previousCtx,
-                          static_cast<unsigned>(attempts));
-                return false;
-            }
-
-            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-                state.ctx_reported = canonicalCtx;
-                state.helper_passive_since_ms = 0;
-                UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, reason ? reason : "canonical-pending");
-                if (canonicalOwner) {
-                    state.owner_tid = canonicalOwner;
-                    state.last_tid = canonicalOwner;
-                    state.flags |= STATE_FLAG_OWNER_READY;
-                    if (state.owner_ready_tick_ms == 0)
-                        state.owner_ready_tick_ms = nowTick;
-                }
-                if (ctxChanged) {
-                    if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
-                        ++state.helper_rebind_attempts;
-                } else {
-                    state.helper_rebind_attempts = 0;
-                }
-                attempts = state.helper_rebind_attempts;
-            }, &info);
-            info.ctx_reported = canonicalCtx;
-            info.helper_rebind_attempts = attempts;
-            if (canonicalOwner)
-                info.owner_tid = canonicalOwner;
-
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Hooks,
-                      "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u (pending)",
-                      previousCtx,
-                      canonicalCtx,
-                      static_cast<unsigned>(canonicalOwner));
-            MarkHelperRebindPending();
-            if (!Core::Bind::IsCurrentDispatchTag("helpers"))
-                PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-pending");
-            return true;
-        }
-
-        if (ctxChanged && attempts >= kMaxHelperRebindAttempts) {
-            Log::Logf(Log::Level::Warn,
-                      Log::Category::Hooks,
-                      "[HOOKS] helpers rebind limit ctx old=0x%p attempts=%u",
-                      previousCtx,
-                      static_cast<unsigned>(attempts));
-            return false;
-        }
-
-        const char* stageReason = reason ? reason : "ctx-rebind";
         uint64_t nowTick = GetTickCount64();
         g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
             state.ctx_reported = canonicalCtx;
             state.helper_passive_since_ms = 0;
-            state.flags |= STATE_FLAG_CANON_READY;
-            UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, stageReason);
+            state.helper_rebind_attempts = 0;
+            if (canonicalValid) {
+                state.flags |= STATE_FLAG_CANON_READY;
+                UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, reason ? reason : "ctx-rebind");
+            }
             if (canonicalOwner) {
                 state.owner_tid = canonicalOwner;
                 state.last_tid = canonicalOwner;
@@ -6230,47 +6117,50 @@ static bool BindHelpersOnThread(lua_State* L,
                 if (state.owner_ready_tick_ms == 0)
                     state.owner_ready_tick_ms = nowTick;
             }
-            if (ctxChanged) {
-                if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
-                    ++state.helper_rebind_attempts;
-            } else {
-                state.helper_rebind_attempts = 0;
-            }
-            attempts = state.helper_rebind_attempts;
         }, &info);
         info.ctx_reported = canonicalCtx;
-        info.helper_rebind_attempts = attempts;
+        info.helper_rebind_attempts = 0;
         if (canonicalOwner)
             info.owner_tid = canonicalOwner;
         if (canonicalOwner)
             SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
-        if (!ctxChanged) {
-            info.ctx_reported = canonicalCtx;
-            if (canonicalOwner)
-                info.owner_tid = canonicalOwner;
-            info.helper_rebind_attempts = 0;
-            return false;
+
+        if (ctxChanged && s_lastRebindCtx != canonicalCtx) {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u reason=%s",
+                      previousCtx,
+                      canonicalCtx,
+                      static_cast<unsigned>(canonicalOwner),
+                      reason ? reason : "unknown");
         }
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u (pending)",
-                  previousCtx,
-                  canonicalCtx,
-                  static_cast<unsigned>(canonicalOwner));
-        MarkHelperRebindPending();
-        if (!Core::Bind::IsCurrentDispatchTag("helpers"))
-            PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
-        return true;
+        s_lastRebindCtx = canonicalCtx;
     };
 
     if (!IsOwnerThread(info)) {
-        if (rebindToCanonical(info.ctx_reported, "wrong-thread"))
-            return false;
+        rebindToCanonical(info.ctx_reported, "wrong-thread");
+        DWORD currentTid = GetCurrentThreadId();
+        DWORD previousOwner = info.owner_tid;
+        uint64_t nowTick = GetTickCount64();
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] helpers remote-run ctx=%p prior_owner=%lu thread=%lu",
+                  info.ctx_reported,
+                  static_cast<unsigned long>(previousOwner),
+                  static_cast<unsigned long>(currentTid));
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            state.owner_tid = currentTid;
+            state.last_tid = currentTid;
+            state.flags |= STATE_FLAG_OWNER_READY;
+            if (state.owner_ready_tick_ms == 0)
+                state.owner_ready_tick_ms = nowTick;
+        }, &info);
+        info.owner_tid = currentTid;
         LogLuaBind("bind-helpers wrong-thread L=%p owner=%lu current=%lu",
                    L,
-                   info.owner_tid,
-                   static_cast<unsigned long>(GetCurrentThreadId()));
-        return false;
+                   static_cast<unsigned long>(previousOwner),
+                   static_cast<unsigned long>(currentTid));
+        refreshCanonical();
     }
 
     Log::Logf(Log::Level::Info,
@@ -6283,20 +6173,17 @@ static bool BindHelpersOnThread(lua_State* L,
               static_cast<unsigned long>(GetCurrentThreadId()));
 
     if (!canonicalValid) {
-        if (rebindToCanonical(info.ctx_reported, "canonical-invalid"))
-            return false;
+        rebindToCanonical(info.ctx_reported, "canonical-invalid");
         refreshCanonical();
     }
 
     if (canonicalOwner && canonicalOwner != GetCurrentThreadId()) {
-        if (rebindToCanonical(info.ctx_reported, "owner-mismatch"))
-            return false;
+        rebindToCanonical(info.ctx_reported, "owner-mismatch");
         refreshCanonical();
     }
 
     if (canonicalValid && info.ctx_reported != canonicalCtx) {
-        if (rebindToCanonical(info.ctx_reported, "ctx-mismatch"))
-            return false;
+        rebindToCanonical(info.ctx_reported, "ctx-mismatch");
         refreshCanonical();
     }
 
@@ -6323,8 +6210,7 @@ static bool BindHelpersOnThread(lua_State* L,
         HCTX attemptedCtx = info.ctx_reported;
         SafeRefreshLuaStateFromSlot();
         refreshCanonical();
-        if (rebindToCanonical(attemptedCtx, "ctx-invalid"))
-            return false;
+        rebindToCanonical(attemptedCtx, "ctx-invalid");
 
         g_stateRegistry.GetByPointer(L, info);
 
@@ -6350,8 +6236,8 @@ static bool BindHelpersOnThread(lua_State* L,
         }
     } else if (!info.ctx_reported) {
         refreshCanonical();
-        if (canonicalValid && rebindToCanonical(nullptr, "ctx-missing"))
-            return false;
+        if (canonicalValid)
+            rebindToCanonical(nullptr, "ctx-missing");
     }
 
     const bool probeOk = ProbeLua(L);
@@ -6555,9 +6441,11 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     else if (ownerThreadNow)
         installTag = "owner-direct";
 
-    const bool sbReadyNow = Net::IsReady();
-    const bool sbPivotNow = Net::IsPivotReady();
+    Net::SendBuilderStatus sbStatus = Net::GetSendBuilderStatus();
+    const bool sbReadyNow = sbStatus.ready;
+    const bool sbPivotNow = sbStatus.pivotReady;
     const bool sbFallbackNow = Net::HasFallbackPivot();
+    const bool sbDbMgrMode = sbStatus.ready && sbStatus.readyMode == Net::ReadyMode::DbMgr;
 
     if (!dispatchHelpers && !ownerThreadNow) {
         uint64_t now = GetTickCount64();
@@ -6606,36 +6494,25 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
               static_cast<unsigned long long>(info.helper_next_retry_ms),
               reason ? reason : "unknown");
 
-    if (!AcquireBindingSlot(L)) {
+    if (!HelperSingleFlightTryAcquire()) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "helpers in-progress skip L=%p owner=%lu",
-                  L,
-                  static_cast<unsigned long>(info.owner_tid));
-        ClearHelperPending(L, generation, &info);
-        return;
-    }
-
-    struct SlotGuard {
-        lua_State* state;
-        bool active;
-        explicit SlotGuard(lua_State* s) : state(s), active(true) {}
-        ~SlotGuard() {
-            if (active)
-                ReleaseBindingSlot(state);
-        }
-    } slotGuard(L);
-
-    HelperInstallFlightGuard flightGuard;
-    if (!flightGuard) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "[HOOKS] helpers single-flight suppress tag=%s tid=%u",
+                  "[HOOKS] helpers in-progress skip tag=%s reason=single-flight tid=%u",
                   installTag,
                   static_cast<unsigned>(GetCurrentThreadId()));
         ClearHelperPending(L, generation, &info);
         return;
     }
+
+    struct HelperSingleFlightGuard {
+        ~HelperSingleFlightGuard() { HelperSingleFlightRelease(); }
+    } singleFlightGuard;
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Hooks,
+              "[HOOKS][step] install-flight-acquired tag=%s tid=%u",
+              installTag,
+              static_cast<unsigned>(GetCurrentThreadId()));
 
     LogLuaState("bind-start Lc=%p (Lr=%p ctx=%p) tid=%lu gen=%llu reason=%s",
                 L,
@@ -6682,7 +6559,6 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     }
 
     uint64_t summaryTick = GetTickCount64();
-    bool rebindPending = !ok ? ConsumeHelperRebindPending() : false;
     if (ok) {
         ClearHelperPending(L, generation, &info);
         g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
@@ -6692,10 +6568,6 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
         TrackHelperEvent(g_helperInstalledCount);
         MaybeEmitHelperSummary(summaryTick, true);
     } else {
-        if (rebindPending) {
-            MaybeEmitHelperSummary(summaryTick);
-            return;
-        }
         ClearHelperPending(L, generation, &info);
         TrackHelperEvent(g_helperDeferredCount);
         const HelperRetryPolicy& retry = GetHelperRetryPolicy();
@@ -7747,7 +7619,6 @@ bool InitLuaBridge() {
         g_debugInstallInFlight.clear();
     }
     g_queueLoggedDuringInit.store(false, std::memory_order_release);
-    g_bindingInFlight.clear();
     LogLuaState("registry-init ok cap=32");
     if (!ResolveRegisterFunction())
         return false;
@@ -7778,7 +7649,6 @@ void ShutdownLuaBridge() {
         g_debugInstallInFlight.clear();
     }
 
-    g_bindingInFlight.clear();
     g_stateRegistry.Reset();
     g_mainLuaState.store(nullptr, std::memory_order_release);
     g_mainLuaPlusState.store(nullptr, std::memory_order_release);
