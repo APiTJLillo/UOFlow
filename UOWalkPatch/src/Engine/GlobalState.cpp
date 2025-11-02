@@ -267,6 +267,7 @@ static void* FindGlobalStateInfo() {
                         WriteRawLog(buffer);
                         if (info->databaseManager)
                             Net::NotifyGlobalStateManager(info->databaseManager);
+                        Net::PivotFromDbMgr(info->databaseManager);
                         return info;
                     }
                     if (!info)
@@ -409,6 +410,7 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
             WriteRawLog(buffer);
             if (candidate->databaseManager)
                 Net::NotifyGlobalStateManager(candidate->databaseManager);
+            Net::PivotFromDbMgr(candidate->databaseManager);
             InterlockedExchange(&g_flags.lua_slot_seen, 1);
 
             void* engineCtx = candidate->engineContext;

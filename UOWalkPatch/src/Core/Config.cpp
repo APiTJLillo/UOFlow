@@ -379,6 +379,14 @@ bool SendBuilderAllowCallsitePivot() {
     return false;
 }
 
+bool SendBuilderAllowDbMgrPivot() {
+    if (auto env = TryGetEnvBool("SB_ALLOW_DBMGR_PIVOT"))
+        return *env;
+    if (auto cfg = TryGetBool("SendBuilder.allow_dbmgr_pivot"))
+        return *cfg;
+    return true;
+}
+
 std::string ConfigSourcePath() {
     EnsureLoaded();
     return g_state.sourcePath;

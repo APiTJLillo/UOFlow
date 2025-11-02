@@ -31,6 +31,7 @@ namespace Core::Config {
 
     uint32_t GetSendBuilderSettleTimeoutMs();
     bool SendBuilderAllowCallsitePivot();
+    bool SendBuilderAllowDbMgrPivot();
 
     std::string ConfigSourcePath();
 

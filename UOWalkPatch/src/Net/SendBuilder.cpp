@@ -179,9 +179,11 @@ static std::atomic<uint64_t> g_netcfg_settle_start_ms{0};
 static std::atomic<uint32_t> g_netcfg_settle_timeout_ms{2500};
 static std::atomic<bool> g_netcfg_settle_warned{false};
 static std::atomic<bool> g_allowCallsitePivot{false};
+static std::atomic<bool> g_allowDbMgrPivot{true};
 static std::atomic<bool> g_sb_pivot_ready{false};
 static std::atomic<void*> g_netmgr_this{nullptr};
 static std::atomic<void**> g_netmgr_vtbl{nullptr};
+static std::atomic<ReadyMode> g_ready_mode{ReadyMode::None};
 static std::atomic<uintptr_t> g_netcfg_region_base{0};
 static std::atomic<SIZE_T> g_netcfg_region_size{0};
 static std::atomic<bool> g_mem_event_flag{false};
@@ -1292,6 +1294,7 @@ void OnSendPacketEnter(void* ecxThis)
     g_netmgr_vtbl.store(vtbl, std::memory_order_release);
     InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(&g_netMgr), ecxThis, nullptr);
 
+    g_ready_mode.store(ReadyMode::Callsite, std::memory_order_release);
     g_sbReady.store(true, std::memory_order_release);
     ScheduleScan("pivot:callsite", false);
     HookSendBuilderFromNetMgr();
@@ -1300,6 +1303,41 @@ void OnSendPacketEnter(void* ecxThis)
               Log::Category::Core,
               "[CORE][SB][READY] callsite captured this=%p vtbl=%p",
               ecxThis,
+              vtbl);
+}
+
+void PivotFromDbMgr(void* dbMgr)
+{
+    if (!g_allowDbMgrPivot.load(std::memory_order_acquire))
+        return;
+    if (g_sbReady.load(std::memory_order_acquire))
+        return;
+    if (!dbMgr)
+        return;
+    if (g_builderScanned)
+        return;
+
+    void** vtbl = nullptr;
+    if (!SafeCopy(&vtbl, dbMgr, sizeof(vtbl)) || !vtbl)
+        return;
+
+    bool expected = false;
+    if (!g_sb_pivot_ready.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_acquire))
+        return;
+
+    g_netmgr_this.store(dbMgr, std::memory_order_release);
+    g_netmgr_vtbl.store(vtbl, std::memory_order_release);
+    InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(&g_netMgr), dbMgr, nullptr);
+
+    g_ready_mode.store(ReadyMode::DbMgr, std::memory_order_release);
+    g_sbReady.store(true, std::memory_order_release);
+    ScheduleScan("pivot:dbmgr", false);
+    HookSendBuilderFromNetMgr();
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[CORE][SB][READY] dbmgr pivot this=%p vtbl=%p",
+              dbMgr,
               vtbl);
 }
 
@@ -6843,6 +6881,7 @@ static void HookSendBuilderFromNetMgr()
         g_sb_pivot_ready.store(false, std::memory_order_release);
         g_netmgr_this.store(nullptr, std::memory_order_release);
         g_netmgr_vtbl.store(nullptr, std::memory_order_release);
+        g_ready_mode.store(ReadyMode::None, std::memory_order_release);
         TryDiscoverFromEngineContext();
         return;
     }
@@ -6854,6 +6893,7 @@ static void HookSendBuilderFromNetMgr()
         g_sb_pivot_ready.store(false, std::memory_order_release);
         g_netmgr_this.store(nullptr, std::memory_order_release);
         g_netmgr_vtbl.store(nullptr, std::memory_order_release);
+        g_ready_mode.store(ReadyMode::None, std::memory_order_release);
         g_lastNetCfgPtr = rawCfg;
         g_lastNetCfgState = 0xFFFFFFFF;
         g_lastNetCfgProtect = 0xFFFFFFFF;
@@ -7061,6 +7101,27 @@ static void ScanSendBuilder()
 
 static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int len)
 {
+    if (!g_sbReady.load(std::memory_order_acquire)) {
+        void* this_ecx = thisPtr;
+#if defined(_M_IX86)
+        this_ecx = nullptr;
+        __asm { mov this_ecx, ecx }
+#endif
+        if (this_ecx) {
+            void** vtbl = nullptr;
+            if (SafeCopy(&vtbl, this_ecx, sizeof(vtbl)) && vtbl) {
+                uintptr_t vtblAddr = reinterpret_cast<uintptr_t>(vtbl);
+                bool plausible = (vtblAddr >= 0x00400000ull) && (vtblAddr < 0x00E86000ull);
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[CORE][SB][PROBE] send callsite this=%p vtbl=%p plausible=%d",
+                          this_ecx,
+                          vtbl,
+                          plausible ? 1 : 0);
+            }
+        }
+    }
+
     OnSendPacketEnter(thisPtr);
 
     void* returnPc = _ReturnAddress();
@@ -7202,6 +7263,7 @@ bool InitSendBuilder(GlobalStateInfo* state)
         g_sb_pivot_ready.store(false, std::memory_order_release);
         g_netmgr_this.store(nullptr, std::memory_order_release);
         g_netmgr_vtbl.store(nullptr, std::memory_order_release);
+        g_ready_mode.store(ReadyMode::None, std::memory_order_relaxed);
     }
 
     bool sbDebug = ResolveSendBuilderFlag("SB_DEBUG", "sb.debug", false);
@@ -7243,6 +7305,8 @@ bool InitSendBuilder(GlobalStateInfo* state)
     g_allowDbProbe = ResolveSendBuilderFlag("SB_ALLOW_DB_PROBE", "sb.allow_db_probe", false);
     bool allowCallsitePivot = Core::Config::SendBuilderAllowCallsitePivot();
     g_allowCallsitePivot.store(allowCallsitePivot, std::memory_order_relaxed);
+    bool allowDbMgrPivot = Core::Config::SendBuilderAllowDbMgrPivot();
+    g_allowDbMgrPivot.store(allowDbMgrPivot, std::memory_order_relaxed);
     uint32_t settleTimeoutMs = Core::Config::GetSendBuilderSettleTimeoutMs();
     g_netcfg_settle_timeout_ms.store(settleTimeoutMs, std::memory_order_relaxed);
 
@@ -7422,6 +7486,8 @@ void ShutdownSendBuilder()
     g_netmgr_this.store(nullptr, std::memory_order_release);
     g_netmgr_vtbl.store(nullptr, std::memory_order_release);
     g_allowCallsitePivot.store(false, std::memory_order_relaxed);
+    g_allowDbMgrPivot.store(false, std::memory_order_relaxed);
+    g_ready_mode.store(ReadyMode::None, std::memory_order_relaxed);
 }
 
 bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint)
@@ -7522,6 +7588,7 @@ SendBuilderStatus GetSendBuilderStatus()
     status.hooked = g_sendBuilderHooked;
     status.ready = g_sbReady.load(std::memory_order_acquire);
     status.pivotReady = g_sb_pivot_ready.load(std::memory_order_acquire);
+    status.readyMode = g_ready_mode.load(std::memory_order_acquire);
     status.sendPacket = g_sendPacketTarget;
     void* pivotMgr = g_netmgr_this.load(std::memory_order_acquire);
     status.netMgr = g_netMgr ? g_netMgr : pivotMgr;

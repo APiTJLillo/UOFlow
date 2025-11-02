@@ -4923,13 +4923,24 @@ static void MaybeEmitHeartbeat() {
     const bool ctxOK = engineCtx != nullptr;
     const char* ctxLabel = ctxOK ? "OK" : "MISS";
     Net::SendBuilderStatus sbStatus = Net::GetSendBuilderStatus();
+    char sbLabelBuf[32]{};
     const char* sbLabel = "pending";
     if (sbStatus.hooked) {
         sbLabel = "attached";
-    } else if (sbStatus.pivotReady) {
-        sbLabel = "pivot";
     } else if (sbStatus.ready) {
-        sbLabel = "ready";
+        const char* modeStr = "scan";
+        switch (sbStatus.readyMode) {
+        case Net::ReadyMode::Callsite:
+            modeStr = "callsite";
+            break;
+        case Net::ReadyMode::DbMgr:
+            modeStr = "dbmgr";
+            break;
+        default:
+            break;
+        }
+        _snprintf_s(sbLabelBuf, sizeof(sbLabelBuf), _TRUNCATE, "ready(mode=%s)", modeStr);
+        sbLabel = sbLabelBuf;
     } else if (sbStatus.probing) {
         sbLabel = "probing";
     }

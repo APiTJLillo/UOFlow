@@ -20,6 +20,12 @@ namespace Net {
         Backoff
     };
 
+    enum class ReadyMode : std::uint8_t {
+        None = 0,
+        Callsite,
+        DbMgr
+    };
+
     struct Stage3ScanConfig {
         std::uint32_t vtbl_scan_slots = 0;
         std::uint32_t depth = 0;
@@ -51,6 +57,7 @@ namespace Net {
         bool probing = false;
         bool ready = false;
         bool pivotReady = false;
+        ReadyMode readyMode = ReadyMode::None;
         void* sendPacket = nullptr;
         void* netMgr = nullptr;
     };
@@ -65,4 +72,5 @@ namespace Net {
     void SubmitSendSample(void* endpoint, void** frames, USHORT captured, std::uint64_t nowMs);
     bool IsSendSamplingEnabled();
     void OnSendPacketEnter(void* netMgrThis);
+    void PivotFromDbMgr(void* dbMgr);
 }
