@@ -493,7 +493,14 @@ void OnMovementSnapshot(const Engine::MovementSnapshot& snapshot,
         return;
     }
 
-    const bool sent = SendWalk(dir, g_state.run ? 1 : 0);
+    bool sent = false;
+    if (::Engine::Movement::IsReady()) {
+        sent = ::Engine::Movement::EnqueueMove(static_cast<::Engine::Movement::Dir>(dir & 0x7),
+                                               g_state.run);
+    }
+    if (!sent) {
+        sent = SendWalk(dir, g_state.run ? 1 : 0);
+    }
     g_state.lastStepTick = tickMs;
     if (sent) {
         ++g_state.inflight;

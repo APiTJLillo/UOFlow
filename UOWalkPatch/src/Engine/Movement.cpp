@@ -1759,6 +1759,17 @@ uint32_t GetAckDropCount()
     return g_ackDropCount.load(std::memory_order_relaxed);
 }
 
+void GetAckStats(AckStats& out)
+{
+    out = {};
+    out.okCount = g_ackOkCount.load(std::memory_order_relaxed);
+    out.dropCount = g_ackDropCount.load(std::memory_order_relaxed);
+    if (g_haveAckSeq.load(std::memory_order_relaxed))
+        out.lastSeq = g_lastAckSeq.load(std::memory_order_relaxed);
+    else
+        out.lastSeq = 0;
+}
+
 void NotifyClientMovementSent()
 {
     g_clientMovementSendObserved.store(true, std::memory_order_release);
@@ -2496,6 +2507,127 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
 
 } // namespace
 
+namespace Engine { namespace Movement {
+    static Symbols g_syms{};
+}}
+
+namespace {
+#pragma pack(push, 1)
+struct RequestMove {
+    std::uint32_t tag = 0;
+    std::uint8_t dir = 0;
+    std::uint8_t run = 0;
+    std::uint16_t padding = 0;
+};
+#pragma pack(pop)
+
+static bool MatchesAddServerReqPrologue(const std::uint8_t* p) {
+    if (!p)
+        return false;
+    const std::uint8_t sig[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x00, 0x56, 0x8B, 0xF1};
+    for (std::size_t i = 0; i < sizeof(sig); ++i) {
+        if (i == 5)
+            continue;
+        if (p[i] != sig[i])
+            return false;
+    }
+    return true;
+}
+} // namespace
+
+namespace Engine { namespace Movement {
+
+bool ResolveSymbols() {
+    if (g_syms.AddServerRequest && g_syms.vtbl_MovementPlayer)
+        return true;
+
+    void* self = g_moveComp;
+    if (self) {
+        auto** vtblSlot = reinterpret_cast<void***>(self);
+        if (vtblSlot && *vtblSlot) {
+            g_syms.vtbl_MovementPlayer = *vtblSlot;
+            constexpr int kProbeSpan = 64;
+            for (int i = 0; i < kProbeSpan; ++i) {
+                auto fn = reinterpret_cast<std::uint8_t*>((*vtblSlot)[i]);
+                if (!fn)
+                    continue;
+                __try {
+                    if (IsBadReadPtr(fn, 16))
+                        continue;
+                    if (MatchesAddServerReqPrologue(fn)) {
+                        g_syms.AddServerRequest = reinterpret_cast<Symbols::AddServerReqFn>(fn);
+                        break;
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    continue;
+                }
+            }
+        }
+    }
+
+    if (!g_syms.AddServerRequest) {
+        if (BYTE* addr = Core::PatternScan::FindPatternText("55 8B EC 83 EC ?? 56 8B F1 8B ?? ?? ?? ?? ??")) {
+            g_syms.AddServerRequest = reinterpret_cast<Symbols::AddServerReqFn>(addr);
+        }
+    }
+
+    const bool ok = (g_syms.vtbl_MovementPlayer != nullptr) && (g_syms.AddServerRequest != nullptr);
+    static bool logged = false;
+    if (ok && !logged) {
+        logged = true;
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Movement,
+                  "[MOVE] symbols resolved vtbl=%p AddServerRequest=%p",
+                  g_syms.vtbl_MovementPlayer,
+                  reinterpret_cast<void*>(g_syms.AddServerRequest));
+    }
+    return ok;
+}
+
+bool IsReady() {
+    return ::Engine::MovementReady() && ResolveSymbols();
+}
+
+int QueueDepth() {
+    return ::Engine::FastWalkQueueDepth();
+}
+
+bool EnqueueMove(Dir dir, bool run) {
+    if (!IsReady())
+        return false;
+
+    void* self = g_moveComp;
+    auto* fn = g_syms.AddServerRequest;
+    if (!self || !fn)
+        return false;
+
+    RequestMove req{};
+    req.dir = static_cast<std::uint8_t>(dir) & 0x7u;
+    req.run = run ? 1u : 0u;
+
+    int rc = 0;
+    __try {
+        rc = fn(self, &req, run, 0, true);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Movement,
+                  "[MOVE] AddServerRequest faulted; falling back");
+        rc = 0;
+    }
+
+    if (rc) {
+        Log::Logf(Log::Level::Debug,
+                  Log::Category::Movement,
+                  "[MOVE] enqueue ok dir=%u run=%u",
+                  static_cast<unsigned>(req.dir),
+                  static_cast<unsigned>(req.run));
+        return true;
+    }
+    return false;
+}
+
+}} // namespace Engine::Movement
+
 extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
     const bool debugLog = Walk::Controller::DebugEnabled();
     const bool detailedLog = debugLog || Log::IsEnabled(Log::Category::Walk, Log::Level::Debug);
@@ -2580,6 +2712,22 @@ extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
                   run,
                   normalizedDir,
                   reinterpret_cast<void*>(static_cast<uintptr_t>(movementSocket)));
+    }
+
+    if (Engine::Movement::IsReady() &&
+        Engine::Movement::EnqueueMove(static_cast<Engine::Movement::Dir>(normalizedDir & 0x7), shouldRun)) {
+        uint8_t nextSeq = NextMovementSequence();
+        Engine::TrackMovementTx(nextSeq, normalizedDir, shouldRun, movementSocket, 0u, "engine");
+        Engine::RecordMovementSent(nextSeq);
+        g_lastMovementSendTickMs.store(GetTickCount(), std::memory_order_relaxed);
+        if (detailedLog) {
+            Log::Logf(Log::Level::Debug,
+                      Log::Category::Walk,
+                      "SendWalk(engine) accepted dir=%d run=%d",
+                      normalizedDir,
+                      shouldRun ? 1 : 0);
+        }
+        return true;
     }
 
     uint8_t pkt[7]{};

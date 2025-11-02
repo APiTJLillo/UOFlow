@@ -1,5 +1,5 @@
 #pragma once
-#include <stdint.h>
+#include <cstdint>
 #include <winsock2.h>
 #include <windows.h>
 
@@ -84,11 +84,34 @@ namespace Engine {
     void GetFastWalkCounters(FastWalkCounters& out);
     uint64_t GetWalkStepsSent();
 
+    struct AckStats {
+        std::uint8_t lastSeq = 0;
+        std::uint32_t okCount = 0;
+        std::uint32_t dropCount = 0;
+    };
+    void GetAckStats(AckStats& out);
+
     bool MovementReady();
     bool MovementReadyWithReason(const char** reasonOut);
     void GetMovementDebugStatus(MovementDebugStatus& out);
     bool GetLastMovementSnapshot(MovementSnapshot& outSnapshot);
     void RequestWalkRegistration();
+
+    namespace Movement {
+        enum class Dir : std::uint8_t { N = 0, NE, E, SE, S, SW, W, NW };
+
+        struct Symbols {
+            void* vtbl_MovePlayer = nullptr;
+            void* vtbl_MovementPlayer = nullptr;
+            using AddServerReqFn = int(__thiscall*)(void* self, void* req, bool run, int flags, bool queued);
+            AddServerReqFn AddServerRequest = nullptr;
+        };
+
+        bool ResolveSymbols();
+        bool IsReady();
+        bool EnqueueMove(Dir dir, bool run);
+        int QueueDepth();
+    } // namespace Movement
 }
 
 extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run);

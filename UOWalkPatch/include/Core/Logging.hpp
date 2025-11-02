@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <cstdint>
 
 namespace Log {
     enum class Level : int {
@@ -25,6 +26,14 @@ namespace Log {
     void WriteRawLog(const char* message);
     void LogLastError(const char* prefix);
     void LogLoadedModules();
+
+    void SetCategoryMask(std::uint32_t mask);
+    std::uint32_t GetCategoryMask();
+
+    bool ShouldWriteDebounced(const char* key, std::uint32_t intervalMs);
+
+    void EnableQuietProfile();
+    void EnableDevVerbose();
 
     void SetMinLevel(Level level);
     Level GetMinLevel();

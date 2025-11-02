@@ -10,6 +10,9 @@
 #include <string>
 #include <cstring>
 #include <atomic>
+#include <cstdint>
+#include <mutex>
+#include <unordered_map>
 #include <algorithm>
 #include <cstdlib>
 #include <exception>
@@ -30,6 +33,7 @@ namespace {
 HANDLE g_logFile = INVALID_HANDLE_VALUE;
 char   g_logPath[MAX_PATH] = {};
 BOOL   g_logAnnounced = FALSE;
+std::atomic<std::uint32_t> g_categoryMask{0xFFFFFFFFu};
 HMODULE g_hModule = NULL;
 std::atomic<int> g_minLevel{static_cast<int>(Level::Info)};
 PVOID g_securityHandlerHandle = nullptr;
@@ -453,8 +457,54 @@ bool IsEnabled(Level level) {
     return ShouldWrite(level);
 }
 
-bool IsEnabled(Category, Level level) {
-    return ShouldWrite(level);
+bool IsEnabled(Category category, Level level) {
+    if (!ShouldWrite(level))
+        return false;
+    const auto mask = g_categoryMask.load(std::memory_order_acquire);
+    const auto bit = 1u << static_cast<unsigned>(category);
+    return (mask & bit) != 0;
+}
+
+void SetCategoryMask(std::uint32_t mask)
+{
+    g_categoryMask.store(mask, std::memory_order_release);
+}
+
+std::uint32_t GetCategoryMask()
+{
+    return g_categoryMask.load(std::memory_order_acquire);
+}
+
+bool ShouldWriteDebounced(const char* key, std::uint32_t intervalMs)
+{
+    if (!key || !*key)
+        return true;
+    static std::mutex s_mutex;
+    static std::unordered_map<std::string, DWORD> s_lastEmit;
+    DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lock(s_mutex);
+    DWORD& last = s_lastEmit[key];
+    if (last == 0 || now - last >= intervalMs) {
+        last = now;
+        return true;
+    }
+    return false;
+}
+
+void EnableQuietProfile()
+{
+    constexpr std::uint32_t mask =
+        (1u << static_cast<unsigned>(Category::Core)) |
+        (1u << static_cast<unsigned>(Category::Hooks)) |
+        (1u << static_cast<unsigned>(Category::Walk));
+    SetMinLevel(Level::Info);
+    SetCategoryMask(mask);
+}
+
+void EnableDevVerbose()
+{
+    SetMinLevel(Level::Debug);
+    SetCategoryMask(0xFFFFFFFFu);
 }
 
 void LogMessage(Level level, Category category, const char* message) {

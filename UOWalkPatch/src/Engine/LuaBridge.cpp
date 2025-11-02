@@ -1490,6 +1490,9 @@ static void MaybeEmitHelperSummary(uint64_t now, bool force = false) {
 }
 
 static constexpr const char* kHelperWalkName = "uow_walk";
+static constexpr const char* kHelperWalkMoveName = "WalkMove";
+static constexpr const char* kHelperGetPacingName = "GetPacing";
+static constexpr const char* kHelperGetWalkMetricsName = "GetWalkMetrics";
 static constexpr const char* kHelperDumpName = "uow_dump_walk_env";
 static constexpr const char* kHelperInspectName = "uow_lua_inspect";
 static constexpr const char* kHelperRebindName = "uow_lua_rebind_all";
@@ -2073,6 +2076,9 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
 static void DumpWalkEnv(lua_State* L, const char* reason);
 static int Lua_UOWalk(lua_State* L);
 static int Lua_UOWDump(lua_State* L);
+static int Lua_WalkMove(lua_State* L);
+static int Lua_GetPacing(lua_State* L);
+static int Lua_GetWalkMetrics(lua_State* L);
 static int Lua_UOWInspect(lua_State* L);
 static int Lua_UOWSelfTest(lua_State* L);
 static int Lua_UOWRebindAll(lua_State* L);
@@ -2781,7 +2787,16 @@ static bool TryBuildInspectSummary(lua_State* target, const LuaStateInfo& info, 
     std::vector<std::string> helperEntries;
     helperEntries.reserve(5);
 
-    const char* helpers[] = { kHelperWalkName, kHelperDumpName, kHelperInspectName, kHelperRebindName, kHelperSelfTestName };
+    const char* helpers[] = {
+        kHelperWalkName,
+        kHelperWalkMoveName,
+        kHelperGetPacingName,
+        kHelperGetWalkMetricsName,
+        kHelperDumpName,
+        kHelperInspectName,
+        kHelperRebindName,
+        kHelperSelfTestName
+    };
     constexpr size_t helperCount = sizeof(helpers) / sizeof(helpers[0]);
     for (size_t i = 0; i < helperCount; ++i) {
         int type = LUA_TNONE;
@@ -6180,6 +6195,12 @@ static WORD HelperFlagForName(const char* name) {
         return 0;
     if (_stricmp(name, kHelperWalkName) == 0)
         return HELPER_FLAG_WALK;
+    if (_stricmp(name, kHelperWalkMoveName) == 0)
+        return HELPER_FLAG_WALK_MOVE;
+    if (_stricmp(name, kHelperGetPacingName) == 0)
+        return HELPER_FLAG_GET_PACING;
+    if (_stricmp(name, kHelperGetWalkMetricsName) == 0)
+        return HELPER_FLAG_GET_METRICS;
     if (_stricmp(name, kHelperDumpName) == 0)
         return HELPER_FLAG_DUMP;
     if (_stricmp(name, kHelperInspectName) == 0)
@@ -6413,6 +6434,51 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
     return success;
 }
 
+static bool RegisterHelperViaOwnerPump(lua_State* ownerState,
+                                       lua_State* target,
+                                       LuaStateInfo info,
+                                       const char* name,
+                                       lua_CFunction fn,
+                                       uint64_t generation,
+                                       WORD flag,
+                                       LuaStateInfo& latestOut) {
+    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+    if (!flag || scriptTid == 0)
+        return false;
+
+    lua_State* scriptState = ownerState ? ownerState : g_mainLuaState.load(std::memory_order_acquire);
+    if (!scriptState)
+        scriptState = target;
+    if (!scriptState)
+        return false;
+
+    std::string helperName = (name && name[0] != '\0') ? name : "";
+    Util::OwnerPump::RunOnOwner([scriptState, target, info, helperName, fn, generation]() mutable {
+        const char* runName = helperName.empty() ? nullptr : helperName.c_str();
+        DoRegisterHelperOnScriptThread(scriptState,
+                                       target,
+                                       info,
+                                       runName,
+                                       fn,
+                                       generation,
+                                       /*allowForeignThread*/ true);
+    });
+
+    const DWORD deadline = GetTickCount() + 1000;
+    while (static_cast<LONG>(deadline - GetTickCount()) > 0) {
+        LuaStateInfo latest{};
+        if (g_stateRegistry.GetByPointer(target, latest) ||
+            (scriptState != target && g_stateRegistry.GetByPointer(scriptState, latest))) {
+            if ((latest.helper_flags & flag) != 0) {
+                latestOut = latest;
+                return true;
+            }
+        }
+        Sleep(10);
+    }
+    return false;
+}
+
 static bool ScriptThreadRegisterHelper(lua_State* ownerState,
                                        lua_State* target,
                                        LuaStateInfo info,
@@ -6528,6 +6594,21 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
         latest = info;
 
     bool installed = (latest.helper_flags & flag) != 0;
+
+    if (!installed) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] helper-register pending name=%s; scheduling owner-pump fallback",
+                  safeName);
+        if (RegisterHelperViaOwnerPump(scriptState, L, info, name, fn, generation, flag, latest)) {
+            installed = true;
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS] helper-register owner-pump name=%s ok flags=0x%04X",
+                      safeName,
+                      latest.helper_flags);
+        }
+    }
 
     Log::Logf(installed ? Log::Level::Info : Log::Level::Warn,
               Log::Category::Hooks,
@@ -6871,6 +6952,9 @@ static bool BindHelpersOnThread(lua_State* L,
         };
 
         bool walkOk = logStep(kHelperWalkName, [&]() { return RegisterHelper(L, info, kHelperWalkName, Lua_UOWalk, generation); });
+        bool walkMoveOk = logStep(kHelperWalkMoveName, [&]() { return RegisterHelper(L, info, kHelperWalkMoveName, Lua_WalkMove, generation); });
+        bool pacingOk = logStep(kHelperGetPacingName, [&]() { return RegisterHelper(L, info, kHelperGetPacingName, Lua_GetPacing, generation); });
+        bool metricsOk = logStep(kHelperGetWalkMetricsName, [&]() { return RegisterHelper(L, info, kHelperGetWalkMetricsName, Lua_GetWalkMetrics, generation); });
         bool dumpOk = logStep(kHelperDumpName, [&]() { return RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation); });
         bool inspectOk = logStep(kHelperInspectName, [&]() { return RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation); });
         bool rebindOk = logStep(kHelperRebindName, [&]() { return RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation); });
@@ -6881,6 +6965,9 @@ static bool BindHelpersOnThread(lua_State* L,
         if (metrics) {
             uint32_t successCount = 0;
             successCount += walkOk ? 1u : 0u;
+            successCount += walkMoveOk ? 1u : 0u;
+            successCount += pacingOk ? 1u : 0u;
+            successCount += metricsOk ? 1u : 0u;
             successCount += dumpOk ? 1u : 0u;
             successCount += inspectOk ? 1u : 0u;
             successCount += rebindOk ? 1u : 0u;
@@ -6889,9 +6976,12 @@ static bool BindHelpersOnThread(lua_State* L,
             successCount += debugStatusOk ? 1u : 0u;
             successCount += debugPingOk ? 1u : 0u;
             metrics->hookSuccess = successCount;
-            metrics->hookFailure = 8u > successCount ? (8u - successCount) : 0u;
+            constexpr uint32_t kTotalHelpers = 11u;
+            metrics->hookFailure = kTotalHelpers > successCount ? (kTotalHelpers - successCount) : 0u;
         }
-        bool allOk = walkOk && dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk && debugPingOk;
+        bool allOk = walkOk && walkMoveOk && pacingOk && metricsOk &&
+                     dumpOk && inspectOk && rebindOk && selfTestOk &&
+                     debugCfgOk && debugStatusOk && debugPingOk;
         if (allOk) {
             uint64_t installTick = GetTickCount64();
             g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
@@ -6928,6 +7018,9 @@ static bool BindHelpersOnThread(lua_State* L,
                 missing.append(name);
             };
             appendMissing(walkOk, kHelperWalkName);
+            appendMissing(walkMoveOk, kHelperWalkMoveName);
+            appendMissing(pacingOk, kHelperGetPacingName);
+            appendMissing(metricsOk, kHelperGetWalkMetricsName);
             appendMissing(dumpOk, kHelperDumpName);
             appendMissing(inspectOk, kHelperInspectName);
             appendMissing(rebindOk, kHelperRebindName);
@@ -7287,6 +7380,63 @@ static int Lua_UOWDump(lua_State* L) {
     EnsureHelperState(L, kHelperDumpName, &ready, &coalesced, nullptr);
     DumpWalkEnv(L, "uow_dump_walk_env");
     return 0;
+}
+
+static int Lua_WalkMove(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    EnsureHelperState(L, kHelperWalkMoveName, &ready, &coalesced, nullptr);
+    int argc = lua_gettop(L);
+    if (argc < 1 || !lua_isnumber(L, 1)) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    int dir = static_cast<int>(lua_tointeger(L, 1));
+    bool run = false;
+    if (argc >= 2)
+        run = lua_toboolean(L, 2) != 0;
+    bool ok = false;
+    if (::Engine::Movement::IsReady()) {
+        ok = ::Engine::Movement::EnqueueMove(static_cast<::Engine::Movement::Dir>(dir & 0x7), run);
+    }
+    if (!ok) {
+        ok = SendWalk(dir & 0x7, run ? 1 : 0);
+    }
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+static int Lua_GetPacing(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    EnsureHelperState(L, kHelperGetPacingName, &ready, &coalesced, nullptr);
+    lua_pushinteger(L, static_cast<lua_Integer>(Walk::Controller::GetStepDelayMs()));
+    return 1;
+}
+
+static int Lua_GetWalkMetrics(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    EnsureHelperState(L, kHelperGetWalkMetricsName, &ready, &coalesced, nullptr);
+    Engine::AckStats ack{};
+    Engine::GetAckStats(ack);
+    lua_newtable(L);
+    lua_pushinteger(L, static_cast<lua_Integer>(Walk::Controller::GetStepDelayMs()));
+    lua_setfield(L, -2, "stepDelay");
+    lua_pushinteger(L, static_cast<lua_Integer>(Walk::Controller::GetInflightCount()));
+    lua_setfield(L, -2, "inflight");
+    lua_pushinteger(L, static_cast<lua_Integer>(::Engine::Movement::QueueDepth()));
+    lua_setfield(L, -2, "queueDepth");
+    lua_pushinteger(L, static_cast<lua_Integer>(ack.lastSeq));
+    lua_setfield(L, -2, "lastAckSeq");
+    lua_pushinteger(L, static_cast<lua_Integer>(ack.okCount));
+    lua_setfield(L, -2, "acksOk");
+    lua_pushinteger(L, static_cast<lua_Integer>(ack.dropCount));
+    lua_setfield(L, -2, "acksDrop");
+    return 1;
 }
 
 static int Lua_UOWalk(lua_State* L) {
