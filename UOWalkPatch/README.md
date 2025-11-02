@@ -1,7 +1,7 @@
 # UOWalkPatch
 
 This utility injects a helper stub into the running Ultima Online Enhanced Client. The stub registers additional Lua natives which expand the built in macro functionality. Signatures for client functions are defined in `signatures.json`.
-`command_list.json` contains a reference list of skills and spells for use with the `processCommand` signature.
+`command_list.json` contains a reference list of skills and spells for use with the `processCommand` signature. 
 
 ## Building
 
