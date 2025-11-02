@@ -15,4 +15,11 @@ bool PostToOwner(std::uint32_t ownerTid, TaskFn&& fn, const char* tag);
 // if the owner does not acknowledge execution within the configured timeout.
 bool DispatchWithFallback(std::uint32_t ownerTid, TaskFn&& fn, const char* tag);
 
+// Returns true when the current thread is executing a dispatch tagged with the
+// supplied label (e.g. "helpers").
+bool IsCurrentDispatchTag(const char* tag);
+
+// Returns true when the current thread is running inside any dispatch context.
+bool IsInDispatch();
+
 } // namespace Core::Bind

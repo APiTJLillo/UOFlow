@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <functional>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -34,12 +35,6 @@ struct DispatchState {
             return;
 
         acked.store(true, std::memory_order_release);
-        if (!ownerLogged.test_and_set(std::memory_order_acq_rel) && tag == "helpers") {
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Hooks,
-                      "[HOOKS] helpers owner-entry tid=%u",
-                      static_cast<unsigned>(current));
-        }
         if (ackEvent)
             SetEvent(ackEvent);
     }
@@ -67,6 +62,8 @@ struct DispatchWork {
     std::shared_ptr<DispatchState> state;
 };
 
+thread_local const DispatchState* t_currentDispatchState = nullptr;
+
 void RunTaskOnCurrentThread(const std::shared_ptr<DispatchWork>& work) {
     if (!work)
         return;
@@ -79,6 +76,34 @@ void RunTaskOnCurrentThread(const std::shared_ptr<DispatchWork>& work) {
             state->NoteOwnerEntry();
         if (!state->AcquireExecution(isOwner))
             return;
+    }
+
+    struct DispatchScope {
+        const DispatchState* previous;
+        DispatchScope(const DispatchState* next) : previous(t_currentDispatchState) {
+            t_currentDispatchState = next;
+        }
+        ~DispatchScope() {
+            t_currentDispatchState = previous;
+        }
+    } scopeGuard(state.get());
+
+    if (state && state->tag == "helpers") {
+        DWORD current = GetCurrentThreadId();
+        if (state->owner != 0 && current == state->owner) {
+            if (!state->ownerLogged.test_and_set(std::memory_order_acq_rel)) {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Hooks,
+                          "[HOOKS] helpers owner-entry tid=%u",
+                          static_cast<unsigned>(current));
+            }
+        } else {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS] helpers remote-entry owner=%u tid=%u",
+                      static_cast<unsigned>(state ? state->owner : 0),
+                      static_cast<unsigned>(GetCurrentThreadId()));
+        }
     }
 
     if (work->task && *work->task) {
@@ -277,6 +302,19 @@ bool DispatchWithFallback(std::uint32_t ownerTid, TaskFn&& fn, const char* tag) 
     }
 
     return work->state && work->state->executed.load(std::memory_order_acquire);
+}
+
+bool IsCurrentDispatchTag(const char* tag) {
+    if (!tag)
+        return false;
+    const DispatchState* state = t_currentDispatchState;
+    if (!state)
+        return false;
+    return _stricmp(state->tag.c_str(), tag) == 0;
+}
+
+bool IsInDispatch() {
+    return t_currentDispatchState != nullptr;
 }
 
 } // namespace Core::Bind

@@ -5175,31 +5175,8 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
     }
 
     lua_State* target = current.L_canonical;
-    if (!force && !(Net::IsReady() || Net::IsPivotReady())) {
-        uint64_t nextRetry = now + retry.retryBackoffMs;
-        lua_State* stageTarget = target ? target : lookupPtr;
-        if (stageTarget) {
-            g_stateRegistry.UpdateByPointer(stageTarget, [&](LuaStateInfo& state) {
-                UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, "sendbuilder");
-                if (state.helper_first_attempt_ms == 0)
-                    state.helper_first_attempt_ms = now;
-                if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < nextRetry)
-                    state.helper_next_retry_ms = nextRetry;
-            }, &current);
-        }
-        current.helper_next_retry_ms = nextRetry;
-        LogLuaState("bind-skip Lc=%p reason=sendbuilder action=%s",
-                    stageTarget,
-                    action);
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "helpers skip Lc=%p reason=sendbuilder action=%s",
-                  stageTarget,
-                  action);
-        TrackHelperEvent(g_helperDeferredCount);
-        MaybeEmitHelperSummary(now);
-        return;
-    }
+    const bool sbReadyNow = Net::IsReady();
+    const bool sbPivotNow = Net::IsPivotReady();
     HelperInstallStage stage = DetermineHelperStage(current, canonicalReadyFlag);
     void* engineCtxSnapshot = g_engineContext.load(std::memory_order_acquire);
     if (engineCtxSnapshot && current.helper_settle_start_ms == 0) {
@@ -5453,16 +5430,25 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         }
     }
 
-    if (!allowNow && Core::Config::HelpersIgnoreGlobalSettleIfSbReady() && Net::IsReady()) {
+    if (allowNow && !(sbReadyNow || sbPivotNow)) {
+        allowNow = false;
+        gateReason = "sendbuilder";
+        desiredNextMs = std::max<uint64_t>(desiredNextMs, now + retry.retryBackoffMs);
+    }
+
+    if (!allowNow && Core::Config::HelpersIgnoreGlobalSettleIfSbReady() && (sbReadyNow || sbPivotNow)) {
         allowNow = true;
         passiveMode = false;
         gateReason = nullptr;
         logOverride = true;
         overrideReason = "sb-ready";
+        const char* readyModeLabel = Net::ReadyModeString();
+        if (!readyModeLabel || readyModeLabel[0] == '\0')
+            readyModeLabel = sbPivotNow ? "pivot" : "scan";
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
                   "[HOOKS] helpers forcing proceed: sb=ready(%s)",
-                  Net::ReadyModeString());
+                  readyModeLabel);
     }
 
     if (!allowNow) {
@@ -6413,7 +6399,8 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
 
     MaybeAdoptOwnerThread(L, info);
 
-    if (!IsOwnerThread(info)) {
+    const bool dispatchHelpers = Core::Bind::IsCurrentDispatchTag("helpers");
+    if (!dispatchHelpers && !IsOwnerThread(info)) {
         uint64_t now = GetTickCount64();
         if (now - info.last_bind_log_tick_ms >= kBindLogCooldownMs) {
             info.last_bind_log_tick_ms = now;
@@ -7833,6 +7820,7 @@ uint32_t GetSehTrapCount() {
 
 
 } // namespace Engine::Lua
+
 
 
 
