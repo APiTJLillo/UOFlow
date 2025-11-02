@@ -63,6 +63,7 @@ struct DispatchWork {
 };
 
 thread_local const DispatchState* t_currentDispatchState = nullptr;
+std::atomic<bool> g_postThreadMessageDisabled{false};
 
 void RunTaskOnCurrentThread(const std::shared_ptr<DispatchWork>& work) {
     if (!work)
@@ -123,9 +124,14 @@ bool QueueViaOwnerPump(DWORD ownerTid, const std::shared_ptr<DispatchWork>& work
 
     BOOL posted = FALSE;
     DWORD gle = ERROR_INVALID_PARAMETER;
-    if (ownerTid != 0) {
+    bool attemptedPost = false;
+    if (!g_postThreadMessageDisabled.load(std::memory_order_acquire) && ownerTid != 0) {
+        attemptedPost = true;
         posted = PostThreadMessageW(ownerTid, kOwnerWakeMessage, 0u, 0u);
         gle = posted ? 0u : GetLastError();
+        if (!posted && gle == ERROR_INVALID_THREAD_ID) {
+            g_postThreadMessageDisabled.store(true, std::memory_order_release);
+        }
     }
 
     Log::Logf(Log::Level::Info,
@@ -135,6 +141,14 @@ bool QueueViaOwnerPump(DWORD ownerTid, const std::shared_ptr<DispatchWork>& work
               work->state ? work->state->tag.c_str() : "<none>",
               posted ? 1 : 0,
               static_cast<unsigned long>(gle));
+
+    if (!posted && attemptedPost && g_postThreadMessageDisabled.load(std::memory_order_acquire)) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[CORE][Bind] post-thread-message disabled for owner=%u (gle=%lu)",
+                  static_cast<unsigned>(ownerTid),
+                  static_cast<unsigned long>(gle));
+    }
 
     return posted == TRUE;
 }
@@ -269,10 +283,10 @@ bool DispatchWithFallback(std::uint32_t ownerTid, TaskFn&& fn, const char* tag) 
         return false;
 
     // Primary post
-    QueueViaOwnerPump(resolvedOwner, work);
+    bool primaryPosted = QueueViaOwnerPump(resolvedOwner, work);
 
     const DWORD ackTimeout = Core::Config::HelpersPostAckTimeoutMs();
-    if (ackTimeout > 0 && work->state && work->state->ackEvent) {
+    if (primaryPosted && ackTimeout > 0 && work->state && work->state->ackEvent) {
         DWORD waitResult = WaitForSingleObject(work->state->ackEvent, ackTimeout);
         if (waitResult == WAIT_OBJECT_0 && work->state->acked.load(std::memory_order_acquire))
             return true;

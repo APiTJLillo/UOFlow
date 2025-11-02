@@ -4828,6 +4828,11 @@ static void PostBindToOwnerThread(lua_State* L,
     if (ownerTid == 0)
         return;
 
+    if (Core::Bind::IsCurrentDispatchTag("helpers") || GetCurrentThreadId() == ownerTid) {
+        BindHelpersTask(L, generation, force, reason ? reason : "ctx-rebind");
+        return;
+    }
+
     std::string reasonCopy = reason ? reason : "ctx-rebind";
     PostToOwnerWithTask(L, "helpers", [L, generation, force, reasonCopy]() {
         BindHelpersTask(L, generation, force, reasonCopy.c_str());
@@ -6021,6 +6026,11 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
         constexpr uint32_t kCanonicalNullRetryBudget = 3;
 
         uint32_t attempts = info.helper_rebind_attempts;
+        bool ctxChanged = (canonicalCtx != previousCtx);
+        if (!ctxChanged) {
+            attempts = 0;
+            info.helper_rebind_attempts = 0;
+        }
         if (!canonicalValid) {
             const bool canonicalAvailable = canonicalCtx != nullptr;
             uint64_t nowTick = GetTickCount64();
@@ -6038,8 +6048,12 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                     state.ctx_reported = canonicalCtx;
                     state.helper_passive_since_ms = 0;
                     UpdateHelperStage(state, HelperInstallStage::Installing, nowTick, reason ? reason : "canonical-missing");
-                    if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
-                        ++state.helper_rebind_attempts;
+                    if (ctxChanged) {
+                        if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
+                            ++state.helper_rebind_attempts;
+                    } else {
+                        state.helper_rebind_attempts = 0;
+                    }
                     attempts = state.helper_rebind_attempts;
                     if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms > nowTick + 200)
                         state.helper_next_retry_ms = nowTick + 200;
@@ -6054,11 +6068,12 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                           canonicalCtx,
                           static_cast<unsigned>(canonicalOwner));
                 MarkHelperRebindPending();
-                PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-missing");
+                if (!Core::Bind::IsCurrentDispatchTag("helpers"))
+                    PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-missing");
                 return true;
             }
 
-            if (attempts >= kMaxHelperRebindAttempts) {
+            if (ctxChanged && attempts >= kMaxHelperRebindAttempts) {
                 Log::Logf(Log::Level::Warn,
                           Log::Category::Hooks,
                           "[HOOKS] helpers rebind limit ctx old=0x%p attempts=%u",
@@ -6078,8 +6093,12 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                     if (state.owner_ready_tick_ms == 0)
                         state.owner_ready_tick_ms = nowTick;
                 }
-                if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
-                    ++state.helper_rebind_attempts;
+                if (ctxChanged) {
+                    if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
+                        ++state.helper_rebind_attempts;
+                } else {
+                    state.helper_rebind_attempts = 0;
+                }
                 attempts = state.helper_rebind_attempts;
             }, &info);
             info.ctx_reported = canonicalCtx;
@@ -6094,11 +6113,12 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                       canonicalCtx,
                       static_cast<unsigned>(canonicalOwner));
             MarkHelperRebindPending();
-            PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-pending");
+            if (!Core::Bind::IsCurrentDispatchTag("helpers"))
+                PostBindToOwnerThread(L, canonicalOwner, generation, force, "canonical-pending");
             return true;
         }
 
-        if (attempts >= kMaxHelperRebindAttempts) {
+        if (ctxChanged && attempts >= kMaxHelperRebindAttempts) {
             Log::Logf(Log::Level::Warn,
                       Log::Category::Hooks,
                       "[HOOKS] helpers rebind limit ctx old=0x%p attempts=%u",
@@ -6121,8 +6141,12 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                 if (state.owner_ready_tick_ms == 0)
                     state.owner_ready_tick_ms = nowTick;
             }
-            if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
-                ++state.helper_rebind_attempts;
+            if (ctxChanged) {
+                if (state.helper_rebind_attempts < std::numeric_limits<uint32_t>::max())
+                    ++state.helper_rebind_attempts;
+            } else {
+                state.helper_rebind_attempts = 0;
+            }
             attempts = state.helper_rebind_attempts;
         }, &info);
         info.ctx_reported = canonicalCtx;
@@ -6138,7 +6162,8 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                   canonicalCtx,
                   static_cast<unsigned>(canonicalOwner));
         MarkHelperRebindPending();
-        PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
+        if (!Core::Bind::IsCurrentDispatchTag("helpers"))
+            PostBindToOwnerThread(L, canonicalOwner, generation, force, "ctx-rebind");
         return true;
     };
 
@@ -6280,14 +6305,28 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
                       Net::ReadyModeString(),
                       static_cast<unsigned>(GetCurrentThreadId()));
 
-            bool walkOk = RegisterHelper(L, info, kHelperWalkName, Lua_UOWalk, generation);
-            bool dumpOk = RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation);
-            bool inspectOk = RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation);
-            bool rebindOk = RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation);
-            bool selfTestOk = RegisterHelper(L, info, kHelperSelfTestName, Lua_UOWSelfTest, generation);
-            bool debugCfgOk = RegisterHelper(L, info, kHelperDebugName, Lua_UOWDebug, generation);
-            bool debugStatusOk = RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOWDebugStatus, generation);
-            bool debugPingOk = RegisterHelper(L, info, kHelperDebugPingName, Lua_UOWDebugPing, generation);
+            auto logStep = [&](const char* name, auto&& fn) -> bool {
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Hooks,
+                          "[HOOKS][step] name=%s phase=pre",
+                          name);
+                bool ok = fn();
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Hooks,
+                          "[HOOKS][step] name=%s phase=post ok=%d",
+                          name,
+                          ok ? 1 : 0);
+                return ok;
+            };
+
+            bool walkOk = logStep(kHelperWalkName, [&]() { return RegisterHelper(L, info, kHelperWalkName, Lua_UOWalk, generation); });
+            bool dumpOk = logStep(kHelperDumpName, [&]() { return RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation); });
+            bool inspectOk = logStep(kHelperInspectName, [&]() { return RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation); });
+            bool rebindOk = logStep(kHelperRebindName, [&]() { return RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation); });
+            bool selfTestOk = logStep(kHelperSelfTestName, [&]() { return RegisterHelper(L, info, kHelperSelfTestName, Lua_UOWSelfTest, generation); });
+            bool debugCfgOk = logStep(kHelperDebugName, [&]() { return RegisterHelper(L, info, kHelperDebugName, Lua_UOWDebug, generation); });
+            bool debugStatusOk = logStep(kHelperDebugStatusName, [&]() { return RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOWDebugStatus, generation); });
+            bool debugPingOk = logStep(kHelperDebugPingName, [&]() { return RegisterHelper(L, info, kHelperDebugPingName, Lua_UOWDebugPing, generation); });
             if (metrics) {
                 uint32_t successCount = 0;
                 successCount += walkOk ? 1u : 0u;
