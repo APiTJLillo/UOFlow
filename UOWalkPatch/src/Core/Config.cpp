@@ -349,7 +349,7 @@ std::optional<uint32_t> TryGetMilliseconds(const std::string& key, LookupResult*
 }
 
 uint32_t GetSendBuilderSettleTimeoutMs() {
-    constexpr uint32_t kDefaultTimeoutMs = 2500;
+    constexpr uint32_t kDefaultTimeoutMs = 30'000;
     uint32_t timeoutMs = kDefaultTimeoutMs;
 
     if (auto cfgTimeout = TryGetMilliseconds("SendBuilder.settle_timeout_ms")) {

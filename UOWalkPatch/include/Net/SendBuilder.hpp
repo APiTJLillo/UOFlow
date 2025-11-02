@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
 #include <winsock2.h>
 #include "Net/ScannerStage3.hpp"
 #include "../include/Engine/GlobalState.hpp"
@@ -24,6 +25,18 @@ namespace Net {
         None = 0,
         Callsite,
         DbMgr
+    };
+
+    struct NetCfg {
+        void* ptr = nullptr;
+        std::size_t size = 0;
+        DWORD state = 0;
+        DWORD protect = 0;
+        bool settled = false;
+    };
+
+    struct SendBuilderState {
+        NetCfg netcfg{};
     };
 
     struct Stage3ScanConfig {
@@ -61,8 +74,11 @@ namespace Net {
         ReadyMode readyMode = ReadyMode::None;
         void* sendPacket = nullptr;
         void* netMgr = nullptr;
+        SendBuilderState state{};
     };
     SendBuilderStatus GetSendBuilderStatus();
+    SendBuilderState GetSendBuilderState();
+    NetCfg GetNetCfgState();
     Scanner::ScanPassTelemetry DumpLastPassTelemetry();
     Stage3ScanStats GetStage3ScanStats();
     Stage3ScanConfig GetStage3ScanConfig();
@@ -77,4 +93,5 @@ namespace Net {
     const char* ReadyModeString();
     bool InstallSendPacketHook(void* sendPacketAddr);
     void RegisterNetworkConfigPivot(void* netCfg, const char* sourceTag);
+    void NotifyMovementAck(uint8_t seq, uint8_t status, bool ok, bool forcedFailure);
 }

@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <deque>
 #include <mutex>
 #include <atomic>
 #include <array>
@@ -38,6 +39,7 @@
 #include "Net/SendSampleStore.hpp"
 #include "Util/OwnerPump.hpp"
 #include "Util/RegionWatch.hpp"
+#include "Walk/WalkController.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/LuaBridge.hpp"
 
@@ -62,6 +64,12 @@ struct SendBuilderTunables {
     static constexpr bool FALLBACK_PIVOT_ENABLED = true;
     static constexpr DWORD WAKE_DEBOUNCE_MS = 200;
     static constexpr int TAIL_FOLLOW_MAX = 2;
+};
+
+struct PendingMovement {
+    uint8_t seq = 0;
+    DWORD enqueueTick = 0;
+    bool acked = false;
 };
 
 constexpr DWORD kEngineUnstableLogCooldownMs = 2000;
@@ -177,7 +185,7 @@ static std::atomic<bool> g_sbReady{false};
 static void* g_netCfgSettlePtr = nullptr;
 static bool g_netCfgSettleLogged = false;
 static std::atomic<uint64_t> g_netcfg_settle_start_ms{0};
-static std::atomic<uint32_t> g_netcfg_settle_timeout_ms{2500};
+static std::atomic<uint32_t> g_netcfg_settle_timeout_ms{30'000};
 static std::atomic<bool> g_netcfg_settle_warned{false};
 static std::atomic<bool> g_allowCallsitePivot{false};
 static std::atomic<bool> g_allowDbMgrPivot{true};
@@ -189,9 +197,19 @@ static std::atomic<uintptr_t> g_netcfg_region_base{0};
 static std::atomic<SIZE_T> g_netcfg_region_size{0};
 static std::atomic<bool> g_mem_event_flag{false};
 static std::atomic<uint64_t> g_last_mem_event_ms{0};
-static constexpr DWORD kNetCfgSettleIntervalMs = 250;
-static constexpr DWORD kNetCfgSettleTimeoutMs = 10'000;
+static SendBuilderState g_runtimeState{};
+static std::mutex g_runtimeStateMutex;
+static constexpr DWORD kNetCfgSettleIntervalMs = 300;
+static constexpr DWORD kNetCfgSettleTimeoutMs = 30'000;
+static constexpr std::uint32_t kNetCfgSettleLogEvery = 5;
 static std::once_flag g_missingManagerLogOnce;
+static std::mutex g_movementQueueMutex;
+static std::deque<PendingMovement> g_movementQueue;
+static std::atomic<uint32_t> g_movementInflight{0};
+static std::atomic<uint32_t> g_movementMaxInflight{1};
+static std::atomic<uint32_t> g_movementConsecutiveFailures{0};
+static std::atomic<DWORD> g_lastMovementOverrideTick{0};
+static constexpr DWORD kMovementOverrideCooldownMs = 600;
 
 static bool IsExecutableCodeAddress(void* addr);
 static std::atomic<std::uint64_t> g_guardWarnPass{0};
@@ -1170,6 +1188,167 @@ static const char* MemProtectToStr(DWORD protect) noexcept
     return buf;
 }
 
+static bool IsReadableProtect(DWORD protect) noexcept
+{
+    constexpr DWORD kReadableMask = PAGE_READONLY | PAGE_READWRITE |
+                                    PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                                    PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if (protect & PAGE_GUARD)
+        return false;
+    if (protect & PAGE_NOACCESS)
+        return false;
+    return (protect & kReadableMask) != 0;
+}
+
+static void PublishNetCfgState(void* ptr,
+                               SIZE_T size,
+                               DWORD state,
+                               DWORD protect,
+                               bool settled) noexcept
+{
+    NetCfg previous{};
+    NetCfg current{};
+    bool readyTransition = false;
+
+    current.ptr = ptr;
+    current.size = static_cast<std::size_t>(size);
+    current.state = state;
+    current.protect = protect;
+    current.settled = settled && ptr != nullptr;
+
+    {
+        std::lock_guard<std::mutex> lock(g_runtimeStateMutex);
+        previous = g_runtimeState.netcfg;
+        if (previous.ptr == current.ptr &&
+            previous.size == current.size &&
+            previous.state == current.state &&
+            previous.protect == current.protect &&
+            previous.settled == current.settled) {
+            return;
+        }
+        g_runtimeState.netcfg = current;
+        readyTransition = current.settled &&
+                          (!previous.settled ||
+                           previous.ptr != current.ptr ||
+                           previous.size != current.size ||
+                           previous.state != current.state ||
+                           previous.protect != current.protect);
+    }
+
+    if (readyTransition) {
+        const char* stateStr = MemStateToStr(current.state);
+        const char* protectStr = MemProtectToStr(current.protect);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB][READY] networkConfig=%p size=0x%zx state=%s protect=%s",
+                  current.ptr,
+                  current.size,
+                  stateStr,
+                  protectStr);
+    }
+}
+
+static bool IsMovementPacket(const uint8_t* bytes, int len) noexcept
+{
+    return bytes && len >= 3 && bytes[0] == 0x02;
+}
+
+static void MaybeApplyMovementOverride(const char* /*reason*/)
+{
+    DWORD now = GetTickCount();
+    DWORD last = g_lastMovementOverrideTick.load(std::memory_order_acquire);
+    if (last != 0 && static_cast<DWORD>(now - last) < kMovementOverrideCooldownMs)
+        return;
+    g_lastMovementOverrideTick.store(now, std::memory_order_release);
+    Walk::Controller::ApplyInflightOverride(1, 4);
+}
+
+static void TrackMovementSend(const void* pkt, int len)
+{
+    const uint8_t* bytes = static_cast<const uint8_t*>(pkt);
+    if (!IsMovementPacket(bytes, len))
+        return;
+
+    const uint8_t seq = bytes[2];
+    const DWORD now = GetTickCount();
+
+    {
+        std::lock_guard<std::mutex> lock(g_movementQueueMutex);
+        while (!g_movementQueue.empty()) {
+            const PendingMovement& front = g_movementQueue.front();
+            if (!front.acked && (now - front.enqueueTick) <= 10'000)
+                break;
+            g_movementQueue.pop_front();
+        }
+        if (g_movementQueue.size() >= 32)
+            g_movementQueue.pop_front();
+
+        PendingMovement entry{};
+        entry.seq = seq;
+        entry.enqueueTick = now;
+        entry.acked = false;
+        g_movementQueue.push_back(entry);
+    }
+
+    g_movementInflight.fetch_add(1, std::memory_order_acq_rel);
+    auto settings = Walk::Controller::GetSettings();
+    if (settings.maxInflight == 0)
+        settings.maxInflight = 1;
+    g_movementMaxInflight.store(settings.maxInflight, std::memory_order_relaxed);
+
+    if (!g_sbReady.load(std::memory_order_acquire) ||
+        g_movementInflight.load(std::memory_order_acquire) > g_movementMaxInflight.load(std::memory_order_relaxed)) {
+        MaybeApplyMovementOverride("pending");
+    }
+}
+
+static void NotifyMovementAckInternal(uint8_t seq, bool ok)
+{
+    DWORD now = GetTickCount();
+    bool decremented = false;
+    {
+        std::lock_guard<std::mutex> lock(g_movementQueueMutex);
+        for (auto& entry : g_movementQueue) {
+            if (entry.seq == seq && !entry.acked) {
+                entry.acked = true;
+                decremented = true;
+                break;
+            }
+        }
+        while (!g_movementQueue.empty()) {
+            const PendingMovement& front = g_movementQueue.front();
+            if (!front.acked && (now - front.enqueueTick) <= 10'000)
+                break;
+            g_movementQueue.pop_front();
+        }
+    }
+
+    if (decremented) {
+        std::uint32_t current = g_movementInflight.load(std::memory_order_acquire);
+        while (current > 0 &&
+               !g_movementInflight.compare_exchange_weak(current,
+                                                        current - 1,
+                                                        std::memory_order_acq_rel,
+                                                        std::memory_order_relaxed)) {
+        }
+    }
+
+    if (ok) {
+        g_movementConsecutiveFailures.store(0, std::memory_order_release);
+    } else {
+        g_movementInflight.store(0, std::memory_order_release);
+        std::uint32_t failures = g_movementConsecutiveFailures.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (failures == 1 || (failures % 2u) == 0)
+            MaybeApplyMovementOverride("ack");
+    }
+}
+
+void NotifyMovementAck(uint8_t seq, uint8_t /*status*/, bool ok, bool forcedFailure)
+{
+    bool success = ok && !forcedFailure;
+    NotifyMovementAckInternal(seq, success);
+}
+
 static void UpdateNetCfgRegionBounds(const MEMORY_BASIC_INFORMATION& mbi) noexcept
 {
     g_netcfg_region_base.store(reinterpret_cast<uintptr_t>(mbi.BaseAddress), std::memory_order_relaxed);
@@ -1253,26 +1432,22 @@ static void TryScanIfMapped() noexcept
 
     UpdateNetCfgRegionBounds(mbi);
 
-    const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
     const bool committed = (mbi.State == MEM_COMMIT);
     const bool guard = (mbi.Protect & PAGE_GUARD) != 0;
     const bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
-    const bool readable = (mbi.Protect & readableMask) != 0;
+    const bool readable = committed && IsReadableProtect(mbi.Protect);
     if (!committed || guard || noAccess || !readable)
         return;
 
     StopNetCfgRetryLoop();
+    void* publishPtr = GetTrackedConfigPtr();
+    if (!publishPtr)
+        publishPtr = basePtr;
+    PublishNetCfgState(publishPtr, mbi.RegionSize, mbi.State, mbi.Protect, true);
     const bool wasReady = g_sbReady.load(std::memory_order_acquire);
     g_sbReady.store(true, std::memory_order_release);
     ScheduleScan("mem-event:ready", false);
     HookSendBuilderFromNetMgr();
-    if (!wasReady) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[CORE][SB][READY] netcfg mapped & scanned (base=%p size=0x%zx)",
-                  mbi.BaseAddress,
-                  static_cast<std::size_t>(mbi.RegionSize));
-    }
 }
 
 void OnSendPacketEnter(void* ecxThis)
@@ -1471,16 +1646,19 @@ static void StartNetCfgRetryLoop(void* watchPtr, DWORD nowTick) noexcept
     MEMORY_BASIC_INFORMATION mbi{};
     if (VirtualQuery(watchPtr, &mbi, sizeof(mbi))) {
         UpdateNetCfgRegionBounds(mbi);
+        PublishNetCfgState(watchPtr, mbi.RegionSize, mbi.State, mbi.Protect, false);
+        const char* stateStr = MemStateToStr(mbi.State);
+        const char* protectStr = MemProtectToStr(mbi.Protect);
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "[CORE][SB][PEND] networkConfig settle start ptr=%p state=0x%08lX protect=0x%08lX type=0x%08lX size=0x%zx",
+                  "[CORE][SB][PEND] networkConfig settle start ptr=%p state=%s protect=%s size=0x%zx settled=false",
                   watchPtr,
-                  static_cast<unsigned long>(mbi.State),
-                  static_cast<unsigned long>(mbi.Protect),
-                  static_cast<unsigned long>(mbi.Type),
+                  stateStr,
+                  protectStr,
                   static_cast<std::size_t>(mbi.RegionSize));
     } else {
         ClearNetCfgRegionBounds();
+        PublishNetCfgState(watchPtr, 0, 0, 0, false);
         Log::Logf(Log::Level::Warn,
                   Log::Category::Core,
                   "[CORE][SB][PEND] networkConfig settle start VirtualQuery failed ptr=%p error=%lu",
@@ -1533,14 +1711,13 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
     if (VirtualQuery(g_netCfgSettlePtr, &mbi, sizeof(mbi))) {
         UpdateNetCfgRegionBounds(mbi);
         const bool committed = (mbi.State == MEM_COMMIT);
-        const bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
         const bool guard = (mbi.Protect & PAGE_GUARD) != 0;
-        if (committed && !noAccess && !guard) {
+        const bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
+        const bool readable = committed && IsReadableProtect(mbi.Protect);
+        PublishNetCfgState(g_netCfgSettlePtr, mbi.RegionSize, mbi.State, mbi.Protect, readable);
+        if (readable) {
             StopNetCfgRetryLoop();
             g_sbReady.store(true, std::memory_order_release);
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Core,
-                      "[CORE][SB] networkConfig settled; scheduling scan");
             ScheduleScan("settle:ready", false);
             return;
         }
@@ -1548,8 +1725,8 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
         ++g_netCfgRetryIndex;
         MaybeWarnNetCfgSettleTimeout();
         const bool shouldLog = !g_netCfgSettleLogged ||
-                               g_netCfgRetryIndex <= 8 ||
-                               (g_netCfgRetryIndex % 8u) == 0;
+                               g_netCfgRetryIndex <= kNetCfgSettleLogEvery ||
+                               (g_netCfgRetryIndex % kNetCfgSettleLogEvery) == 0;
         if (shouldLog) {
             const char* stateStr = MemStateToStr(mbi.State);
             const char* protectStr = MemProtectToStr(mbi.Protect);
@@ -1559,27 +1736,27 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
                 (settleStart != 0 && nowMs >= settleStart) ? (nowMs - settleStart) : 0;
             Log::Logf(Log::Level::Info,
                       Log::Category::Core,
-                      "[CORE][SB][SKIP] netcfg settle waiting ptr=%p attempt=%u state=0x%08lX protect=0x%08lX guard=%d noaccess=%d state=%s protect=%s settle_elapsed_ms=%llu",
+                      "[CORE][SB][SKIP] netcfg settle waiting ptr=%p attempt=%u state=%s protect=%s guard=%d noaccess=%d elapsed_ms=%llu settled=false",
                       g_netCfgSettlePtr,
                       static_cast<unsigned>(g_netCfgRetryIndex),
-                      static_cast<unsigned long>(mbi.State),
-                      static_cast<unsigned long>(mbi.Protect),
-                      guard ? 1 : 0,
-                      noAccess ? 1 : 0,
                       stateStr,
                       protectStr,
+                      guard ? 1 : 0,
+                      noAccess ? 1 : 0,
                       static_cast<unsigned long long>(settleElapsed));
             g_netCfgSettleLogged = true;
         }
         LogNetCfgBlockedDiagnostics(g_netCfgSettlePtr, mbi);
     } else {
         ClearNetCfgRegionBounds();
+        PublishNetCfgState(g_netCfgSettlePtr, 0, 0, 0, false);
         ++g_netCfgRetryIndex;
         MaybeWarnNetCfgSettleTimeout();
-        if (!g_netCfgSettleLogged || (g_netCfgRetryIndex % 8u) == 0) {
+        if (!g_netCfgSettleLogged ||
+            (g_netCfgRetryIndex % kNetCfgSettleLogEvery) == 0) {
             Log::Logf(Log::Level::Warn,
                       Log::Category::Core,
-                      "[CORE][SB][SKIP] netcfg settle VirtualQuery failed ptr=%p attempt=%u error=%lu",
+                      "[CORE][SB][SKIP] netcfg settle VirtualQuery failed ptr=%p attempt=%u error=%lu settled=false",
                       g_netCfgSettlePtr,
                       static_cast<unsigned>(g_netCfgRetryIndex),
                       GetLastError());
@@ -1613,7 +1790,6 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
 
 static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
 {
-    const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
 
     auto recordCandidate = [&](void* candidate, std::uint8_t slotIndex) {
         if (!candidate)
@@ -1638,11 +1814,12 @@ static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
 
         MEMORY_BASIC_INFORMATION mbi{};
         if (!VirtualQuery(candidate, &mbi, sizeof(mbi))) {
+            const char* src = (sourceLabel && *sourceLabel) ? sourceLabel : "cached";
             Log::Logf(Log::Level::Debug,
                       Log::Category::Core,
                       "[CORE][SB][ALT] candidate slot=%zu source=%s VirtualQuery failed ptr=%p error=%lu",
                       slotIndex,
-                      sourceLabel ? sourceLabel : "?",
+                      src,
                       candidate,
                       GetLastError());
             return false;
@@ -1651,15 +1828,18 @@ static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
         const bool committed = (mbi.State == MEM_COMMIT);
         const bool guard = (mbi.Protect & PAGE_GUARD) != 0;
         const bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
-        const bool readable = (mbi.Protect & readableMask) != 0;
-        if (!committed || guard || noAccess || !readable) {
+        const bool readable = committed && IsReadableProtect(mbi.Protect);
+        if (!committed || !readable) {
+            const char* stateStr = MemStateToStr(mbi.State);
+            const char* protectStr = MemProtectToStr(mbi.Protect);
+            const char* src = (sourceLabel && *sourceLabel) ? sourceLabel : "cached";
             Log::Logf(Log::Level::Debug,
                       Log::Category::Core,
-                      "[CORE][SB][ALT] candidate slot=%zu source=%s rejected state=0x%08lX protect=0x%08lX guard=%d noaccess=%d readable=%d",
+                      "[CORE][SB][ALT] candidate slot=%zu source=%s rejected state=%s protect=%s guard=%d noaccess=%d readable=%d",
                       slotIndex,
-                      sourceLabel ? sourceLabel : "?",
-                      static_cast<unsigned long>(mbi.State),
-                      static_cast<unsigned long>(mbi.Protect),
+                      src,
+                      stateStr,
+                      protectStr,
                       guard ? 1 : 0,
                       noAccess ? 1 : 0,
                       readable ? 1 : 0);
@@ -1673,15 +1853,17 @@ static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
 
         std::uintptr_t probe{};
         if (!SafeCopy(&probe, candidate, sizeof(probe))) {
+            const char* src = (sourceLabel && *sourceLabel) ? sourceLabel : "cached";
             Log::Logf(Log::Level::Debug,
                       Log::Category::Core,
                       "[CORE][SB][ALT] candidate slot=%zu source=%s rejected (SafeCopy failed)",
                       slotIndex,
-                      sourceLabel ? sourceLabel : "?");
+                      src);
             return false;
         }
 
         StopNetCfgRetryLoop();
+        PublishNetCfgState(candidate, mbi.RegionSize, mbi.State, mbi.Protect, true);
         g_netCfgFallbackPtr = candidate;
         g_lastNetCfgPtr = candidate;
         g_lastNetCfgState = 0xFFFFFFFF;
@@ -1694,18 +1876,20 @@ static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
         ResetNetCfgCandidates();
         Util::RegionWatch::SetWatchPointer(candidate);
         void** vtbl = g_netmgr_vtbl.load(std::memory_order_acquire);
-        uow::netcfg::NotifyFallbackCandidate(g_netMgr, vtbl, candidate, sourceLabel);
-
+        const char* src = (sourceLabel && *sourceLabel) ? sourceLabel : "cached";
+        uow::netcfg::NotifyFallbackCandidate(g_netMgr, vtbl, candidate, src);
+        const char* stateStr = MemStateToStr(mbi.State);
+        const char* protectStr = MemProtectToStr(mbi.Protect);
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
-                  "[CORE][SB][ALT] networkConfig fallback slot=%zu source=%s ptr=%p base=%p size=0x%zx state=0x%08lX protect=0x%08lX type=0x%08lX",
+                  "[CORE][SB][ALT] networkConfig fallback slot=%zu source=%s ptr=%p base=%p size=0x%zx state=%s protect=%s type=0x%08lX",
                   slotIndex,
-                  sourceLabel ? sourceLabel : "?",
+                  src,
                   candidate,
                   mbi.BaseAddress,
                   static_cast<std::size_t>(mbi.RegionSize),
-                  static_cast<unsigned long>(mbi.State),
-                  static_cast<unsigned long>(mbi.Protect),
+                  stateStr,
+                  protectStr,
                   static_cast<unsigned long>(mbi.Type));
         rawCfg = candidate;
         return true;
@@ -1713,25 +1897,29 @@ static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
 
     if (g_netCfgFallbackPtr && rawCfg != g_netCfgFallbackPtr) {
         MEMORY_BASIC_INFORMATION fallbackMbi{};
-        if (VirtualQuery(g_netCfgFallbackPtr, &fallbackMbi, sizeof(fallbackMbi)) &&
-            fallbackMbi.State == MEM_COMMIT &&
-            !(fallbackMbi.Protect & PAGE_GUARD) &&
-            !(fallbackMbi.Protect & PAGE_NOACCESS) &&
-            (fallbackMbi.Protect & readableMask)) {
-            UpdateNetCfgRegionBounds(fallbackMbi);
-            rawCfg = g_netCfgFallbackPtr;
+        if (VirtualQuery(g_netCfgFallbackPtr, &fallbackMbi, sizeof(fallbackMbi))) {
+            const bool readable = (fallbackMbi.State == MEM_COMMIT) && IsReadableProtect(fallbackMbi.Protect);
+            PublishNetCfgState(g_netCfgFallbackPtr,
+                               fallbackMbi.RegionSize,
+                               fallbackMbi.State,
+                               fallbackMbi.Protect,
+                               readable);
+            if (readable) {
+                UpdateNetCfgRegionBounds(fallbackMbi);
+                rawCfg = g_netCfgFallbackPtr;
+                Log::Logf(Log::Level::Debug,
+                          Log::Category::Core,
+                          "[CORE][SB][ALT] reuse fallback netcfg ptr=%p",
+                          g_netCfgFallbackPtr);
+                return true;
+            }
             Log::Logf(Log::Level::Debug,
                       Log::Category::Core,
-                      "[CORE][SB][ALT] reuse fallback netcfg ptr=%p",
-                      g_netCfgFallbackPtr);
-            return true;
+                      "[CORE][SB][ALT] dropping fallback ptr=%p state=0x%08lX protect=0x%08lX",
+                      g_netCfgFallbackPtr,
+                      static_cast<unsigned long>(fallbackMbi.State),
+                      static_cast<unsigned long>(fallbackMbi.Protect));
         }
-        Log::Logf(Log::Level::Debug,
-                  Log::Category::Core,
-                  "[CORE][SB][ALT] dropping fallback ptr=%p state=0x%08lX protect=0x%08lX",
-                  g_netCfgFallbackPtr,
-                  static_cast<unsigned long>(fallbackMbi.State),
-                  static_cast<unsigned long>(fallbackMbi.Protect));
         g_netCfgFallbackPtr = nullptr;
         ClearNetCfgRegionBounds();
     }
@@ -6861,16 +7049,20 @@ static void HookSendBuilderFromNetMgr()
         } else {
             MEMORY_BASIC_INFORMATION fallbackMbi{};
             if (VirtualQuery(g_netCfgFallbackPtr, &fallbackMbi, sizeof(fallbackMbi)) &&
-                fallbackMbi.State == MEM_COMMIT &&
-                !(fallbackMbi.Protect & PAGE_GUARD) &&
-                !(fallbackMbi.Protect & PAGE_NOACCESS)) {
-                const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
-                if (fallbackMbi.Protect & readableMask) {
+                fallbackMbi.State == MEM_COMMIT) {
+                const bool readable = IsReadableProtect(fallbackMbi.Protect);
+                PublishNetCfgState(g_netCfgFallbackPtr,
+                                   fallbackMbi.RegionSize,
+                                   fallbackMbi.State,
+                                   fallbackMbi.Protect,
+                                   readable);
+                if (readable) {
                     rawCfg = g_netCfgFallbackPtr;
                 } else {
                     g_netCfgFallbackPtr = nullptr;
                 }
             } else {
+                PublishNetCfgState(g_netCfgFallbackPtr, 0, 0, 0, false);
                 g_netCfgFallbackPtr = nullptr;
             }
         }
@@ -6880,6 +7072,7 @@ static void HookSendBuilderFromNetMgr()
             g_loggedNetScanFailure = true;
             WriteRawLog("HookSendBuilderFromNetMgr: networkConfig pointer is null");
         }
+        PublishNetCfgState(nullptr, 0, 0, 0, false);
         Util::RegionWatch::ClearWatch();
         StopNetCfgRetryLoop();
         g_sbReady.store(false, std::memory_order_release);
@@ -6909,6 +7102,7 @@ static void HookSendBuilderFromNetMgr()
         g_haveNetCfgSnapshot = false;
         g_lastLoggedManager = nullptr;
         g_lastLoggedEndpoint = nullptr;
+        PublishNetCfgState(rawCfg, 0, 0, 0, false);
         Util::RegionWatch::SetWatchPointer(rawCfg);
         if (g_netCfgFallbackPtr && g_netCfgFallbackPtr != rawCfg)
             g_netCfgFallbackPtr = nullptr;
@@ -6925,6 +7119,7 @@ RetryNetCfgSnapshot:
     if (!SafeCopy(snapshot, rawCfg, sizeof(snapshot))) {
         MEMORY_BASIC_INFORMATION mbi{};
         if (!VirtualQuery(rawCfg, &mbi, sizeof(mbi))) {
+            PublishNetCfgState(rawCfg, 0, 0, 0, false);
             if (!g_loggedNetScanFailure || g_lastNetCfgState != 0xFFFFFFFE) {
                 char buf[200];
                 sprintf_s(buf, sizeof(buf),
@@ -6945,6 +7140,7 @@ RetryNetCfgSnapshot:
                             (mbi.RegionSize != g_lastNetCfgRegionSize);
         Util::RegionWatch::UpdateRegionInfo(mbi);
         UpdateNetCfgRegionBounds(mbi);
+        PublishNetCfgState(rawCfg, mbi.RegionSize, mbi.State, mbi.Protect, false);
         if (stateChanged) {
             char buf[256];
             sprintf_s(buf, sizeof(buf),
@@ -6962,8 +7158,7 @@ RetryNetCfgSnapshot:
             g_lastNetCfgBase = mbi.BaseAddress;
             g_lastNetCfgRegionSize = mbi.RegionSize;
         }
-        const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
-        bool readable = (mbi.State == MEM_COMMIT) && !(mbi.Protect & PAGE_GUARD) && (mbi.Protect & readableMask);
+        const bool readable = (mbi.State == MEM_COMMIT) && IsReadableProtect(mbi.Protect);
         if (!readable) {
             if (!retriedFallback && TryAdoptNetCfgFallback(rawCfg)) {
                 retriedFallback = true;
@@ -6973,9 +7168,9 @@ RetryNetCfgSnapshot:
             if (!g_loggedNetScanFailure) {
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
-                          "[CORE][SB] networkConfig pending protect=0x%08lX state=0x%08lX; deferring scan",
-                          static_cast<unsigned long>(mbi.Protect),
-                          static_cast<unsigned long>(mbi.State));
+                          "[CORE][SB] networkConfig pending state=%s protect=%s settled=false; deferring scan",
+                          MemStateToStr(mbi.State),
+                          MemProtectToStr(mbi.Protect));
             }
             g_loggedNetScanFailure = true;
             g_stage3SettleBypassBudget.store(2, std::memory_order_release);
@@ -6989,7 +7184,7 @@ RetryNetCfgSnapshot:
             if (!g_loggedNetScanFailure) {
                 Log::Logf(Log::Level::Info,
                           Log::Category::Core,
-                          "[CORE][SB] networkConfig access fault; deferring scan");
+                          "[CORE][SB] networkConfig access fault; deferring scan settled=false");
             }
             g_loggedNetScanFailure = true;
             g_stage3SettleBypassBudget.store(2, std::memory_order_release);
@@ -7028,6 +7223,8 @@ RetryNetCfgSnapshot:
 
     MEMORY_BASIC_INFORMATION mbiCurrent{};
     if (VirtualQuery(rawCfg, &mbiCurrent, sizeof(mbiCurrent))) {
+        const bool readable = (mbiCurrent.State == MEM_COMMIT) && IsReadableProtect(mbiCurrent.Protect);
+        PublishNetCfgState(rawCfg, mbiCurrent.RegionSize, mbiCurrent.State, mbiCurrent.Protect, readable);
         bool changed = (mbiCurrent.State != g_lastNetCfgState) ||
                        (mbiCurrent.Protect != g_lastNetCfgProtect) ||
                        (mbiCurrent.Type != g_lastNetCfgType) ||
@@ -7162,6 +7359,7 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
     LONG previous = InterlockedExchange(&g_needWalkReg, 0);
     if (previous != 0)
         Engine::Lua::ScheduleWalkBinding();
+    TrackMovementSend(pkt, len);
     if (!isDebugNudge)
         g_sendPacket(thisPtr, pkt, len);
 }
@@ -7298,6 +7496,18 @@ bool InitSendBuilder(GlobalStateInfo* state)
         Util::RegionWatch::SetWatchPointer(state->networkConfig);
     } else {
         Util::RegionWatch::SetWatchPointer(const_cast<void*>(defaultNetCfgPage));
+    }
+
+    if (void* initialCfg = GetTrackedConfigPtr()) {
+        MEMORY_BASIC_INFORMATION initMbi{};
+        if (VirtualQuery(initialCfg, &initMbi, sizeof(initMbi))) {
+            const bool readable = (initMbi.State == MEM_COMMIT) && IsReadableProtect(initMbi.Protect);
+            PublishNetCfgState(initialCfg, initMbi.RegionSize, initMbi.State, initMbi.Protect, readable);
+        } else {
+            PublishNetCfgState(initialCfg, 0, 0, 0, false);
+        }
+    } else {
+        PublishNetCfgState(nullptr, 0, 0, 0, false);
     }
 
     bool samplingEnabled = ResolveSendBuilderFlag("SB_SEND_SAMPLING", "sb.sendSampling", true);
@@ -7598,6 +7808,18 @@ bool HasFallbackPivot()
     return g_netCfgFallbackPtr != nullptr;
 }
 
+SendBuilderState GetSendBuilderState()
+{
+    std::lock_guard<std::mutex> lock(g_runtimeStateMutex);
+    return g_runtimeState;
+}
+
+NetCfg GetNetCfgState()
+{
+    std::lock_guard<std::mutex> lock(g_runtimeStateMutex);
+    return g_runtimeState.netcfg;
+}
+
 const char* ReadyModeString()
 {
     switch (g_ready_mode.load(std::memory_order_acquire)) {
@@ -7621,6 +7843,7 @@ SendBuilderStatus GetSendBuilderStatus()
     status.sendPacket = g_sendPacketTarget;
     void* pivotMgr = g_netmgr_this.load(std::memory_order_acquire);
     status.netMgr = g_netMgr ? g_netMgr : pivotMgr;
+    status.state = GetSendBuilderState();
     bool haveManager = (g_netMgr != nullptr) || (g_sendCtx != nullptr) || (pivotMgr != nullptr);
     bool activelyScanning = !g_builderScanned || HasEndpointBackoff() || g_nextNetCfgProbeTick != 0;
     status.probing = !status.hooked && !status.ready && (haveManager || activelyScanning);
@@ -7732,8 +7955,10 @@ bool InstallSendPacketHook(void* sendPacketAddr)
 
 void RegisterNetworkConfigPivot(void* netCfg, const char* sourceTag)
 {
-    if (!netCfg)
+    if (!netCfg) {
+        PublishNetCfgState(nullptr, 0, 0, 0, false);
         return;
+    }
     bool changed = (g_netCfgFallbackPtr != netCfg);
     g_netCfgFallbackPtr = netCfg;
     if (changed) {
@@ -7742,6 +7967,13 @@ void RegisterNetworkConfigPivot(void* netCfg, const char* sourceTag)
         g_nextNetCfgProbeTick = 0;
         g_lastNetCfgPtr = nullptr;
         ScheduleScan(sourceTag ? sourceTag : "pivot", false);
+    }
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(netCfg, &mbi, sizeof(mbi))) {
+        const bool readable = (mbi.State == MEM_COMMIT) && IsReadableProtect(mbi.Protect);
+        PublishNetCfgState(netCfg, mbi.RegionSize, mbi.State, mbi.Protect, readable);
+    } else {
+        PublishNetCfgState(netCfg, 0, 0, 0, false);
     }
     if (g_state && (!g_state->networkConfig || g_state->networkConfig == netCfg))
         Util::RegionWatch::SetWatchPointer(netCfg);

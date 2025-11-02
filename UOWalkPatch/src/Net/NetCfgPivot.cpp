@@ -13,8 +13,9 @@ std::atomic<void*> g_DbMgr{nullptr};
 std::atomic<void**> g_NetCfgSlot{nullptr};
 std::atomic<bool> g_FallbackTriggered{false};
 std::atomic<bool> g_FallbackLogged{false};
+std::atomic<bool> g_GlobalLogged{false};
 DWORD g_SettleStart = 0;
-DWORD g_SettleTimeoutMs = 4000;
+DWORD g_SettleTimeoutMs = 30000;
 
 bool IsReadablePtr(void* p) {
     if (!p)
@@ -44,20 +45,31 @@ bool TryUseGlobal() {
         return false;
     }
 
-    if (!value || !IsReadablePtr(value))
+    if (!value)
         return false;
 
+    bool readable = IsReadablePtr(value);
     void* previous = g_NetCfg.exchange(value, std::memory_order_acq_rel);
-    if (previous == value)
-        return true;
+    bool changed = previous != value;
 
-    Log::Logf(Log::Level::Info,
-              Log::Category::Core,
-              "[INFO][CORE] [SB] networkConfig adopted from global slot=%p value=%p",
-              slot,
-              value);
+    if (changed) {
+        g_GlobalLogged.store(false, std::memory_order_release);
+        Net::RegisterNetworkConfigPivot(value, "[GLOBAL]");
+    }
 
-    Net::RegisterNetworkConfigPivot(value, "[GLOBAL]");
+    if (!readable)
+        return false;
+
+    bool shouldLog = changed || !g_GlobalLogged.load(std::memory_order_acquire);
+    if (shouldLog) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[INFO][CORE] [SB] networkConfig adopted from global slot=%p value=%p",
+                  slot,
+                  value);
+        g_GlobalLogged.store(true, std::memory_order_release);
+    }
+
     Net::ForceScan(Net::WakeReason::NetCfgSettled);
     g_FallbackLogged.store(true, std::memory_order_release);
     return true;
@@ -118,6 +130,7 @@ void OnGlobalStateObserved(const GlobalStateInfo& gsi) {
     g_NetCfgSlot.store(gsi.networkConfigSlot, std::memory_order_release);
     g_SettleStart = GetTickCount();
     g_FallbackTriggered.store(false, std::memory_order_release);
+    g_GlobalLogged.store(false, std::memory_order_release);
     if (!g_NetCfg.load(std::memory_order_acquire))
         g_FallbackLogged.store(false, std::memory_order_release);
 
@@ -146,7 +159,7 @@ void* GetNetworkConfig() {
 }
 
 void SettleTimeoutMs(unsigned ms) {
-    g_SettleTimeoutMs = ms ? ms : 4000;
+    g_SettleTimeoutMs = ms ? ms : 30000;
 }
 
 void NotifyFallbackCandidate(void* dbMgr, void* vtbl, void* cfg, const char* sourceTag) {

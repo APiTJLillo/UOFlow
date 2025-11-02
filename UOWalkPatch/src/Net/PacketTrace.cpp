@@ -188,6 +188,8 @@ static bool HandleWalkAckMessage(SOCKET sock,
         Engine::RecordMovementReject(seq, rawStatus);
     }
     Net::SetPreferredSocket(sock);
+    bool ackSuccess = (ackResult.action == Engine::MovementAckAction::Ok) && !forcedFailure;
+    Net::NotifyMovementAck(seq, rawStatus, ackSuccess, forcedFailure);
 
     const uint32_t inflightCount = Walk::Controller::GetInflightCount();
     const uint32_t stepDelayMs = Walk::Controller::GetStepDelayMs();

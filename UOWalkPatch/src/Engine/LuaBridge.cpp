@@ -6197,6 +6197,21 @@ static WORD HelperFlagForName(const char* name) {
     return 0;
 }
 
+static int WaitForDispatchResult(std::atomic<int>& outcome, DWORD timeoutMs) {
+    if (timeoutMs == 0)
+        timeoutMs = 100;
+    const DWORD deadline = GetTickCount() + timeoutMs;
+    for (;;) {
+        int value = outcome.load(std::memory_order_acquire);
+        if (value != 0)
+            return value;
+        if (static_cast<LONG>(deadline - GetTickCount()) <= 0)
+            break;
+        Sleep(1);
+    }
+    return outcome.load(std::memory_order_acquire);
+}
+
 static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
                                            lua_State* target,
                                            LuaStateInfo info,
@@ -6417,7 +6432,6 @@ static bool ScriptThreadRegisterHelper(lua_State* ownerState,
     if (GetCurrentThreadId() == scriptTid)
         return DoRegisterHelperOnScriptThread(scriptState, target, info, name, fn, generation);
 
-    std::atomic<int> outcome{0};
     std::string dispatchTag = "helper-register";
     if (name && name[0] != '\0') {
         dispatchTag.push_back(':');
@@ -6425,43 +6439,55 @@ static bool ScriptThreadRegisterHelper(lua_State* ownerState,
     }
 
     std::string nameCopy = (name && name[0] != '\0') ? name : "";
-    bool dispatched = Core::Bind::DispatchWithFallback(
-        scriptTid,
-        [scriptTid, scriptState, target, info, nameCopy, fn, generation, &outcome]() mutable {
-            DWORD currentTid = GetCurrentThreadId();
-            bool onScriptThread = (currentTid == scriptTid);
-            if (!onScriptThread) {
-                Log::Logf(Log::Level::Warn,
-                          Log::Category::Hooks,
-                          "[HOOKS] helper-register dispatch-thread-mismatch name=%s expected=%u got=%u (falling back)",
-                          nameCopy.empty() ? "<null>" : nameCopy.c_str(),
-                          static_cast<unsigned>(scriptTid),
-                          static_cast<unsigned>(currentTid));
-            }
+    constexpr std::size_t kMaxDispatchAttempts = 6;
 
-            const char* runName = nameCopy.empty() ? nullptr : nameCopy.c_str();
-            bool ok = DoRegisterHelperOnScriptThread(scriptState,
-                                                     target,
-                                                     info,
-                                                     runName,
-                                                     fn,
-                                                     generation,
-                                                     !onScriptThread);
-            outcome.store(ok ? 1 : -1, std::memory_order_release);
-        },
-        dispatchTag.c_str());
+    for (std::size_t attempt = 0; attempt < kMaxDispatchAttempts; ++attempt) {
+        std::atomic<int> outcome{0};
+        bool dispatched = Core::Bind::DispatchWithFallback(
+            scriptTid,
+            [scriptTid, scriptState, target, info, nameCopy, fn, generation, &outcome]() mutable {
+                DWORD currentTid = GetCurrentThreadId();
+                if (currentTid != scriptTid) {
+                    outcome.store(2, std::memory_order_release);
+                    return;
+                }
 
-    if (!dispatched) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register dispatch-failed name=%s scriptTid=%u",
-                  name ? name : "<null>",
-                  static_cast<unsigned>(scriptTid));
-        return false;
+                const char* runName = nameCopy.empty() ? nullptr : nameCopy.c_str();
+                bool ok = DoRegisterHelperOnScriptThread(scriptState,
+                                                         target,
+                                                         info,
+                                                         runName,
+                                                         fn,
+                                                         generation,
+                                                         false);
+                outcome.store(ok ? 1 : -1, std::memory_order_release);
+            },
+            dispatchTag.c_str());
+
+        if (!dispatched) {
+            Log::Logf(Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "[HOOKS] helper-register dispatch-failed name=%s scriptTid=%u",
+                      name ? name : "<null>",
+                      static_cast<unsigned>(scriptTid));
+            return false;
+        }
+
+        int result = WaitForDispatchResult(outcome, 200);
+        if (result == 1)
+            return true;
+        if (result == -1)
+            return false;
+
+        Sleep(10 + static_cast<DWORD>((attempt + 1) * 7));
     }
 
-    int result = outcome.load(std::memory_order_acquire);
-    return result > 0;
+    Log::Logf(Log::Level::Warn,
+              Log::Category::Hooks,
+              "[HOOKS] helper-register dispatch exhausted name=%s scriptTid=%u",
+              name ? name : "<null>",
+              static_cast<unsigned>(scriptTid));
+    return false;
 }
 
 static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn, uint64_t generation) {
