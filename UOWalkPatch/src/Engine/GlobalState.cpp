@@ -13,6 +13,7 @@
 #include "Engine/LuaBridge.hpp"
 #include "Engine/Movement.hpp"
 #include "Net/SendBuilder.hpp"
+#include "Net/NetCfgPivot.h"
 
 namespace Engine {
 
@@ -268,6 +269,13 @@ static void* FindGlobalStateInfo() {
                         if (info->databaseManager)
                             Net::NotifyGlobalStateManager(info->databaseManager);
                         Net::PivotFromDbMgr(info->databaseManager);
+                        uow::netcfg::GlobalStateInfo pivotInfo{};
+                        pivotInfo.lua = info->luaState;
+                        pivotInfo.dbMgr = info->databaseManager;
+                        pivotInfo.scriptCtx = info->scriptContext;
+                        pivotInfo.resourceMgr = info->resourceManager;
+                        pivotInfo.networkConfigSlot = info ? &info->networkConfig : nullptr;
+                        uow::netcfg::OnGlobalStateObserved(pivotInfo);
                         return info;
                     }
                     if (!info)
@@ -411,6 +419,13 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
             if (candidate->databaseManager)
                 Net::NotifyGlobalStateManager(candidate->databaseManager);
             Net::PivotFromDbMgr(candidate->databaseManager);
+            uow::netcfg::GlobalStateInfo pivotInfo{};
+            pivotInfo.lua = candidate->luaState;
+            pivotInfo.dbMgr = candidate->databaseManager;
+            pivotInfo.scriptCtx = candidate->scriptContext;
+            pivotInfo.resourceMgr = candidate->resourceManager;
+            pivotInfo.networkConfigSlot = candidate ? &candidate->networkConfig : nullptr;
+            uow::netcfg::OnGlobalStateObserved(pivotInfo);
             InterlockedExchange(&g_flags.lua_slot_seen, 1);
 
             void* engineCtx = candidate->engineContext;

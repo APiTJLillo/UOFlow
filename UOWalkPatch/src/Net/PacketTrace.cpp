@@ -10,6 +10,7 @@
 #include "Core/Logging.hpp"
 #include "Core/Utils.hpp"
 #include "Net/PacketTrace.hpp"
+#include "Net/SendDiscover.h"
 #include "Net/SendBuilder.hpp"
 #include "Net/SendSampleStore.hpp"
 #include "Engine/Movement.hpp"
@@ -36,6 +37,7 @@ static constexpr int kFastWalkReserveDepth = 2;
 static volatile LONG g_ackPayloadLogBudget = 4;
 static std::atomic<std::uint32_t> g_wsasendWarmupRemaining{64};
 static std::atomic<bool> g_loggedAckOkSignature{false};
+static std::atomic<bool> g_sendPacketHookAttempted{false};
 
 struct WalkAckStatusInfo {
     uint8_t code;
@@ -666,6 +668,13 @@ static int WSAAPI H_Send(SOCKET s, const char* buf, int len, int flags)
     return g_real_send ? g_real_send(s, buf, len, flags) : 0;
 }
 
+extern "C" __declspec(naked) void* _GetReturnAddress() {
+    __asm {
+        mov eax, [esp]
+        ret
+    }
+}
+
 static int WSAAPI H_WSASend(
     SOCKET s,
     const WSABUF* wsa,
@@ -675,6 +684,21 @@ static int WSAAPI H_WSASend(
     LPWSAOVERLAPPED ov,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE cr)
 {
+    if (!g_sendPacketHookAttempted.load(std::memory_order_acquire)) {
+        void* ra = _GetReturnAddress();
+        if (ra) {
+            void* sp = uow::net::DiscoverSendPacketFromWsasendReturnAddress(ra);
+            if (sp) {
+                bool expected = false;
+                if (g_sendPacketHookAttempted.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                    if (!Uow_AttemptInstallSendPacketHook(sp)) {
+                        g_sendPacketHookAttempted.store(false, std::memory_order_release);
+                    }
+                }
+            }
+        }
+    }
+
     if (cnt && wsa && wsa[0].buf && wsa[0].len) {
         const std::uint64_t nowMs = GetTickCount64();
         if (ShouldSampleWsasend(nowMs)) {

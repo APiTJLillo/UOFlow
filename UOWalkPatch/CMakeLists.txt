@@ -87,7 +87,9 @@ add_library(UOWalkPatchDLL SHARED
     src/Core/SendRing.cpp
     src/Win32/SafeProbe.cpp
     src/Net/PacketTrace.cpp
+    src/Net/SendDiscover.cpp
     src/Net/SendBuilder.cpp
+    src/Net/NetCfgPivot.cpp
     src/Net/SendSampleStore.cpp
     src/Engine/GlobalState.cpp
     src/Engine/Movement.cpp

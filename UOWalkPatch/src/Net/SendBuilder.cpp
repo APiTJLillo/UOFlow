@@ -34,6 +34,7 @@
 #include "Net/PacketTrace.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Net/ScannerStage3.hpp"
+#include "Net/NetCfgPivot.h"
 #include "Net/SendSampleStore.hpp"
 #include "Util/OwnerPump.hpp"
 #include "Util/RegionWatch.hpp"
@@ -1026,6 +1027,9 @@ static void ResetNetCfgCandidates() noexcept
 
 static void* GetTrackedConfigPtr()
 {
+    void* pivot = uow::netcfg::GetNetworkConfig();
+    if (pivot)
+        return pivot;
     if (g_netCfgFallbackPtr)
         return g_netCfgFallbackPtr;
     if (g_state && g_state->networkConfig)
@@ -1689,6 +1693,8 @@ static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
         g_loggedNetScanFailure = false;
         ResetNetCfgCandidates();
         Util::RegionWatch::SetWatchPointer(candidate);
+        void** vtbl = g_netmgr_vtbl.load(std::memory_order_acquire);
+        uow::netcfg::NotifyFallbackCandidate(g_netMgr, vtbl, candidate, sourceLabel);
 
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
@@ -7285,7 +7291,10 @@ bool InitSendBuilder(GlobalStateInfo* state)
         ScanSendBuilder();
     });
     const void* defaultNetCfgPage = reinterpret_cast<void*>(0x310A0000);
-    if (state && state->networkConfig) {
+    if (void* pivotCfg = uow::netcfg::GetNetworkConfig()) {
+        g_netCfgFallbackPtr = pivotCfg;
+        Util::RegionWatch::SetWatchPointer(pivotCfg);
+    } else if (state && state->networkConfig) {
         Util::RegionWatch::SetWatchPointer(state->networkConfig);
     } else {
         Util::RegionWatch::SetWatchPointer(const_cast<void*>(defaultNetCfgPage));
@@ -7309,6 +7318,7 @@ bool InitSendBuilder(GlobalStateInfo* state)
     g_allowDbMgrPivot.store(allowDbMgrPivot, std::memory_order_relaxed);
     uint32_t settleTimeoutMs = Core::Config::GetSendBuilderSettleTimeoutMs();
     g_netcfg_settle_timeout_ms.store(settleTimeoutMs, std::memory_order_relaxed);
+    uow::netcfg::SettleTimeoutMs(settleTimeoutMs);
 
     if (!g_initLogged || stateChanged) {
         char initBuf[160];
@@ -7345,6 +7355,7 @@ bool InitSendBuilder(GlobalStateInfo* state)
 
 void PollSendBuilder()
 {
+    uow::netcfg::TickNetworkConfigSettle();
     if (!g_state)
         return;
 
@@ -7707,6 +7718,33 @@ void NotifyGlobalStateManager(void* netMgr)
     if (!netMgr)
         return;
     CaptureNetManager(netMgr, "globalState.databaseManager");
+}
+
+bool InstallSendPacketHook(void* sendPacketAddr)
+{
+    if (!sendPacketAddr)
+        return false;
+    if (!g_sendPacketTarget || g_sendPacketTarget != sendPacketAddr)
+        g_sendPacketTarget = sendPacketAddr;
+    HookSendPacket();
+    return g_sendPacketHooked;
+}
+
+void RegisterNetworkConfigPivot(void* netCfg, const char* sourceTag)
+{
+    if (!netCfg)
+        return;
+    bool changed = (g_netCfgFallbackPtr != netCfg);
+    g_netCfgFallbackPtr = netCfg;
+    if (changed) {
+        g_loggedNetScanFailure = false;
+        g_netCfgRetryStartTick = 0;
+        g_nextNetCfgProbeTick = 0;
+        g_lastNetCfgPtr = nullptr;
+        ScheduleScan(sourceTag ? sourceTag : "pivot", false);
+    }
+    if (g_state && (!g_state->networkConfig || g_state->networkConfig == netCfg))
+        Util::RegionWatch::SetWatchPointer(netCfg);
 }
 
 

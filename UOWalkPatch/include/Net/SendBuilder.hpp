@@ -75,4 +75,6 @@ namespace Net {
     void OnSendPacketEnter(void* netMgrThis);
     void PivotFromDbMgr(void* dbMgr);
     const char* ReadyModeString();
+    bool InstallSendPacketHook(void* sendPacketAddr);
+    void RegisterNetworkConfigPivot(void* netCfg, const char* sourceTag);
 }
