@@ -4540,42 +4540,8 @@ static void EnsureScriptThread(DWORD tid, lua_State* L) {
         L = normalized;
 
     DWORD expected = 0;
-    bool scriptThreadDiscovered = false;
     if (g_scriptThreadId.compare_exchange_strong(expected, tid)) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::LuaGuard,
-                  "[LuaQ] script-thread-discovered tid=%lu L=%p",
-                  static_cast<unsigned long>(tid),
-                  L);
-        scriptThreadDiscovered = true;
-    }
-
-    if (!scriptThreadDiscovered) {
-        DWORD current = g_scriptThreadId.load(std::memory_order_acquire);
-        if (current != tid && L) {
-            lua_State* canonical = g_canonicalState.load(std::memory_order_acquire);
-            lua_State* mainState = g_mainLuaState.load(std::memory_order_acquire);
-            if ((canonical && L == canonical) || (mainState && L == mainState)) {
-                if (g_scriptThreadId.compare_exchange_strong(current, tid)) {
-                    Log::Logf(Log::Level::Info,
-                              Log::Category::LuaGuard,
-                              "[LuaQ] script-thread-updated tid=%lu prev=%lu L=%p",
-                              static_cast<unsigned long>(tid),
-                              static_cast<unsigned long>(current),
-                              L);
-                    scriptThreadDiscovered = true;
-                }
-            } else {
-                Log::Logf(Log::Level::Info,
-                          Log::Category::LuaGuard,
-                          "[LuaQ] script-thread-await tid=%lu prev=%lu L=%p canonical=%p main=%p",
-                          static_cast<unsigned long>(tid),
-                          static_cast<unsigned long>(current),
-                          L,
-                          canonical,
-                          mainState);
-            }
-        }
+        LogLuaQ("tid=%lu script-thread-discovered L=%p", tid, L);
     }
 
     if (g_scriptThreadId.load(std::memory_order_acquire) == tid && L) {
@@ -4591,9 +4557,6 @@ static void EnsureScriptThread(DWORD tid, lua_State* L) {
             }
             if (hasPending)
                 ProcessPendingLuaTasks(L);
-        }
-        if (scriptThreadDiscovered || prev != L) {
-            ScheduleWalkBinding();
         }
     }
 }
@@ -4830,8 +4793,6 @@ static void MaybeAdoptOwnerThread(lua_State* L, LuaStateInfo& info) {
 }
 
 static bool IsOwnerThread(const LuaStateInfo& info) {
-    if (Core::Bind::IsCurrentDispatchTag("helpers"))
-        return true;
     DWORD current = GetCurrentThreadId();
     if (info.owner_tid != 0 && info.owner_tid == current)
         return true;
@@ -5235,32 +5196,6 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
                   current.ctx_reported,
                   action);
         return;
-    }
-
-    if (reason && _stricmp(reason, "script-thread-wait") == 0) {
-        DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
-        lua_State* scriptL = g_mainLuaState.load(std::memory_order_acquire);
-        if (scriptTid == 0 || !scriptL) {
-            uint64_t now = GetTickCount64();
-            const HelperRetryPolicy& retryPolicy = GetHelperRetryPolicy();
-            uint64_t retryDelay = retryPolicy.debounceMs ? retryPolicy.debounceMs : 50u;
-            uint64_t nextRetry = now + retryDelay;
-            g_stateRegistry.UpdateByPointer(lookupPtr, [&](LuaStateInfo& state) {
-                state.helper_next_retry_ms = nextRetry;
-                state.helper_passive_since_ms = 0;
-                UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, "script-thread-wait");
-            }, &current);
-
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Hooks,
-                      "helpers bind deferral L=%p reason=%s scriptTid=%lu scriptState=%p nextRetry=%llu",
-                      lookupPtr,
-                      action,
-                      static_cast<unsigned long>(scriptTid),
-                      scriptL,
-                      static_cast<unsigned long long>(nextRetry));
-            return;
-        }
     }
 
     uint64_t now = GetTickCount64();
@@ -5680,12 +5615,16 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
 
     const bool luaOk = (target != nullptr);
     const bool ctxOk = (current.ctx_reported != nullptr);
-    if (!force && !(luaOk && ctxOk)) {
+    const bool sbUnblocked = sbReadyNow || sbPivotNow || sbFallbackNow;
+    if (!force && !(luaOk && ctxOk && sbUnblocked)) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "[HOOKS] helpers install-defer lua=%d ctx=%d",
+                  "[HOOKS] helpers install-defer lua=%d ctx=%d sb_ready=%d sb_pivot=%d sb_fallback=%d",
                   luaOk ? 1 : 0,
-                  ctxOk ? 1 : 0);
+                  ctxOk ? 1 : 0,
+                  sbReadyNow ? 1 : 0,
+                  sbPivotNow ? 1 : 0,
+                  sbFallbackNow ? 1 : 0);
         TrackHelperEvent(g_helperDeferredCount);
         MaybeEmitHelperSummary(now);
         ClearHelperPending(target, generation, &current);
@@ -5746,9 +5685,13 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
     MaybeEmitHelperSummary(now);
 
     if (promotionTriggered) {
-        TrackHelperEvent(g_helperDeferredCount);
-        MaybeEmitHelperSummary(now);
-        RequestBindForState(current, "script-thread-wait", false);
+        unsigned long elapsedLog = promotionElapsed > std::numeric_limits<unsigned long>::max()
+                                       ? std::numeric_limits<unsigned long>::max()
+                                       : static_cast<unsigned long>(promotionElapsed);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "helpers promoting after settle budget elapsed=%lums (lua=OK, ctx=OK) guard=enabled",
+                  elapsedLog);
     }
 
     const char* bindReason = promotionTriggered ? kSettlePromoteReason : action;
@@ -6096,420 +6039,37 @@ static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
     }
 }
 
-static int CallClientRegister(void* ctx, lua_CFunction fn, const char* safeName, DWORD* outSeh) noexcept {
-    if (!g_clientRegister || !fn || !safeName || !ctx) {
-        if (outSeh)
-            *outSeh = 0;
-        return 0;
-    }
-    DWORD seh = 0;
-    int rc = 0;
-    __try {
-        rc = g_clientRegister(ctx, reinterpret_cast<void*>(fn), safeName);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        seh = GetExceptionCode();
-        rc = 0;
-    }
-    if (outSeh)
-        *outSeh = seh;
-    return rc;
-}
-
-static bool TryLuaSetGlobal(lua_State* L, lua_CFunction fn, const char* name, DWORD* outSeh) noexcept {
-    if (!L || !fn || !name || name[0] == '\0')
-        return false;
-    const DWORD tid = GetCurrentThreadId();
-    int topBefore = 0;
-    DWORD topSeh = 0;
-    bool topOk = SafeLuaGetTop(L, &topBefore, &topSeh);
-    DWORD pushSeh = 0;
-    DWORD setSeh = 0;
-    bool pushOk = false;
-    bool setOk = false;
-    __try {
-        lua_pushcfunction(L, fn);
-        pushOk = true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        pushSeh = GetExceptionCode();
-        pushOk = false;
-    }
-    if (pushOk) {
-        __try {
-            lua_setglobal(L, name);
-            setOk = true;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            setSeh = GetExceptionCode();
-            setOk = false;
-        }
-    }
-    if (!(pushOk && setOk)) {
-        char fnModule[64] = {};
-        void* fnModuleBase = nullptr;
-        DWORD fnProtect = 0;
-        DescribeAddressForLog(reinterpret_cast<const void*>(fn), fnModule, ARRAYSIZE(fnModule), &fnModuleBase, &fnProtect);
-        char stateModule[64] = {};
-        void* stateModuleBase = nullptr;
-        DWORD stateProtect = 0;
-        DescribeAddressForLog(L, stateModule, ARRAYSIZE(stateModule), &stateModuleBase, &stateProtect);
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register lua_setglobal failed name=%s tid=%lu L=%p Lmod=%s Lprot=0x%08lX fn=%p fnMod=%s fnProt=0x%08lX okTop=%d top=%d topSeh=0x%08lX pushOk=%d pushSeh=0x%08lX setOk=%d setSeh=0x%08lX",
-                  name,
-                  static_cast<unsigned long>(tid),
-                  L,
-                  stateModule[0] ? stateModule : "<unk>",
-                  static_cast<unsigned long>(stateProtect),
-                  reinterpret_cast<void*>(fn),
-                  fnModule[0] ? fnModule : "<unk>",
-                  static_cast<unsigned long>(fnProtect),
-                  topOk ? 1 : 0,
-                  topBefore,
-                  static_cast<unsigned long>(topSeh),
-                  pushOk ? 1 : 0,
-                  static_cast<unsigned long>(pushSeh),
-                  setOk ? 1 : 0,
-                  static_cast<unsigned long>(setSeh));
-    }
-    if (outSeh)
-        *outSeh = pushOk ? setSeh : pushSeh;
-    return pushOk && setOk;
-}
-
-static WORD HelperFlagForName(const char* name) {
-    if (!name)
-        return 0;
-    if (_stricmp(name, kHelperWalkName) == 0)
-        return HELPER_FLAG_WALK;
-    if (_stricmp(name, kHelperDumpName) == 0)
-        return HELPER_FLAG_DUMP;
-    if (_stricmp(name, kHelperInspectName) == 0)
-        return HELPER_FLAG_INSPECT;
-    if (_stricmp(name, kHelperRebindName) == 0)
-        return HELPER_FLAG_REBIND;
-    if (_stricmp(name, kHelperSelfTestName) == 0)
-        return HELPER_FLAG_SELFTEST;
-    if (_stricmp(name, kHelperDebugName) == 0)
-        return HELPER_FLAG_DEBUG;
-    if (_stricmp(name, kHelperDebugStatusName) == 0)
-        return HELPER_FLAG_DEBUG_STATUS;
-    if (_stricmp(name, kHelperDebugPingName) == 0)
-        return HELPER_FLAG_DEBUG_PING;
-    return 0;
-}
-
-static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
-                                           lua_State* target,
-                                           LuaStateInfo info,
-                                           const char* name,
-                                           lua_CFunction fn,
-                                           uint64_t generation,
-                                           bool allowForeignThread = false) {
-    const char* safeName = (name && name[0] != '\0') ? name : "<null>";
-    lua_State* state = target ? target : ownerState;
-    if (!state || !fn) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register abort name=%s reason=state-or-fn-null state=%p",
-                  safeName,
-                  state);
-        return false;
-    }
-
-    const DWORD currentTid = GetCurrentThreadId();
-    if (!allowForeignThread) {
-        EnsureScriptThread(currentTid, state);
-    } else {
-        DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
-        if (scriptTid == 0 || scriptTid == currentTid) {
-            EnsureScriptThread(currentTid, state);
-        } else {
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Hooks,
-                      "[HOOKS] helper-register foreign-thread name=%s tid=%lu scriptTid=%lu (skip-ensure) L=%p",
-                      safeName,
-                      static_cast<unsigned long>(currentTid),
-                      static_cast<unsigned long>(scriptTid),
-                      state);
-        }
-    }
-
-    LuaStateInfo latest = info;
-    if (!g_stateRegistry.GetByPointer(state, latest)) {
-        if (target && target != state)
-            g_stateRegistry.GetByPointer(target, latest);
-    }
-
-    WORD flag = HelperFlagForName(name);
-    if (flag == 0) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register abort name=%s reason=unknown-helper",
-                  safeName);
-        return false;
-    }
-
-    const GlobalStateInfo* globalInfo = Engine::Info();
-    void* ctx = nullptr;
-    if (globalInfo && globalInfo->scriptContext) {
-        ctx = globalInfo->scriptContext;
-    }
-
-    auto validateCtx = [&](void*& candidate, const char* source) {
-        if (candidate && !IsValidCtx(static_cast<HCTX>(candidate))) {
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Hooks,
-                      "[HOOKS] helper-register ctx-invalid source=%s ptr=%p",
-                      source ? source : "?",
-                      candidate);
-            candidate = nullptr;
-        }
-    };
-    validateCtx(ctx, "global-script");
-    if (!ctx) {
-        ctx = g_latestScriptCtx.load(std::memory_order_acquire);
-        validateCtx(ctx, "latest-script");
-    }
-    if (!ctx) {
-        ctx = latest.ctx_reported;
-        validateCtx(ctx, "reported");
-    }
-    if (!ctx) {
-        ctx = GetCanonicalHelperCtx();
-        validateCtx(ctx, "canonical");
-    }
-    if (!ctx) {
-        ctx = ResolveCanonicalEngineContext();
-        validateCtx(ctx, "resolved");
-    }
-
-    if (ctx && latest.ctx_reported != ctx) {
-        g_stateRegistry.UpdateByPointer(state, [&](LuaStateInfo& stateRef) {
-            stateRef.ctx_reported = ctx;
-        }, &latest);
-    }
-
-    DWORD ownerTid = latest.owner_tid ? latest.owner_tid : GetCurrentThreadId();
-    void* clientFn = reinterpret_cast<void*>(g_clientRegister);
-
-    Log::Logf(Log::Level::Info,
-              Log::Category::Hooks,
-              "[HOOKS] helper-register begin name=%s L=%p ctx=%p owner=%lu gen=%llu clientFn=%p",
-              safeName,
-              state,
-              ctx,
-              static_cast<unsigned long>(ownerTid),
-              static_cast<unsigned long long>(generation),
-              clientFn);
-
-    bool clientAttempted = false;
-    bool clientOk = false;
-    int clientRc = 0;
-    DWORD clientSeh = 0;
-
-    if (g_clientRegister && ctx) {
-        clientAttempted = true;
-        clientRc = CallClientRegister(ctx, fn, safeName, &clientSeh);
-        clientOk = (clientRc != 0);
-        Log::Logf(clientOk ? Log::Level::Info : Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register client name=%s ok=%d rc=%d seh=0x%08lX",
-                  safeName,
-                  clientOk ? 1 : 0,
-                  clientRc,
-                  static_cast<unsigned long>(clientSeh));
-    } else {
-        const char* reason = g_clientRegister ? "ctx-null" : "client-missing";
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register client-skip name=%s reason=%s",
-                  safeName,
-                  reason);
-    }
-
-    bool fallbackOk = false;
-    DWORD fallbackSeh = 0;
-    if (!clientOk) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register fallback name=%s",
-                  safeName);
-
-        int topBefore = 0;
-        bool topCaptured = SafeLuaGetTop(state, latest, &topBefore, &fallbackSeh);
-        if (!topCaptured) {
-            Log::Logf(Log::Level::Warn,
-                      Log::Category::Hooks,
-                      "[HOOKS] helper-register fallback-abort name=%s reason=gettop-failed seh=0x%08lX",
-                      safeName,
-                      static_cast<unsigned long>(fallbackSeh));
-        } else if (!name || name[0] == '\0') {
-            Log::Logf(Log::Level::Warn,
-                      Log::Category::Hooks,
-                      "[HOOKS] helper-register fallback-abort name=%s reason=name-empty",
-                      safeName);
-        } else {
-            fallbackOk = TryLuaSetGlobal(state, fn, name, &fallbackSeh);
-        }
-
-        if (topCaptured) {
-            DWORD restoreSeh = 0;
-            if (!SafeLuaSetTop(state, latest, topBefore, &restoreSeh)) {
-                Log::Logf(Log::Level::Warn,
-                          Log::Category::Hooks,
-                          "[HOOKS] helper-register fallback-restore name=%s seh=0x%08lX",
-                          safeName,
-                          static_cast<unsigned long>(restoreSeh));
-            }
-        }
-
-        Log::Logf(fallbackOk ? Log::Level::Info : Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register fallback-result name=%s ok=%d seh=0x%08lX",
-                  safeName,
-                  fallbackOk ? 1 : 0,
-                  static_cast<unsigned long>(fallbackSeh));
-    }
-
-    bool success = clientOk || fallbackOk;
-    if (success) {
-        uint64_t now = GetTickCount64();
-        auto updater = [&](LuaStateInfo& stateRef) {
-            stateRef.helper_flags |= flag;
-            stateRef.gen = generation;
-            stateRef.helper_last_attempt_ms = now;
-            stateRef.helper_last_mutation_tick_ms = g_lastContextMutationTick.load(std::memory_order_acquire);
-            if (!stateRef.ctx_reported && ctx)
-                stateRef.ctx_reported = ctx;
-        };
-        if (!g_stateRegistry.UpdateByPointer(state, updater, &latest) && ownerState && ownerState != state) {
-            g_stateRegistry.UpdateByPointer(ownerState, updater, &latest);
-        }
-    }
-
-    Log::Logf(success ? Log::Level::Info : Log::Level::Warn,
-              Log::Category::Hooks,
-              "[HOOKS] helper-register %s name=%s client=%d fallback=%d flags=0x%04X",
-              success ? "done" : "failed",
-              safeName,
-              clientOk ? 1 : 0,
-              fallbackOk ? 1 : 0,
-              latest.helper_flags);
-
-    return success;
-}
-
-static bool ScriptThreadRegisterHelper(lua_State* ownerState,
-                                       lua_State* target,
-                                       LuaStateInfo info,
-                                       const char* name,
-                                       lua_CFunction fn,
-                                       uint64_t generation) {
-    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
-    if (scriptTid == 0)
-        return false;
-
-    lua_State* scriptState = ownerState ? ownerState : g_mainLuaState.load(std::memory_order_acquire);
-    if (!scriptState)
-        scriptState = target;
-    if (!scriptState)
-        return false;
-
-    if (GetCurrentThreadId() == scriptTid)
-        return DoRegisterHelperOnScriptThread(scriptState, target, info, name, fn, generation);
-
-    std::atomic<int> outcome{0};
-    std::string dispatchTag = "helper-register";
-    if (name && name[0] != '\0') {
-        dispatchTag.push_back(':');
-        dispatchTag.append(name);
-    }
-
-    std::string nameCopy = (name && name[0] != '\0') ? name : "";
-    bool dispatched = Core::Bind::DispatchWithFallback(
-        scriptTid,
-        [scriptTid, scriptState, target, info, nameCopy, fn, generation, &outcome]() mutable {
-            DWORD currentTid = GetCurrentThreadId();
-            bool onScriptThread = (currentTid == scriptTid);
-            if (!onScriptThread) {
-                Log::Logf(Log::Level::Warn,
-                          Log::Category::Hooks,
-                          "[HOOKS] helper-register dispatch-thread-mismatch name=%s expected=%u got=%u (falling back)",
-                          nameCopy.empty() ? "<null>" : nameCopy.c_str(),
-                          static_cast<unsigned>(scriptTid),
-                          static_cast<unsigned>(currentTid));
-            }
-
-            const char* runName = nameCopy.empty() ? nullptr : nameCopy.c_str();
-            bool ok = DoRegisterHelperOnScriptThread(scriptState,
-                                                     target,
-                                                     info,
-                                                     runName,
-                                                     fn,
-                                                     generation,
-                                                     !onScriptThread);
-            outcome.store(ok ? 1 : -1, std::memory_order_release);
-        },
-        dispatchTag.c_str());
-
-    if (!dispatched) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register dispatch-failed name=%s scriptTid=%u",
-                  name ? name : "<null>",
-                  static_cast<unsigned>(scriptTid));
-        return false;
-    }
-
-    int result = outcome.load(std::memory_order_acquire);
-    return result > 0;
-}
-
 static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn, uint64_t generation) {
-    const char* safeName = name ? name : "<null>";
-    WORD flag = HelperFlagForName(name);
-    if (flag == 0) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register abort name=%s reason=unknown-helper",
-                  safeName);
-        return false;
+    bool registered = false;
+    DWORD seh = 0;
+
+    if (g_clientRegister && info.ctx_reported) {
+        __try {
+            g_clientRegister(info.ctx_reported, reinterpret_cast<void*>(fn), name);
+            registered = true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            seh = GetExceptionCode();
+            registered = false;
+            LogLuaBind("fail name=%s L=%p reason=register-call-exception seh=0x%08lX ctx=%p", name, L, seh, info.ctx_reported);
+        }
     }
 
-    lua_State* scriptState = g_mainLuaState.load(std::memory_order_acquire);
-    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
-    if (!scriptState || scriptTid == 0) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register defer name=%s reason=script-thread-missing L=%p ctx=%p scriptTid=%lu scriptState=%p",
-                  safeName,
-                  L,
-                  info.ctx_reported,
-                  static_cast<unsigned long>(scriptTid),
-                  scriptState);
-        return false;
+    if (!registered) {
+        __try {
+            lua_pushcfunction(L, fn);
+            lua_setglobal(L, name);
+            registered = true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            seh = GetExceptionCode();
+            registered = false;
+            LogLuaBind("fail name=%s L=%p reason=fallback-exception seh=0x%08lX", name, L, seh);
+        }
     }
 
-    lua_State* ownerState = scriptState ? scriptState : L;
-    (void)ScriptThreadRegisterHelper(ownerState, L, info, name, fn, generation);
-
-    ProcessPendingLuaTasks(scriptState);
-
-    LuaStateInfo latest{};
-    bool haveLatest = g_stateRegistry.GetByPointer(L, latest);
-    if (!haveLatest && scriptState && scriptState != L)
-        haveLatest = g_stateRegistry.GetByPointer(scriptState, latest);
-    if (!haveLatest)
-        latest = info;
-
-    bool installed = (latest.helper_flags & flag) != 0;
-
-    Log::Logf(installed ? Log::Level::Info : Log::Level::Warn,
-              Log::Category::Hooks,
-              "[HOOKS] helper-register %s name=%s flags=0x%04X",
-              installed ? "ok" : "pending",
-              safeName,
-              latest.helper_flags);
-    return installed;
+    if (registered) {
+        LogLuaBind("ok name=%s L=%p ctx=%p tid=%lu gen=%llu", name, L, info.ctx_reported, info.owner_tid, generation);
+    }
+    return registered;
 }
 
 static bool BindHelpersOnThread(lua_State* L,
@@ -6563,24 +6123,6 @@ static bool BindHelpersOnThread(lua_State* L,
             state.flags |= STATE_FLAG_OWNER_READY;
         }, &info);
         info.owner_tid = desiredOwner;
-    }
-
-    DWORD currentScriptTid = g_scriptThreadId.load(std::memory_order_acquire);
-    lua_State* currentScriptState = g_mainLuaState.load(std::memory_order_acquire);
-    if (currentScriptTid == 0 || !currentScriptState) {
-        uint64_t nowTick = GetTickCount64();
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "[HOOKS] helpers defer L=%p reason=script-thread-wait owner=%lu scriptTid=%lu scriptState=%p",
-                  L,
-                  static_cast<unsigned long>(info.owner_tid),
-                  static_cast<unsigned long>(currentScriptTid),
-                  currentScriptState);
-        TrackHelperEvent(g_helperDeferredCount);
-        MaybeEmitHelperSummary(nowTick);
-        ClearHelperPending(L, generation, &info);
-        RequestBindForState(info, "script-thread-wait", false);
-        return false;
     }
 
     Net::SendBuilderStatus bindStatusSnapshot = Net::GetSendBuilderStatus();
@@ -7035,29 +6577,6 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
               static_cast<unsigned long long>(info.helper_pending_generation),
               static_cast<unsigned long long>(info.helper_next_retry_ms),
               reason ? reason : "unknown");
-
-    if (!IsOwnerThread(info)) {
-        if (dispatchHelpers) {
-            DWORD currentTid = GetCurrentThreadId();
-            uint64_t nowTick = GetTickCount64();
-            g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-                state.owner_tid = currentTid;
-                state.last_tid = currentTid;
-                if (state.owner_ready_tick_ms == 0)
-                    state.owner_ready_tick_ms = nowTick;
-                state.flags |= STATE_FLAG_OWNER_READY;
-            }, &info);
-            info.owner_tid = currentTid;
-        } else {
-            DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
-            DWORD targetOwner = info.owner_tid ? info.owner_tid : scriptTid;
-            if (targetOwner && targetOwner != GetCurrentThreadId()) {
-                PostBindToOwnerThread(L, targetOwner, generation, force, "owner-redirect");
-                ClearHelperPending(L, generation, &info);
-                return;
-            }
-        }
-    }
 
     if (!HelperSingleFlightTryAcquire()) {
         Log::Logf(Log::Level::Info,

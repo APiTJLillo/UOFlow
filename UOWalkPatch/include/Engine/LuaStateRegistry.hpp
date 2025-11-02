@@ -34,6 +34,14 @@ constexpr uint32_t STATE_FLAG_HELPERS_INSTALLED = 1u << 13;
 
 constexpr uint16_t HELPER_FLAG_SETTLE_PROMOTED = 1u << 0;
 constexpr uint16_t HELPER_FLAG_SETTLE_ARMED    = 1u << 1;
+constexpr uint16_t HELPER_FLAG_WALK            = 1u << 2;
+constexpr uint16_t HELPER_FLAG_DUMP            = 1u << 3;
+constexpr uint16_t HELPER_FLAG_INSPECT         = 1u << 4;
+constexpr uint16_t HELPER_FLAG_REBIND          = 1u << 5;
+constexpr uint16_t HELPER_FLAG_SELFTEST        = 1u << 6;
+constexpr uint16_t HELPER_FLAG_DEBUG           = 1u << 7;
+constexpr uint16_t HELPER_FLAG_DEBUG_STATUS    = 1u << 8;
+constexpr uint16_t HELPER_FLAG_DEBUG_PING      = 1u << 9;
 
 enum class HelperInstallStage : uint8_t {
     WaitingForGlobalState = 0,
