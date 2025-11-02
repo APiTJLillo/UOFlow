@@ -212,6 +212,7 @@ static std::atomic<uint32_t> g_helperProbeAttempted{0};
 static std::atomic<uint32_t> g_helperProbeSuccess{0};
 static std::atomic<uint32_t> g_helperProbeSkipped{0};
 static std::atomic<bool> g_helpersInstalledAny{false};
+static std::atomic<bool> g_helperInstallSingleFlight{false};
 static std::atomic<uint64_t> g_ownerPumpUnstickLoggedGen{0};
 static std::atomic<DWORD> g_lastHelperOwnerThread{0};
 static std::atomic<uint64_t> g_lastHelperRetryScanTick{0};
@@ -317,6 +318,29 @@ struct HelperInstallMetrics {
     uint64_t endTick = 0;
     uint32_t hookSuccess = 0;
     uint32_t hookFailure = 0;
+};
+
+class HelperInstallFlightGuard {
+public:
+    HelperInstallFlightGuard()
+    {
+        bool expected = false;
+        acquired = g_helperInstallSingleFlight.compare_exchange_strong(expected,
+                                                                       true,
+                                                                       std::memory_order_acq_rel,
+                                                                       std::memory_order_acquire);
+    }
+
+    ~HelperInstallFlightGuard()
+    {
+        if (acquired)
+            g_helperInstallSingleFlight.store(false, std::memory_order_release);
+    }
+
+    explicit operator bool() const { return acquired; }
+
+private:
+    bool acquired = false;
 };
 
 static void SetCanonicalHelperCtx(HCTX ctx, DWORD ownerTid) noexcept {
@@ -1987,7 +2011,26 @@ static void MaybeAdoptOwnerThread(lua_State* L, LuaStateInfo& info);
 static void MaybeRunMaintenance();
 static void RequestBindForState(const LuaStateInfo& info, const char* reason, bool force);
 static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const char* reason);
-static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& info, uint64_t generation, bool force, HelperInstallMetrics* metrics);
+static bool BindHelpersOnThread(lua_State* L,
+                                const LuaStateInfo& info,
+                                uint64_t generation,
+                                bool force,
+                                HelperInstallMetrics* metrics,
+                                const char* installTag,
+                                bool sbReadyNow,
+                                bool sbPivotNow,
+                                bool sbFallbackNow);
+static bool BindHelpersWithSeh(lua_State* L,
+                               const LuaStateInfo& info,
+                               uint64_t generation,
+                               bool force,
+                               bool& attemptedOut,
+                               DWORD& sehCodeOut,
+                               HelperInstallMetrics* metrics,
+                               const char* installTag,
+                               bool sbReadyNow,
+                               bool sbPivotNow,
+                               bool sbFallbackNow) noexcept;
 static void MaybeProcessHelperRetryQueue();
 static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info);
 static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn, uint64_t generation);
@@ -5182,6 +5225,7 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
     lua_State* target = current.L_canonical;
     const bool sbReadyNow = Net::IsReady();
     const bool sbPivotNow = Net::IsPivotReady();
+    const bool sbFallbackNow = Net::HasFallbackPivot();
     HelperInstallStage stage = DetermineHelperStage(current, canonicalReadyFlag);
     void* engineCtxSnapshot = g_engineContext.load(std::memory_order_acquire);
     if (engineCtxSnapshot && current.helper_settle_start_ms == 0) {
@@ -5435,13 +5479,13 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         }
     }
 
-    if (allowNow && !(sbReadyNow || sbPivotNow)) {
+        if (allowNow && !(sbReadyNow || sbPivotNow || sbFallbackNow)) {
         allowNow = false;
         gateReason = "sendbuilder";
         desiredNextMs = std::max<uint64_t>(desiredNextMs, now + retry.retryBackoffMs);
     }
 
-    if (!allowNow && Core::Config::HelpersIgnoreGlobalSettleIfSbReady() && (sbReadyNow || sbPivotNow)) {
+    if (!allowNow && Core::Config::HelpersIgnoreGlobalSettleIfSbReady() && (sbReadyNow || sbPivotNow || sbFallbackNow)) {
         allowNow = true;
         passiveMode = false;
         gateReason = nullptr;
@@ -5528,6 +5572,24 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
                       static_cast<unsigned long long>(desiredNextMs),
                       action);
         }
+        return;
+    }
+
+    const bool luaOk = (target != nullptr);
+    const bool ctxOk = (current.ctx_reported != nullptr);
+    const bool sbUnblocked = sbReadyNow || sbPivotNow || sbFallbackNow;
+    if (!force && !(luaOk && ctxOk && sbUnblocked)) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] helpers install-defer lua=%d ctx=%d sb_ready=%d sb_pivot=%d sb_fallback=%d",
+                  luaOk ? 1 : 0,
+                  ctxOk ? 1 : 0,
+                  sbReadyNow ? 1 : 0,
+                  sbPivotNow ? 1 : 0,
+                  sbFallbackNow ? 1 : 0);
+        TrackHelperEvent(g_helperDeferredCount);
+        MaybeEmitHelperSummary(now);
+        ClearHelperPending(target, generation, &current);
         return;
     }
 
@@ -6002,11 +6064,38 @@ static void HandleProbeFailure(lua_State* L, LuaStateInfo& info, Engine::Lua::Lu
     }, &info);
 }
 
-static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, uint64_t generation, bool force, HelperInstallMetrics* metrics) {
+static bool BindHelpersOnThread(lua_State* L,
+                                const LuaStateInfo& originalInfo,
+                                uint64_t generation,
+                                bool force,
+                                HelperInstallMetrics* metrics,
+                                const char* installTag,
+                                bool sbReadyNow,
+                                bool sbPivotNow,
+                                bool sbFallbackNow) {
     if (!L)
         return false;
 
     LuaStateInfo info = originalInfo;
+
+    const char* tagLabel = (installTag && installTag[0] != '\0') ? installTag : "unknown";
+    const bool luaOk = (info.L_canonical != nullptr);
+    const bool ctxOk = (info.ctx_reported != nullptr);
+    const bool sbReady = sbReadyNow;
+    const bool sbPivot = sbPivotNow;
+    const bool sbFallback = sbFallbackNow;
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Hooks,
+              "[HOOKS] helpers install-begin tag=%s mode=%s tid=%u lua=%d ctx=%d sb_ready=%d sb_pivot=%d sb_fallback=%d",
+              tagLabel,
+              Net::ReadyModeString(),
+              static_cast<unsigned>(GetCurrentThreadId()),
+              luaOk ? 1 : 0,
+              ctxOk ? 1 : 0,
+              sbReady ? 1 : 0,
+              sbPivot ? 1 : 0,
+              sbFallback ? 1 : 0);
 
     MaybeAdoptOwnerThread(L, info);
 
@@ -6155,6 +6244,13 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
             info.owner_tid = canonicalOwner;
         if (canonicalOwner)
             SetCanonicalHelperCtx(canonicalCtx, canonicalOwner);
+        if (!ctxChanged) {
+            info.ctx_reported = canonicalCtx;
+            if (canonicalOwner)
+                info.owner_tid = canonicalOwner;
+            info.helper_rebind_attempts = 0;
+            return false;
+        }
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
                   "[HOOKS] helpers rebind ctx old=%p new=%p owner=%u (pending)",
@@ -6357,7 +6453,8 @@ static bool BindHelpersOnThread(lua_State* L, const LuaStateInfo& originalInfo, 
         }, &info);
                 Log::Logf(Log::Level::Info,
                           Log::Category::Hooks,
-                          "helpers installed L=%p owner=%lu gen=%llu thread=%lu",
+                          "[HOOKS] helpers install-success tag=%s L=%p owner=%lu gen=%llu thread=%lu",
+                          tagLabel,
                           L,
                           static_cast<unsigned long>(info.owner_tid),
                           static_cast<unsigned long long>(generation),
@@ -6408,7 +6505,11 @@ static bool BindHelpersWithSeh(lua_State* L,
                                bool force,
                                bool& attemptedOut,
                                DWORD& sehCodeOut,
-                               HelperInstallMetrics* metrics) noexcept {
+                               HelperInstallMetrics* metrics,
+                               const char* installTag,
+                               bool sbReadyNow,
+                               bool sbPivotNow,
+                               bool sbFallbackNow) noexcept {
     bool ok = false;
     bool attempted = false;
     DWORD sehCode = 0;
@@ -6416,7 +6517,15 @@ static bool BindHelpersWithSeh(lua_State* L,
     HelperInstallMetrics localMetrics{};
     HelperInstallMetrics* metricsPtr = metrics ? metrics : &localMetrics;
     bool probeOk = sp::seh_probe([&]() {
-        ok = BindHelpersOnThread(L, info, generation, force, metricsPtr);
+        ok = BindHelpersOnThread(L,
+                                 info,
+                                 generation,
+                                 force,
+                                 metricsPtr,
+                                 installTag,
+                                 sbReadyNow,
+                                 sbPivotNow,
+                                 sbFallbackNow);
     }, &sehCode);
     if (!probeOk)
         ok = false;
@@ -6439,7 +6548,18 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     MaybeAdoptOwnerThread(L, info);
 
     const bool dispatchHelpers = Core::Bind::IsCurrentDispatchTag("helpers");
-    if (!dispatchHelpers && !IsOwnerThread(info)) {
+    const bool ownerThreadNow = IsOwnerThread(info);
+    const char* installTag = "queued";
+    if (dispatchHelpers)
+        installTag = ownerThreadNow ? "owner" : "fallback";
+    else if (ownerThreadNow)
+        installTag = "owner-direct";
+
+    const bool sbReadyNow = Net::IsReady();
+    const bool sbPivotNow = Net::IsPivotReady();
+    const bool sbFallbackNow = Net::HasFallbackPivot();
+
+    if (!dispatchHelpers && !ownerThreadNow) {
         uint64_t now = GetTickCount64();
         if (now - info.last_bind_log_tick_ms >= kBindLogCooldownMs) {
             info.last_bind_log_tick_ms = now;
@@ -6496,6 +6616,27 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
         return;
     }
 
+    struct SlotGuard {
+        lua_State* state;
+        bool active;
+        explicit SlotGuard(lua_State* s) : state(s), active(true) {}
+        ~SlotGuard() {
+            if (active)
+                ReleaseBindingSlot(state);
+        }
+    } slotGuard(L);
+
+    HelperInstallFlightGuard flightGuard;
+    if (!flightGuard) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] helpers single-flight suppress tag=%s tid=%u",
+                  installTag,
+                  static_cast<unsigned>(GetCurrentThreadId()));
+        ClearHelperPending(L, generation, &info);
+        return;
+    }
+
     LogLuaState("bind-start Lc=%p (Lr=%p ctx=%p) tid=%lu gen=%llu reason=%s",
                 L,
                 info.L_reported,
@@ -6520,7 +6661,7 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
                   static_cast<unsigned long>(info.owner_tid));
     } else {
         g_helperProbeAttempted.fetch_add(1u, std::memory_order_relaxed);
-        ok = BindHelpersWithSeh(L, info, generation, force, attempted, sehCode, &metrics);
+                ok = BindHelpersWithSeh(L, info, generation, force, attempted, sehCode, &metrics, installTag, sbReadyNow, sbPivotNow, sbFallbackNow);
     }
     LeaveHelperInstall(guardEngaged);
 
@@ -6532,14 +6673,14 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
             tookMs = static_cast<unsigned long>(endTick - startTick);
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
-                  "[HOOKS] helpers installed ok=%d hooks_ok=%u hooks_fail=%u took=%lums",
+                  "[HOOKS] helpers install-end tag=%s ok=%d hooks_ok=%u hooks_fail=%u took=%lums",
+                  installTag,
                   ok ? 1 : 0,
                   static_cast<unsigned>(metrics.hookSuccess),
                   static_cast<unsigned>(metrics.hookFailure),
                   tookMs);
     }
 
-    ReleaseBindingSlot(L);
     uint64_t summaryTick = GetTickCount64();
     bool rebindPending = !ok ? ConsumeHelperRebindPending() : false;
     if (ok) {
@@ -7859,6 +8000,15 @@ uint32_t GetSehTrapCount() {
 
 
 } // namespace Engine::Lua
+
+
+
+
+
+
+
+
+
 
 
 

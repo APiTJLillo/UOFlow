@@ -7582,6 +7582,11 @@ bool IsPivotReady()
     return g_sb_pivot_ready.load(std::memory_order_acquire);
 }
 
+bool HasFallbackPivot()
+{
+    return g_netCfgFallbackPtr != nullptr;
+}
+
 const char* ReadyModeString()
 {
     switch (g_ready_mode.load(std::memory_order_acquire)) {

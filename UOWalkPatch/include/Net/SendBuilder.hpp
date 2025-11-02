@@ -51,6 +51,7 @@ namespace Net {
     void PollSendBuilder();
     void GetSendBuilderProbeStats(uint32_t& attempted, uint32_t& succeeded, uint32_t& skipped);
     void ForceScan(WakeReason reason);
+    bool HasFallbackPivot();
     void SoftNudgeBuilder(std::uint32_t minDelayMs, std::uint32_t maxDelayMs);
     struct SendBuilderStatus {
         bool hooked = false;
