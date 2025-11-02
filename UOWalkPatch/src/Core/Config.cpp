@@ -348,6 +348,37 @@ std::optional<uint32_t> TryGetMilliseconds(const std::string& key, LookupResult*
     return static_cast<uint32_t>(*value);
 }
 
+uint32_t GetSendBuilderSettleTimeoutMs() {
+    constexpr uint32_t kDefaultTimeoutMs = 2500;
+    uint32_t timeoutMs = kDefaultTimeoutMs;
+
+    if (auto cfgTimeout = TryGetMilliseconds("SendBuilder.settle_timeout_ms")) {
+        timeoutMs = *cfgTimeout;
+    }
+
+    if (auto envTimeout = TryGetEnv("SB_SETTLE_TIMEOUT_MS")) {
+        int64_t parsed = 0;
+        if (StrToInt64(*envTimeout, parsed) && parsed >= 0) {
+            if (parsed > static_cast<int64_t>(UINT32_MAX))
+                parsed = static_cast<int64_t>(UINT32_MAX);
+            timeoutMs = static_cast<uint32_t>(parsed);
+        }
+    }
+
+    if (timeoutMs == 0)
+        timeoutMs = kDefaultTimeoutMs;
+
+    return timeoutMs;
+}
+
+bool SendBuilderAllowCallsitePivot() {
+    if (auto env = TryGetEnvBool("SB_ALLOW_CALLSITE_PIVOT"))
+        return *env;
+    if (auto cfg = TryGetBool("SendBuilder.allow_callsite_pivot"))
+        return *cfg;
+    return false;
+}
+
 std::string ConfigSourcePath() {
     EnsureLoaded();
     return g_state.sourcePath;

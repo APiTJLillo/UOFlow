@@ -50,6 +50,7 @@ constexpr std::uint32_t kMaxInflightCap = 4;
 constexpr std::uint32_t kDelayIncreaseMs = 30;
 constexpr std::uint32_t kDelayDecayMs = 10;
 constexpr std::uint32_t kDelayCooldownMs = 2000;
+constexpr std::uint32_t kAckOkThreshold = 3;
 
 ControllerConfig g_config{};
 std::once_flag g_configOnce;
@@ -70,6 +71,7 @@ bool g_preAttachDefaultsActive = false;
 bool g_builderWasAttached = false;
 std::uint32_t g_attachStableStartTick = 0;
 std::uint32_t g_attachBaselineAckDrops = 0;
+std::uint32_t g_consecutiveAckOk = 0;
 
 std::uint32_t GetTickMs() {
     return GetTickCount();
@@ -95,6 +97,7 @@ void ApplyPreAttachDefaultsLocked() {
     g_stepDelayFloor = 320;
     g_stepDelayCeil = 420;
     g_preAttachDefaultsActive = true;
+    g_consecutiveAckOk = 0;
     g_runtimeMaxInflight.store(1u, std::memory_order_release);
     UpdateStepDelay(std::clamp(g_tunedStepDelayMs, g_stepDelayFloor, g_stepDelayCeil), "pre-attach");
     Log::Logf(Log::Level::Info,
@@ -111,6 +114,7 @@ void RestoreNominalPacingLocked(const char* reason) {
     g_stepDelayFloor = g_nominalStepDelayFloor;
     g_stepDelayCeil = g_nominalStepDelayCeil;
     g_preAttachDefaultsActive = false;
+    g_consecutiveAckOk = 0;
     g_runtimeMaxInflight.store(g_nominalMaxInflight, std::memory_order_release);
     UpdateStepDelay(std::clamp(g_tunedStepDelayMs, g_stepDelayFloor, g_stepDelayCeil),
                     reason ? reason : "attach-stable");
@@ -306,6 +310,7 @@ void Reset() {
     g_state = ControllerState{};
     g_inflightOverride.store(0, std::memory_order_release);
     g_inflightOverrideBudget.store(0, std::memory_order_release);
+    g_consecutiveAckOk = 0;
     g_tunedStepDelayMs = std::clamp(g_config.stepDelayMs, g_stepDelayFloor, g_stepDelayCeil);
     g_lastDelayTick = 0;
     std::uint32_t now = GetTickMs();
@@ -378,6 +383,7 @@ void Cancel() {
         return;
     g_state.active = false;
     g_state.inflight = 0;
+    g_consecutiveAckOk = 0;
 }
 
 void OnMovementSnapshot(const Engine::MovementSnapshot& snapshot,
@@ -438,11 +444,14 @@ void OnMovementSnapshot(const Engine::MovementSnapshot& snapshot,
             std::uint32_t sinceDelay = tickMs - g_lastDelayTick;
             std::uint32_t sinceDecay = g_lastDecayTick ? (tickMs - g_lastDecayTick) : kDelayCooldownMs;
             if (sinceDelay >= kDelayCooldownMs && sinceDecay >= kDelayCooldownMs) {
-                std::uint32_t target = (g_tunedStepDelayMs > g_stepDelayFloor + kDelayDecayMs)
-                                           ? g_tunedStepDelayMs - kDelayDecayMs
-                                           : g_stepDelayFloor;
-                UpdateStepDelay(target, "decay");
-                g_lastDecayTick = tickMs;
+                if (g_consecutiveAckOk >= kAckOkThreshold) {
+                    std::uint32_t target = (g_tunedStepDelayMs > g_stepDelayFloor + kDelayDecayMs)
+                                               ? g_tunedStepDelayMs - kDelayDecayMs
+                                               : g_stepDelayFloor;
+                    UpdateStepDelay(target, "decay");
+                    g_lastDecayTick = tickMs;
+                    g_consecutiveAckOk = 0;
+                }
             }
         }
     } else {
@@ -526,18 +535,26 @@ void NotifyAckOk() {
     g_state.lastProgressTick = nowTick;
     g_lastDecayTick = nowTick;
     if (g_tunedStepDelayMs > g_stepDelayFloor) {
+        ++g_consecutiveAckOk;
+        if (g_consecutiveAckOk < kAckOkThreshold)
+            return;
+        g_consecutiveAckOk = 0;
         std::uint32_t diff = g_tunedStepDelayMs - g_stepDelayFloor;
         std::uint32_t decay = std::max<std::uint32_t>(kDelayDecayMs, diff / 4u);
         std::uint32_t target = (diff > decay) ? g_tunedStepDelayMs - decay : g_stepDelayFloor;
         UpdateStepDelay(target, "ack");
     } else if (g_tunedStepDelayMs < g_stepDelayFloor) {
+        g_consecutiveAckOk = 0;
         UpdateStepDelay(g_stepDelayFloor, "ack-floor");
+    } else {
+        g_consecutiveAckOk = 0;
     }
 }
 
 void NotifyAckSoftFail() {
     std::lock_guard<std::mutex> lock(g_stateMutex);
     g_state.inflight = 0;
+    g_consecutiveAckOk = 0;
 }
 
 void NotifyResync(const char* reason) {
@@ -546,6 +563,7 @@ void NotifyResync(const char* reason) {
     if (reason && _stricmp(reason, "delay") == 0) {
         g_lastDelayTick = nowTick;
         g_lastDecayTick = nowTick;
+        g_consecutiveAckOk = 0;
         std::uint32_t target = g_tunedStepDelayMs + kDelayIncreaseMs;
         if (target > g_stepDelayCeil)
             target = g_stepDelayCeil;

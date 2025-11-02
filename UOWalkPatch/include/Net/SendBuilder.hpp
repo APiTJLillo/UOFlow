@@ -38,6 +38,8 @@ namespace Net {
     bool InitSendBuilder(GlobalStateInfo* state);
     void ShutdownSendBuilder();
     bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint = INVALID_SOCKET);
+    bool IsReady();
+    bool IsPivotReady();
     bool IsSendReady();
     bool IsSendBuilderAttached();
     void PollSendBuilder();
@@ -47,6 +49,8 @@ namespace Net {
     struct SendBuilderStatus {
         bool hooked = false;
         bool probing = false;
+        bool ready = false;
+        bool pivotReady = false;
         void* sendPacket = nullptr;
         void* netMgr = nullptr;
     };
@@ -60,4 +64,5 @@ namespace Net {
     void NotifyGlobalStateManager(void* netMgr);
     void SubmitSendSample(void* endpoint, void** frames, USHORT captured, std::uint64_t nowMs);
     bool IsSendSamplingEnabled();
+    void OnSendPacketEnter(void* netMgrThis);
 }

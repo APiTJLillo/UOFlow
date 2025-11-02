@@ -59,7 +59,7 @@ using SendBuilder_t = void* (__thiscall*)(void* thisPtr, void* builder);
 struct SendBuilderTunables {
     static constexpr std::size_t VTBL_SCAN_SLOTS = 32;
     static constexpr bool FALLBACK_PIVOT_ENABLED = true;
-    static constexpr DWORD WAKE_DEBOUNCE_MS = 500;
+    static constexpr DWORD WAKE_DEBOUNCE_MS = 200;
     static constexpr int TAIL_FOLLOW_MAX = 2;
 };
 
@@ -175,6 +175,17 @@ static bool g_pendingScanFallback = false;
 static std::atomic<bool> g_sbReady{false};
 static void* g_netCfgSettlePtr = nullptr;
 static bool g_netCfgSettleLogged = false;
+static std::atomic<uint64_t> g_netcfg_settle_start_ms{0};
+static std::atomic<uint32_t> g_netcfg_settle_timeout_ms{2500};
+static std::atomic<bool> g_netcfg_settle_warned{false};
+static std::atomic<bool> g_allowCallsitePivot{false};
+static std::atomic<bool> g_sb_pivot_ready{false};
+static std::atomic<void*> g_netmgr_this{nullptr};
+static std::atomic<void**> g_netmgr_vtbl{nullptr};
+static std::atomic<uintptr_t> g_netcfg_region_base{0};
+static std::atomic<SIZE_T> g_netcfg_region_size{0};
+static std::atomic<bool> g_mem_event_flag{false};
+static std::atomic<uint64_t> g_last_mem_event_ms{0};
 static constexpr DWORD kNetCfgSettleIntervalMs = 250;
 static constexpr DWORD kNetCfgSettleTimeoutMs = 10'000;
 static std::once_flag g_missingManagerLogOnce;
@@ -306,6 +317,7 @@ static ScheduledScanInfo ConsumeScheduledInvocation()
 static void ScheduleScan(const char* reason, bool fallback);
 static void RunScanOnce(bool fallback, const char* reason);
 static ScanRunResult ExecuteManagerScanSequence(const ScanInvocationContext& ctx);
+static void HookSendBuilderFromNetMgr();
 
 class Stage3Controller {
 public:
@@ -1081,6 +1093,126 @@ static bool IsNetworkConfigReadable(MEMORY_BASIC_INFORMATION* mbiOut = nullptr)
     return committed && !guard && !noAccess && readable;
 }
 
+static const char* MemStateToStr(DWORD state) noexcept
+{
+    switch (state) {
+    case MEM_FREE:
+        return "MEM_FREE";
+    case MEM_RESERVE:
+        return "MEM_RESERVE";
+    case MEM_COMMIT:
+        return "MEM_COMMIT";
+    default: {
+        thread_local char buf[11];
+        sprintf_s(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(state));
+        return buf;
+    }
+    }
+}
+
+static const char* MemProtectToStr(DWORD protect) noexcept
+{
+    constexpr DWORD kKnownModifiers = PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE;
+    DWORD base = protect & ~kKnownModifiers;
+    const char* baseStr = nullptr;
+    switch (base) {
+    case PAGE_NOACCESS:
+        baseStr = "PAGE_NOACCESS";
+        break;
+    case PAGE_READONLY:
+        baseStr = "PAGE_READONLY";
+        break;
+    case PAGE_READWRITE:
+        baseStr = "PAGE_READWRITE";
+        break;
+    case PAGE_WRITECOPY:
+        baseStr = "PAGE_WRITECOPY";
+        break;
+    case PAGE_EXECUTE:
+        baseStr = "PAGE_EXECUTE";
+        break;
+    case PAGE_EXECUTE_READ:
+        baseStr = "PAGE_EXECUTE_READ";
+        break;
+    case PAGE_EXECUTE_READWRITE:
+        baseStr = "PAGE_EXECUTE_READWRITE";
+        break;
+    case PAGE_EXECUTE_WRITECOPY:
+        baseStr = "PAGE_EXECUTE_WRITECOPY";
+        break;
+    default:
+        break;
+    }
+
+    if (!baseStr || (protect & ~(base | kKnownModifiers)) != 0) {
+        thread_local char buf[11];
+        sprintf_s(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(protect));
+        return buf;
+    }
+
+    if ((protect & kKnownModifiers) == 0)
+        return baseStr;
+
+    thread_local char buf[64];
+    strcpy_s(buf, sizeof(buf), baseStr);
+    if (protect & PAGE_GUARD)
+        strcat_s(buf, sizeof(buf), "|GUARD");
+    if (protect & PAGE_NOCACHE)
+        strcat_s(buf, sizeof(buf), "|NOCACHE");
+    if (protect & PAGE_WRITECOMBINE)
+        strcat_s(buf, sizeof(buf), "|WRITECOMBINE");
+    return buf;
+}
+
+static void UpdateNetCfgRegionBounds(const MEMORY_BASIC_INFORMATION& mbi) noexcept
+{
+    g_netcfg_region_base.store(reinterpret_cast<uintptr_t>(mbi.BaseAddress), std::memory_order_relaxed);
+    g_netcfg_region_size.store(mbi.RegionSize, std::memory_order_relaxed);
+}
+
+static void ClearNetCfgRegionBounds() noexcept
+{
+    g_netcfg_region_base.store(0, std::memory_order_relaxed);
+    g_netcfg_region_size.store(0, std::memory_order_relaxed);
+}
+
+static void OnMemoryChange(void* base, SIZE_T size, DWORD state, DWORD protect, DWORD type) noexcept
+{
+    (void)type;
+    uintptr_t regionBase = g_netcfg_region_base.load(std::memory_order_relaxed);
+    SIZE_T regionSize = g_netcfg_region_size.load(std::memory_order_relaxed);
+    if (regionBase == 0 || regionSize == 0)
+        return;
+
+    uintptr_t a0 = reinterpret_cast<uintptr_t>(base);
+    uintptr_t a1 = (size > 0) ? (a0 + size - 1) : a0;
+    uintptr_t b0 = regionBase;
+    uintptr_t b1 = (regionSize > 0) ? (b0 + regionSize - 1) : b0;
+
+    if (a1 < b0 || b1 < a0)
+        return;
+
+    g_mem_event_flag.store(true, std::memory_order_release);
+    g_last_mem_event_ms.store(static_cast<uint64_t>(GetTickCount64()), std::memory_order_relaxed);
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[CORE][SB][EVT] mem-change overlaps netcfg state=%s protect=%s",
+              MemStateToStr(state),
+              MemProtectToStr(protect));
+}
+
+static void NotifyNetCfgMemoryChange(void* address) noexcept
+{
+    if (!address)
+        return;
+    MEMORY_BASIC_INFORMATION mbi{};
+    DWORD saved = GetLastError();
+    BOOL ok = VirtualQuery(address, &mbi, sizeof(mbi)) != 0;
+    SetLastError(saved);
+    if (ok)
+        OnMemoryChange(mbi.BaseAddress, mbi.RegionSize, mbi.State, mbi.Protect, mbi.Type);
+}
+
 static void StopNetCfgRetryLoop() noexcept
 {
     g_netCfgRetryActive = false;
@@ -1090,6 +1222,85 @@ static void StopNetCfgRetryLoop() noexcept
     g_nextNetCfgProbeTick = 0;
     g_netCfgSettlePtr = nullptr;
     g_netCfgSettleLogged = false;
+    g_netcfg_settle_start_ms.store(0, std::memory_order_relaxed);
+    g_netcfg_settle_warned.store(false, std::memory_order_relaxed);
+}
+
+static void TryScanIfMapped() noexcept
+{
+    if (g_builderScanned)
+        return;
+
+    uintptr_t regionBase = g_netcfg_region_base.load(std::memory_order_relaxed);
+    SIZE_T regionSize = g_netcfg_region_size.load(std::memory_order_relaxed);
+    if (regionBase == 0 || regionSize == 0)
+        return;
+
+    void* basePtr = reinterpret_cast<void*>(regionBase);
+    MEMORY_BASIC_INFORMATION mbi{};
+    DWORD savedError = GetLastError();
+    if (!VirtualQuery(basePtr, &mbi, sizeof(mbi))) {
+        SetLastError(savedError);
+        return;
+    }
+    SetLastError(savedError);
+
+    UpdateNetCfgRegionBounds(mbi);
+
+    const DWORD readableMask = PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
+    const bool committed = (mbi.State == MEM_COMMIT);
+    const bool guard = (mbi.Protect & PAGE_GUARD) != 0;
+    const bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
+    const bool readable = (mbi.Protect & readableMask) != 0;
+    if (!committed || guard || noAccess || !readable)
+        return;
+
+    StopNetCfgRetryLoop();
+    const bool wasReady = g_sbReady.load(std::memory_order_acquire);
+    g_sbReady.store(true, std::memory_order_release);
+    ScheduleScan("mem-event:ready", false);
+    HookSendBuilderFromNetMgr();
+    if (!wasReady) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][SB][READY] netcfg mapped & scanned (base=%p size=0x%zx)",
+                  mbi.BaseAddress,
+                  static_cast<std::size_t>(mbi.RegionSize));
+    }
+}
+
+void OnSendPacketEnter(void* ecxThis)
+{
+    if (g_sbReady.load(std::memory_order_acquire))
+        return;
+    if (!g_allowCallsitePivot.load(std::memory_order_acquire))
+        return;
+    if (!ecxThis)
+        return;
+    if (g_builderScanned)
+        return;
+
+    void** vtbl = nullptr;
+    if (!SafeCopy(&vtbl, ecxThis, sizeof(vtbl)) || !vtbl)
+        return;
+
+    bool expected = false;
+    if (!g_sb_pivot_ready.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_acquire))
+        return;
+
+    g_netmgr_this.store(ecxThis, std::memory_order_release);
+    g_netmgr_vtbl.store(vtbl, std::memory_order_release);
+    InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(&g_netMgr), ecxThis, nullptr);
+
+    g_sbReady.store(true, std::memory_order_release);
+    ScheduleScan("pivot:callsite", false);
+    HookSendBuilderFromNetMgr();
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[CORE][SB][READY] callsite captured this=%p vtbl=%p",
+              ecxThis,
+              vtbl);
 }
 
 static void LogNetCfgBlockedDiagnostics(void* cfgPtr,
@@ -1098,6 +1309,7 @@ static void LogNetCfgBlockedDiagnostics(void* cfgPtr,
     if (g_loggedNetCfgBlockedSnapshot)
         return;
     g_loggedNetCfgBlockedSnapshot = true;
+    UpdateNetCfgRegionBounds(mbi);
 
     char summary[256];
     sprintf_s(summary,
@@ -1207,6 +1419,8 @@ static void StartNetCfgRetryLoop(void* watchPtr, DWORD nowTick) noexcept
     g_nextNetCfgProbeTick = g_netCfgRetryNextTick;
     g_netCfgSettlePtr = watchPtr;
     g_netCfgSettleLogged = false;
+    g_netcfg_settle_warned.store(false, std::memory_order_relaxed);
+    g_netcfg_settle_start_ms.store(static_cast<uint64_t>(GetTickCount64()), std::memory_order_relaxed);
     g_sbReady.store(false, std::memory_order_release);
     g_stage3SettleBypassBudget.store(2, std::memory_order_release);
     g_loggedNetCfgBlockedSnapshot = false;
@@ -1214,6 +1428,7 @@ static void StartNetCfgRetryLoop(void* watchPtr, DWORD nowTick) noexcept
 
     MEMORY_BASIC_INFORMATION mbi{};
     if (VirtualQuery(watchPtr, &mbi, sizeof(mbi))) {
+        UpdateNetCfgRegionBounds(mbi);
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
                   "[CORE][SB][PEND] networkConfig settle start ptr=%p state=0x%08lX protect=0x%08lX type=0x%08lX size=0x%zx",
@@ -1223,11 +1438,43 @@ static void StartNetCfgRetryLoop(void* watchPtr, DWORD nowTick) noexcept
                   static_cast<unsigned long>(mbi.Type),
                   static_cast<std::size_t>(mbi.RegionSize));
     } else {
+        ClearNetCfgRegionBounds();
         Log::Logf(Log::Level::Warn,
                   Log::Category::Core,
                   "[CORE][SB][PEND] networkConfig settle start VirtualQuery failed ptr=%p error=%lu",
                   watchPtr,
                   GetLastError());
+    }
+}
+
+static void MaybeWarnNetCfgSettleTimeout() noexcept
+{
+    if (g_netcfg_settle_warned.load(std::memory_order_relaxed))
+        return;
+    if (g_sbReady.load(std::memory_order_acquire))
+        return;
+
+    const uint64_t settleStart = g_netcfg_settle_start_ms.load(std::memory_order_relaxed);
+    if (settleStart == 0)
+        return;
+
+    const uint32_t timeoutMs = g_netcfg_settle_timeout_ms.load(std::memory_order_relaxed);
+    if (timeoutMs == 0)
+        return;
+
+    const uint64_t nowMs = GetTickCount64();
+    if (nowMs <= settleStart)
+        return;
+
+    const uint64_t elapsed = nowMs - settleStart;
+    if (elapsed <= timeoutMs)
+        return;
+
+    if (!g_netcfg_settle_warned.exchange(true, std::memory_order_acq_rel)) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[WARN][CORE][SB] netcfg settle timeout - pivot eligible (elapsed=%llums)",
+                  static_cast<unsigned long long>(elapsed));
     }
 }
 
@@ -1242,6 +1489,7 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
 
     MEMORY_BASIC_INFORMATION mbi{};
     if (VirtualQuery(g_netCfgSettlePtr, &mbi, sizeof(mbi))) {
+        UpdateNetCfgRegionBounds(mbi);
         const bool committed = (mbi.State == MEM_COMMIT);
         const bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
         const bool guard = (mbi.Protect & PAGE_GUARD) != 0;
@@ -1256,24 +1504,36 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
         }
 
         ++g_netCfgRetryIndex;
+        MaybeWarnNetCfgSettleTimeout();
         const bool shouldLog = !g_netCfgSettleLogged ||
                                g_netCfgRetryIndex <= 8 ||
                                (g_netCfgRetryIndex % 8u) == 0;
         if (shouldLog) {
+            const char* stateStr = MemStateToStr(mbi.State);
+            const char* protectStr = MemProtectToStr(mbi.Protect);
+            const std::uint64_t nowMs = GetTickCount64();
+            const std::uint64_t settleStart = g_netcfg_settle_start_ms.load(std::memory_order_relaxed);
+            const std::uint64_t settleElapsed =
+                (settleStart != 0 && nowMs >= settleStart) ? (nowMs - settleStart) : 0;
             Log::Logf(Log::Level::Info,
                       Log::Category::Core,
-                      "[CORE][SB][SKIP] netcfg settle waiting ptr=%p attempt=%u state=0x%08lX protect=0x%08lX guard=%d noaccess=%d",
+                      "[CORE][SB][SKIP] netcfg settle waiting ptr=%p attempt=%u state=0x%08lX protect=0x%08lX guard=%d noaccess=%d state=%s protect=%s settle_elapsed_ms=%llu",
                       g_netCfgSettlePtr,
                       static_cast<unsigned>(g_netCfgRetryIndex),
                       static_cast<unsigned long>(mbi.State),
                       static_cast<unsigned long>(mbi.Protect),
                       guard ? 1 : 0,
-                      noAccess ? 1 : 0);
+                      noAccess ? 1 : 0,
+                      stateStr,
+                      protectStr,
+                      static_cast<unsigned long long>(settleElapsed));
             g_netCfgSettleLogged = true;
         }
         LogNetCfgBlockedDiagnostics(g_netCfgSettlePtr, mbi);
     } else {
+        ClearNetCfgRegionBounds();
         ++g_netCfgRetryIndex;
+        MaybeWarnNetCfgSettleTimeout();
         if (!g_netCfgSettleLogged || (g_netCfgRetryIndex % 8u) == 0) {
             Log::Logf(Log::Level::Warn,
                       Log::Category::Core,
@@ -1367,6 +1627,8 @@ static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
         if (allowRecord)
             recordCandidate(candidate, static_cast<std::uint8_t>(slotIndex));
 
+        UpdateNetCfgRegionBounds(mbi);
+
         std::uintptr_t probe{};
         if (!SafeCopy(&probe, candidate, sizeof(probe))) {
             Log::Logf(Log::Level::Debug,
@@ -1412,6 +1674,7 @@ static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
             !(fallbackMbi.Protect & PAGE_GUARD) &&
             !(fallbackMbi.Protect & PAGE_NOACCESS) &&
             (fallbackMbi.Protect & readableMask)) {
+            UpdateNetCfgRegionBounds(fallbackMbi);
             rawCfg = g_netCfgFallbackPtr;
             Log::Logf(Log::Level::Debug,
                       Log::Category::Core,
@@ -1426,6 +1689,7 @@ static bool TryAdoptNetCfgFallback(void*& rawCfg) noexcept
                   static_cast<unsigned long>(fallbackMbi.State),
                   static_cast<unsigned long>(fallbackMbi.Protect));
         g_netCfgFallbackPtr = nullptr;
+        ClearNetCfgRegionBounds();
     }
 
     if (!g_netMgr) {
@@ -2051,6 +2315,7 @@ static void UpdateTrackedRegionCache(const MEMORY_BASIC_INFORMATION& mbi)
     g_lastNetCfgType = mbi.Type;
     g_lastNetCfgBase = mbi.BaseAddress;
     g_lastNetCfgRegionSize = mbi.RegionSize;
+    UpdateNetCfgRegionBounds(mbi);
 }
 
 static bool IsEngineStableForScanning()
@@ -5693,6 +5958,9 @@ static BOOL WINAPI Hook_VirtualProtect(LPVOID lpAddress, SIZE_T dwSize, DWORD fl
             UpdateTrackedRegionCache(after);
     }
 
+    if (result && lpAddress)
+        NotifyNetCfgMemoryChange(lpAddress);
+
     SetLastError(callError);
     return result;
 }
@@ -5769,6 +6037,9 @@ static BOOL WINAPI Hook_VirtualProtectEx(HANDLE hProcess, LPVOID lpAddress, SIZE
             UpdateTrackedRegionCache(after);
     }
 
+    if (sameProcess && result && lpAddress)
+        NotifyNetCfgMemoryChange(lpAddress);
+
     SetLastError(callError);
     return result;
 }
@@ -5813,6 +6084,9 @@ static LPVOID WINAPI Hook_VirtualAlloc(LPVOID lpAddress, SIZE_T dwSize, DWORD fl
             WriteRawLog(buf);
         }
     }
+
+    if (result)
+        NotifyNetCfgMemoryChange(result);
 
     SetLastError(callError);
     return result;
@@ -5879,6 +6153,9 @@ static LPVOID WINAPI Hook_VirtualAllocEx(HANDLE hProcess, LPVOID lpAddress, SIZE
         }
     }
 
+    if (sameProcess && result)
+        NotifyNetCfgMemoryChange(result);
+
     SetLastError(callError);
     return result;
 }
@@ -5923,6 +6200,9 @@ static LPVOID WINAPI Hook_MapViewOfFile(HANDLE hFileMappingObject, DWORD dwDesir
             }
         }
     }
+
+    if (result)
+        NotifyNetCfgMemoryChange(result);
 
     SetLastError(callError);
     return result;
@@ -5979,6 +6259,9 @@ static LPVOID WINAPI Hook_MapViewOfFileEx(HANDLE hFileMappingObject,
             }
         }
     }
+
+    if (result)
+        NotifyNetCfgMemoryChange(result);
 
     SetLastError(callError);
     return result;
@@ -6084,6 +6367,13 @@ static NTSTATUS NTAPI Hook_NtProtectVirtualMemory(HANDLE processHandle,
             ScheduleSendBuilderWake("NtProtectVirtualMemory", 100, 200);
     }
 
+    if (sameProcess && NT_SUCCESS(status))
+    {
+        void* notifyPtr = (baseAddress && *baseAddress) ? *baseAddress : reinterpret_cast<void*>(outputBase);
+        if (notifyPtr)
+            NotifyNetCfgMemoryChange(notifyPtr);
+    }
+
     return status;
 }
 
@@ -6160,6 +6450,13 @@ static NTSTATUS NTAPI Hook_NtAllocateVirtualMemory(HANDLE processHandle,
                                        haveAfter ? &mbiAfter : nullptr);
         if (haveAfter && MbiCommittedReadable(mbiAfter))
             ScheduleSendBuilderWake("NtAllocateVirtualMemory", 100, 200);
+    }
+
+    if (sameProcess && NT_SUCCESS(status))
+    {
+        void* notifyPtr = (baseAddress && *baseAddress) ? *baseAddress : reinterpret_cast<void*>(outputBase);
+        if (notifyPtr)
+            NotifyNetCfgMemoryChange(notifyPtr);
     }
 
     return status;
@@ -6243,6 +6540,9 @@ static NTSTATUS NTAPI Hook_NtMapViewOfSection(HANDLE sectionHandle,
             ScheduleSendBuilderWake("NtMapViewOfSection", 100, 200);
     }
 
+    if (sameProcess && NT_SUCCESS(status) && mappedBase != 0)
+        NotifyNetCfgMemoryChange(reinterpret_cast<void*>(mappedBase));
+
     return status;
 }
 
@@ -6286,12 +6586,15 @@ static NTSTATUS NTAPI Hook_NtUnmapViewOfSection(HANDLE processHandle, PVOID base
 
         if (NT_SUCCESS(status))
         {
+            if (baseAddress)
+                NotifyNetCfgMemoryChange(baseAddress);
             g_lastNetCfgState = 0xFFFFFFFF;
             g_lastNetCfgProtect = 0xFFFFFFFF;
             g_lastNetCfgType = 0xFFFFFFFF;
             g_lastNetCfgBase = nullptr;
             g_lastNetCfgRegionSize = 0;
             g_haveNetCfgSnapshot = false;
+            ClearNetCfgRegionBounds();
         }
     }
 
@@ -6536,6 +6839,10 @@ static void HookSendBuilderFromNetMgr()
         Util::RegionWatch::ClearWatch();
         StopNetCfgRetryLoop();
         g_sbReady.store(false, std::memory_order_release);
+        ClearNetCfgRegionBounds();
+        g_sb_pivot_ready.store(false, std::memory_order_release);
+        g_netmgr_this.store(nullptr, std::memory_order_release);
+        g_netmgr_vtbl.store(nullptr, std::memory_order_release);
         TryDiscoverFromEngineContext();
         return;
     }
@@ -6543,6 +6850,10 @@ static void HookSendBuilderFromNetMgr()
     if (rawCfg != g_lastNetCfgPtr) {
         StopNetCfgRetryLoop();
         g_sbReady.store(false, std::memory_order_release);
+        ClearNetCfgRegionBounds();
+        g_sb_pivot_ready.store(false, std::memory_order_release);
+        g_netmgr_this.store(nullptr, std::memory_order_release);
+        g_netmgr_vtbl.store(nullptr, std::memory_order_release);
         g_lastNetCfgPtr = rawCfg;
         g_lastNetCfgState = 0xFFFFFFFF;
         g_lastNetCfgProtect = 0xFFFFFFFF;
@@ -6587,6 +6898,7 @@ RetryNetCfgSnapshot:
                             (mbi.BaseAddress != g_lastNetCfgBase) ||
                             (mbi.RegionSize != g_lastNetCfgRegionSize);
         Util::RegionWatch::UpdateRegionInfo(mbi);
+        UpdateNetCfgRegionBounds(mbi);
         if (stateChanged) {
             char buf[256];
             sprintf_s(buf, sizeof(buf),
@@ -6749,6 +7061,8 @@ static void ScanSendBuilder()
 
 static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int len)
 {
+    OnSendPacketEnter(thisPtr);
+
     void* returnPc = _ReturnAddress();
     g_sendRing.push(returnPc, HashPointer(returnPc));
     if (Log::IsEnabled(Log::Level::Debug)) {
@@ -6885,6 +7199,9 @@ bool InitSendBuilder(GlobalStateInfo* state)
         g_sendSampleStore.Reset();
 
         g_lastPollTick = 0;
+        g_sb_pivot_ready.store(false, std::memory_order_release);
+        g_netmgr_this.store(nullptr, std::memory_order_release);
+        g_netmgr_vtbl.store(nullptr, std::memory_order_release);
     }
 
     bool sbDebug = ResolveSendBuilderFlag("SB_DEBUG", "sb.debug", false);
@@ -6924,6 +7241,10 @@ bool InitSendBuilder(GlobalStateInfo* state)
     bool requireSamples = ResolveSendBuilderFlag("SB_REQUIRE_SAMPLE", "sb.requireSendSample", true);
     g_requireSendSample.store(requireSamples, std::memory_order_relaxed);
     g_allowDbProbe = ResolveSendBuilderFlag("SB_ALLOW_DB_PROBE", "sb.allow_db_probe", false);
+    bool allowCallsitePivot = Core::Config::SendBuilderAllowCallsitePivot();
+    g_allowCallsitePivot.store(allowCallsitePivot, std::memory_order_relaxed);
+    uint32_t settleTimeoutMs = Core::Config::GetSendBuilderSettleTimeoutMs();
+    g_netcfg_settle_timeout_ms.store(settleTimeoutMs, std::memory_order_relaxed);
 
     if (!g_initLogged || stateChanged) {
         char initBuf[160];
@@ -6965,6 +7286,8 @@ void PollSendBuilder()
 
     DWORD now = GetTickCount();
     ServiceNetCfgRetryLoop(now);
+    if (g_mem_event_flag.exchange(false, std::memory_order_acq_rel))
+        TryScanIfMapped();
     if (g_stage3RetryPending.load(std::memory_order_acquire)) {
         DWORD deadline = g_stage3RetryDeadline.load(std::memory_order_relaxed);
         if (deadline == 0 || TickHasElapsed(now, deadline)) {
@@ -7095,6 +7418,10 @@ void ShutdownSendBuilder()
     g_netCfgSettlePtr = nullptr;
     g_netCfgSettleLogged = false;
     StopNetCfgRetryLoop();
+    g_sb_pivot_ready.store(false, std::memory_order_release);
+    g_netmgr_this.store(nullptr, std::memory_order_release);
+    g_netmgr_vtbl.store(nullptr, std::memory_order_release);
+    g_allowCallsitePivot.store(false, std::memory_order_relaxed);
 }
 
 bool SendPacketRaw(const void* bytes, int len, SOCKET socketHint)
@@ -7179,15 +7506,28 @@ bool IsSendReady()
     return g_sendPacket && (g_sendCtx || g_netMgr);
 }
 
+bool IsReady()
+{
+    return g_sbReady.load(std::memory_order_acquire);
+}
+
+bool IsPivotReady()
+{
+    return g_sb_pivot_ready.load(std::memory_order_acquire);
+}
+
 SendBuilderStatus GetSendBuilderStatus()
 {
     SendBuilderStatus status{};
     status.hooked = g_sendBuilderHooked;
+    status.ready = g_sbReady.load(std::memory_order_acquire);
+    status.pivotReady = g_sb_pivot_ready.load(std::memory_order_acquire);
     status.sendPacket = g_sendPacketTarget;
-    status.netMgr = g_netMgr;
-    bool haveManager = g_netMgr != nullptr || g_sendCtx != nullptr;
+    void* pivotMgr = g_netmgr_this.load(std::memory_order_acquire);
+    status.netMgr = g_netMgr ? g_netMgr : pivotMgr;
+    bool haveManager = (g_netMgr != nullptr) || (g_sendCtx != nullptr) || (pivotMgr != nullptr);
     bool activelyScanning = !g_builderScanned || HasEndpointBackoff() || g_nextNetCfgProbeTick != 0;
-    status.probing = !status.hooked && (haveManager || activelyScanning);
+    status.probing = !status.hooked && !status.ready && (haveManager || activelyScanning);
     return status;
 }
 

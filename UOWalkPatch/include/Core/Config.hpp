@@ -29,6 +29,9 @@ namespace Core::Config {
     std::optional<unsigned> TryGetUInt(const std::string& key, LookupResult* outMeta = nullptr);
     std::optional<uint32_t> TryGetMilliseconds(const std::string& key, LookupResult* outMeta = nullptr);
 
+    uint32_t GetSendBuilderSettleTimeoutMs();
+    bool SendBuilderAllowCallsitePivot();
+
     std::string ConfigSourcePath();
 
 } // namespace Core::Config

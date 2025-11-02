@@ -4923,7 +4923,16 @@ static void MaybeEmitHeartbeat() {
     const bool ctxOK = engineCtx != nullptr;
     const char* ctxLabel = ctxOK ? "OK" : "MISS";
     Net::SendBuilderStatus sbStatus = Net::GetSendBuilderStatus();
-    const char* sbLabel = sbStatus.hooked ? "attached" : (sbStatus.probing ? "probing" : "pending");
+    const char* sbLabel = "pending";
+    if (sbStatus.hooked) {
+        sbLabel = "attached";
+    } else if (sbStatus.pivotReady) {
+        sbLabel = "pivot";
+    } else if (sbStatus.ready) {
+        sbLabel = "ready";
+    } else if (sbStatus.probing) {
+        sbLabel = "probing";
+    }
 
     if (ctxOK && luaOK) {
         uint64_t expected = 0;
@@ -5116,6 +5125,31 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
     }
 
     lua_State* target = current.L_canonical;
+    if (!force && !(Net::IsReady() || Net::IsPivotReady())) {
+        uint64_t nextRetry = now + retry.retryBackoffMs;
+        lua_State* stageTarget = target ? target : lookupPtr;
+        if (stageTarget) {
+            g_stateRegistry.UpdateByPointer(stageTarget, [&](LuaStateInfo& state) {
+                UpdateHelperStage(state, HelperInstallStage::WaitingForGlobalState, now, "sendbuilder");
+                if (state.helper_first_attempt_ms == 0)
+                    state.helper_first_attempt_ms = now;
+                if (state.helper_next_retry_ms == 0 || state.helper_next_retry_ms < nextRetry)
+                    state.helper_next_retry_ms = nextRetry;
+            }, &current);
+        }
+        current.helper_next_retry_ms = nextRetry;
+        LogLuaState("bind-skip Lc=%p reason=sendbuilder action=%s",
+                    stageTarget,
+                    action);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "helpers skip Lc=%p reason=sendbuilder action=%s",
+                  stageTarget,
+                  action);
+        TrackHelperEvent(g_helperDeferredCount);
+        MaybeEmitHelperSummary(now);
+        return;
+    }
     HelperInstallStage stage = DetermineHelperStage(current, canonicalReadyFlag);
     void* engineCtxSnapshot = g_engineContext.load(std::memory_order_acquire);
     if (engineCtxSnapshot && current.helper_settle_start_ms == 0) {
