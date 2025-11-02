@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Interface>
+  <Scripts>
+    <Script file="Source/UOFlowStatus.lua"/>
+  </Scripts>
+
+  <Windows>
+
+    <!-- Root HUD window -->
+    <Window name="UOFlowStatusWindowTemplate">
+      <Size>
+        <AbsPoint x="220" y="120"/>
+      </Size>
+      <Anchors>
+        <Anchor point="topleft" relativePoint="topleft">
+          <AbsPoint x="40" y="100"/>
+        </Anchor>
+      </Anchors>
+
+      <Windows>
+        <Label name="$parentTitle" text="UOFlow Status">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="8" y="6"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+
+        <Window name="$parentList">
+          <Size>
+            <AbsPoint x="208" y="90"/>
+          </Size>
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft">
+              <AbsPoint x="6" y="24"/>
+            </Anchor>
+          </Anchors>
+        </Window>
+      </Windows>
+    </Window>
+
+    <!-- One status row: dot + label + value -->
+    <Window name="UOFlowStatusRowTemplate">
+      <Size>
+        <AbsPoint x="208" y="16"/>
+      </Size>
+
+      <Windows>
+        <Label name="$parentDot" text="">
+          <Anchors>
+            <Anchor point="topleft" relativePoint="topleft"/>
+          </Anchors>
+        </Label>
+
+        <Label name="$parentLabel" text="">
+          <Anchors>
+            <Anchor point="topleft" relativeTo="$parentDot" relativePoint="topright">
+              <AbsPoint x="6" y="-2"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+
+        <Label name="$parentVal" text="">
+          <Anchors>
+            <Anchor point="topleft" relativeTo="$parentLabel" relativePoint="topright">
+              <AbsPoint x="80" y="0"/>
+            </Anchor>
+          </Anchors>
+        </Label>
+      </Windows>
+    </Window>
+
+  </Windows>
+</Interface>
