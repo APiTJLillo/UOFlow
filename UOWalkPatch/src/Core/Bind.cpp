@@ -295,6 +295,15 @@ bool DispatchWithFallback(std::uint32_t ownerTid, TaskFn&& fn, const char* tag) 
     if (work->state && work->state->executed.load(std::memory_order_acquire))
         return true;
 
+    bool helpersTag = work->state && _stricmp(work->state->tag.c_str(), "helpers") == 0;
+    if (helpersTag) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[CORE][Bind] helpers dispatch awaiting owner drain owner=%u",
+                  static_cast<unsigned>(resolvedOwner));
+        return primaryPosted || (work->state && work->state->executed.load(std::memory_order_acquire));
+    }
+
     // APC fallback
     if (Core::Config::HelpersAllowApcFallback() && resolvedOwner != 0) {
         if (QueueApcFallback(resolvedOwner, work)) {

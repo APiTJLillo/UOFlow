@@ -6107,6 +6107,19 @@ static bool BindHelpersOnThread(lua_State* L,
 
     MaybeAdoptOwnerThread(L, info);
 
+    DWORD scriptThreadId = g_scriptThreadId.load(std::memory_order_acquire);
+    if (scriptThreadId != 0 && info.owner_tid != scriptThreadId) {
+        uint64_t adoptTick = GetTickCount64();
+        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
+            state.owner_tid = scriptThreadId;
+            state.last_tid = scriptThreadId;
+            if ((state.flags & STATE_FLAG_OWNER_READY) == 0 || state.owner_ready_tick_ms == 0)
+                state.owner_ready_tick_ms = adoptTick;
+            state.flags |= STATE_FLAG_OWNER_READY;
+        }, &info);
+        info.owner_tid = scriptThreadId;
+    }
+
     Net::SendBuilderStatus bindStatusSnapshot = Net::GetSendBuilderStatus();
     Net::ReadyMode helperReadyMode = bindStatusSnapshot.ready ? bindStatusSnapshot.readyMode : Net::ReadyMode::None;
     const GlobalStateInfo* globalInfo = Engine::Info();
@@ -6137,9 +6150,10 @@ static bool BindHelpersOnThread(lua_State* L,
         info.ctx_reported = bindCtx;
     }
 
-    if (bindCtx) {
-        DWORD ownerHint = info.owner_tid ? info.owner_tid : GetCurrentThreadId();
-        SetCanonicalHelperCtx(bindCtx, ownerHint);
+    if (bindCtx && bindCtx == scriptCtx) {
+        DWORD ownerHint = scriptThreadId ? scriptThreadId : (info.owner_tid ? info.owner_tid : GetCurrentThreadId());
+        if (ownerHint != 0)
+            SetCanonicalHelperCtx(bindCtx, ownerHint);
     }
 
     CtxValidationResult bindCtxStatus = ValidateCtxLoose(bindCtx);
