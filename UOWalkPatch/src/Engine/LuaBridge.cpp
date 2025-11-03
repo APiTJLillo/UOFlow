@@ -6376,7 +6376,7 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
                   reason);
     }
 
-        bool fallbackOk = false;
+    bool fallbackOk = false;
     DWORD fallbackSeh = 0;
     if (!clientOk) {
         Log::Logf(Log::Level::Info,
@@ -7481,30 +7481,133 @@ static int Lua_UOWStatusFlags(lua_State* L) {
     bool coalesced = false;
     EnsureHelperState(L, kHelperStatusFlagsName, &ready, &coalesced, nullptr);
 
-    lua_newtable(L);
-
     const bool helpersReady = g_helpersInstalledAny.load(std::memory_order_acquire);
-    lua_pushboolean(L, helpersReady ? 1 : 0);
-    lua_setfield(L, -2, "helpers");
-
     const bool engineReady = g_engineContext.load(std::memory_order_acquire) != nullptr;
-    lua_pushboolean(L, engineReady ? 1 : 0);
-    lua_setfield(L, -2, "engineCtx");
-
     const bool movementReady = Engine::MovementReady();
-    lua_pushboolean(L, movementReady ? 1 : 0);
-    lua_setfield(L, -2, "sendReady");
+    const int fwDepth = Engine::Movement::QueueDepth();
+    const int stepDelayMs = static_cast<int>(Walk::Controller::GetStepDelayMs());
+    const int inflight = static_cast<int>(Walk::Controller::GetInflightCount());
 
-    lua_pushinteger(L, static_cast<lua_Integer>(Engine::Movement::QueueDepth()));
-    lua_setfield(L, -2, "fwDepth");
+    const char* rawKey = nullptr;
+    size_t rawKeyLen = 0;
+    if (lua_gettop(L) >= 1 && lua_isstring(L, 1)) {
+        rawKey = lua_tolstring(L, 1, &rawKeyLen);
+    }
 
-    lua_pushinteger(L, static_cast<lua_Integer>(Walk::Controller::GetStepDelayMs()));
-    lua_setfield(L, -2, "stepDelayMs");
+    int argCount = lua_gettop(L);
+    int argType = (argCount >= 1) ? lua_type(L, 1) : LUA_TNONE;
 
-    lua_pushinteger(L, static_cast<lua_Integer>(Walk::Controller::GetInflightCount()));
-    lua_setfield(L, -2, "inflight");
+    std::string keyStr;
+    if (rawKey && rawKeyLen > 0) {
+        keyStr.assign(rawKey, rawKeyLen);
+        auto trim = [](std::string& s) {
+            while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front())))
+                s.erase(s.begin());
+            while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())))
+                s.pop_back();
+        };
+        trim(keyStr);
+    }
 
-    return 1;
+    std::string keyLower = keyStr;
+    std::transform(keyLower.begin(), keyLower.end(), keyLower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    const char* safeKey = !keyStr.empty() ? keyStr.c_str() : "<table>";
+    LogLuaProbe("uow_statusflags call key=%s type=%d argc=%d ready=%d coalesced=%d helpers=%d engine=%d send=%d fwDepth=%d stepDelay=%d inflight=%d",
+                safeKey,
+                argType,
+                argCount,
+                ready ? 1 : 0,
+                coalesced ? 1 : 0,
+                helpersReady ? 1 : 0,
+                engineReady ? 1 : 0,
+                movementReady ? 1 : 0,
+                fwDepth,
+                stepDelayMs,
+                inflight);
+    DebugRingTryWrite("[UOW][statusflags] key=%s type=%d argc=%d helpers=%d engine=%d send=%d fw=%d step=%d inflight=%d",
+                      safeKey,
+                      argType,
+                      argCount,
+                      helpersReady ? 1 : 0,
+                      engineReady ? 1 : 0,
+                      movementReady ? 1 : 0,
+                      fwDepth,
+                      stepDelayMs,
+                      inflight);
+
+    auto pushBool = [&](bool value) {
+        LogLuaProbe("uow_statusflags return bool key=%s value=%d", safeKey, value ? 1 : 0);
+        DebugRingTryWrite("[UOW][statusflags] return bool key=%s value=%d", safeKey, value ? 1 : 0);
+        lua_pushboolean(L, value ? 1 : 0);
+        return 1;
+    };
+    auto pushInt = [&](int value) {
+        LogLuaProbe("uow_statusflags return int key=%s value=%d", safeKey, value);
+        DebugRingTryWrite("[UOW][statusflags] return int key=%s value=%d", safeKey, value);
+        lua_pushinteger(L, static_cast<lua_Integer>(value));
+        return 1;
+    };
+    auto pushNil = [&]() {
+        LogLuaProbe("uow_statusflags return nil key=%s", safeKey);
+        DebugRingTryWrite("[UOW][statusflags] return nil key=%s", safeKey);
+        lua_pushnil(L);
+        return 1;
+    };
+    auto pushTable = [&]() {
+        LogLuaProbe("uow_statusflags return table key=%s", safeKey);
+        DebugRingTryWrite("[UOW][statusflags] return table key=%s", safeKey);
+        if (!lua_checkstack(L, 8)) {
+            lua_pushnil(L);
+            return 1;
+        }
+        lua_createtable(L, 0, 6);
+
+        lua_pushboolean(L, helpersReady ? 1 : 0);
+        lua_setfield(L, -2, "helpers");
+
+        lua_pushboolean(L, engineReady ? 1 : 0);
+        lua_setfield(L, -2, "engineCtx");
+
+        lua_pushboolean(L, movementReady ? 1 : 0);
+        lua_setfield(L, -2, "sendReady");
+
+        lua_pushinteger(L, static_cast<lua_Integer>(fwDepth));
+        lua_setfield(L, -2, "fwDepth");
+
+        lua_pushinteger(L, static_cast<lua_Integer>(stepDelayMs));
+        lua_setfield(L, -2, "stepDelayMs");
+
+        lua_pushinteger(L, static_cast<lua_Integer>(inflight));
+        lua_setfield(L, -2, "inflight");
+
+        return 1;
+    };
+
+    if (keyLower.empty()) {
+        LogLuaProbe("uow_statusflags missing key, returning table");
+        return pushTable();
+    }
+
+    if (keyLower == "helpers")
+        return pushBool(helpersReady);
+    if (keyLower == "engine" || keyLower == "enginctx" || keyLower == "enginectx")
+        return pushBool(engineReady);
+    if (keyLower == "send" || keyLower == "sendready")
+        return pushBool(movementReady);
+    if (keyLower == "fw" || keyLower == "fwdepth" || keyLower == "queuedepth")
+        return pushInt(fwDepth);
+    if (keyLower == "pace" || keyLower == "stepdelay" || keyLower == "stepdelayms")
+        return pushInt(stepDelayMs);
+    if (keyLower == "inflight")
+        return pushInt(inflight);
+    if (keyLower == "version")
+        return pushInt(20251103);
+
+    LogLuaProbe("uow_statusflags unknown key=%s (len=%zu)", safeKey, keyStr.size());
+    return pushTable();
 }
 
 static int Lua_UOWalk(lua_State* L) {
