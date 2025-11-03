@@ -41,6 +41,12 @@ surface the game's packet wrapper and capture the network manager pointer. The
 Lua functions are registered automatically when the helper locates the client's
 Lua state.
 
+`UOW_StatusFlags` and `UOW_StatusFlagsEx` now publish shims that forward to
+registry-stored implementations. The install path logs the active binding,
+reasserts the shim during early heartbeats, and can optionally trace overwrites
+by launching with `UOW_TRACE_OVERWRITES=1`, which briefly hooks `_G.__newindex`
+to report any script attempting to replace these globals.
+
 ## Troubleshooting
 
 If injection fails with a generic `LoadLibrary` error, ensure `signatures.json`
