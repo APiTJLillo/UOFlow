@@ -34,6 +34,7 @@ namespace Log {
 
     void EnableQuietProfile();
     void EnableDevVerbose();
+    void BeginBurstDebugWindow(std::uint64_t nowMs);
 
     void SetMinLevel(Level level);
     Level GetMinLevel();

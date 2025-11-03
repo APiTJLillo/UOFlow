@@ -1,5 +1,7 @@
 #include "Core/Startup.hpp"
 
+#include <windows.h>
+
 #include <atomic>
 #include <cstdint>
 #include <sstream>
@@ -245,6 +247,7 @@ void NotifyLuaHeartbeat() {
 
 void NotifySendBuilderReady() {
     g_state.sendBuilder.store(1, std::memory_order_release);
+    Log::BeginBurstDebugWindow(GetTickCount64());
     MaybeEmitAttachSummary();
 }
 

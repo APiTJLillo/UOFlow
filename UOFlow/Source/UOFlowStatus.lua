@@ -143,15 +143,17 @@ end
 local function doPoll()
   local m = safe_call(GetWalkMetrics) or {}
   local flags = status_flags()
-  debug_print(
-    "UOFlowStatus.poll: helpers=", tostring(flags.helpers or m.helpers),
-    " engine=", tostring(flags.engineCtx or m.engineCtx),
-    " sendReady=", tostring(flags.sendReady or m.sendReady),
-    " fwDepth=", tostring(flags.fwDepth or m.queueDepth),
-    " acks=", tostring(m.acksOk or m.ack_ok or 0), "/", tostring(m.acksDrop or m.ack_drop or 0),
-    " stepDelay=", tostring(m.stepDelay or m.stepDelayMs or safe_call(GetPacing) or "n/a"),
-    " inflight=", tostring(m.inflight or "n/a")
-  )
+  debug_print(string.format(
+    "UOFlowStatus.poll: helpers=%s engine=%s sendReady=%s fwDepth=%s acks=%s/%s stepDelay=%s inflight=%s",
+    tostring(flags.helpers),
+    tostring(flags.engineCtx),
+    tostring(flags.sendReady),
+    tostring(flags.fwDepth or m.queueDepth),
+    tostring(m.acksOk or m.ack_ok or 0),
+    tostring(m.acksDrop or m.ack_drop or 0),
+    tostring(m.stepDelay or m.stepDelayMs or safe_call(GetPacing) or "n/a"),
+    tostring(m.inflight or "n/a")
+  ))
 
   do
     local base = W .. "ListRow1"

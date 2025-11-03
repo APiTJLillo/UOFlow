@@ -45,6 +45,9 @@ constexpr uint16_t HELPER_FLAG_DEBUG_PING      = 1u << 9;
 constexpr uint16_t HELPER_FLAG_WALK_MOVE       = 1u << 10;
 constexpr uint16_t HELPER_FLAG_GET_PACING      = 1u << 11;
 constexpr uint16_t HELPER_FLAG_GET_METRICS     = 1u << 12;
+constexpr uint16_t HELPER_FLAG_STATUS_FLAGS    = 1u << 13;
+constexpr uint16_t HELPER_FLAG_SET_PACING      = 1u << 14;
+constexpr uint16_t HELPER_FLAG_SET_INFLIGHT    = 1u << 15;
 
 enum class HelperInstallStage : uint8_t {
     WaitingForGlobalState = 0,

@@ -36,8 +36,13 @@ BOOL   g_logAnnounced = FALSE;
 std::atomic<std::uint32_t> g_categoryMask{0xFFFFFFFFu};
 HMODULE g_hModule = NULL;
 std::atomic<int> g_minLevel{static_cast<int>(Level::Info)};
+std::atomic<int> g_defaultLevel{static_cast<int>(Level::Info)};
+std::atomic<std::uint32_t> g_debounceWindowMs{0};
+std::atomic<std::uint32_t> g_burstDebugMs{0};
+std::atomic<std::uint64_t> g_burstDeadlineMs{0};
 PVOID g_securityHandlerHandle = nullptr;
 std::terminate_handler g_prevTerminate = nullptr;
+std::mutex g_burstMutex;
 
 const char* LevelToString(Level level) {
     switch (level) {
@@ -71,6 +76,12 @@ std::string Trim(const std::string& text) {
     while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])))
         --end;
     return text.substr(begin, end - begin);
+}
+
+std::string ToUpperAscii(std::string value) {
+    for (char& ch : value)
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    return value;
 }
 
 bool IsAbsolutePath(const std::string& path) {
@@ -114,6 +125,49 @@ Level ParseLevelString(const std::string& raw, Level fallback) {
     if (lowered == "info" || lowered == "information")
         return Level::Info;
     return fallback;
+}
+
+constexpr std::uint32_t CategoryBit(Category category) {
+    return 1u << static_cast<unsigned>(category);
+}
+
+std::uint32_t ParseCategoryMask(const std::string& raw, std::uint32_t fallback) {
+    if (raw.empty())
+        return fallback;
+    std::uint32_t mask = 0;
+    size_t start = 0;
+    while (start <= raw.size()) {
+        size_t end = raw.find_first_of(",;|", start);
+        std::string token = Trim(raw.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        if (!token.empty()) {
+            std::string upper = ToUpperAscii(token);
+            if (upper == "CORE") {
+                mask |= CategoryBit(Category::Core);
+            } else if (upper == "FASTWALK" || upper == "FW") {
+                mask |= CategoryBit(Category::FastWalk);
+            } else if (upper == "WALK") {
+                mask |= CategoryBit(Category::Walk);
+            } else if (upper == "HOOK" || upper == "HOOKS") {
+                mask |= CategoryBit(Category::Hooks);
+            } else if (upper == "LUA" || upper == "LUAGUARD") {
+                mask |= CategoryBit(Category::LuaGuard);
+            } else if (upper == "MOVE" || upper == "MOVEMENT") {
+                mask |= CategoryBit(Category::Movement);
+            } else if (upper == "MEM" || upper == "MEMORY") {
+                mask |= CategoryBit(Category::Memory);
+            } else if (upper == "NET" || upper == "SCAN") {
+                mask |= CategoryBit(Category::Core);
+            } else if (upper == "ERROR") {
+                mask = 0xFFFFFFFFu;
+            }
+        }
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    if (mask == 0)
+        return fallback;
+    return mask;
 }
 
 bool OpenLogFileInternal(const std::string& path) {
@@ -303,10 +357,49 @@ void LogCurrentException(const char* context) {
 }
 
 bool ShouldWrite(Level level) {
-    return static_cast<int>(level) >= g_minLevel.load(std::memory_order_acquire);
+    int minLevel = g_minLevel.load(std::memory_order_acquire);
+    std::uint64_t deadline = g_burstDeadlineMs.load(std::memory_order_relaxed);
+    if (deadline != 0) {
+        std::uint64_t now = GetTickCount64();
+        if (now >= deadline) {
+            std::lock_guard<std::mutex> lock(g_burstMutex);
+            if (g_burstDeadlineMs.load(std::memory_order_relaxed) == deadline) {
+                g_burstDeadlineMs.store(0, std::memory_order_release);
+                g_minLevel.store(g_defaultLevel.load(std::memory_order_relaxed), std::memory_order_release);
+                minLevel = g_minLevel.load(std::memory_order_acquire);
+            } else {
+                minLevel = g_minLevel.load(std::memory_order_acquire);
+            }
+        }
+    }
+    return static_cast<int>(level) >= minLevel;
 }
 
 } // namespace
+
+void ApplyLoggingConfig()
+{
+    if (auto debounce = Core::Config::GetLoggingDebounceMs())
+        g_debounceWindowMs.store(*debounce, std::memory_order_relaxed);
+
+    Level defaultLevel = Level::Info;
+    if (auto levelStr = Core::Config::GetLoggingLevel())
+        defaultLevel = ParseLevelString(*levelStr, Level::Info);
+    g_defaultLevel.store(static_cast<int>(defaultLevel), std::memory_order_release);
+    SetMinLevel(defaultLevel);
+
+    if (auto categories = Core::Config::GetLoggingCategories()) {
+        std::uint32_t current = g_categoryMask.load(std::memory_order_relaxed);
+        std::uint32_t mask = ParseCategoryMask(*categories, current);
+        SetCategoryMask(mask);
+    }
+
+    std::uint32_t burstMs = 0;
+    if (auto burst = Core::Config::GetLoggingBurstDebugMs())
+        burstMs = *burst;
+    g_burstDebugMs.store(burstMs, std::memory_order_release);
+    g_burstDeadlineMs.store(0, std::memory_order_release);
+}
 
 void Init(HMODULE self) {
     Core::EarlyTrace::Write("Log::Init start");
@@ -317,6 +410,7 @@ void Init(HMODULE self) {
     Core::EarlyTrace::Write("Log::Init before ConfigureLogging");
     ConfigureLogging(self);
     Core::EarlyTrace::Write("Log::Init after ConfigureLogging");
+    ApplyLoggingConfig();
     SetupConsole();
     Core::EarlyTrace::Write("Log::Init after SetupConsole");
     _set_invalid_parameter_handler(LogInvalidParameterHandler);
@@ -507,9 +601,24 @@ void EnableDevVerbose()
     SetCategoryMask(0xFFFFFFFFu);
 }
 
+void BeginBurstDebugWindow(std::uint64_t nowMs)
+{
+    std::uint32_t burst = g_burstDebugMs.load(std::memory_order_relaxed);
+    if (burst == 0)
+        return;
+    std::lock_guard<std::mutex> lock(g_burstMutex);
+    g_minLevel.store(static_cast<int>(Level::Debug), std::memory_order_release);
+    g_burstDeadlineMs.store(nowMs + burst, std::memory_order_release);
+}
+
 void LogMessage(Level level, Category category, const char* message) {
     if (!message || !ShouldWrite(level))
         return;
+    uint32_t debounce = g_debounceWindowMs.load(std::memory_order_relaxed);
+    if (debounce != 0) {
+        if (!ShouldWriteDebounced(message, debounce))
+            return;
+    }
     std::string formatted;
     formatted.reserve(strlen(message) + 32);
     formatted.append("[");

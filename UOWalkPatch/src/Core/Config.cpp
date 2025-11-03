@@ -174,6 +174,7 @@ void LoadConfig() {
             size_t cursor = 0;
             size_t linesProcessed = 0;
             size_t rawLineNumber = 0;
+            std::string currentSection;
             while (cursor < contents.size()) {
                 size_t lineEnd = contents.find_first_of("\r\n", cursor);
                 size_t segmentEnd = (lineEnd == std::string::npos) ? contents.size() : lineEnd;
@@ -196,6 +197,12 @@ void LoadConfig() {
                     cursor = nextCursor;
                     continue;
                 }
+                if (cleaned.front() == '[' && cleaned.back() == ']') {
+                    std::string section = Trim(cleaned.substr(1, cleaned.size() - 2));
+                    currentSection = ToUpperAscii(section);
+                    cursor = nextCursor;
+                    continue;
+                }
                 size_t eq = cleaned.find('=');
                 if (eq == std::string::npos) {
                     cursor = nextCursor;
@@ -207,7 +214,9 @@ void LoadConfig() {
                     cursor = nextCursor;
                     continue;
                 }
-                g_state.values[ToUpperAscii(key)] = value;
+                std::string upperKey = ToUpperAscii(key);
+                std::string fullKey = currentSection.empty() ? upperKey : (currentSection + "." + upperKey);
+                g_state.values[fullKey] = value;
                 ++linesProcessed;
                 if (linesProcessed <= 8) {
                     char lineLog[256];
@@ -428,6 +437,40 @@ bool HelpersIgnoreGlobalSettleIfSbReady() {
     if (auto cfg = TryGetBool("Helpers.ignore_global_settle_if_sb_ready"))
         return *cfg;
     return true;
+}
+
+std::optional<std::string> GetLoggingLevel() {
+    if (auto env = TryGetEnv("LOG_LEVEL"))
+        return env;
+    if (auto cfg = TryGetValue("LOGGING.LEVEL"))
+        return cfg;
+    return std::nullopt;
+}
+
+std::optional<uint32_t> GetLoggingBurstDebugMs() {
+    if (auto env = TryGetEnv("LOGGING_BURST_DEBUG_MS")) {
+        int64_t parsed = 0;
+        if (StrToInt64(*env, parsed) && parsed >= 0 && parsed <= static_cast<int64_t>(UINT32_MAX))
+            return static_cast<uint32_t>(parsed);
+    }
+    return TryGetMilliseconds("LOGGING.BURST_DEBUG_MS");
+}
+
+std::optional<uint32_t> GetLoggingDebounceMs() {
+    if (auto env = TryGetEnv("LOGGING_DEBOUNCE_MS")) {
+        int64_t parsed = 0;
+        if (StrToInt64(*env, parsed) && parsed >= 0 && parsed <= static_cast<int64_t>(UINT32_MAX))
+            return static_cast<uint32_t>(parsed);
+    }
+    return TryGetMilliseconds("LOGGING.DEBOUNCE_SAME_LINE_MS");
+}
+
+std::optional<std::string> GetLoggingCategories() {
+    if (auto env = TryGetEnv("LOGGING_CATEGORIES"))
+        return env;
+    if (auto cfg = TryGetValue("LOGGING.CATEGORIES"))
+        return cfg;
+    return std::nullopt;
 }
 
 std::string ConfigSourcePath() {

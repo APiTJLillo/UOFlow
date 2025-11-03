@@ -14,6 +14,7 @@
 #include <mutex>
 #include <atomic>
 #include <array>
+#include <memory>
 #include <string>
 #include <optional>
 #include <cstdlib>
@@ -42,6 +43,7 @@
 #include "Walk/WalkController.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/LuaBridge.hpp"
+#include "uow/TailFollowScanner.hpp"
 
 #ifndef NTSTATUS
 typedef LONG NTSTATUS;
@@ -126,6 +128,9 @@ static std::unordered_set<uint64_t> g_vtblSlotCache;
 static std::unordered_set<void*> g_skipWarnedVtables;
 static DWORD g_nextNetCfgProbeTick = 0;
 static DWORD g_lastWakeScheduleTick = 0;
+static std::unique_ptr<uow::TailFollowScanner> g_tailScanner;
+
+static void UpdateTailScannerAnchors(void* netMgr, void** vtbl);
 static Scanner::SendSampleRing g_sendSampleRing{};
 static Scanner::SampleDeduper g_sendSampleDeduper{};
 static std::atomic<bool> g_sendSamplingEnabled{true};
@@ -1472,6 +1477,7 @@ void OnSendPacketEnter(void* ecxThis)
     g_netmgr_this.store(ecxThis, std::memory_order_release);
     g_netmgr_vtbl.store(vtbl, std::memory_order_release);
     InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(&g_netMgr), ecxThis, nullptr);
+    UpdateTailScannerAnchors(ecxThis, vtbl);
 
     g_ready_mode.store(ReadyMode::Callsite, std::memory_order_release);
     g_sbReady.store(true, std::memory_order_release);
@@ -1507,6 +1513,7 @@ void PivotFromDbMgr(void* dbMgr)
     g_netmgr_this.store(dbMgr, std::memory_order_release);
     g_netmgr_vtbl.store(vtbl, std::memory_order_release);
     InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(&g_netMgr), dbMgr, nullptr);
+    UpdateTailScannerAnchors(dbMgr, vtbl);
 
     g_ready_mode.store(ReadyMode::DbMgr, std::memory_order_release);
     g_sbReady.store(true, std::memory_order_release);
@@ -5018,6 +5025,17 @@ static void CaptureNetManager(void* candidate, const char* sourceTag)
     ScheduleScan("capture:netMgr", false);
 }
 
+static void UpdateTailScannerAnchors(void* netMgr, void** vtbl)
+{
+    if (!netMgr || !vtbl)
+        return;
+    if (!g_tailScanner) {
+        g_tailScanner = std::make_unique<uow::TailFollowScanner>(netMgr, vtbl, SendBuilderTunables::VTBL_SCAN_SLOTS);
+    } else {
+        g_tailScanner->update_anchors(netMgr, vtbl, SendBuilderTunables::VTBL_SCAN_SLOTS);
+    }
+}
+
 static bool CallsSendPacket(uint8_t* fn, size_t maxScan, uintptr_t send, uint8_t* offsetOut) {
     if (!fn || !send || maxScan < 5)
         return false;
@@ -5827,6 +5845,28 @@ static bool ScanEndpointVTable(void* endpoint,
         g_builderProbeSkipped.fetch_add(1u, std::memory_order_relaxed);
         return false;
     }
+    UpdateTailScannerAnchors(endpoint, vtbl);
+
+    std::optional<uow::SendEndpoint> preferredEndpoint;
+    if (g_tailScanner) {
+        preferredEndpoint = g_tailScanner->resolve_best();
+        if (preferredEndpoint && preferredEndpoint->mgr && endpoint && preferredEndpoint->mgr != endpoint)
+            preferredEndpoint.reset();
+        if (preferredEndpoint && preferredEndpoint->fn) {
+            if (AttachSendBuilderFromTrace(reinterpret_cast<void*>(preferredEndpoint->fn),
+                                           0xFF,
+                                           vtbl,
+                                           nullptr,
+                                           "tail-follow",
+                                           reinterpret_cast<const uint8_t*>(preferredEndpoint->fn))) {
+                if (ringStats)
+                    *ringStats = {};
+                if (outTrace)
+                    ResetTraceResult(*outTrace);
+                return true;
+            }
+        }
+    }
 
     bool vtblInRdata = false;
     if (!IsGameVtableAddress(vtbl, &vtblInRdata) || !vtblInRdata) {
@@ -5898,6 +5938,12 @@ static bool ScanEndpointVTable(void* endpoint,
             }
 
             slotFns[i] = fn;
+
+            if (preferredEndpoint && fn && fn == preferredEndpoint->fn) {
+                matchedIndex = static_cast<int>(i);
+                matchedFn = fn;
+                break;
+            }
 
             bool execLike = fn && sp::is_executable_code_ptr(fn);
             if (execLike)
@@ -7362,6 +7408,8 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
     TrackMovementSend(pkt, len);
     if (!isDebugNudge)
         g_sendPacket(thisPtr, pkt, len);
+    if (!isDebugNudge && g_tailScanner && g_sendPacket)
+        g_tailScanner->note_tail(reinterpret_cast<void*>(g_sendPacket));
 }
 
 static void FindSendPacket()
@@ -7665,6 +7713,7 @@ void ShutdownSendBuilder()
     g_helperBypassWarningLogged = false;
     g_vtblSlotCache.clear();
     g_skipWarnedVtables.clear();
+    g_tailScanner.reset();
     {
         std::lock_guard<std::mutex> lock(g_endpointBackoffMutex);
         g_endpointBackoff.clear();

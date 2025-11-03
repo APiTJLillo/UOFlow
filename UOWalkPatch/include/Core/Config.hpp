@@ -37,6 +37,11 @@ namespace Core::Config {
     bool HelpersAllowRemoteThreadFallback();
     bool HelpersIgnoreGlobalSettleIfSbReady();
 
+    std::optional<std::string> GetLoggingLevel();
+    std::optional<uint32_t> GetLoggingBurstDebugMs();
+    std::optional<uint32_t> GetLoggingDebounceMs();
+    std::optional<std::string> GetLoggingCategories();
+
     std::string ConfigSourcePath();
 
 } // namespace Core::Config

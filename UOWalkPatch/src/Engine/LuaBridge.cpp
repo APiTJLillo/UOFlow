@@ -1492,7 +1492,10 @@ static void MaybeEmitHelperSummary(uint64_t now, bool force = false) {
 static constexpr const char* kHelperWalkName = "uow_walk";
 static constexpr const char* kHelperWalkMoveName = "WalkMove";
 static constexpr const char* kHelperGetPacingName = "GetPacing";
+static constexpr const char* kHelperSetPacingName = "uow_set_pacing";
+static constexpr const char* kHelperSetInflightName = "uow_set_inflight";
 static constexpr const char* kHelperGetWalkMetricsName = "GetWalkMetrics";
+static constexpr const char* kHelperStatusFlagsName = "UOW_StatusFlags";
 static constexpr const char* kHelperDumpName = "uow_dump_walk_env";
 static constexpr const char* kHelperInspectName = "uow_lua_inspect";
 static constexpr const char* kHelperRebindName = "uow_lua_rebind_all";
@@ -2078,7 +2081,10 @@ static int Lua_UOWalk(lua_State* L);
 static int Lua_UOWDump(lua_State* L);
 static int Lua_WalkMove(lua_State* L);
 static int Lua_GetPacing(lua_State* L);
+static int Lua_SetPacing(lua_State* L);
+static int Lua_SetInflight(lua_State* L);
 static int Lua_GetWalkMetrics(lua_State* L);
+static int Lua_UOWStatusFlags(lua_State* L);
 static int Lua_UOWInspect(lua_State* L);
 static int Lua_UOWSelfTest(lua_State* L);
 static int Lua_UOWRebindAll(lua_State* L);
@@ -2791,6 +2797,8 @@ static bool TryBuildInspectSummary(lua_State* target, const LuaStateInfo& info, 
         kHelperWalkName,
         kHelperWalkMoveName,
         kHelperGetPacingName,
+        kHelperSetPacingName,
+        kHelperSetInflightName,
         kHelperGetWalkMetricsName,
         kHelperDumpName,
         kHelperInspectName,
@@ -6199,8 +6207,14 @@ static WORD HelperFlagForName(const char* name) {
         return HELPER_FLAG_WALK_MOVE;
     if (_stricmp(name, kHelperGetPacingName) == 0)
         return HELPER_FLAG_GET_PACING;
+    if (_stricmp(name, kHelperSetPacingName) == 0)
+        return HELPER_FLAG_SET_PACING;
+    if (_stricmp(name, kHelperSetInflightName) == 0)
+        return HELPER_FLAG_SET_INFLIGHT;
     if (_stricmp(name, kHelperGetWalkMetricsName) == 0)
         return HELPER_FLAG_GET_METRICS;
+    if (_stricmp(name, kHelperStatusFlagsName) == 0)
+        return HELPER_FLAG_STATUS_FLAGS;
     if (_stricmp(name, kHelperDumpName) == 0)
         return HELPER_FLAG_DUMP;
     if (_stricmp(name, kHelperInspectName) == 0)
@@ -6362,7 +6376,7 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
                   reason);
     }
 
-    bool fallbackOk = false;
+        bool fallbackOk = false;
     DWORD fallbackSeh = 0;
     if (!clientOk) {
         Log::Logf(Log::Level::Info,
@@ -6925,7 +6939,10 @@ static bool BindHelpersOnThread(lua_State* L,
         bool walkOk = logStep(kHelperWalkName, [&]() { return RegisterHelper(L, info, kHelperWalkName, Lua_UOWalk, generation); });
         bool walkMoveOk = logStep(kHelperWalkMoveName, [&]() { return RegisterHelper(L, info, kHelperWalkMoveName, Lua_WalkMove, generation); });
         bool pacingOk = logStep(kHelperGetPacingName, [&]() { return RegisterHelper(L, info, kHelperGetPacingName, Lua_GetPacing, generation); });
+        bool setPacingOk = logStep(kHelperSetPacingName, [&]() { return RegisterHelper(L, info, kHelperSetPacingName, Lua_SetPacing, generation); });
+        bool setInflightOk = logStep(kHelperSetInflightName, [&]() { return RegisterHelper(L, info, kHelperSetInflightName, Lua_SetInflight, generation); });
         bool metricsOk = logStep(kHelperGetWalkMetricsName, [&]() { return RegisterHelper(L, info, kHelperGetWalkMetricsName, Lua_GetWalkMetrics, generation); });
+        bool statusFlagsOk = logStep(kHelperStatusFlagsName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsName, Lua_UOWStatusFlags, generation); });
         bool dumpOk = logStep(kHelperDumpName, [&]() { return RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation); });
         bool inspectOk = logStep(kHelperInspectName, [&]() { return RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation); });
         bool rebindOk = logStep(kHelperRebindName, [&]() { return RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation); });
@@ -6938,7 +6955,10 @@ static bool BindHelpersOnThread(lua_State* L,
             successCount += walkOk ? 1u : 0u;
             successCount += walkMoveOk ? 1u : 0u;
             successCount += pacingOk ? 1u : 0u;
+            successCount += setPacingOk ? 1u : 0u;
+            successCount += setInflightOk ? 1u : 0u;
             successCount += metricsOk ? 1u : 0u;
+            successCount += statusFlagsOk ? 1u : 0u;
             successCount += dumpOk ? 1u : 0u;
             successCount += inspectOk ? 1u : 0u;
             successCount += rebindOk ? 1u : 0u;
@@ -6947,10 +6967,10 @@ static bool BindHelpersOnThread(lua_State* L,
             successCount += debugStatusOk ? 1u : 0u;
             successCount += debugPingOk ? 1u : 0u;
             metrics->hookSuccess = successCount;
-            constexpr uint32_t kTotalHelpers = 11u;
+            constexpr uint32_t kTotalHelpers = 12u;
             metrics->hookFailure = kTotalHelpers > successCount ? (kTotalHelpers - successCount) : 0u;
         }
-        bool allOk = walkOk && walkMoveOk && pacingOk && metricsOk &&
+        bool allOk = walkOk && walkMoveOk && pacingOk && metricsOk && statusFlagsOk &&
                      dumpOk && inspectOk && rebindOk && selfTestOk &&
                      debugCfgOk && debugStatusOk && debugPingOk;
         if (allOk) {
@@ -6991,7 +7011,10 @@ static bool BindHelpersOnThread(lua_State* L,
             appendMissing(walkOk, kHelperWalkName);
             appendMissing(walkMoveOk, kHelperWalkMoveName);
             appendMissing(pacingOk, kHelperGetPacingName);
+            appendMissing(setPacingOk, kHelperSetPacingName);
+            appendMissing(setInflightOk, kHelperSetInflightName);
             appendMissing(metricsOk, kHelperGetWalkMetricsName);
+            appendMissing(statusFlagsOk, kHelperStatusFlagsName);
             appendMissing(dumpOk, kHelperDumpName);
             appendMissing(inspectOk, kHelperInspectName);
             appendMissing(rebindOk, kHelperRebindName);
@@ -7387,6 +7410,48 @@ static int Lua_GetPacing(lua_State* L) {
     return 1;
 }
 
+static int Lua_SetPacing(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    EnsureHelperState(L, kHelperSetPacingName, &ready, &coalesced, nullptr);
+
+    if (lua_gettop(L) < 1 || !lua_isnumber(L, 1)) {
+        LogLuaProbe("uow_set_pacing invalid parameter");
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    int ms = static_cast<int>(lua_tointeger(L, 1));
+    if (ms < 0)
+        ms = 0;
+    Walk::Controller::SetStepDelayMs(static_cast<std::uint32_t>(ms));
+    LogLuaProbe("uow_set_pacing ms=%d", ms);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int Lua_SetInflight(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    EnsureHelperState(L, kHelperSetInflightName, &ready, &coalesced, nullptr);
+
+    if (lua_gettop(L) < 1 || !lua_isnumber(L, 1)) {
+        LogLuaProbe("uow_set_inflight invalid parameter");
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    int count = static_cast<int>(lua_tointeger(L, 1));
+    if (count < 1)
+        count = 1;
+    Walk::Controller::SetMaxInflight(static_cast<std::uint32_t>(count));
+    LogLuaProbe("uow_set_inflight count=%d", count);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
 static int Lua_GetWalkMetrics(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
@@ -7407,6 +7472,38 @@ static int Lua_GetWalkMetrics(lua_State* L) {
     lua_setfield(L, -2, "acksOk");
     lua_pushinteger(L, static_cast<lua_Integer>(ack.dropCount));
     lua_setfield(L, -2, "acksDrop");
+    return 1;
+}
+
+static int Lua_UOWStatusFlags(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    EnsureHelperState(L, kHelperStatusFlagsName, &ready, &coalesced, nullptr);
+
+    lua_newtable(L);
+
+    const bool helpersReady = g_helpersInstalledAny.load(std::memory_order_acquire);
+    lua_pushboolean(L, helpersReady ? 1 : 0);
+    lua_setfield(L, -2, "helpers");
+
+    const bool engineReady = g_engineContext.load(std::memory_order_acquire) != nullptr;
+    lua_pushboolean(L, engineReady ? 1 : 0);
+    lua_setfield(L, -2, "engineCtx");
+
+    const bool movementReady = Engine::MovementReady();
+    lua_pushboolean(L, movementReady ? 1 : 0);
+    lua_setfield(L, -2, "sendReady");
+
+    lua_pushinteger(L, static_cast<lua_Integer>(Engine::Movement::QueueDepth()));
+    lua_setfield(L, -2, "fwDepth");
+
+    lua_pushinteger(L, static_cast<lua_Integer>(Walk::Controller::GetStepDelayMs()));
+    lua_setfield(L, -2, "stepDelayMs");
+
+    lua_pushinteger(L, static_cast<lua_Integer>(Walk::Controller::GetInflightCount()));
+    lua_setfield(L, -2, "inflight");
+
     return 1;
 }
 

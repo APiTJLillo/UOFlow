@@ -28,4 +28,6 @@ namespace Walk::Controller {
     void NotifyAckSoftFail();
     void NotifyResync(const char* reason);
     std::uint32_t GetStepDelayMs();
+    void SetStepDelayMs(std::uint32_t ms);
+    void SetMaxInflight(std::uint32_t count);
 }
