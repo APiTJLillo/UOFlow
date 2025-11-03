@@ -1496,6 +1496,7 @@ static constexpr const char* kHelperSetPacingName = "uow_set_pacing";
 static constexpr const char* kHelperSetInflightName = "uow_set_inflight";
 static constexpr const char* kHelperGetWalkMetricsName = "GetWalkMetrics";
 static constexpr const char* kHelperStatusFlagsName = "UOW_StatusFlags";
+static constexpr const char* kHelperStatusFlagsAliasName = "UOW_StatusFlagsEx";
 static constexpr const char* kHelperDumpName = "uow_dump_walk_env";
 static constexpr const char* kHelperInspectName = "uow_lua_inspect";
 static constexpr const char* kHelperRebindName = "uow_lua_rebind_all";
@@ -4603,8 +4604,30 @@ static void EnsureScriptThread(DWORD tid, lua_State* L) {
 
     if (g_scriptThreadId.load(std::memory_order_acquire) == tid && L) {
         lua_State* prev = g_mainLuaState.exchange(L, std::memory_order_acq_rel);
-        if (prev != L) {
+        bool stateChanged = (prev != L);
+        if (stateChanged) {
             LogLuaQ("tid=%lu main-state-updated L=%p (prev=%p)", tid, L, prev);
+
+            void* ctxHint = nullptr;
+            if (prev) {
+                LuaStateInfo prevInfo{};
+                if (g_stateRegistry.GetByPointer(prev, prevInfo) && prevInfo.ctx_reported)
+                    ctxHint = prevInfo.ctx_reported;
+            }
+            if (!ctxHint)
+                ctxHint = g_latestScriptCtx.load(std::memory_order_acquire);
+            if (!ctxHint)
+                ctxHint = GetCanonicalHelperCtx();
+
+            bool isNew = false;
+            bool ready = false;
+            bool coalesced = false;
+            uint64_t gen = g_generation.load(std::memory_order_acquire);
+            ObserveReportedState(L, ctxHint, tid, gen, "main-state", &isNew, &ready, &coalesced);
+
+            if (prev) {
+                ForceRebindAll("main-state-updated");
+            }
         }
         if (!g_processingLuaQueue) {
             bool hasPending = false;
@@ -4615,7 +4638,7 @@ static void EnsureScriptThread(DWORD tid, lua_State* L) {
             if (hasPending)
                 ProcessPendingLuaTasks(L);
         }
-        if (scriptThreadDiscovered || prev != L) {
+        if (scriptThreadDiscovered || stateChanged) {
             ScheduleWalkBinding();
         }
     }
@@ -6213,7 +6236,7 @@ static WORD HelperFlagForName(const char* name) {
         return HELPER_FLAG_SET_INFLIGHT;
     if (_stricmp(name, kHelperGetWalkMetricsName) == 0)
         return HELPER_FLAG_GET_METRICS;
-    if (_stricmp(name, kHelperStatusFlagsName) == 0)
+    if (_stricmp(name, kHelperStatusFlagsName) == 0 || _stricmp(name, kHelperStatusFlagsAliasName) == 0)
         return HELPER_FLAG_STATUS_FLAGS;
     if (_stricmp(name, kHelperDumpName) == 0)
         return HELPER_FLAG_DUMP;
@@ -6943,6 +6966,7 @@ static bool BindHelpersOnThread(lua_State* L,
         bool setInflightOk = logStep(kHelperSetInflightName, [&]() { return RegisterHelper(L, info, kHelperSetInflightName, Lua_SetInflight, generation); });
         bool metricsOk = logStep(kHelperGetWalkMetricsName, [&]() { return RegisterHelper(L, info, kHelperGetWalkMetricsName, Lua_GetWalkMetrics, generation); });
         bool statusFlagsOk = logStep(kHelperStatusFlagsName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsName, Lua_UOWStatusFlags, generation); });
+        bool statusFlagsExOk = logStep(kHelperStatusFlagsAliasName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsAliasName, Lua_UOWStatusFlags, generation); });
         bool dumpOk = logStep(kHelperDumpName, [&]() { return RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation); });
         bool inspectOk = logStep(kHelperInspectName, [&]() { return RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation); });
         bool rebindOk = logStep(kHelperRebindName, [&]() { return RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation); });
@@ -7493,6 +7517,13 @@ static int Lua_UOWStatusFlags(lua_State* L) {
     Engine::AckStats ack{};
     Engine::GetAckStats(ack);
 
+    int topAtEntry = lua_gettop(L);
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[UOW][statusflags] begin top=%d L=%p",
+              topAtEntry,
+              L);
+
     const char* rawKey = nullptr;
     size_t rawKeyLen = 0;
     if (lua_gettop(L) >= 1 && lua_isstring(L, 1)) {
@@ -7580,44 +7611,60 @@ static int Lua_UOWStatusFlags(lua_State* L) {
     auto pushTable = [&]() {
         LogLuaProbe("uow_statusflags return table key=%s", safeKey);
         DebugRingTryWrite("[UOW][statusflags] return table key=%s", safeKey);
-        lua_createtable(L, 0, 20);
+        lua_newtable(L);
 
-        auto setBoolField = [&](const char* field, bool value) {
-            lua_pushboolean(L, value ? 1 : 0);
-            lua_setfield(L, -2, field);
-        };
+        lua_pushboolean(L, helpersReady ? 1 : 0);
+        lua_setfield(L, -2, "helpers");
+        lua_pushboolean(L, helpersReady ? 1 : 0);
+        lua_setfield(L, -2, "helpersReady");
 
-        auto setIntField = [&](const char* field, lua_Integer value) {
-            lua_pushinteger(L, value);
-            lua_setfield(L, -2, field);
-        };
+        lua_pushboolean(L, engineReady ? 1 : 0);
+        lua_setfield(L, -2, "engineCtx");
+        lua_pushboolean(L, engineReady ? 1 : 0);
+        lua_setfield(L, -2, "engine");
 
-        setBoolField("helpers", helpersReady);
-        setBoolField("helpersReady", helpersReady);
+        lua_pushboolean(L, sendReady ? 1 : 0);
+        lua_setfield(L, -2, "sendReady");
+        lua_pushboolean(L, sendReady ? 1 : 0);
+        lua_setfield(L, -2, "send");
 
-        setBoolField("engineCtx", engineReady);
-        setBoolField("engine", engineReady);
+        lua_pushboolean(L, sendPivotReady ? 1 : 0);
+        lua_setfield(L, -2, "sendPivot");
+        lua_pushboolean(L, sendFallback ? 1 : 0);
+        lua_setfield(L, -2, "sendFallback");
+        lua_pushboolean(L, movementReady ? 1 : 0);
+        lua_setfield(L, -2, "movementReady");
 
-        setBoolField("sendReady", sendReady);
-        setBoolField("send", sendReady);
-        setBoolField("sendPivot", sendPivotReady);
-        setBoolField("sendFallback", sendFallback);
-        setBoolField("movementReady", movementReady);
+        lua_pushinteger(L, static_cast<lua_Integer>(fwDepth));
+        lua_setfield(L, -2, "fwDepth");
+        lua_pushinteger(L, static_cast<lua_Integer>(fwDepth));
+        lua_setfield(L, -2, "fw");
+        lua_pushinteger(L, static_cast<lua_Integer>(fwDepth));
+        lua_setfield(L, -2, "queueDepth");
 
-        setIntField("fwDepth", static_cast<lua_Integer>(fwDepth));
-        setIntField("fw", static_cast<lua_Integer>(fwDepth));
-        setIntField("queueDepth", static_cast<lua_Integer>(fwDepth));
+        lua_pushinteger(L, static_cast<lua_Integer>(stepDelayMs));
+        lua_setfield(L, -2, "stepDelay");
+        lua_pushinteger(L, static_cast<lua_Integer>(stepDelayMs));
+        lua_setfield(L, -2, "stepDelayMs");
+        lua_pushinteger(L, static_cast<lua_Integer>(stepDelayMs));
+        lua_setfield(L, -2, "pace");
 
-        setIntField("stepDelay", static_cast<lua_Integer>(stepDelayMs));
-        setIntField("stepDelayMs", static_cast<lua_Integer>(stepDelayMs));
-        setIntField("pace", static_cast<lua_Integer>(stepDelayMs));
+        lua_pushinteger(L, static_cast<lua_Integer>(inflight));
+        lua_setfield(L, -2, "inflight");
 
-        setIntField("inflight", static_cast<lua_Integer>(inflight));
+        lua_pushinteger(L, static_cast<lua_Integer>(ack.okCount));
+        lua_setfield(L, -2, "acksOk");
+        lua_pushinteger(L, static_cast<lua_Integer>(ack.dropCount));
+        lua_setfield(L, -2, "acksDrop");
+        lua_pushinteger(L, static_cast<lua_Integer>(ack.okCount));
+        lua_setfield(L, -2, "ack_ok");
+        lua_pushinteger(L, static_cast<lua_Integer>(ack.dropCount));
+        lua_setfield(L, -2, "ack_drop");
 
-        setIntField("acksOk", static_cast<lua_Integer>(ack.okCount));
-        setIntField("acksDrop", static_cast<lua_Integer>(ack.dropCount));
-        setIntField("ack_ok", static_cast<lua_Integer>(ack.okCount));
-        setIntField("ack_drop", static_cast<lua_Integer>(ack.dropCount));
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[UOW][statusflags] built-table top=%d",
+                  lua_gettop(L));
 
         return 1;
     };
@@ -7646,11 +7693,15 @@ static int Lua_UOWStatusFlags(lua_State* L) {
     if (keyLower == "inflight")
         return pushInt(inflight);
     if (keyLower == "ack" || keyLower == "acks") {
-        lua_createtable(L, 0, 2);
+        lua_newtable(L);
         lua_pushinteger(L, static_cast<lua_Integer>(ack.okCount));
         lua_setfield(L, -2, "ok");
         lua_pushinteger(L, static_cast<lua_Integer>(ack.dropCount));
         lua_setfield(L, -2, "drop");
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[UOW][statusflags] returning ack-table top=%d",
+                  lua_gettop(L));
         LogLuaProbe("uow_statusflags return ack-table key=%s ok=%u drop=%u",
                     safeKey,
                     static_cast<unsigned int>(ack.okCount),
@@ -7669,6 +7720,10 @@ static int Lua_UOWStatusFlags(lua_State* L) {
         return pushInt(20251103);
 
     LogLuaProbe("uow_statusflags unknown key=%s (len=%zu)", safeKey, keyStr.size());
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[UOW][statusflags] unknown-key returning table top=%d",
+              lua_gettop(L));
     return pushTable();
 }
 

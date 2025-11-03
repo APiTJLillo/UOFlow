@@ -28,6 +28,11 @@ local BULLET = "+"
 
 local poll -- forward declaration
 local updateRegistered = false
+
+if type(UOW_StatusFlags) == "function" and type(UOW_StatusFlagsEx) ~= "function" then
+  UOW_StatusFlagsEx = UOW_StatusFlags
+end
+
 local function debug_print(...)
   if type(Debug) ~= "table" or type(Debug.Print) ~= "function" then
     return
@@ -162,24 +167,72 @@ local function coerce_value(value, asBool)
 end
 
 local function status_flags()
-  local legacy = safe_call(UOW_StatusFlags)
-  if type(legacy) == "table" then
-    local outLegacy = {}
-    outLegacy.helpers = coerce_value(legacy.helpers, true)
-    outLegacy.engineCtx = coerce_value(legacy.engineCtx or legacy.engine, true)
-    outLegacy.sendReady = coerce_value(legacy.sendReady or legacy.send, true)
-    outLegacy.fwDepth = coerce_value(legacy.fwDepth or legacy.queueDepth or legacy.fw, false)
-    outLegacy.stepDelayMs = coerce_value(legacy.stepDelayMs or legacy.stepDelay or legacy.pace, false)
-    outLegacy.inflight = coerce_value(legacy.inflight, false)
-    return outLegacy
+  local function resolve_fns()
+    local primary
+    local fallback
+    if type(UOW_StatusFlagsEx) == "function" then
+      primary = UOW_StatusFlagsEx
+      if type(UOW_StatusFlags) == "function" then
+        fallback = UOW_StatusFlags
+      end
+    elseif type(UOW_StatusFlags) == "function" then
+      primary = UOW_StatusFlags
+    end
+    return primary, fallback
   end
 
-  local out = {}
-  for field, cfg in pairs(STATUS_KEYS) do
-    local raw = safe_call(UOW_StatusFlags, cfg.key)
-    out[field] = coerce_value(raw, cfg.asBool)
+  local function try_table(fn)
+    if type(fn) ~= "function" then
+      return nil
+    end
+    local result = safe_call(fn)
+    if type(result) == "table" then
+      return result
+    end
+    return nil
   end
-  return out
+
+  local function attempt_rebind()
+    if type(uow_lua_rebind_all) ~= "function" then
+      return false
+    end
+    safe_call(uow_lua_rebind_all)
+    return true
+  end
+
+  local attemptedRebind = false
+  while true do
+    local primary, fallback = resolve_fns()
+    local rawTable = try_table(primary) or try_table(fallback)
+    if type(rawTable) == "table" then
+      local normalized = {}
+      normalized.helpers = coerce_value(rawTable.helpers, true)
+      normalized.engineCtx = coerce_value(rawTable.engineCtx or rawTable.engine, true)
+      normalized.sendReady = coerce_value(rawTable.sendReady or rawTable.send, true)
+      normalized.fwDepth = coerce_value(rawTable.fwDepth or rawTable.queueDepth or rawTable.fw, false)
+      normalized.stepDelayMs = coerce_value(rawTable.stepDelayMs or rawTable.stepDelay or rawTable.pace, false)
+      normalized.inflight = coerce_value(rawTable.inflight, false)
+      return normalized
+    end
+
+    if attemptedRebind or not attempt_rebind() then
+      local out = {}
+      for field, cfg in pairs(STATUS_KEYS) do
+        local value
+        if primary then
+          value = safe_call(primary, cfg.key)
+        end
+        if value == nil and fallback then
+          value = safe_call(fallback, cfg.key)
+        end
+        out[field] = coerce_value(value, cfg.asBool)
+      end
+      return out
+    end
+
+    attemptedRebind = true
+    -- Loop to retry after rebind attempt.
+  end
 end
 
 local function doPoll()
