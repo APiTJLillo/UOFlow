@@ -6945,6 +6945,8 @@ static bool BindHelpersOnThread(lua_State* L,
                   Net::ReadyModeString(),
                   static_cast<unsigned>(GetCurrentThreadId()));
 
+        const bool wantsDebugPack = DebugInstrumentationEnabled() && DebugInstallEnvEnabled();
+
         auto logStep = [&](const char* name, auto&& fn) -> bool {
             Log::Logf(Log::Level::Info,
                       Log::Category::Hooks,
@@ -6967,36 +6969,72 @@ static bool BindHelpersOnThread(lua_State* L,
         bool metricsOk = logStep(kHelperGetWalkMetricsName, [&]() { return RegisterHelper(L, info, kHelperGetWalkMetricsName, Lua_GetWalkMetrics, generation); });
         bool statusFlagsOk = logStep(kHelperStatusFlagsName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsName, Lua_UOWStatusFlags, generation); });
         bool statusFlagsExOk = logStep(kHelperStatusFlagsAliasName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsAliasName, Lua_UOWStatusFlags, generation); });
-        bool dumpOk = logStep(kHelperDumpName, [&]() { return RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation); });
-        bool inspectOk = logStep(kHelperInspectName, [&]() { return RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation); });
-        bool rebindOk = logStep(kHelperRebindName, [&]() { return RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation); });
-        bool selfTestOk = logStep(kHelperSelfTestName, [&]() { return RegisterHelper(L, info, kHelperSelfTestName, Lua_UOWSelfTest, generation); });
-        bool debugCfgOk = logStep(kHelperDebugName, [&]() { return RegisterHelper(L, info, kHelperDebugName, Lua_UOWDebug, generation); });
-        bool debugStatusOk = logStep(kHelperDebugStatusName, [&]() { return RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOWDebugStatus, generation); });
-        bool debugPingOk = logStep(kHelperDebugPingName, [&]() { return RegisterHelper(L, info, kHelperDebugPingName, Lua_UOWDebugPing, generation); });
+
+        bool dumpOk = true;
+        bool inspectOk = true;
+        bool rebindOk = true;
+        bool selfTestOk = true;
+        bool debugCfgOk = true;
+        bool debugStatusOk = true;
+        bool debugPingOk = true;
+        bool dumpAttempted = false;
+        bool inspectAttempted = false;
+        bool rebindAttempted = false;
+        bool selfTestAttempted = false;
+        bool debugCfgAttempted = false;
+        bool debugStatusAttempted = false;
+        bool debugPingAttempted = false;
+
+        if (wantsDebugPack) {
+            dumpOk = logStep(kHelperDumpName, [&]() { return RegisterHelper(L, info, kHelperDumpName, Lua_UOWDump, generation); });
+            inspectOk = logStep(kHelperInspectName, [&]() { return RegisterHelper(L, info, kHelperInspectName, Lua_UOWInspect, generation); });
+            rebindOk = logStep(kHelperRebindName, [&]() { return RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation); });
+            selfTestOk = logStep(kHelperSelfTestName, [&]() { return RegisterHelper(L, info, kHelperSelfTestName, Lua_UOWSelfTest, generation); });
+            debugCfgOk = logStep(kHelperDebugName, [&]() { return RegisterHelper(L, info, kHelperDebugName, Lua_UOWDebug, generation); });
+            debugStatusOk = logStep(kHelperDebugStatusName, [&]() { return RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOWDebugStatus, generation); });
+            debugPingOk = logStep(kHelperDebugPingName, [&]() { return RegisterHelper(L, info, kHelperDebugPingName, Lua_UOWDebugPing, generation); });
+            dumpAttempted = true;
+            inspectAttempted = true;
+            rebindAttempted = true;
+            selfTestAttempted = true;
+            debugCfgAttempted = true;
+            debugStatusAttempted = true;
+            debugPingAttempted = true;
+        }
+
         if (metrics) {
             uint32_t successCount = 0;
-            successCount += walkOk ? 1u : 0u;
-            successCount += walkMoveOk ? 1u : 0u;
-            successCount += pacingOk ? 1u : 0u;
-            successCount += setPacingOk ? 1u : 0u;
-            successCount += setInflightOk ? 1u : 0u;
-            successCount += metricsOk ? 1u : 0u;
-            successCount += statusFlagsOk ? 1u : 0u;
-            successCount += dumpOk ? 1u : 0u;
-            successCount += inspectOk ? 1u : 0u;
-            successCount += rebindOk ? 1u : 0u;
-            successCount += selfTestOk ? 1u : 0u;
-            successCount += debugCfgOk ? 1u : 0u;
-            successCount += debugStatusOk ? 1u : 0u;
-            successCount += debugPingOk ? 1u : 0u;
+            uint32_t failureCount = 0;
+            auto recordMetric = [&](bool attempted, bool ok) {
+                if (!attempted)
+                    return;
+                if (ok)
+                    ++successCount;
+                else
+                    ++failureCount;
+            };
+            recordMetric(true, walkOk);
+            recordMetric(true, walkMoveOk);
+            recordMetric(true, pacingOk);
+            recordMetric(true, setPacingOk);
+            recordMetric(true, setInflightOk);
+            recordMetric(true, metricsOk);
+            recordMetric(true, statusFlagsOk);
+            recordMetric(true, statusFlagsExOk);
+            recordMetric(dumpAttempted, dumpOk);
+            recordMetric(inspectAttempted, inspectOk);
+            recordMetric(rebindAttempted, rebindOk);
+            recordMetric(selfTestAttempted, selfTestOk);
+            recordMetric(debugCfgAttempted, debugCfgOk);
+            recordMetric(debugStatusAttempted, debugStatusOk);
+            recordMetric(debugPingAttempted, debugPingOk);
             metrics->hookSuccess = successCount;
-            constexpr uint32_t kTotalHelpers = 12u;
-            metrics->hookFailure = kTotalHelpers > successCount ? (kTotalHelpers - successCount) : 0u;
+            metrics->hookFailure = failureCount;
         }
-        bool allOk = walkOk && walkMoveOk && pacingOk && metricsOk && statusFlagsOk &&
-                     dumpOk && inspectOk && rebindOk && selfTestOk &&
-                     debugCfgOk && debugStatusOk && debugPingOk;
+
+        bool coreOk = walkOk && walkMoveOk && pacingOk && setPacingOk && setInflightOk && metricsOk && statusFlagsOk && statusFlagsExOk;
+        bool debugPackOk = !wantsDebugPack || (dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk && debugPingOk);
+        bool allOk = coreOk && debugPackOk;
         if (allOk) {
             uint64_t installTick = GetTickCount64();
             g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
@@ -7025,27 +7063,28 @@ static bool BindHelpersOnThread(lua_State* L,
         } else {
             ok = false;
             std::string missing;
-            auto appendMissing = [&](bool valueOk, const char* name) {
-                if (valueOk)
+            auto appendMissing = [&](bool attempted, bool valueOk, const char* name) {
+                if (!attempted || valueOk)
                     return;
                 if (!missing.empty())
                     missing.append(",");
                 missing.append(name);
             };
-            appendMissing(walkOk, kHelperWalkName);
-            appendMissing(walkMoveOk, kHelperWalkMoveName);
-            appendMissing(pacingOk, kHelperGetPacingName);
-            appendMissing(setPacingOk, kHelperSetPacingName);
-            appendMissing(setInflightOk, kHelperSetInflightName);
-            appendMissing(metricsOk, kHelperGetWalkMetricsName);
-            appendMissing(statusFlagsOk, kHelperStatusFlagsName);
-            appendMissing(dumpOk, kHelperDumpName);
-            appendMissing(inspectOk, kHelperInspectName);
-            appendMissing(rebindOk, kHelperRebindName);
-            appendMissing(selfTestOk, kHelperSelfTestName);
-            appendMissing(debugCfgOk, kHelperDebugName);
-            appendMissing(debugStatusOk, kHelperDebugStatusName);
-            appendMissing(debugPingOk, kHelperDebugPingName);
+            appendMissing(true, walkOk, kHelperWalkName);
+            appendMissing(true, walkMoveOk, kHelperWalkMoveName);
+            appendMissing(true, pacingOk, kHelperGetPacingName);
+            appendMissing(true, setPacingOk, kHelperSetPacingName);
+            appendMissing(true, setInflightOk, kHelperSetInflightName);
+            appendMissing(true, metricsOk, kHelperGetWalkMetricsName);
+            appendMissing(true, statusFlagsOk, kHelperStatusFlagsName);
+            appendMissing(true, statusFlagsExOk, kHelperStatusFlagsAliasName);
+            appendMissing(dumpAttempted, dumpOk, kHelperDumpName);
+            appendMissing(inspectAttempted, inspectOk, kHelperInspectName);
+            appendMissing(rebindAttempted, rebindOk, kHelperRebindName);
+            appendMissing(selfTestAttempted, selfTestOk, kHelperSelfTestName);
+            appendMissing(debugCfgAttempted, debugCfgOk, kHelperDebugName);
+            appendMissing(debugStatusAttempted, debugStatusOk, kHelperDebugStatusName);
+            appendMissing(debugPingAttempted, debugPingOk, kHelperDebugPingName);
             Log::Logf(Log::Level::Warn,
                       Log::Category::Hooks,
                       "helpers install failed L=%p owner=%lu gen=%llu missing=[%s]",
@@ -7550,6 +7589,10 @@ static int Lua_UOWStatusFlags(lua_State* L) {
         return static_cast<char>(std::tolower(c));
     });
 
+    // We have already copied any key data we need; clear the Lua stack so our
+    // return path always starts from a clean slate.
+    lua_settop(L, 0);
+
     const char* safeKey = !keyStr.empty() ? keyStr.c_str() : "<table>";
     LogLuaProbe("uow_statusflags call key=%s type=%d argc=%d ready=%d coalesced=%d helpers=%d engine=%d send=%d pivot=%d fallback=%d movement=%d fwDepth=%d stepDelay=%d inflight=%d ackOk=%u ackDrop=%u",
                 safeKey,
@@ -7611,7 +7654,7 @@ static int Lua_UOWStatusFlags(lua_State* L) {
     auto pushTable = [&]() {
         LogLuaProbe("uow_statusflags return table key=%s", safeKey);
         DebugRingTryWrite("[UOW][statusflags] return table key=%s", safeKey);
-        lua_newtable(L);
+        lua_createtable(L, 0, 20);
 
         lua_pushboolean(L, helpersReady ? 1 : 0);
         lua_setfield(L, -2, "helpers");
