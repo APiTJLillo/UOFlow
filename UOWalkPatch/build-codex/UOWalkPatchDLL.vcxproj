@@ -189,7 +189,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <BufferSecurityCheck>false</BufferSecurityCheck>
-      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
       <ExceptionHandling>Async</ExceptionHandling>
       <ForceConformanceInForLoopScope></ForceConformanceInForLoopScope>
@@ -264,14 +264,14 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <AdditionalOptions>%(AdditionalOptions) /machine:X86</AdditionalOptions>
       <DataExecutionPrevention>false</DataExecutionPrevention>
       <DelayLoadDLLs>luaplus_1100.dll</DelayLoadDLLs>
-      <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableCOMDATFolding>false</EnableCOMDATFolding>
+      <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
       <GenerateMapFile>true</GenerateMapFile>
       <IgnoreSpecificDefaultLibraries>msvcrt.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <ImportLibrary>C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/lib/Release/UOWalkPatchDLL.lib</ImportLibrary>
       <LinkErrorReporting></LinkErrorReporting>
-      <OptimizeReferences>true</OptimizeReferences>
+      <OptimizeReferences>false</OptimizeReferences>
       <ProgramDataBaseFile>C:/Users/dukey/Source/UOFlow/UOWalkPatch/build-codex/bin/Release/UOWalkPatchDLL.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress></RandomizedBaseAddress>
       <SubSystem>Windows</SubSystem>

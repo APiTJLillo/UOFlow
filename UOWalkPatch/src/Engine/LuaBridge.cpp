@@ -1497,6 +1497,7 @@ static constexpr const char* kHelperSetInflightName = "uow_set_inflight";
 static constexpr const char* kHelperGetWalkMetricsName = "GetWalkMetrics";
 static constexpr const char* kHelperStatusFlagsName = "UOW_StatusFlags";
 static constexpr const char* kHelperStatusFlagsAliasName = "UOW_StatusFlagsEx";
+static constexpr const char* kHelperTestRetName = "UOW_TestRet";
 static constexpr const char* kHelperDumpName = "uow_dump_walk_env";
 static constexpr const char* kHelperInspectName = "uow_lua_inspect";
 static constexpr const char* kHelperRebindName = "uow_lua_rebind_all";
@@ -1509,6 +1510,18 @@ static char g_hookSentinelKey = 0;
 static void LogLuaBind(const char* fmt, ...);
 static void LogLuaState(const char* fmt, ...);
 static bool DebugInstrumentationEnabled();
+
+static int top(lua_State* L) {
+    return lua_gettop(L);
+}
+
+static void log_top(lua_State* L, const char* tag) {
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[UOW][statusflags] %s: top=%d",
+              tag ? tag : "<null>",
+              top(L));
+}
 
 static std::atomic<uint64_t> g_lastContextMutationTick{0};
 static std::atomic<uint64_t> g_lastDestabilizedTick{0};
@@ -2086,6 +2099,7 @@ static int Lua_SetPacing(lua_State* L);
 static int Lua_SetInflight(lua_State* L);
 static int Lua_GetWalkMetrics(lua_State* L);
 static int Lua_UOWStatusFlags(lua_State* L);
+static int Lua_UOWTestRet(lua_State* L);
 static int Lua_UOWInspect(lua_State* L);
 static int Lua_UOWSelfTest(lua_State* L);
 static int Lua_UOWRebindAll(lua_State* L);
@@ -6238,6 +6252,8 @@ static WORD HelperFlagForName(const char* name) {
         return HELPER_FLAG_GET_METRICS;
     if (_stricmp(name, kHelperStatusFlagsName) == 0 || _stricmp(name, kHelperStatusFlagsAliasName) == 0)
         return HELPER_FLAG_STATUS_FLAGS;
+    if (_stricmp(name, kHelperTestRetName) == 0)
+        return HELPER_FLAG_STATUS_FLAGS;
     if (_stricmp(name, kHelperDumpName) == 0)
         return HELPER_FLAG_DUMP;
     if (_stricmp(name, kHelperInspectName) == 0)
@@ -6468,6 +6484,44 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
               fallbackOk ? 1 : 0,
               latest.helper_flags);
 
+    if (success && name) {
+        if (_stricmp(name, kHelperStatusFlagsName) == 0 ||
+            _stricmp(name, kHelperStatusFlagsAliasName) == 0 ||
+            _stricmp(name, kHelperTestRetName) == 0) {
+            lua_getglobal(state, name);
+            int globalType = lua_type(state, -1);
+            if (globalType == LUA_TFUNCTION && lua_iscfunction(state, -1)) {
+                lua_CFunction currentFn = lua_tocfunction(state, -1);
+                Log::Logf(Log::Level::Warn,
+                          Log::Category::Hooks,
+                          "[HOOKS] helper-register verify name=%s type=cfunction ptr=%p",
+                          name,
+                          reinterpret_cast<void*>(currentFn));
+            } else {
+                const char* typeName = lua_typename(state, globalType);
+                bool isCFunc = (globalType == LUA_TFUNCTION) && lua_iscfunction(state, -1);
+                const void* ptr = lua_topointer(state, -1);
+                lua_Debug ar{};
+                const char* shortSrc = nullptr;
+                const char* source = nullptr;
+                if (globalType == LUA_TFUNCTION && lua_getinfo(state, ">S", &ar) != 0) {
+                    shortSrc = ar.short_src;
+                    source = ar.source;
+                }
+                Log::Logf(Log::Level::Warn,
+                          Log::Category::Hooks,
+                          "[HOOKS] helper-register verify name=%s type=%s iscfunction=%d ptr=%p src=%s full=%s",
+                          name,
+                          typeName ? typeName : "<unknown>",
+                          isCFunc ? 1 : 0,
+                          ptr,
+                          shortSrc ? shortSrc : "<n/a>",
+                          source ? source : "<n/a>");
+            }
+            lua_pop(state, 1);
+        }
+    }
+
     return success;
 }
 
@@ -6550,8 +6604,9 @@ static bool ScriptThreadRegisterHelper(lua_State* ownerState,
 
 static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn, uint64_t generation) {
     const char* safeName = name ? name : "<null>";
+    const bool allowFlagless = (name && _stricmp(name, kHelperTestRetName) == 0);
     WORD flag = HelperFlagForName(name);
-    if (flag == 0) {
+    if (flag == 0 && !allowFlagless) {
         Log::Logf(Log::Level::Warn,
                   Log::Category::Hooks,
                   "[HOOKS] helper-register abort name=%s reason=unknown-helper",
@@ -6580,12 +6635,12 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
 
     LuaStateInfo latest{};
     bool haveLatest = g_stateRegistry.GetByPointer(L, latest);
-    if (!haveLatest && scriptState && scriptState != L)
-        haveLatest = g_stateRegistry.GetByPointer(scriptState, latest);
-    if (!haveLatest)
-        latest = info;
+   if (!haveLatest && scriptState && scriptState != L)
+       haveLatest = g_stateRegistry.GetByPointer(scriptState, latest);
+   if (!haveLatest)
+       latest = info;
 
-    bool installed = (latest.helper_flags & flag) != 0;
+    bool installed = allowFlagless ? false : ((latest.helper_flags & flag) != 0);
 
     if (!installed) {
         Log::Logf(Log::Level::Info,
@@ -6603,7 +6658,7 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
             if (g_stateRegistry.GetByPointer(L, refreshed) ||
                 (scriptState != L && g_stateRegistry.GetByPointer(scriptState, refreshed)))
                 latest = refreshed;
-            installed = (latest.helper_flags & flag) != 0;
+            installed = allowFlagless ? true : ((latest.helper_flags & flag) != 0);
             Log::Logf(installed ? Log::Level::Info : Log::Level::Warn,
                       Log::Category::Hooks,
                       "[HOOKS] helper-register inline-fallback name=%s ok=%d flags=0x%04X",
@@ -6969,6 +7024,8 @@ static bool BindHelpersOnThread(lua_State* L,
         bool metricsOk = logStep(kHelperGetWalkMetricsName, [&]() { return RegisterHelper(L, info, kHelperGetWalkMetricsName, Lua_GetWalkMetrics, generation); });
         bool statusFlagsOk = logStep(kHelperStatusFlagsName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsName, Lua_UOWStatusFlags, generation); });
         bool statusFlagsExOk = logStep(kHelperStatusFlagsAliasName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsAliasName, Lua_UOWStatusFlags, generation); });
+        bool testRetOk = logStep(kHelperTestRetName, [&]() { return RegisterHelper(L, info, kHelperTestRetName, Lua_UOWTestRet, generation); });
+        bool testRetAttempted = true;
 
         bool dumpOk = true;
         bool inspectOk = true;
@@ -7021,6 +7078,7 @@ static bool BindHelpersOnThread(lua_State* L,
             recordMetric(true, metricsOk);
             recordMetric(true, statusFlagsOk);
             recordMetric(true, statusFlagsExOk);
+            recordMetric(testRetAttempted, testRetOk);
             recordMetric(dumpAttempted, dumpOk);
             recordMetric(inspectAttempted, inspectOk);
             recordMetric(rebindAttempted, rebindOk);
@@ -7032,7 +7090,7 @@ static bool BindHelpersOnThread(lua_State* L,
             metrics->hookFailure = failureCount;
         }
 
-        bool coreOk = walkOk && walkMoveOk && pacingOk && setPacingOk && setInflightOk && metricsOk && statusFlagsOk && statusFlagsExOk;
+        bool coreOk = walkOk && walkMoveOk && pacingOk && setPacingOk && setInflightOk && metricsOk && statusFlagsOk && statusFlagsExOk && testRetOk;
         bool debugPackOk = !wantsDebugPack || (dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk && debugPingOk);
         bool allOk = coreOk && debugPackOk;
         if (allOk) {
@@ -7078,6 +7136,7 @@ static bool BindHelpersOnThread(lua_State* L,
             appendMissing(true, metricsOk, kHelperGetWalkMetricsName);
             appendMissing(true, statusFlagsOk, kHelperStatusFlagsName);
             appendMissing(true, statusFlagsExOk, kHelperStatusFlagsAliasName);
+            appendMissing(testRetAttempted, testRetOk, kHelperTestRetName);
             appendMissing(dumpAttempted, dumpOk, kHelperDumpName);
             appendMissing(inspectAttempted, inspectOk, kHelperInspectName);
             appendMissing(rebindAttempted, rebindOk, kHelperRebindName);
@@ -7556,12 +7615,14 @@ static int Lua_UOWStatusFlags(lua_State* L) {
     Engine::AckStats ack{};
     Engine::GetAckStats(ack);
 
-    int topAtEntry = lua_gettop(L);
+    int baseTop = lua_gettop(L);
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
               "[UOW][statusflags] begin top=%d L=%p",
-              topAtEntry,
+              baseTop,
               L);
+
+    log_top(L, "enter");
 
     const char* rawKey = nullptr;
     size_t rawKeyLen = 0;
@@ -7588,10 +7649,6 @@ static int Lua_UOWStatusFlags(lua_State* L) {
     std::transform(keyLower.begin(), keyLower.end(), keyLower.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
-
-    // We have already copied any key data we need; clear the Lua stack so our
-    // return path always starts from a clean slate.
-    lua_settop(L, 0);
 
     const char* safeKey = !keyStr.empty() ? keyStr.c_str() : "<table>";
     LogLuaProbe("uow_statusflags call key=%s type=%d argc=%d ready=%d coalesced=%d helpers=%d engine=%d send=%d pivot=%d fallback=%d movement=%d fwDepth=%d stepDelay=%d inflight=%d ackOk=%u ackDrop=%u",
@@ -7627,31 +7684,14 @@ static int Lua_UOWStatusFlags(lua_State* L) {
                       static_cast<unsigned int>(ack.okCount),
                       static_cast<unsigned int>(ack.dropCount));
 
-    auto pushBool = [&](bool value) {
-        LogLuaProbe("uow_statusflags return bool key=%s value=%d", safeKey, value ? 1 : 0);
-        DebugRingTryWrite("[UOW][statusflags] return bool key=%s value=%d", safeKey, value ? 1 : 0);
-        lua_pushboolean(L, value ? 1 : 0);
-        return 1;
+    auto calcReturnCount = [&](const char* tag) -> int {
+        int topNow = lua_gettop(L);
+        log_top(L, tag);
+        int nret = topNow - baseTop;
+        return (nret < 0) ? 0 : nret;
     };
-    auto pushInt = [&](int value) {
-        LogLuaProbe("uow_statusflags return int key=%s value=%d", safeKey, value);
-        DebugRingTryWrite("[UOW][statusflags] return int key=%s value=%d", safeKey, value);
-        lua_pushinteger(L, static_cast<lua_Integer>(value));
-        return 1;
-    };
-    auto pushUInt = [&](std::uint32_t value) {
-        LogLuaProbe("uow_statusflags return int key=%s value=%u", safeKey, static_cast<unsigned int>(value));
-        DebugRingTryWrite("[UOW][statusflags] return int key=%s value=%u", safeKey, static_cast<unsigned int>(value));
-        lua_pushinteger(L, static_cast<lua_Integer>(value));
-        return 1;
-    };
-    auto pushNil = [&]() {
-        LogLuaProbe("uow_statusflags return nil key=%s", safeKey);
-        DebugRingTryWrite("[UOW][statusflags] return nil key=%s", safeKey);
-        lua_pushnil(L);
-        return 1;
-    };
-    auto pushTable = [&]() {
+
+    auto pushTable = [&]() -> int {
         LogLuaProbe("uow_statusflags return table key=%s", safeKey);
         DebugRingTryWrite("[UOW][statusflags] return table key=%s", safeKey);
         lua_createtable(L, 0, 20);
@@ -7708,8 +7748,7 @@ static int Lua_UOWStatusFlags(lua_State* L) {
                   Log::Category::Core,
                   "[UOW][statusflags] built-table top=%d",
                   lua_gettop(L));
-
-        return 1;
+        return calcReturnCount("ret-table");
     };
 
     if (keyLower.empty()) {
@@ -7717,24 +7756,66 @@ static int Lua_UOWStatusFlags(lua_State* L) {
         return pushTable();
     }
 
-    if (keyLower == "helpers")
-        return pushBool(helpersReady);
-    if (keyLower == "engine" || keyLower == "enginctx" || keyLower == "enginectx")
-        return pushBool(engineReady);
-    if (keyLower == "send" || keyLower == "sendready")
-        return pushBool(sendReady);
-    if (keyLower == "sendpivot" || keyLower == "pivot")
-        return pushBool(sendPivotReady);
-    if (keyLower == "sendfallback" || keyLower == "fallback")
-        return pushBool(sendFallback);
-    if (keyLower == "movement" || keyLower == "movementready")
-        return pushBool(movementReady);
-    if (keyLower == "fw" || keyLower == "fwdepth" || keyLower == "queuedepth")
-        return pushInt(fwDepth);
-    if (keyLower == "pace" || keyLower == "stepdelay" || keyLower == "stepdelayms")
-        return pushInt(stepDelayMs);
-    if (keyLower == "inflight")
-        return pushInt(inflight);
+    if (keyLower == "helpers") {
+        int value = helpersReady ? 1 : 0;
+        LogLuaProbe("uow_statusflags return bool key=%s value=%d", safeKey, value);
+        DebugRingTryWrite("[UOW][statusflags] return bool key=%s value=%d", safeKey, value);
+        lua_pushboolean(L, value);
+        return calcReturnCount("ret-helpers");
+    }
+    if (keyLower == "engine" || keyLower == "enginctx" || keyLower == "enginectx") {
+        int value = engineReady ? 1 : 0;
+        LogLuaProbe("uow_statusflags return bool key=%s value=%d", safeKey, value);
+        DebugRingTryWrite("[UOW][statusflags] return bool key=%s value=%d", safeKey, value);
+        lua_pushboolean(L, value);
+        return calcReturnCount("ret-engine");
+    }
+    if (keyLower == "send" || keyLower == "sendready") {
+        int value = sendReady ? 1 : 0;
+        LogLuaProbe("uow_statusflags return bool key=%s value=%d", safeKey, value);
+        DebugRingTryWrite("[UOW][statusflags] return bool key=%s value=%d", safeKey, value);
+        lua_pushboolean(L, value);
+        return calcReturnCount("ret-send");
+    }
+    if (keyLower == "sendpivot" || keyLower == "pivot") {
+        int value = sendPivotReady ? 1 : 0;
+        LogLuaProbe("uow_statusflags return bool key=%s value=%d", safeKey, value);
+        DebugRingTryWrite("[UOW][statusflags] return bool key=%s value=%d", safeKey, value);
+        lua_pushboolean(L, value);
+        return calcReturnCount("ret-sendpivot");
+    }
+    if (keyLower == "sendfallback" || keyLower == "fallback") {
+        int value = sendFallback ? 1 : 0;
+        LogLuaProbe("uow_statusflags return bool key=%s value=%d", safeKey, value);
+        DebugRingTryWrite("[UOW][statusflags] return bool key=%s value=%d", safeKey, value);
+        lua_pushboolean(L, value);
+        return calcReturnCount("ret-sendfallback");
+    }
+    if (keyLower == "movement" || keyLower == "movementready") {
+        int value = movementReady ? 1 : 0;
+        LogLuaProbe("uow_statusflags return bool key=%s value=%d", safeKey, value);
+        DebugRingTryWrite("[UOW][statusflags] return bool key=%s value=%d", safeKey, value);
+        lua_pushboolean(L, value);
+        return calcReturnCount("ret-movement");
+    }
+    if (keyLower == "fw" || keyLower == "fwdepth" || keyLower == "queuedepth") {
+        LogLuaProbe("uow_statusflags return int key=%s value=%d", safeKey, fwDepth);
+        DebugRingTryWrite("[UOW][statusflags] return int key=%s value=%d", safeKey, fwDepth);
+        lua_pushinteger(L, static_cast<lua_Integer>(fwDepth));
+        return calcReturnCount("ret-fw");
+    }
+    if (keyLower == "pace" || keyLower == "stepdelay" || keyLower == "stepdelayms") {
+        LogLuaProbe("uow_statusflags return int key=%s value=%d", safeKey, stepDelayMs);
+        DebugRingTryWrite("[UOW][statusflags] return int key=%s value=%d", safeKey, stepDelayMs);
+        lua_pushinteger(L, static_cast<lua_Integer>(stepDelayMs));
+        return calcReturnCount("ret-pace");
+    }
+    if (keyLower == "inflight") {
+        LogLuaProbe("uow_statusflags return int key=%s value=%d", safeKey, inflight);
+        DebugRingTryWrite("[UOW][statusflags] return int key=%s value=%d", safeKey, inflight);
+        lua_pushinteger(L, static_cast<lua_Integer>(inflight));
+        return calcReturnCount("ret-inflight");
+    }
     if (keyLower == "ack" || keyLower == "acks") {
         lua_newtable(L);
         lua_pushinteger(L, static_cast<lua_Integer>(ack.okCount));
@@ -7753,14 +7834,27 @@ static int Lua_UOWStatusFlags(lua_State* L) {
                           safeKey,
                           static_cast<unsigned int>(ack.okCount),
                           static_cast<unsigned int>(ack.dropCount));
-        return 1;
+        return calcReturnCount("ret-ack-table");
     }
-    if (keyLower == "ackok" || keyLower == "acksok" || keyLower == "ack_ok")
-        return pushUInt(ack.okCount);
-    if (keyLower == "ackdrop" || keyLower == "acksdrop" || keyLower == "ack_drop")
-        return pushUInt(ack.dropCount);
-    if (keyLower == "version")
-        return pushInt(20251103);
+    if (keyLower == "ackok" || keyLower == "acksok" || keyLower == "ack_ok") {
+        LogLuaProbe("uow_statusflags return int key=%s value=%u", safeKey, static_cast<unsigned int>(ack.okCount));
+        DebugRingTryWrite("[UOW][statusflags] return int key=%s value=%u", safeKey, static_cast<unsigned int>(ack.okCount));
+        lua_pushinteger(L, static_cast<lua_Integer>(ack.okCount));
+        return calcReturnCount("ret-ackok");
+    }
+    if (keyLower == "ackdrop" || keyLower == "acksdrop" || keyLower == "ack_drop") {
+        LogLuaProbe("uow_statusflags return int key=%s value=%u", safeKey, static_cast<unsigned int>(ack.dropCount));
+        DebugRingTryWrite("[UOW][statusflags] return int key=%s value=%u", safeKey, static_cast<unsigned int>(ack.dropCount));
+        lua_pushinteger(L, static_cast<lua_Integer>(ack.dropCount));
+        return calcReturnCount("ret-ackdrop");
+    }
+    if (keyLower == "version") {
+        constexpr int kStatusFlagsVersion = 20251103;
+        LogLuaProbe("uow_statusflags return int key=%s value=%d", safeKey, kStatusFlagsVersion);
+        DebugRingTryWrite("[UOW][statusflags] return int key=%s value=%d", safeKey, kStatusFlagsVersion);
+        lua_pushinteger(L, static_cast<lua_Integer>(kStatusFlagsVersion));
+        return calcReturnCount("ret-version");
+    }
 
     LogLuaProbe("uow_statusflags unknown key=%s (len=%zu)", safeKey, keyStr.size());
     Log::Logf(Log::Level::Info,
@@ -7768,6 +7862,17 @@ static int Lua_UOWStatusFlags(lua_State* L) {
               "[UOW][statusflags] unknown-key returning table top=%d",
               lua_gettop(L));
     return pushTable();
+}
+
+static int Lua_UOWTestRet(lua_State* L) {
+    int baseTop = lua_gettop(L);
+    lua_pushboolean(L, 1);
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[UOW][testret] enterTop=%d exitTop=%d",
+              baseTop,
+              lua_gettop(L));
+    return std::max(0, lua_gettop(L) - baseTop);
 }
 
 static int Lua_UOWalk(lua_State* L) {

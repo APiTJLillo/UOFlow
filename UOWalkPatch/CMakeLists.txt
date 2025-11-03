@@ -46,7 +46,6 @@ if(MSVC)
         /EHa       # Enable SEH exceptions
         /MP        # Multi-processor compilation
         /wd4996   # Disable deprecation warnings
-        /Zi        # Generate debug info
         /Gy       # Function-level linking
         /Gm-      # Disable minimal rebuild
         /GS-      # Disable buffer security check
@@ -156,6 +155,36 @@ target_link_libraries(UOWalkPatchDLL PRIVATE
     "${CMAKE_SOURCE_DIR}/external/luaplus/luaplus_1100.lib")
 
 # Set DLL-specific flags
+option(UOWALK_RELEASE_SYMBOLS "Emit full debug symbols and keep functions in Release builds" OFF)
+
+set(UOWALK_RELEASE_LINK_OPTIONS
+    /SUBSYSTEM:WINDOWS
+    /SAFESEH:NO
+    /NXCOMPAT:NO
+    /MACHINE:X86
+    /NODEFAULTLIB:msvcrt.lib
+    /MAP
+)
+
+if(UOWALK_RELEASE_SYMBOLS)
+    list(APPEND UOWALK_RELEASE_LINK_OPTIONS
+        /DEBUG:FULL
+        /INCREMENTAL:NO
+        /OPT:NOREF
+        /OPT:NOICF
+    )
+    target_compile_options(UOWalkPatchDLL PRIVATE $<$<CONFIG:Release>:/Z7>)
+    target_compile_options(UOWalkPatchDLL PRIVATE $<$<NOT:$<CONFIG:Release>>:/Zi>)
+else()
+    list(APPEND UOWALK_RELEASE_LINK_OPTIONS
+        /DEBUG
+        /INCREMENTAL:NO
+        /OPT:REF
+        /OPT:ICF
+    )
+    target_compile_options(UOWalkPatchDLL PRIVATE /Zi)
+endif()
+
 target_link_options(UOWalkPatchDLL PRIVATE
     $<$<CONFIG:Debug>:
         /SUBSYSTEM:WINDOWS
@@ -169,18 +198,7 @@ target_link_options(UOWalkPatchDLL PRIVATE
         /NODEFAULTLIB:msvcrt.lib
         /MAP
     >
-    $<$<CONFIG:Release>:
-        /SUBSYSTEM:WINDOWS
-        /SAFESEH:NO
-        /NXCOMPAT:NO
-        /MACHINE:X86
-        /DEBUG
-        /INCREMENTAL:NO
-        /OPT:REF
-        /OPT:ICF
-        /NODEFAULTLIB:msvcrt.lib
-        /MAP
-    >
+    $<$<CONFIG:Release>:${UOWALK_RELEASE_LINK_OPTIONS}>
 )
 
 # Add the injector executable
