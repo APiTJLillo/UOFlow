@@ -120,24 +120,66 @@ function UOFlowStatus.Build()
   return true
 end
 
-local function safe_call(fn)
+local function safe_call(fn, ...)
   if type(fn) ~= "function" then
+    debug_print("safe_call missing fn type=", type(fn))
     return nil
   end
 
-  local ok, res = pcall(fn)
+  local ok, res = pcall(fn, ...)
   if ok then
     return res
+  else
+    debug_print("safe_call pcall failure:", tostring(res))
+  end
+  return nil
+end
+
+local STATUS_KEYS = {
+  helpers = { key = "helpers", asBool = true },
+  engineCtx = { key = "engine", asBool = true },
+  sendReady = { key = "send", asBool = true },
+  fwDepth = { key = "fw", asBool = false },
+  stepDelayMs = { key = "pace", asBool = false },
+  inflight = { key = "inflight", asBool = false },
+}
+
+local function coerce_value(value, asBool)
+  if asBool then
+    if type(value) == "boolean" then
+      return value
+    elseif type(value) == "number" then
+      return value ~= 0
+    end
+  else
+    if type(value) == "number" then
+      return value
+    elseif type(value) == "boolean" then
+      return value and 1 or 0
+    end
   end
   return nil
 end
 
 local function status_flags()
-  local t = safe_call(UOW_StatusFlags)
-  if type(t) == "table" then
-    return t
+  local legacy = safe_call(UOW_StatusFlags)
+  if type(legacy) == "table" then
+    local outLegacy = {}
+    outLegacy.helpers = coerce_value(legacy.helpers, true)
+    outLegacy.engineCtx = coerce_value(legacy.engineCtx or legacy.engine, true)
+    outLegacy.sendReady = coerce_value(legacy.sendReady or legacy.send, true)
+    outLegacy.fwDepth = coerce_value(legacy.fwDepth or legacy.queueDepth or legacy.fw, false)
+    outLegacy.stepDelayMs = coerce_value(legacy.stepDelayMs or legacy.stepDelay or legacy.pace, false)
+    outLegacy.inflight = coerce_value(legacy.inflight, false)
+    return outLegacy
   end
-  return {}
+
+  local out = {}
+  for field, cfg in pairs(STATUS_KEYS) do
+    local raw = safe_call(UOW_StatusFlags, cfg.key)
+    out[field] = coerce_value(raw, cfg.asBool)
+  end
+  return out
 end
 
 local function doPoll()
