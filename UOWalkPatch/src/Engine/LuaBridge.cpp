@@ -216,6 +216,18 @@ static std::atomic<uint32_t> g_helperProbeSkipped{0};
 static std::atomic<bool> g_helpersInstalledAny{false};
 static std::atomic<int> g_helperInstallInFlight{0};
 
+// Forward declarations for helpers referenced before their definitions.
+// These are implemented later in this file but are used earlier when
+// building the UOW Lua namespace and during destabilization handling.
+static void UOW_OnDestabilized();
+static int Lua_UOW_StatusFlags(lua_State* L);
+static int Lua_UOW_StatusVersion(lua_State* L);
+static int Lua_UOW_WalkSetPacing(lua_State* L);
+static int Lua_UOW_WalkSetInflight(lua_State* L);
+static int Lua_UOW_WalkGetMetrics(lua_State* L);
+static int Lua_UOW_DebugPing(lua_State* L);
+static int Lua_UOW_DebugStatus(lua_State* L);
+
 enum class CtxValidationResult {
     Ok = 0,
     Null,
@@ -1938,7 +1950,7 @@ static void RegisterUOWNamespace(lua_State* L) {
 
     lua_getglobal(L, "UOW");
     bool createdUOW = false;
-    if (!lua_istable(L, -1)) {
+    if (!(lua_type(L, -1) == LUA_TTABLE)) {
         lua_pop(L, 1);
         lua_createtable(L, 0, 3);
         createdUOW = true;
@@ -1948,7 +1960,7 @@ static void RegisterUOWNamespace(lua_State* L) {
 
     // Status table
     lua_getfield(L, -1, "Status");
-    if (!lua_istable(L, -1)) {
+    if (!(lua_type(L, -1) == LUA_TTABLE)) {
         lua_pop(L, 1);
         lua_createtable(L, 0, 4);
         lua_pushvalue(L, -1);
@@ -1961,7 +1973,7 @@ static void RegisterUOWNamespace(lua_State* L) {
 
     // Walk table
     lua_getfield(L, -1, "Walk");
-    if (!lua_istable(L, -1)) {
+    if (!(lua_type(L, -1) == LUA_TTABLE)) {
         lua_pop(L, 1);
         lua_createtable(L, 0, 4);
         lua_pushvalue(L, -1);
@@ -1975,7 +1987,7 @@ static void RegisterUOWNamespace(lua_State* L) {
 
     // Debug table
     lua_getfield(L, -1, "Debug");
-    if (!lua_istable(L, -1)) {
+    if (!(lua_type(L, -1) == LUA_TTABLE)) {
         lua_pop(L, 1);
         lua_createtable(L, 0, 4);
         lua_pushvalue(L, -1);
@@ -2011,9 +2023,9 @@ static bool VerifyUOW(lua_State* L) {
     bool ok = false;
     LuaStackGuard guard(L);
     lua_getglobal(L, "UOW");
-    if (lua_istable(L, -1)) {
+    if (lua_type(L, -1) == LUA_TTABLE) {
         lua_getfield(L, -1, "Status");
-        if (lua_istable(L, -1)) {
+        if (lua_type(L, -1) == LUA_TTABLE) {
             lua_getfield(L, -1, "flags");
             int t = lua_type(L, -1);
             const void* p = lua_topointer(L, -1);
@@ -2053,7 +2065,7 @@ static bool UOW_HasNamespace(lua_State* L) {
         return false;
     LuaStackGuard guard(L);
     lua_getglobal(L, "UOW");
-    bool have = lua_istable(L, -1) != 0;
+    bool have = (lua_type(L, -1) == LUA_TTABLE);
     return have;
 }
 
