@@ -222,6 +222,8 @@ static std::atomic<int> g_helperInstallInFlight{0};
 static void UOW_OnDestabilized();
 static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/);
 static void EnsureScriptThread(DWORD tid, lua_State* L);
+static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::function<void()> fn);
+static lua_State* ResolveLuaState();
 static int Lua_UOW_StatusFlags(lua_State* L);
 static int Lua_UOW_StatusVersion(lua_State* L);
 static int Lua_UOW_WalkSetPacing(lua_State* L);
@@ -2116,22 +2118,41 @@ static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/) {
 static void UOW_ScheduleHook(lua_State* L, uint32_t gen, DWORD scriptTid, const char* reason) {
     if (!L)
         return;
-    // Only schedule from the true script thread as captured globally.
-    DWORD actualScriptTid = g_scriptThreadId.load(std::memory_order_acquire);
-    if (!actualScriptTid || actualScriptTid != GetCurrentThreadId())
-        return;
+    // Only schedule once per-generation.
     if (!UowCtxMatches(L, gen))
         return;
     if (g_uowLua.scheduled)
         return;
-    lua_sethook(L, UOW_OneShotHook, LUA_MASKCOUNT, 1);
+
     g_uowLua.scheduled = true;
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
-              "[UOW][NS] scheduled one-shot hook (gen=%u tid=%lu reason=%s)",
+              "[UOW][NS] scheduled install via owner-pump (gen=%u tid=%lu reason=%s)",
               gen,
               static_cast<unsigned long>(scriptTid),
               reason ? reason : "unknown");
+
+    // Post the namespace install onto the owner/script thread; avoid lua_sethook
+    // entirely to prevent ABI/threading issues with lua_State internals.
+    // If we don't have registry info yet for L, resolve a pointer we can use.
+    lua_State* target = L;
+    LuaStateInfo info{};
+    if (!g_stateRegistry.GetByPointer(L, info)) {
+        lua_State* existing = ResolveLuaState();
+        if (existing)
+            target = existing;
+    }
+    PostToOwnerWithTask(target, "uow.ns.install", [target, gen]() {
+        if (!UowCtxMatches(target, gen))
+            return;
+        RegisterUOWNamespace(target);
+        bool ok = VerifyUOW(target);
+        g_uowLua.scheduled = false;
+        if (ok) {
+            g_uowInstalled.store(true, std::memory_order_release);
+            g_uowInstalledGen.store(gen, std::memory_order_release);
+        }
+    });
 }
 
 static void UOW_OnCanonicalReady(lua_State* L, uint32_t gen, DWORD scriptTid) {
