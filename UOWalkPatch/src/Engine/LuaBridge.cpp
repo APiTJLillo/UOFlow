@@ -221,6 +221,7 @@ static std::atomic<int> g_helperInstallInFlight{0};
 // building the UOW Lua namespace and during destabilization handling.
 static void UOW_OnDestabilized();
 static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/);
+static void EnsureScriptThread(DWORD tid, lua_State* L);
 static int Lua_UOW_StatusFlags(lua_State* L);
 static int Lua_UOW_StatusVersion(lua_State* L);
 static int Lua_UOW_WalkSetPacing(lua_State* L);
@@ -1563,6 +1564,9 @@ static std::atomic<uint32_t> g_guardFailOwner{0};
 static std::atomic<uint32_t> g_guardFailRead{0};
 static std::atomic<uint32_t> g_guardFailSeh{0};
 static std::atomic<uint32_t> g_guardFailPlausible{0};
+// UOW namespace install gate
+static std::atomic<bool> g_uowInstalled{false};
+static std::atomic<uint32_t> g_uowInstalledGen{0};
 
 struct UowLuaCtx {
     lua_State* L = nullptr;
@@ -2056,7 +2060,8 @@ static void UpdateStatusNamespace(lua_State* L) {
 
 static bool UOW_IsScriptThread() {
     DWORD tid = GetCurrentThreadId();
-    return (g_uowLua.scriptTid != 0 && g_uowLua.scriptTid == tid);
+    DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+    return (scriptTid != 0 && scriptTid == tid);
 }
 
 static bool UOW_HasNamespace(lua_State* L) {
@@ -2082,11 +2087,19 @@ static void UOW_OneShotHook(lua_State* L, lua_Debug* /*ar*/) {
     UOW_ClearHook(L);
     if (!UowCtxMatches(L, g_uowLua.gen))
         return;
+    if (g_uowInstalled.load(std::memory_order_acquire) &&
+        g_uowInstalledGen.load(std::memory_order_acquire) == g_uowLua.gen) {
+        return;
+    }
     RegisterUOWNamespace(L);
-    VerifyUOW(L);
+    bool ok = VerifyUOW(L);
     g_uowLua.scheduled = false;
     // Schedule a later verification pass to detect churn/overwrites.
     lua_sethook(L, UOW_VerifyHook, LUA_MASKCOUNT, 8192);
+    if (ok) {
+        g_uowInstalled.store(true, std::memory_order_release);
+        g_uowInstalledGen.store(g_uowLua.gen, std::memory_order_release);
+    }
 }
 
 static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/) {
@@ -2103,7 +2116,9 @@ static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/) {
 static void UOW_ScheduleHook(lua_State* L, uint32_t gen, DWORD scriptTid, const char* reason) {
     if (!L)
         return;
-    if (!scriptTid || scriptTid != GetCurrentThreadId())
+    // Only schedule from the true script thread as captured globally.
+    DWORD actualScriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+    if (!actualScriptTid || actualScriptTid != GetCurrentThreadId())
         return;
     if (!UowCtxMatches(L, gen))
         return;
@@ -2122,8 +2137,9 @@ static void UOW_ScheduleHook(lua_State* L, uint32_t gen, DWORD scriptTid, const 
 static void UOW_OnCanonicalReady(lua_State* L, uint32_t gen, DWORD scriptTid) {
     g_uowLua.L = L;
     g_uowLua.gen = gen;
-    g_uowLua.scriptTid = scriptTid;
     g_uowLua.scheduled = false;
+    g_uowInstalled.store(false, std::memory_order_release);
+    g_uowInstalledGen.store(0, std::memory_order_release);
 
     if (!L)
         return;
@@ -2147,6 +2163,8 @@ static void UOW_OnDestabilized() {
     if (g_uowLua.L && UOW_IsScriptThread()) {
         lua_sethook(g_uowLua.L, nullptr, 0, 0);
     }
+    g_uowInstalled.store(false, std::memory_order_release);
+    g_uowInstalledGen.store(0, std::memory_order_release);
     UowCtxClear();
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
@@ -2156,23 +2174,15 @@ static void UOW_OnDestabilized() {
 static void OnLuaRegisterTracer(lua_State* L, const char* /*name*/) {
     if (!L)
         return;
+    // Capture the script thread as early as possible.
+    EnsureScriptThread(GetCurrentThreadId(), L);
     if (!UowCtxMatches(L, g_uowLua.gen))
         return;
     if (!UOW_IsScriptThread())
         return;
 
-    if (!UOW_HasNamespace(L)) {
-        RegisterUOWNamespace(L);
-        VerifyUOW(L);
-        g_uowLua.scheduled = false;
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Core,
-                  "[UOW][NS] installed via tracer");
-        // Schedule a later verify pass to detect churn/overwrites.
-        lua_sethook(L, UOW_VerifyHook, LUA_MASKCOUNT, 8192);
-    } else {
-        VerifyUOW(L);
-    }
+    // Do not mutate here; queue a one-shot install on the script thread.
+    UOW_ScheduleHook(L, g_uowLua.gen, g_uowLua.scriptTid, "tracer");
 }
 
 static bool IsOverwriteLoggerEnabled() {
@@ -2994,7 +3004,7 @@ static bool PromoteCanonicalState(LuaStateInfo& state, uint64_t now, const char*
                     slotReady,
                     ownerReady,
                     regReady);
-        DWORD scriptTid = state.owner_tid ? state.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
+        DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
         UOW_OnCanonicalReady(state.L_canonical, static_cast<uint32_t>(state.gen), scriptTid);
     } else {
         uint64_t delta = previousReady > destabilized ? previousReady - destabilized : 0;
@@ -5879,9 +5889,9 @@ static void RequestBindForState(const LuaStateInfo& info, const char* reason, bo
         uint64_t deadline = current.helper_owner_deadline_ms;
         if (!ownerReady && deadline && now >= deadline) {
             DWORD previousOwner = current.owner_tid;
-            DWORD fallbackTid = previousOwner ? previousOwner : g_scriptThreadId.load(std::memory_order_acquire);
-            if (!fallbackTid)
-                fallbackTid = GetCurrentThreadId();
+            DWORD scriptTid = g_scriptThreadId.load(std::memory_order_acquire);
+            DWORD fallbackTid = previousOwner ? previousOwner : scriptTid;
+            // Do not promote to an arbitrary current thread; wait until we know the real script thread.
             if (fallbackTid) {
                 uint64_t waitedMs = current.helper_state_since_ms ? (now - current.helper_state_since_ms) : 0;
                 g_stateRegistry.UpdateByPointer(target, [&](LuaStateInfo& state) {
@@ -7647,6 +7657,15 @@ static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const
     if (!L)
         return;
 
+    // Do not attempt helper install while the network config mapping is unsettled.
+    if (!Net::IsReady()) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "helpers skip L=%p reason=netcfg-pending", L);
+        ClearHelperPending(L, generation);
+        return;
+    }
+
     // Install helpers only from the script thread, with matching context.
     DWORD scriptTid = g_uowLua.scriptTid;
     if (scriptTid == 0 || GetCurrentThreadId() != scriptTid || !UowCtxMatches(L, static_cast<uint32_t>(generation))) {
@@ -9068,12 +9087,8 @@ static int __stdcall RegLua_detour(void* ctx, void* func, const char* name) {
 }
 
 static int __stdcall RegisterHookImpl(void* ctx, void* func, const char* name) {
-    if (func) {
-        lua_CFunction original = reinterpret_cast<lua_CFunction>(func);
-        lua_CFunction wrapped = MaybeWrapLuaFunction(name, original);
-        if (wrapped != original)
-            func = reinterpret_cast<void*>(wrapped);
-    }
+    // Do not wrap client Lua functions during registration; avoid any
+    // unintended interaction with the VM. We only observe and pass through.
 
     DWORD tid = GetCurrentThreadId();
     lua_State* fromCtx = nullptr;
@@ -9112,43 +9127,24 @@ static int __stdcall RegisterHookImpl(void* ctx, void* func, const char* name) {
     if (ctx)
         g_latestScriptCtx.store(ctx, std::memory_order_release);
 
-    if (L) {
-        uint64_t gen = g_generation.load(std::memory_order_acquire);
-        bool isNew = false;
-        bool ready = false;
-        bool coalesced = false;
-        LuaStateInfo snapshot = ObserveReportedState(L, ctx, tid, gen, name ? name : "register", &isNew, &ready, &coalesced);
-        if (isNew) {
-            LogLuaState("observed L=%p ctx=%p tid=%lu gen=%llu source=register", snapshot.L_reported, ctx, tid, gen);
-            Log::Logf(Log::Level::Info,
+    // Do not mutate/bind from tracer. One-shot/tracer paths schedule install
+    // onto the script thread independently. We only call the client's registrar.
+
+    int rc = 0;
+    if (g_clientRegister) {
+        DWORD seh = 0;
+        __try {
+            rc = g_clientRegister(ctx, func, name);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            seh = GetExceptionCode();
+            Log::Logf(Log::Level::Warn,
                       Log::Category::Core,
-                      "lua state discovered Lc=%p Lr=%p ctx=%p owner=%lu gen=%llu",
-                      snapshot.L_canonical,
-                      snapshot.L_reported,
-                      ctx,
-                      static_cast<unsigned long>(tid),
-                      static_cast<unsigned long long>(gen));
-        }
-        uint64_t registerTick = GetTickCount64();
-        lua_State* registerPtr = snapshot.L_canonical ? snapshot.L_canonical : L;
-        if (registerPtr) {
-            g_stateRegistry.UpdateByPointer(registerPtr, [&](LuaStateInfo& state) {
-                state.register_last_tick_ms = registerTick;
-                state.register_quiet_tick_ms = 0;
-                state.flags &= ~(STATE_FLAG_REG_STABLE | STATE_FLAG_CANON_READY | STATE_FLAG_VALID);
-            }, &snapshot);
-        }
-        if (!name || _stricmp(name, kHelperWalkName) != 0) {
-            RequestBindForState(snapshot, name ? name : "register", false);
+                      "[LUA][REG] client register-seh name=%s code=0x%08lX",
+                      name ? name : "<null>",
+                      static_cast<unsigned long>(seh));
+            rc = 0;
         }
     }
-
-    if (L) {
-        ProcessPendingLuaTasks(L);
-        MaybeProcessHelperRetryQueue();
-    }
-
-    int rc = g_clientRegister ? g_clientRegister(ctx, func, name) : 0;
     return rc;
 }
 
