@@ -309,10 +309,8 @@ bool DispatchWithFallback(std::uint32_t ownerTid, TaskFn&& fn, const char* tag) 
                   static_cast<unsigned>(resolvedOwner),
                   primaryPosted ? 1 : 0,
                   alreadyExecuted ? 1 : 0);
-        if (alreadyExecuted)
-            return true;
-        if (!Core::Config::HelpersAllowApcFallback() && !Core::Config::HelpersAllowRemoteThreadFallback())
-            return primaryPosted;
+        // For Lua helpers, never fall back to APC or CreateThread.
+        return alreadyExecuted ? true : primaryPosted;
     }
 
     // APC fallback

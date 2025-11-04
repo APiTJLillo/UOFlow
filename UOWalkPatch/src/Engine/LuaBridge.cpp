@@ -224,6 +224,9 @@ static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/);
 static void EnsureScriptThread(DWORD tid, lua_State* L);
 static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::function<void()> fn);
 static lua_State* ResolveLuaState();
+// Forward decls for registrar-driven namespace install
+static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn, uint64_t generation);
+static WORD HelperFlagForName(const char* name);
 static int Lua_UOW_StatusFlags(lua_State* L);
 static int Lua_UOW_StatusVersion(lua_State* L);
 static int Lua_UOW_WalkSetPacing(lua_State* L);
@@ -1943,121 +1946,59 @@ static void SetFieldCFunc(lua_State* L, const char* key, lua_CFunction f) {
 }
 
 static void RegisterUOWNamespace(lua_State* L) {
+    // Registrar-only implementation; avoids touching Lua VM directly.
     if (!L)
         return;
-    if (!lua_checkstack(L, 8)) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[UOW][NS][WARN] insufficient stack for namespace install L=%p",
-                  L);
-        return;
+
+    LuaStateInfo info{};
+    if (!g_stateRegistry.GetByPointer(L, info)) {
+        auto snap = g_stateRegistry.Snapshot();
+        if (!snap.empty())
+            info = snap.front();
     }
 
-    LuaStackGuard guard(L);
+    uint64_t gen = info.gen ? info.gen : g_uowLua.gen;
 
-    lua_getglobal(L, "UOW");
-    bool createdUOW = false;
-    if (!(lua_type(L, -1) == LUA_TTABLE)) {
-        lua_pop(L, 1);
-        lua_createtable(L, 0, 3);
-        createdUOW = true;
-        lua_pushvalue(L, -1);
-        lua_setglobal(L, "UOW");
-    }
-
-    // Status table
-    lua_getfield(L, -1, "Status");
-    if (!(lua_type(L, -1) == LUA_TTABLE)) {
-        lua_pop(L, 1);
-        lua_createtable(L, 0, 4);
-        lua_pushvalue(L, -1);
-        lua_setfield(L, -3, "Status");
-    }
-    SetFieldCFunc(L, "flags", Lua_UOW_StatusFlags);
-    SetFieldCFunc(L, "version", Lua_UOW_StatusVersion);
-    MakeReadonlyTable(L, -1);
-    lua_pop(L, 1); // pop Status
-
-    // Walk table
-    lua_getfield(L, -1, "Walk");
-    if (!(lua_type(L, -1) == LUA_TTABLE)) {
-        lua_pop(L, 1);
-        lua_createtable(L, 0, 4);
-        lua_pushvalue(L, -1);
-        lua_setfield(L, -3, "Walk");
-    }
-    SetFieldCFunc(L, "set_pacing", Lua_UOW_WalkSetPacing);
-    SetFieldCFunc(L, "set_inflight", Lua_UOW_WalkSetInflight);
-    SetFieldCFunc(L, "get_metrics", Lua_UOW_WalkGetMetrics);
-    MakeReadonlyTable(L, -1);
-    lua_pop(L, 1); // pop Walk
-
-    // Debug table
-    lua_getfield(L, -1, "Debug");
-    if (!(lua_type(L, -1) == LUA_TTABLE)) {
-        lua_pop(L, 1);
-        lua_createtable(L, 0, 4);
-        lua_pushvalue(L, -1);
-        lua_setfield(L, -3, "Debug");
-    }
-    SetFieldCFunc(L, "ping", Lua_UOW_DebugPing);
-    SetFieldCFunc(L, "status", Lua_UOW_DebugStatus);
-    MakeReadonlyTable(L, -1);
-    lua_pop(L, 1); // pop Debug
-
-    if (createdUOW) {
-        MakeReadonlyTable(L, -1);
-    }
-
-    lua_pop(L, 1); // pop UOW
+    bool ok1 = RegisterHelper(L, info, kHelperStatusFlagsName,    Lua_UOW_StatusFlags,   gen);
+    bool ok2 = RegisterHelper(L, info, kHelperStatusVersionName,  Lua_UOW_StatusVersion, gen);
+    bool ok3 = RegisterHelper(L, info, kHelperSetPacingName,      Lua_UOW_WalkSetPacing, gen);
+    bool ok4 = RegisterHelper(L, info, kHelperSetInflightName,    Lua_UOW_WalkSetInflight, gen);
+    bool ok5 = RegisterHelper(L, info, kHelperGetWalkMetricsName, Lua_UOW_WalkGetMetrics, gen);
+    bool ok6 = RegisterHelper(L, info, kHelperDebugPingName,      Lua_UOW_DebugPing, gen);
+    bool ok7 = RegisterHelper(L, info, kHelperDebugStatusName,    Lua_UOW_DebugStatus, gen);
 
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
-              "[UOW][NS] namespace installed");
+              "[UOW][NS] namespace installed via registrar ok=[%d,%d,%d,%d,%d,%d,%d]",
+              ok1 ? 1 : 0,
+              ok2 ? 1 : 0,
+              ok3 ? 1 : 0,
+              ok4 ? 1 : 0,
+              ok5 ? 1 : 0,
+              ok6 ? 1 : 0,
+              ok7 ? 1 : 0);
 }
 
 static bool VerifyUOW(lua_State* L) {
     if (!L)
         return false;
-    if (!lua_checkstack(L, 4)) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[UOW][NS][WARN] verify failed stack-check L=%p",
-                  L);
-        return false;
+    LuaStateInfo info{};
+    if (!g_stateRegistry.GetByPointer(L, info)) {
+        auto snap = g_stateRegistry.Snapshot();
+        if (!snap.empty())
+            info = snap.front();
     }
-
-    bool ok = false;
-    LuaStackGuard guard(L);
-    lua_getglobal(L, "UOW");
-    if (lua_type(L, -1) == LUA_TTABLE) {
-        lua_getfield(L, -1, "Status");
-        if (lua_type(L, -1) == LUA_TTABLE) {
-            lua_getfield(L, -1, "flags");
-            int t = lua_type(L, -1);
-            const void* p = lua_topointer(L, -1);
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Core,
-                      "[UOW][NS] verify Status.flags type=%d ptr=%p",
-                      t,
-                      p);
-            ok = (t == LUA_TFUNCTION) && lua_iscfunction(L, -1);
-            lua_pop(L, 1);
-        } else {
-            lua_pop(L, 1);
-        }
-    }
-    if (!ok) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[UOW][NS][WARN] verification failed or flags not cfunction");
-    }
-    return ok;
+    WORD flag = HelperFlagForName(kHelperStatusFlagsName);
+    bool haveFlags = (flag != 0) && ((info.helper_flags & flag) != 0);
+    Log::Logf(haveFlags ? Log::Level::Info : Log::Level::Warn,
+              Log::Category::Core,
+              haveFlags ? "[UOW][NS] verify flags=registered" : "[UOW][NS] verify flags=missing");
+    return haveFlags;
 }
 
 static void UpdateStatusNamespace(lua_State* L) {
     RegisterUOWNamespace(L);
-    VerifyUOW(L);
+    (void)VerifyUOW(L);
 }
 
 static bool UOW_IsScriptThread() {
@@ -2069,50 +2010,47 @@ static bool UOW_IsScriptThread() {
 static bool UOW_HasNamespace(lua_State* L) {
     if (!L)
         return false;
-    if (!lua_checkstack(L, 1))
-        return false;
-    LuaStackGuard guard(L);
-    lua_getglobal(L, "UOW");
-    bool have = (lua_type(L, -1) == LUA_TTABLE);
-    return have;
+    LuaStateInfo info{};
+    if (!g_stateRegistry.GetByPointer(L, info)) {
+        auto snap = g_stateRegistry.Snapshot();
+        if (!snap.empty())
+            info = snap.front();
+    }
+    WORD flag = HelperFlagForName(kHelperStatusFlagsName);
+    return (flag != 0) && ((info.helper_flags & flag) != 0);
 }
 
-static void UOW_ClearHook(lua_State* L) {
-    if (!L)
-        return;
-    if (!UOW_IsScriptThread())
-        return;
-    lua_sethook(L, nullptr, 0, 0);
+static void UOW_ClearHook(lua_State* /*L*/) {
+    // Hooks are disabled; no-op to avoid touching lua_sethook
 }
 
 static void UOW_OneShotHook(lua_State* L, lua_Debug* /*ar*/) {
-    UOW_ClearHook(L);
+    // Legacy one-shot path disabled; delegate to owner-pump scheduling
+    if (!L)
+        return;
     if (!UowCtxMatches(L, g_uowLua.gen))
         return;
     if (g_uowInstalled.load(std::memory_order_acquire) &&
         g_uowInstalledGen.load(std::memory_order_acquire) == g_uowLua.gen) {
         return;
     }
-    RegisterUOWNamespace(L);
-    bool ok = VerifyUOW(L);
-    g_uowLua.scheduled = false;
-    // Schedule a later verification pass to detect churn/overwrites.
-    lua_sethook(L, UOW_VerifyHook, LUA_MASKCOUNT, 8192);
-    if (ok) {
-        g_uowInstalled.store(true, std::memory_order_release);
-        g_uowInstalledGen.store(g_uowLua.gen, std::memory_order_release);
-    }
+    // Post install on owner thread instead of lua_sethook
+    PostToOwnerWithTask(L, "helpers",
+        [target=L, gen=g_uowLua.gen]() {
+            if (!UowCtxMatches(target, gen))
+                return;
+            RegisterUOWNamespace(target);
+            bool ok = VerifyUOW(target);
+            g_uowLua.scheduled = false;
+            if (ok) {
+                g_uowInstalled.store(true, std::memory_order_release);
+                g_uowInstalledGen.store(gen, std::memory_order_release);
+            }
+        });
 }
 
-static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/) {
-    if (!L)
-        return;
-    if (!UOW_IsScriptThread() || !UowCtxMatches(L, g_uowLua.gen)) {
-        lua_sethook(L, nullptr, 0, 0);
-        return;
-    }
-    VerifyUOW(L);
-    lua_sethook(L, nullptr, 0, 0);
+static void UOW_VerifyHook(lua_State* /*L*/, lua_Debug* /*ar*/) {
+    // Verification via hooks is disabled; no-op
 }
 
 static void UOW_ScheduleHook(lua_State* L, uint32_t gen, DWORD scriptTid, const char* reason) {
@@ -2142,7 +2080,7 @@ static void UOW_ScheduleHook(lua_State* L, uint32_t gen, DWORD scriptTid, const 
         if (existing)
             target = existing;
     }
-    PostToOwnerWithTask(target, "uow.ns.install", [target, gen]() {
+    PostToOwnerWithTask(target, "helpers", [target, gen]() {
         if (!UowCtxMatches(target, gen))
             return;
         RegisterUOWNamespace(target);
@@ -2181,9 +2119,7 @@ static void UOW_OnCanonicalReady(lua_State* L, uint32_t gen, DWORD scriptTid) {
 }
 
 static void UOW_OnDestabilized() {
-    if (g_uowLua.L && UOW_IsScriptThread()) {
-        lua_sethook(g_uowLua.L, nullptr, 0, 0);
-    }
+    // Do not touch lua_sethook; just clear state
     g_uowInstalled.store(false, std::memory_order_release);
     g_uowInstalledGen.store(0, std::memory_order_release);
     UowCtxClear();
@@ -2241,31 +2177,8 @@ static int GlobalNewIndexLogger(lua_State* L) {
     return 0;
 }
 
-static void InstallGlobalOverwriteLogger(lua_State* L) {
-    if (!L || !IsOverwriteLoggerEnabled())
-        return;
-    DWORD seh = 0;
-    bool probeOk = sp::seh_probe([&]() {
-        int top = lua_gettop(L);
-        lua_getglobal(L, "_G");
-        if (lua_type(L, -1) == LUA_TTABLE) {
-            int hasMeta = lua_getmetatable(L, -1);
-            if (hasMeta == 0)
-                lua_newtable(L);
-            lua_pushstring(L, "__newindex");
-            lua_pushcfunction(L, GlobalNewIndexLogger);
-            lua_rawset(L, -3);
-            lua_setmetatable(L, -2);
-        }
-        lua_pop(L, 1);
-        lua_settop(L, top);
-    }, &seh);
-    if (!probeOk) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[UOW] InstallGlobalOverwriteLogger seh code=0x%08lX",
-                  static_cast<unsigned long>(seh));
-    }
+static void InstallGlobalOverwriteLogger(lua_State* /*L*/) {
+    // Disabled to avoid touching Lua C API
 }
 
 static void MaybeLogInstallDefer(lua_State* L, const char* reason) {
@@ -4690,14 +4603,7 @@ static void CleanupHooksOnOwner(lua_State* L, const char* reason, bool releaseEn
 
     bool haveInfo = g_stateRegistry.GetByPointer(L, info);
 
-    if (haveInfo && info.debug_status == 1) {
-        lua_Hook restore = info.debug_prev_valid ? info.debug_prev : nullptr;
-        int restoreMask = info.debug_prev_valid ? info.debug_prev_mask : 0;
-        int restoreCount = info.debug_prev_valid ? info.debug_prev_count : 0;
-        SafeLuaSetHook(L, restore, restoreMask, restoreCount, nullptr);
-    } else {
-        SafeLuaSetHook(L, nullptr, 0, 0, nullptr);
-    }
+    // Do not restore or alter debug hooks via lua_sethook; hooks disabled.
 
     if (haveInfo && info.panic_status == 1) {
         lua_CFunction restorePanic = info.panic_prev;
@@ -4823,49 +4729,14 @@ static bool ApplyDebugConfigOnOwner(lua_State* L, LuaStateInfo& info, const Debu
     }
 
     if (enabling) {
-        InstallPanicAndDebug(L, info);
-        lua_Hook prevHook = nullptr;
-        int prevMask = 0;
-        int prevCount = 0;
-        if (info.debug_status != 1) {
-            SafeLuaGetHook(L, &prevHook, &prevMask, nullptr);
-            prevCount = lua_gethookcount(L);
-        } else {
-            prevHook = info.debug_prev;
-            prevMask = info.debug_prev_mask;
-            prevCount = info.debug_prev_count;
-        }
-
-        DWORD setSeh = 0;
-        if (!SafeLuaSetHook(L, UOW_DebugHook, hookMask, hookCount, &setSeh)) {
-            result.error = "sethook-failed";
-            result.seh = setSeh;
-            return false;
-        }
-
-        g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
-            if (state.debug_status != 1) {
-                state.debug_prev = prevHook;
-                state.debug_prev_mask = prevMask;
-                state.debug_prev_count = prevCount;
-                state.debug_prev_valid = 1;
-            }
-            state.debug_status = 1;
-            state.debug_status_gen = state.gen;
-            state.debug_mode = mode;
-            state.debug_mode_gen = state.gen;
-            state.debug_mask = static_cast<uint32_t>(hookMask);
-            state.debug_count = static_cast<uint32_t>(hookCount);
-            state.flags |= STATE_FLAG_DEBUG_OK;
-            state.flags &= ~STATE_FLAG_DEBUG_MISS;
-        }, &info);
-
-        result.applied = true;
-        result.enabled = true;
-        result.mode = mode;
-        result.mask = static_cast<uint32_t>(hookMask);
-        result.count = static_cast<uint32_t>(hookCount);
-        return true;
+        // Debug hooks are disabled; report as not applied
+        result.applied = false;
+        result.enabled = false;
+        result.mode = DEBUG_MODE_OFF;
+        result.mask = 0;
+        result.count = 0;
+        result.error = "hooks-unavailable";
+        return false;
     }
 
     lua_Hook restoreHook = nullptr;
@@ -4877,12 +4748,7 @@ static bool ApplyDebugConfigOnOwner(lua_State* L, LuaStateInfo& info, const Debu
         restoreCount = info.debug_prev_count;
     }
 
-    DWORD setSeh = 0;
-    if (!SafeLuaSetHook(L, restoreHook, restoreMask, restoreCount, &setSeh)) {
-        result.error = "restore-failed";
-        result.seh = setSeh;
-        return false;
-    }
+    // When disabling, do not touch lua_sethook. Just update state below.
 
     g_stateRegistry.UpdateByPointer(L, [&](LuaStateInfo& state) {
         state.debug_status = 0;
@@ -6372,16 +6238,9 @@ static bool QueryClientDebugPreference(lua_State* L, LuaStateInfo& info, bool* o
 }
 
 static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info) {
-    if (!L)
-        return;
-
-    LuaStackGuard stackGuard(L, &info);
-    g_stateRegistry.UpdateByPointer(L, [](LuaStateInfo&) {}, &info);
-
-    if (!(info.flags & STATE_FLAG_VALID))
-        return;
-
-    MaybeAdoptOwnerThread(L, info);
+    // Disabled: avoid touching Lua C API (panic/debug hooks)
+    (void)L; (void)info;
+    return;
 
     if (!IsOwnerThread(info)) {
         uint64_t now = GetTickCount64();
@@ -6670,49 +6529,11 @@ static int CallClientRegister(void* ctx, lua_CFunction fn, const char* safeName,
     return rc;
 }
 
-static bool TryLuaSetGlobal(lua_State* L, lua_CFunction fn, const char* name, DWORD* outSeh) noexcept {
-    if (!L || !fn || !name || name[0] == '\0')
-        return false;
-    const DWORD tid = GetCurrentThreadId();
-    int topBefore = 0;
-    DWORD topSeh = 0;
-    bool topOk = SafeLuaGetTop(L, &topBefore, &topSeh);
-    LuaStackGuard guard(L);
-    DWORD pushSeh = 0;
-    bool pushOk = SafeLuaPushCClosure(L, fn, 0, &pushSeh);
-    DWORD setSeh = 0;
-    bool setOk = pushOk && SafeLuaSetGlobal(L, name, &setSeh);
-    if (!(pushOk && setOk)) {
-        char fnModule[64] = {};
-        void* fnModuleBase = nullptr;
-        DWORD fnProtect = 0;
-        DescribeAddressForLog(reinterpret_cast<const void*>(fn), fnModule, ARRAYSIZE(fnModule), &fnModuleBase, &fnProtect);
-        char stateModule[64] = {};
-        void* stateModuleBase = nullptr;
-        DWORD stateProtect = 0;
-        DescribeAddressForLog(L, stateModule, ARRAYSIZE(stateModule), &stateModuleBase, &stateProtect);
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register lua_setglobal failed name=%s tid=%lu L=%p Lmod=%s Lprot=0x%08lX fn=%p fnMod=%s fnProt=0x%08lX okTop=%d top=%d topSeh=0x%08lX pushOk=%d pushSeh=0x%08lX setOk=%d setSeh=0x%08lX",
-                  name,
-                  static_cast<unsigned long>(tid),
-                  L,
-                  stateModule[0] ? stateModule : "<unk>",
-                  static_cast<unsigned long>(stateProtect),
-                  reinterpret_cast<void*>(fn),
-                  fnModule[0] ? fnModule : "<unk>",
-                  static_cast<unsigned long>(fnProtect),
-                  topOk ? 1 : 0,
-                  topOk ? topBefore : 0,
-                  static_cast<unsigned long>(topSeh),
-                  pushOk ? 1 : 0,
-                  static_cast<unsigned long>(pushSeh),
-                  setOk ? 1 : 0,
-                  static_cast<unsigned long>(setSeh));
-    }
+static bool TryLuaSetGlobal(lua_State* /*L*/, lua_CFunction /*fn*/, const char* /*name*/, DWORD* outSeh) noexcept {
     if (outSeh)
-        *outSeh = pushOk ? setSeh : pushSeh;
-    return pushOk && setOk;
+        *outSeh = 0;
+    // Disabled: avoid mixing Lua runtimes/ABI. Use the client's RegisterLuaFunction only.
+    return false;
 }
 
 static WORD HelperFlagForName(const char* name) {
@@ -6895,51 +6716,8 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
                   reason);
     }
 
-    bool fallbackOk = false;
-    DWORD fallbackSeh = 0;
-    if (!clientOk) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register fallback name=%s",
-                  safeName);
-
-        int topBefore = 0;
-        bool topCaptured = SafeLuaGetTop(state, latest, &topBefore, &fallbackSeh);
-        if (!topCaptured) {
-            Log::Logf(Log::Level::Warn,
-                      Log::Category::Hooks,
-                      "[HOOKS] helper-register fallback-abort name=%s reason=gettop-failed seh=0x%08lX",
-                      safeName,
-                      static_cast<unsigned long>(fallbackSeh));
-        } else if (!name || name[0] == '\0') {
-            Log::Logf(Log::Level::Warn,
-                      Log::Category::Hooks,
-                      "[HOOKS] helper-register fallback-abort name=%s reason=name-empty",
-                      safeName);
-        } else {
-            fallbackOk = TryLuaSetGlobal(state, fn, name, &fallbackSeh);
-        }
-
-        if (topCaptured) {
-            DWORD restoreSeh = 0;
-            if (!SafeLuaSetTop(state, latest, topBefore, &restoreSeh)) {
-                Log::Logf(Log::Level::Warn,
-                          Log::Category::Hooks,
-                          "[HOOKS] helper-register fallback-restore name=%s seh=0x%08lX",
-                          safeName,
-                          static_cast<unsigned long>(restoreSeh));
-            }
-        }
-
-        Log::Logf(fallbackOk ? Log::Level::Info : Log::Level::Warn,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register fallback-result name=%s ok=%d seh=0x%08lX",
-                  safeName,
-                  fallbackOk ? 1 : 0,
-                  static_cast<unsigned long>(fallbackSeh));
-    }
-
-    bool success = clientOk || fallbackOk;
+    // No direct Lua C API fallback; rely solely on client registrar.
+    bool success = clientOk;
     if (success) {
         uint64_t now = GetTickCount64();
         auto updater = [&](LuaStateInfo& stateRef) {
@@ -6961,7 +6739,7 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
               success ? "done" : "failed",
               safeName,
               clientOk ? 1 : 0,
-              fallbackOk ? 1 : 0,
+              0,
               latest.helper_flags);
 
     if (success && name) {
@@ -7090,36 +6868,7 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
 
     bool installed = allowFlagless ? false : ((latest.helper_flags & flag) != 0);
 
-    if (!installed) {
-        Log::Logf(Log::Level::Info,
-                  Log::Category::Hooks,
-                  "[HOOKS] helper-register pending name=%s; attempting inline fallback",
-                  safeName);
-        if (DoRegisterHelperOnScriptThread(scriptState,
-                                           L,
-                                           info,
-                                           name,
-                                           fn,
-                                           generation,
-                                           /*allowForeignThread*/ true)) {
-            LuaStateInfo refreshed{};
-            if (g_stateRegistry.GetByPointer(L, refreshed) ||
-                (scriptState != L && g_stateRegistry.GetByPointer(scriptState, refreshed)))
-                latest = refreshed;
-            installed = allowFlagless ? true : ((latest.helper_flags & flag) != 0);
-            Log::Logf(installed ? Log::Level::Info : Log::Level::Warn,
-                      Log::Category::Hooks,
-                      "[HOOKS] helper-register inline-fallback name=%s ok=%d flags=0x%04X",
-                      safeName,
-                      installed ? 1 : 0,
-                      latest.helper_flags);
-        } else {
-            Log::Logf(Log::Level::Warn,
-                      Log::Category::Hooks,
-                      "[HOOKS] helper-register inline-fallback failed name=%s",
-                      safeName);
-        }
-    }
+    // No inline fallback; wait for client registrar success.
 
     Log::Logf(installed ? Log::Level::Info : Log::Level::Warn,
               Log::Category::Hooks,
@@ -9544,18 +9293,6 @@ uint32_t GetSehTrapCount() {
 
 
 } // namespace Engine::Lua
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
