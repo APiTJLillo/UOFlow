@@ -138,6 +138,7 @@ extern "C" {
     LUA_API int lua_setmetatable(lua_State* L, int objindex);
     LUA_API int luaL_newmetatable(lua_State* L, const char* tname);
     LUA_API void luaL_getmetatable(lua_State* L, const char* tname);
+    LUA_API int luaL_error(lua_State* L, const char* fmt, ...);
     LUA_API void lua_settable(lua_State* L, int idx);
     LUA_API int luaL_loadstring(lua_State* L, const char* str);
     LUA_API void lua_call(lua_State* L, int nargs, int nresults);
@@ -993,6 +994,14 @@ static bool SafeLuaGetTop(lua_State* L, const LuaStateInfo& info, int* outTop, D
 static bool SafeLuaGetStack(lua_State* L, int level, lua_Debug* ar, DWORD* outSeh = nullptr) noexcept;
 static bool SafeLuaGetInfo(lua_State* L, const char* what, lua_Debug* ar, DWORD* outSeh = nullptr) noexcept;
 static bool SafeLuaGetGlobalType(lua_State* L, const char* name, int* outType, const char** outTypeName, DWORD* outSeh) noexcept;
+static bool SafeLuaSetGlobal(lua_State* L, const char* name, DWORD* outSeh = nullptr) noexcept;
+static bool TryLuaSetGlobal(lua_State* L, lua_CFunction fn, const char* name, DWORD* outSeh) noexcept;
+static bool SafeLuaCreateTable(lua_State* L, int narr, int nrec, DWORD* outSeh) noexcept;
+static bool SafeLuaPushString(lua_State* L, const char* str, DWORD* outSeh) noexcept;
+static bool SafeLuaPushCClosure(lua_State* L, lua_CFunction fn, int n, DWORD* outSeh) noexcept;
+static bool SafeLuaSetTable(lua_State* L, int idx, DWORD* outSeh) noexcept;
+static bool SafeLuaPushValue(lua_State* L, int idx, DWORD* outSeh) noexcept;
+static bool SafeLuaSetMetatable(lua_State* L, int idx, DWORD* outSeh) noexcept;
 static bool TryInstallPanicHook(lua_State* L, lua_CFunction* outPrev, DWORD* outSeh = nullptr) noexcept;
 static bool ClearHookSentinel(lua_State* L, DWORD* outSeh) noexcept;
 
@@ -1496,8 +1505,13 @@ static constexpr const char* kHelperGetPacingName = "GetPacing";
 static constexpr const char* kHelperSetPacingName = "uow_set_pacing";
 static constexpr const char* kHelperSetInflightName = "uow_set_inflight";
 static constexpr const char* kHelperGetWalkMetricsName = "GetWalkMetrics";
-static constexpr const char* kHelperStatusFlagsName = "UOW_StatusFlags";
-static constexpr const char* kHelperStatusFlagsAliasName = "UOW_StatusFlagsEx";
+static constexpr const char* kHelperStatusFlagsName = "UOW.Status.flags";
+static constexpr const char* kHelperStatusFlagsExName = "UOW.Status.flagsEx";
+static constexpr const char* kHelperStatusFlagsLegacyName = "UOW_StatusFlags";
+static constexpr const char* kHelperStatusFlagsLegacyExName = "UOW_StatusFlagsEx";
+static constexpr const char* kUOWNamespaceName = "UOW";
+static constexpr const char* kUOWStatusNamespaceName = "Status";
+static constexpr const char* kUOWReadonlyMetatable = "UOW.__readonly";
 static constexpr const char* kHelperTestRetName = "UOW_TestRet";
 static constexpr const char* kHelperDumpName = "uow_dump_walk_env";
 static constexpr const char* kHelperInspectName = "uow_lua_inspect";
@@ -1509,10 +1523,8 @@ static constexpr const char* kHelperDebugPingName = "uow_debug_ping";
 static char g_hookSentinelKey = 0;
 static char kUOW_StatusFlagsKey = 0;
 static char kUOW_StatusFlagsExKey = 0;
-static constexpr uint32_t kVerifyStatusFlagsBit = 1u << 0;
-static constexpr uint32_t kVerifyStatusFlagsExBit = 1u << 1;
-static std::atomic<int> g_statusShimWatchdogBudget{0};
-static std::atomic<uint32_t> g_statusShimVerifyMask{0};
+
+
 
 static void LogLuaBind(const char* fmt, ...);
 static void LogLuaState(const char* fmt, ...);
@@ -1850,6 +1862,50 @@ static void LogGlobalFn(lua_State* L, const char* name) {
     }
 }
 
+static void LogStatusNamespaceFn(lua_State* L, const char* fieldName) {
+    if (!L || !fieldName)
+        return;
+    DWORD seh = 0;
+    bool ok = sp::seh_probe([&]() {
+        int top = lua_gettop(L);
+        lua_getglobal(L, kUOWNamespaceName);
+        if (lua_type(L, -1) == LUA_TTABLE) {
+            lua_getfield(L, -1, kUOWStatusNamespaceName);
+            if (lua_type(L, -1) == LUA_TTABLE) {
+                lua_getfield(L, -1, fieldName);
+                int type = lua_type(L, -1);
+                const char* typeName = lua_typename(L, type);
+                int isCFunc = (type == LUA_TFUNCTION) ? lua_iscfunction(L, -1) : 0;
+                const void* ptr = lua_topointer(L, -1);
+                const char* src = "";
+                if (type == LUA_TFUNCTION) {
+                    lua_Debug ar{};
+                    lua_pushvalue(L, -1);
+                    if (lua_getinfo(L, ">S", &ar) != 0)
+                        src = ar.short_src;
+                    lua_pop(L, 1);
+                }
+                Log::Logf(Log::Level::Info,
+                          Log::Category::Core,
+                          "[UOW][verify] UOW.Status.%s type=%s iscfunc=%d ptr=%p src=%s",
+                          fieldName,
+                          typeName ? typeName : "<unknown>",
+                          isCFunc,
+                          ptr,
+                          src ? src : "");
+            }
+        }
+        lua_settop(L, top);
+    }, &seh);
+    if (!ok) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[UOW][verify] UOW.Status.%s probe-seh=0x%08lX",
+                  fieldName ? fieldName : "<null>",
+                  static_cast<unsigned long>(seh));
+    }
+}
+
 static void StoreRegistryCFunction(lua_State* L, void* key, lua_CFunction fn) {
     if (!L || !key || !fn)
         return;
@@ -1860,92 +1916,115 @@ static void StoreRegistryCFunction(lua_State* L, void* key, lua_CFunction fn) {
     lua_settop(L, top);
 }
 
-static void RequestStatusVerify(uint32_t bits) {
-    if (bits == 0)
-        return;
-    g_statusShimVerifyMask.fetch_or(bits, std::memory_order_relaxed);
-}
+static int Lua_UOW_ReadOnlyNewIndex(lua_State* L);
+static void MakeReadonlyTable(lua_State* L, int idx);
+static void UpdateStatusNamespace(lua_State* L);
 
 static void StoreRealStatusFlags(lua_State* L) {
     StoreRegistryCFunction(L, &kUOW_StatusFlagsKey, Lua_UOWStatusFlags);
-    RequestStatusVerify(kVerifyStatusFlagsBit);
+    UpdateStatusNamespace(L);
 }
 
 static void StoreRealStatusFlagsEx(lua_State* L) {
     StoreRegistryCFunction(L, &kUOW_StatusFlagsExKey, Lua_UOWStatusFlags);
-    RequestStatusVerify(kVerifyStatusFlagsBit | kVerifyStatusFlagsExBit);
+    UpdateStatusNamespace(L);
 }
 
-static int ForwardRegistryCall(lua_State* L, void* key, lua_CFunction fallback, const char* name) {
-    if (!L)
-        return 0;
-    lua_pushlightuserdata(L, key);
-    lua_rawget(L, LUA_REGISTRYINDEX);
-    int type = lua_type(L, -1);
-    bool isCFunc = (type == LUA_TFUNCTION) && lua_iscfunction(L, -1);
-    if (!isCFunc) {
-        lua_pop(L, 1);
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[UOW][shim] %s missing registry target (fallback to real)",
-                  name ? name : "<unknown>");
-        return fallback ? fallback(L) : 0;
-    }
-    lua_insert(L, 1);
-    int nargs = lua_gettop(L) - 1;
-    lua_call(L, nargs, LUA_MULTRET);
-    int results = lua_gettop(L);
-    return results;
-}
-
-static int Lua_UOW_StatusFlagsShim(lua_State* L) {
-    return ForwardRegistryCall(L, &kUOW_StatusFlagsKey, Lua_UOWStatusFlags, kHelperStatusFlagsName);
-}
-
-static int Lua_UOW_StatusFlagsExShim(lua_State* L) {
-    return ForwardRegistryCall(L, &kUOW_StatusFlagsExKey, Lua_UOWStatusFlags, kHelperStatusFlagsAliasName);
-}
-
-static uint32_t VerifyBitsForName(const char* name) {
-    if (!name)
-        return 0;
-    if (_stricmp(name, kHelperStatusFlagsName) == 0)
-        return kVerifyStatusFlagsBit;
-    if (_stricmp(name, kHelperStatusFlagsAliasName) == 0)
-        return kVerifyStatusFlagsExBit;
+static int Lua_UOW_ReadOnlyNewIndex(lua_State* L) {
+    const char* key = lua_tolstring(L, 2, nullptr);
+    const int valueType = lua_type(L, 3);
+    const char* typeName = lua_typename(L, valueType);
+    const void* ptr = lua_topointer(L, 3);
+    Log::Logf(Log::Level::Warn,
+              Log::Category::Core,
+              "[UOW] attempt to mutate UOW namespace key=%s type=%s ptr=%p (ignored)",
+              key ? key : "?",
+              typeName ? typeName : "<unknown>",
+              ptr);
     return 0;
 }
 
-static void ReassertBinding(lua_State* L, const char* name, lua_CFunction shim, bool logIfStable = false) {
-    if (!L || !name || !shim)
+static int LuaAbsIndex(lua_State* L, int idx) noexcept {
+    if (!L)
+        return idx;
+    if (idx >= 0 || idx <= LUA_REGISTRYINDEX)
+        return idx;
+    int top = 0;
+    if (SafeLuaGetTop(L, &top, nullptr))
+        return top + idx + 1;
+    return idx;
+}
+
+static void MakeReadonlyTable(lua_State* L, int idx) {
+    if (!L)
         return;
+    int absIdx = LuaAbsIndex(L, idx);
     DWORD seh = 0;
-    bool probeOk = sp::seh_probe([&]() {
-        int top = lua_gettop(L);
-        lua_getglobal(L, name);
-        bool ok = (lua_type(L, -1) == LUA_TFUNCTION) && lua_iscfunction(L, -1) && (lua_tocfunction(L, -1) == shim);
+    if (!SafeLuaCreateTable(L, 0, 1, &seh))
+        return;
+    int mtIndex = lua_gettop(L);
+    if (!SafeLuaPushString(L, "__newindex", &seh) ||
+        !SafeLuaPushCClosure(L, Lua_UOW_ReadOnlyNewIndex, 0, &seh) ||
+        !SafeLuaSetTable(L, mtIndex, &seh)) {
         lua_pop(L, 1);
-        if (!ok) {
-            Log::Logf(Log::Level::Info,
-                      Log::Category::Core,
-                      "[UOW] Rebinding global %s to shim",
-                      name);
-            lua_pushcfunction(L, shim);
-            lua_setglobal(L, name);
-            RequestStatusVerify(VerifyBitsForName(name));
-        } else if (logIfStable) {
-            RequestStatusVerify(VerifyBitsForName(name));
-        }
-        lua_settop(L, top);
-    }, &seh);
-    if (!probeOk) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[UOW] ReassertBinding seh name=%s code=0x%08lX",
-                  name ? name : "<null>",
-                  static_cast<unsigned long>(seh));
-        RequestStatusVerify(VerifyBitsForName(name));
+        return;
     }
+    SafeLuaSetMetatable(L, absIdx, &seh);
+}
+
+static void UpdateStatusNamespace(lua_State* L) {
+    if (!L)
+        return;
+    LuaStackGuard guard(L);
+    DWORD seh = 0;
+    bool createdUOW = false;
+    bool createdStatus = false;
+
+    lua_getglobal(L, kUOWNamespaceName);
+    if (lua_type(L, -1) != LUA_TTABLE) {
+        lua_pop(L, 1);
+        if (!SafeLuaCreateTable(L, 0, 1, &seh))
+            return;
+        createdUOW = true;
+        SafeLuaPushValue(L, -1, &seh);
+        SafeLuaSetGlobal(L, kUOWNamespaceName, &seh);
+    }
+    int uowIdx = lua_gettop(L);
+
+    lua_getfield(L, uowIdx, kUOWStatusNamespaceName);
+    if (lua_type(L, -1) != LUA_TTABLE) {
+        lua_pop(L, 1);
+        if (!SafeLuaCreateTable(L, 0, 4, &seh)) {
+            lua_pop(L, 1);
+            return;
+        }
+        createdStatus = true;
+    }
+    int statusIdx = lua_gettop(L);
+
+    SafeLuaPushString(L, "flags", &seh);
+    SafeLuaPushCClosure(L, Lua_UOWStatusFlags, 0, &seh);
+    SafeLuaSetTable(L, statusIdx, &seh);
+
+    SafeLuaPushString(L, "flagsEx", &seh);
+    SafeLuaPushCClosure(L, Lua_UOWStatusFlags, 0, &seh);
+    SafeLuaSetTable(L, statusIdx, &seh);
+
+    MakeReadonlyTable(L, statusIdx);
+
+    if (createdStatus) {
+        SafeLuaPushString(L, kUOWStatusNamespaceName, &seh);
+        SafeLuaPushValue(L, statusIdx, &seh);
+        SafeLuaSetTable(L, uowIdx, &seh);
+    }
+
+    if (createdUOW) {
+        MakeReadonlyTable(L, uowIdx);
+        SafeLuaPushValue(L, uowIdx, &seh);
+        SafeLuaSetGlobal(L, kUOWNamespaceName, &seh);
+    }
+
+    lua_pop(L, 2);
 }
 
 static bool IsOverwriteLoggerEnabled() {
@@ -1960,7 +2039,10 @@ static bool IsOverwriteLoggerEnabled() {
 
 static int GlobalNewIndexLogger(lua_State* L) {
     const char* key = lua_tolstring(L, 2, nullptr);
-    if (key && (!std::strcmp(key, kHelperStatusFlagsName) || !std::strcmp(key, kHelperStatusFlagsAliasName))) {
+    if (key && (!std::strcmp(key, kHelperStatusFlagsLegacyName) ||
+                !std::strcmp(key, kHelperStatusFlagsLegacyExName) ||
+                !std::strcmp(key, kHelperStatusFlagsName) ||
+                !std::strcmp(key, kHelperStatusFlagsExName))) {
         bool isCF = lua_iscfunction(L, 3);
         const void* ptr = lua_topointer(L, 3);
         const char* src = "";
@@ -3375,6 +3457,21 @@ static bool SafeLuaSetTop(lua_State* L, int idx, DWORD* outSeh) noexcept {
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         NoteGuardFailure(Engine::Lua::LuaGuardFailure::Seh);
+        if (outSeh)
+            *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaSetGlobal(lua_State* L, const char* name, DWORD* outSeh) noexcept {
+    if (!L || !name || name[0] == '\0')
+        return false;
+    __try {
+        lua_setglobal(L, name);
+        if (outSeh)
+            *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
         if (outSeh)
             *outSeh = GetExceptionCode();
         return false;
@@ -6389,26 +6486,11 @@ static bool TryLuaSetGlobal(lua_State* L, lua_CFunction fn, const char* name, DW
     int topBefore = 0;
     DWORD topSeh = 0;
     bool topOk = SafeLuaGetTop(L, &topBefore, &topSeh);
+    LuaStackGuard guard(L);
     DWORD pushSeh = 0;
+    bool pushOk = SafeLuaPushCClosure(L, fn, 0, &pushSeh);
     DWORD setSeh = 0;
-    bool pushOk = false;
-    bool setOk = false;
-    __try {
-        lua_pushcfunction(L, fn);
-        pushOk = true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        pushSeh = GetExceptionCode();
-        pushOk = false;
-    }
-    if (pushOk) {
-        __try {
-            lua_setglobal(L, name);
-            setOk = true;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            setSeh = GetExceptionCode();
-            setOk = false;
-        }
-    }
+    bool setOk = pushOk && SafeLuaSetGlobal(L, name, &setSeh);
     if (!(pushOk && setOk)) {
         char fnModule[64] = {};
         void* fnModuleBase = nullptr;
@@ -6430,7 +6512,7 @@ static bool TryLuaSetGlobal(lua_State* L, lua_CFunction fn, const char* name, DW
                   fnModule[0] ? fnModule : "<unk>",
                   static_cast<unsigned long>(fnProtect),
                   topOk ? 1 : 0,
-                  topBefore,
+                  topOk ? topBefore : 0,
                   static_cast<unsigned long>(topSeh),
                   pushOk ? 1 : 0,
                   static_cast<unsigned long>(pushSeh),
@@ -6457,7 +6539,10 @@ static WORD HelperFlagForName(const char* name) {
         return HELPER_FLAG_SET_INFLIGHT;
     if (_stricmp(name, kHelperGetWalkMetricsName) == 0)
         return HELPER_FLAG_GET_METRICS;
-    if (_stricmp(name, kHelperStatusFlagsName) == 0 || _stricmp(name, kHelperStatusFlagsAliasName) == 0)
+    if (_stricmp(name, kHelperStatusFlagsName) == 0 ||
+        _stricmp(name, kHelperStatusFlagsExName) == 0 ||
+        _stricmp(name, kHelperStatusFlagsLegacyName) == 0 ||
+        _stricmp(name, kHelperStatusFlagsLegacyExName) == 0)
         return HELPER_FLAG_STATUS_FLAGS;
     if (_stricmp(name, kHelperTestRetName) == 0)
         return HELPER_FLAG_STATUS_FLAGS;
@@ -6601,8 +6686,19 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
     bool clientOk = false;
     int clientRc = 0;
     DWORD clientSeh = 0;
+    const bool statusNamespaceHelper = (flag == HELPER_FLAG_STATUS_FLAGS);
 
-    if (g_clientRegister && ctx) {
+    if (statusNamespaceHelper) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Hooks,
+                  "[HOOKS] helper-register namespace-only name=%s ctx=%p",
+                  safeName,
+                  ctx);
+        clientAttempted = false;
+        clientOk = true;
+        clientRc = 1;
+        clientSeh = 0;
+    } else if (g_clientRegister && ctx) {
         clientAttempted = true;
         clientRc = CallClientRegister(ctx, fn, safeName, &clientSeh);
         clientOk = (clientRc != 0);
@@ -6624,7 +6720,7 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
 
     bool fallbackOk = false;
     DWORD fallbackSeh = 0;
-    if (!clientOk) {
+    if (!clientOk && !statusNamespaceHelper) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Hooks,
                   "[HOOKS] helper-register fallback name=%s",
@@ -6691,19 +6787,14 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
               fallbackOk ? 1 : 0,
               latest.helper_flags);
 
-    if (success && name) {
-        if (_stricmp(name, kHelperStatusFlagsName) == 0) {
+    if (success) {
+        if (statusNamespaceHelper) {
             StoreRealStatusFlags(state);
-            lua_pushcfunction(state, Lua_UOW_StatusFlagsShim);
-            lua_setglobal(state, kHelperStatusFlagsName);
-            LogGlobalFn(state, kHelperStatusFlagsName);
-        } else if (_stricmp(name, kHelperStatusFlagsAliasName) == 0) {
             StoreRealStatusFlagsEx(state);
-            lua_pushcfunction(state, Lua_UOW_StatusFlagsExShim);
-            lua_setglobal(state, kHelperStatusFlagsAliasName);
-            LogGlobalFn(state, kHelperStatusFlagsAliasName);
-            LogGlobalFn(state, kHelperStatusFlagsName);
-        } else if (_stricmp(name, kHelperTestRetName) == 0) {
+            InstallGlobalOverwriteLogger(state);
+            LogStatusNamespaceFn(state, "flags");
+            LogStatusNamespaceFn(state, "flagsEx");
+        } else if (name && _stricmp(name, kHelperTestRetName) == 0) {
             LogGlobalFn(state, kHelperTestRetName);
         }
     }
@@ -6900,6 +6991,8 @@ static bool BindHelpersOnThread(lua_State* L,
               sbReady ? 1 : 0,
               sbPivot ? 1 : 0,
               sbFallback ? 1 : 0);
+
+    UpdateStatusNamespace(L);
 
     MaybeAdoptOwnerThread(L, info);
 
@@ -7209,7 +7302,6 @@ static bool BindHelpersOnThread(lua_State* L,
         bool setInflightOk = logStep(kHelperSetInflightName, [&]() { return RegisterHelper(L, info, kHelperSetInflightName, Lua_SetInflight, generation); });
         bool metricsOk = logStep(kHelperGetWalkMetricsName, [&]() { return RegisterHelper(L, info, kHelperGetWalkMetricsName, Lua_GetWalkMetrics, generation); });
         bool statusFlagsOk = logStep(kHelperStatusFlagsName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsName, Lua_UOWStatusFlags, generation); });
-        bool statusFlagsExOk = logStep(kHelperStatusFlagsAliasName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsAliasName, Lua_UOWStatusFlags, generation); });
         bool testRetOk = logStep(kHelperTestRetName, [&]() { return RegisterHelper(L, info, kHelperTestRetName, Lua_UOWTestRet, generation); });
         bool testRetAttempted = true;
 
@@ -7263,7 +7355,6 @@ static bool BindHelpersOnThread(lua_State* L,
             recordMetric(true, setInflightOk);
             recordMetric(true, metricsOk);
             recordMetric(true, statusFlagsOk);
-            recordMetric(true, statusFlagsExOk);
             recordMetric(testRetAttempted, testRetOk);
             recordMetric(dumpAttempted, dumpOk);
             recordMetric(inspectAttempted, inspectOk);
@@ -7276,7 +7367,7 @@ static bool BindHelpersOnThread(lua_State* L,
             metrics->hookFailure = failureCount;
         }
 
-        bool coreOk = walkOk && walkMoveOk && pacingOk && setPacingOk && setInflightOk && metricsOk && statusFlagsOk && statusFlagsExOk && testRetOk;
+        bool coreOk = walkOk && walkMoveOk && pacingOk && setPacingOk && setInflightOk && metricsOk && statusFlagsOk && testRetOk;
         bool debugPackOk = !wantsDebugPack || (dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk && debugPingOk);
         bool allOk = coreOk && debugPackOk;
         if (allOk) {
@@ -7302,9 +7393,7 @@ static bool BindHelpersOnThread(lua_State* L,
                       static_cast<unsigned long long>(generation),
                       static_cast<unsigned long>(GetCurrentThreadId()));
             InstallGlobalOverwriteLogger(L);
-            ReassertBinding(L, kHelperStatusFlagsName, Lua_UOW_StatusFlagsShim, true);
-            ReassertBinding(L, kHelperStatusFlagsAliasName, Lua_UOW_StatusFlagsExShim, true);
-            g_statusShimWatchdogBudget.store(3, std::memory_order_relaxed);
+            UpdateStatusNamespace(L);
             g_helpersInstalledAny.store(true, std::memory_order_release);
             g_lastHelperOwnerThread.store(static_cast<DWORD>(info.owner_tid), std::memory_order_relaxed);
             Core::StartupSummary::NotifyHelpersReady();
@@ -7325,7 +7414,6 @@ static bool BindHelpersOnThread(lua_State* L,
             appendMissing(true, setInflightOk, kHelperSetInflightName);
             appendMissing(true, metricsOk, kHelperGetWalkMetricsName);
             appendMissing(true, statusFlagsOk, kHelperStatusFlagsName);
-            appendMissing(true, statusFlagsExOk, kHelperStatusFlagsAliasName);
             appendMissing(testRetAttempted, testRetOk, kHelperTestRetName);
             appendMissing(dumpAttempted, dumpOk, kHelperDumpName);
             appendMissing(inspectAttempted, inspectOk, kHelperInspectName);
@@ -9175,24 +9263,8 @@ void ScheduleWalkBinding() {
 void ProcessLuaQueue() {
     lua_State* L = ResolveLuaState();
     EnsureScriptThread(GetCurrentThreadId(), L);
-    if (L) {
-        int remaining = g_statusShimWatchdogBudget.load(std::memory_order_relaxed);
-        while (remaining > 0) {
-            if (g_statusShimWatchdogBudget.compare_exchange_weak(remaining,
-                                                                 remaining - 1,
-                                                                 std::memory_order_acq_rel,
-                                                                 std::memory_order_relaxed)) {
-                ReassertBinding(L, kHelperStatusFlagsName, Lua_UOW_StatusFlagsShim);
-                ReassertBinding(L, kHelperStatusFlagsAliasName, Lua_UOW_StatusFlagsExShim);
-                break;
-            }
-        }
-        uint32_t verifyMask = g_statusShimVerifyMask.exchange(0u, std::memory_order_acq_rel);
-        if (verifyMask & kVerifyStatusFlagsBit)
-            LogGlobalFn(L, kHelperStatusFlagsName);
-        if (verifyMask & kVerifyStatusFlagsExBit)
-            LogGlobalFn(L, kHelperStatusFlagsAliasName);
-    }
+    if (L)
+        UpdateStatusNamespace(L);
     ProcessPendingLuaTasks(L);
     MaybeProcessHelperRetryQueue();
     MaybeRunMaintenance();

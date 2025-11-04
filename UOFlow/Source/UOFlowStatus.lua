@@ -29,11 +29,46 @@ local BULLET = "+"
 local poll -- forward declaration
 local updateRegistered = false
 
-if type(UOW_StatusFlags) == "function" and type(UOW_StatusFlagsEx) ~= "function" then
-  UOW_StatusFlagsEx = UOW_StatusFlags
+local debug_print
+
+local function is_cfunc(fn)
+  if type(fn) ~= "function" then
+    return false
+  end
+  return not pcall(string.dump, fn)
 end
 
-local function debug_print(...)
+local statusRebindRequested = false
+
+local function ensureStatusHelpers()
+  local status = type(UOW) == "table" and type(UOW.Status) == "table" and UOW.Status or nil
+  local function status_ready(tbl)
+    return type(tbl) == "table" and is_cfunc(tbl.flags or tbl.flagsEx)
+  end
+
+  if status_ready(status) then
+    return true
+  end
+
+  if not statusRebindRequested and type(uow_lua_rebind_all) == "function" then
+    statusRebindRequested = true
+    safe_call(uow_lua_rebind_all)
+    status = type(UOW) == "table" and type(UOW.Status) == "table" and UOW.Status or nil
+    if status_ready(status) then
+      if debug_print then
+        debug_print("UOFlowStatus: rebound status helpers via UOW.Status.*")
+      end
+      return true
+    end
+    if debug_print then
+      debug_print("UOFlowStatus: unable to resolve UOW.Status helpers after rebind")
+    end
+  end
+
+  return false
+end
+
+debug_print = function(...)
   if type(Debug) ~= "table" or type(Debug.Print) ~= "function" then
     return
   end
@@ -168,15 +203,17 @@ end
 
 local function status_flags()
   local function resolve_fns()
-    local primary
-    local fallback
-    if type(UOW_StatusFlagsEx) == "function" then
-      primary = UOW_StatusFlagsEx
-      if type(UOW_StatusFlags) == "function" then
-        fallback = UOW_StatusFlags
-      end
-    elseif type(UOW_StatusFlags) == "function" then
-      primary = UOW_StatusFlags
+    local status = type(UOW) == "table" and type(UOW.Status) == "table" and UOW.Status or nil
+    if type(status) ~= "table" then
+      return nil, nil
+    end
+    local primary = type(status.flagsEx) == "function" and status.flagsEx or nil
+    local fallback = type(status.flags) == "function" and status.flags or nil
+    if not primary then
+      primary, fallback = fallback, nil
+    end
+    if primary == fallback then
+      fallback = nil
     end
     return primary, fallback
   end
@@ -236,6 +273,8 @@ local function status_flags()
 end
 
 local function doPoll()
+  ensureStatusHelpers()
+
   local m = safe_call(GetWalkMetrics) or {}
   local flags = status_flags()
   debug_print(string.format(
