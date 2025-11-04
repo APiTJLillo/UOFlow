@@ -1502,29 +1502,21 @@ static void MaybeEmitHelperSummary(uint64_t now, bool force = false) {
 static constexpr const char* kHelperWalkName = "uow_walk";
 static constexpr const char* kHelperWalkMoveName = "WalkMove";
 static constexpr const char* kHelperGetPacingName = "GetPacing";
-static constexpr const char* kHelperSetPacingName = "uow_set_pacing";
-static constexpr const char* kHelperSetInflightName = "uow_set_inflight";
-static constexpr const char* kHelperGetWalkMetricsName = "GetWalkMetrics";
-static constexpr const char* kHelperStatusFlagsName = "UOW_StatusFlags";
-static constexpr const char* kHelperStatusFlagsAliasName = "UOW_StatusFlagsEx";
-static constexpr const char* kHelperStatusFlagsNamespaceName = "UOW.Status.flags";
-static constexpr const char* kHelperStatusFlagsNamespaceExName = "UOW.Status.flagsEx";
-static constexpr const char* kUOWStatusFlagsFieldName = "flags";
-static constexpr const char* kUOWStatusFlagsExFieldName = "flagsEx";
-static constexpr const char* kUOWNamespaceName = "UOW";
-static constexpr const char* kUOWStatusNamespaceName = "Status";
-static constexpr const char* kUOWReadonlyMetatable = "UOW.__readonly";
+static constexpr const char* kHelperSetPacingName = "UOW.Walk.set_pacing";
+static constexpr const char* kHelperSetInflightName = "UOW.Walk.set_inflight";
+static constexpr const char* kHelperGetWalkMetricsName = "UOW.Walk.get_metrics";
+static constexpr const char* kHelperStatusFlagsName = "UOW.Status.flags";
+static constexpr const char* kHelperStatusVersionName = "UOW.Status.version";
+static constexpr lua_Integer kUOWStatusVersionValue = 20251103;
 static constexpr const char* kHelperTestRetName = "UOW_TestRet";
 static constexpr const char* kHelperDumpName = "uow_dump_walk_env";
 static constexpr const char* kHelperInspectName = "uow_lua_inspect";
 static constexpr const char* kHelperRebindName = "uow_lua_rebind_all";
 static constexpr const char* kHelperSelfTestName = "uow_selftest";
 static constexpr const char* kHelperDebugName = "uow_debug";
-static constexpr const char* kHelperDebugStatusName = "uow_debug_status";
-static constexpr const char* kHelperDebugPingName = "uow_debug_ping";
+static constexpr const char* kHelperDebugStatusName = "UOW.Debug.status";
+static constexpr const char* kHelperDebugPingName = "UOW.Debug.ping";
 static char g_hookSentinelKey = 0;
-static char kUOW_StatusFlagsKey = 0;
-static char kUOW_StatusFlagsExKey = 0;
 
 
 
@@ -1558,6 +1550,23 @@ static std::atomic<uint32_t> g_guardFailOwner{0};
 static std::atomic<uint32_t> g_guardFailRead{0};
 static std::atomic<uint32_t> g_guardFailSeh{0};
 static std::atomic<uint32_t> g_guardFailPlausible{0};
+
+struct UowLuaCtx {
+    lua_State* L = nullptr;
+    uint32_t gen = 0;
+    DWORD scriptTid = 0;
+    bool scheduled = false;
+};
+
+static UowLuaCtx g_uowLua;
+
+static inline bool UowCtxMatches(lua_State* L, uint32_t gen) {
+    return (g_uowLua.L == L && g_uowLua.gen == gen && L != nullptr);
+}
+
+static void UowCtxClear() {
+    g_uowLua = {};
+}
 static std::atomic<uint64_t> g_guardFailLastLogTick{0};
 static std::mutex g_debugInstallMutex;
 static std::unordered_set<lua_State*> g_debugInstallInFlight;
@@ -1743,6 +1752,7 @@ static void LogLuaStateSnapshot(lua_State* L) {
 
 static void NoteDestabilization(uint64_t tick, const char* reason = nullptr, const char* detail = nullptr) {
     uint64_t previous = g_lastDestabilizedTick.exchange(tick, std::memory_order_acq_rel);
+    UOW_OnDestabilized();
     if (DebugInstrumentationEnabled()) {
         lua_State* canonical = g_canonicalState.load(std::memory_order_acquire);
         uint64_t readyTick = g_lastCanonicalReadyTick.load(std::memory_order_acquire);
@@ -1864,105 +1874,6 @@ static void LogGlobalFn(lua_State* L, const char* name) {
     }
 }
 
-static void LogStatusNamespaceFn(lua_State* L, const char* fieldName) {
-    if (!L || !fieldName)
-        return;
-    DWORD seh = 0;
-    bool ok = sp::seh_probe([&]() {
-        int top = lua_gettop(L);
-        lua_getglobal(L, kUOWNamespaceName);
-        if (lua_type(L, -1) == LUA_TTABLE) {
-            lua_getfield(L, -1, kUOWStatusNamespaceName);
-            if (lua_type(L, -1) == LUA_TTABLE) {
-                lua_getfield(L, -1, fieldName);
-                int type = lua_type(L, -1);
-                const char* typeName = lua_typename(L, type);
-                int isCFunc = (type == LUA_TFUNCTION) ? lua_iscfunction(L, -1) : 0;
-                const void* ptr = lua_topointer(L, -1);
-                const char* src = "";
-                if (type == LUA_TFUNCTION) {
-                    lua_Debug ar{};
-                    lua_pushvalue(L, -1);
-                    if (lua_getinfo(L, ">S", &ar) != 0)
-                        src = ar.short_src;
-                    lua_pop(L, 1);
-                }
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Core,
-                          "[UOW][verify] UOW.Status.%s type=%s iscfunc=%d ptr=%p src=%s",
-                          fieldName,
-                          typeName ? typeName : "<unknown>",
-                          isCFunc,
-                          ptr,
-                          src ? src : "");
-            }
-        }
-        lua_settop(L, top);
-    }, &seh);
-    if (!ok) {
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[UOW][verify] UOW.Status.%s probe-seh=0x%08lX",
-                  fieldName ? fieldName : "<null>",
-                  static_cast<unsigned long>(seh));
-    }
-}
-
-static void StoreRegistryCFunction(lua_State* L, void* key, lua_CFunction fn) {
-    if (!L || !key || !fn)
-        return;
-    int top = lua_gettop(L);
-    lua_pushlightuserdata(L, key);
-    lua_pushcfunction(L, fn);
-    lua_rawset(L, LUA_REGISTRYINDEX);
-    lua_settop(L, top);
-}
-
-static int InvokeRegistryHelper(lua_State* L, void* key, const char* tag) {
-    if (!L || !key)
-        return 0;
-    int baseTop = lua_gettop(L);
-    lua_pushlightuserdata(L, key);
-    lua_rawget(L, LUA_REGISTRYINDEX);
-    if (lua_type(L, -1) != LUA_TFUNCTION) {
-        lua_pop(L, 1);
-        Log::Logf(Log::Level::Warn,
-                  Log::Category::Core,
-                  "[UOW] registry helper missing tag=%s",
-                  tag ? tag : "?");
-        return 0;
-    }
-    lua_insert(L, 1);
-    int argCount = lua_gettop(L) - 1;
-    lua_call(L, argCount, LUA_MULTRET);
-    int resultCount = lua_gettop(L);
-    if (resultCount < 0)
-        resultCount = 0;
-    return resultCount;
-}
-
-static int Lua_UOW_ReadOnlyNewIndex(lua_State* L);
-static void MakeReadonlyTable(lua_State* L, int idx);
-static void UpdateStatusNamespace(lua_State* L);
-
-static void StoreRealStatusFlags(lua_State* L) {
-    StoreRegistryCFunction(L, &kUOW_StatusFlagsKey, Lua_UOWStatusFlags);
-    UpdateStatusNamespace(L);
-}
-
-static void StoreRealStatusFlagsEx(lua_State* L) {
-    StoreRegistryCFunction(L, &kUOW_StatusFlagsExKey, Lua_UOWStatusFlags);
-    UpdateStatusNamespace(L);
-}
-
-static int Lua_UOW_StatusFlagsShim(lua_State* L) {
-    return InvokeRegistryHelper(L, &kUOW_StatusFlagsKey, "UOW_StatusFlagsShim");
-}
-
-static int Lua_UOW_StatusFlagsExShim(lua_State* L) {
-    return InvokeRegistryHelper(L, &kUOW_StatusFlagsExKey, "UOW_StatusFlagsExShim");
-}
-
 static int Lua_UOW_ReadOnlyNewIndex(lua_State* L) {
     const char* key = lua_tolstring(L, 2, nullptr);
     const int valueType = lua_type(L, 3);
@@ -2005,59 +1916,229 @@ static void MakeReadonlyTable(lua_State* L, int idx) {
     SafeLuaSetMetatable(L, absIdx, &seh);
 }
 
-static void UpdateStatusNamespace(lua_State* L) {
+static void SetFieldCFunc(lua_State* L, const char* key, lua_CFunction f) {
+    if (!L || !key || !f)
+        return;
+    lua_pushcfunction(L, f);
+    lua_setfield(L, -2, key);
+}
+
+static void RegisterUOWNamespace(lua_State* L) {
     if (!L)
         return;
+    if (!lua_checkstack(L, 8)) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[UOW][NS][WARN] insufficient stack for namespace install L=%p",
+                  L);
+        return;
+    }
+
     LuaStackGuard guard(L);
-    DWORD seh = 0;
+
+    lua_getglobal(L, "UOW");
     bool createdUOW = false;
-    bool createdStatus = false;
-
-    lua_getglobal(L, kUOWNamespaceName);
-    if (lua_type(L, -1) != LUA_TTABLE) {
+    if (!lua_istable(L, -1)) {
         lua_pop(L, 1);
-        if (!SafeLuaCreateTable(L, 0, 1, &seh))
-            return;
+        lua_createtable(L, 0, 3);
         createdUOW = true;
-        SafeLuaPushValue(L, -1, &seh);
-        SafeLuaSetGlobal(L, kUOWNamespaceName, &seh);
+        lua_pushvalue(L, -1);
+        lua_setglobal(L, "UOW");
     }
-    int uowIdx = lua_gettop(L);
 
-    lua_getfield(L, uowIdx, kUOWStatusNamespaceName);
-    if (lua_type(L, -1) != LUA_TTABLE) {
+    // Status table
+    lua_getfield(L, -1, "Status");
+    if (!lua_istable(L, -1)) {
         lua_pop(L, 1);
-        if (!SafeLuaCreateTable(L, 0, 4, &seh)) {
-            lua_pop(L, 1);
-            return;
-        }
-        createdStatus = true;
+        lua_createtable(L, 0, 4);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -3, "Status");
     }
-    int statusIdx = lua_gettop(L);
+    SetFieldCFunc(L, "flags", Lua_UOW_StatusFlags);
+    SetFieldCFunc(L, "version", Lua_UOW_StatusVersion);
+    MakeReadonlyTable(L, -1);
+    lua_pop(L, 1); // pop Status
 
-    SafeLuaPushString(L, kUOWStatusFlagsFieldName, &seh);
-    SafeLuaPushCClosure(L, Lua_UOWStatusFlags, 0, &seh);
-    SafeLuaSetTable(L, statusIdx, &seh);
-
-    SafeLuaPushString(L, kUOWStatusFlagsExFieldName, &seh);
-    SafeLuaPushCClosure(L, Lua_UOWStatusFlags, 0, &seh);
-    SafeLuaSetTable(L, statusIdx, &seh);
-
-    MakeReadonlyTable(L, statusIdx);
-
-    if (createdStatus) {
-        SafeLuaPushString(L, kUOWStatusNamespaceName, &seh);
-        SafeLuaPushValue(L, statusIdx, &seh);
-        SafeLuaSetTable(L, uowIdx, &seh);
+    // Walk table
+    lua_getfield(L, -1, "Walk");
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_createtable(L, 0, 4);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -3, "Walk");
     }
+    SetFieldCFunc(L, "set_pacing", Lua_UOW_WalkSetPacing);
+    SetFieldCFunc(L, "set_inflight", Lua_UOW_WalkSetInflight);
+    SetFieldCFunc(L, "get_metrics", Lua_UOW_WalkGetMetrics);
+    MakeReadonlyTable(L, -1);
+    lua_pop(L, 1); // pop Walk
+
+    // Debug table
+    lua_getfield(L, -1, "Debug");
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_createtable(L, 0, 4);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -3, "Debug");
+    }
+    SetFieldCFunc(L, "ping", Lua_UOW_DebugPing);
+    SetFieldCFunc(L, "status", Lua_UOW_DebugStatus);
+    MakeReadonlyTable(L, -1);
+    lua_pop(L, 1); // pop Debug
 
     if (createdUOW) {
-        MakeReadonlyTable(L, uowIdx);
-        SafeLuaPushValue(L, uowIdx, &seh);
-        SafeLuaSetGlobal(L, kUOWNamespaceName, &seh);
+        MakeReadonlyTable(L, -1);
     }
 
-    lua_pop(L, 2);
+    lua_pop(L, 1); // pop UOW
+
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[UOW][NS] namespace installed");
+}
+
+static bool VerifyUOW(lua_State* L) {
+    if (!L)
+        return false;
+    if (!lua_checkstack(L, 4)) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[UOW][NS][WARN] verify failed stack-check L=%p",
+                  L);
+        return false;
+    }
+
+    bool ok = false;
+    LuaStackGuard guard(L);
+    lua_getglobal(L, "UOW");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "Status");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "flags");
+            int t = lua_type(L, -1);
+            const void* p = lua_topointer(L, -1);
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Core,
+                      "[UOW][NS] verify Status.flags type=%d ptr=%p",
+                      t,
+                      p);
+            ok = (t == LUA_TFUNCTION) && lua_iscfunction(L, -1);
+            lua_pop(L, 1);
+        } else {
+            lua_pop(L, 1);
+        }
+    }
+    if (!ok) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[UOW][NS][WARN] verification failed or flags not cfunction");
+    }
+    return ok;
+}
+
+static void UpdateStatusNamespace(lua_State* L) {
+    RegisterUOWNamespace(L);
+    VerifyUOW(L);
+}
+
+static bool UOW_IsScriptThread() {
+    DWORD tid = GetCurrentThreadId();
+    return (g_uowLua.scriptTid != 0 && g_uowLua.scriptTid == tid);
+}
+
+static bool UOW_HasNamespace(lua_State* L) {
+    if (!L)
+        return false;
+    if (!lua_checkstack(L, 1))
+        return false;
+    LuaStackGuard guard(L);
+    lua_getglobal(L, "UOW");
+    bool have = lua_istable(L, -1) != 0;
+    return have;
+}
+
+static void UOW_ClearHook(lua_State* L) {
+    if (!L)
+        return;
+    if (!UOW_IsScriptThread())
+        return;
+    lua_sethook(L, nullptr, 0, 0);
+}
+
+static void UOW_OneShotHook(lua_State* L, lua_Debug* /*ar*/) {
+    UOW_ClearHook(L);
+    if (!UowCtxMatches(L, g_uowLua.gen))
+        return;
+    RegisterUOWNamespace(L);
+    VerifyUOW(L);
+    g_uowLua.scheduled = false;
+}
+
+static void UOW_ScheduleHook(lua_State* L, uint32_t gen, DWORD scriptTid, const char* reason) {
+    if (!L)
+        return;
+    if (!scriptTid || scriptTid != GetCurrentThreadId())
+        return;
+    if (!UowCtxMatches(L, gen))
+        return;
+    if (g_uowLua.scheduled)
+        return;
+    lua_sethook(L, UOW_OneShotHook, LUA_MASKCOUNT, 1);
+    g_uowLua.scheduled = true;
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[UOW][NS] scheduled one-shot hook (gen=%u tid=%lu reason=%s)",
+              gen,
+              static_cast<unsigned long>(scriptTid),
+              reason ? reason : "unknown");
+}
+
+static void UOW_OnCanonicalReady(lua_State* L, uint32_t gen, DWORD scriptTid) {
+    g_uowLua.L = L;
+    g_uowLua.gen = gen;
+    g_uowLua.scriptTid = scriptTid;
+    g_uowLua.scheduled = false;
+
+    if (!L)
+        return;
+
+    if (UOW_IsScriptThread()) {
+        if (UOW_HasNamespace(L)) {
+            VerifyUOW(L);
+        } else {
+            UOW_ScheduleHook(L, gen, scriptTid, "canonical-ready");
+        }
+    }
+}
+
+static void UOW_OnDestabilized() {
+    if (g_uowLua.L && UOW_IsScriptThread()) {
+        lua_sethook(g_uowLua.L, nullptr, 0, 0);
+    }
+    UowCtxClear();
+    Log::Logf(Log::Level::Info,
+              Log::Category::Core,
+              "[UOW][NS] context cleared (destabilized)");
+}
+
+static void OnLuaRegisterTracer(lua_State* L, const char* /*name*/) {
+    if (!L)
+        return;
+    if (!UowCtxMatches(L, g_uowLua.gen))
+        return;
+    if (!UOW_IsScriptThread())
+        return;
+
+    if (!UOW_HasNamespace(L)) {
+        RegisterUOWNamespace(L);
+        VerifyUOW(L);
+        g_uowLua.scheduled = false;
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[UOW][NS] installed via tracer");
+    } else {
+        VerifyUOW(L);
+    }
 }
 
 static bool IsOverwriteLoggerEnabled() {
@@ -2072,10 +2153,7 @@ static bool IsOverwriteLoggerEnabled() {
 
 static int GlobalNewIndexLogger(lua_State* L) {
     const char* key = lua_tolstring(L, 2, nullptr);
-    if (key && (!std::strcmp(key, kHelperStatusFlagsName) ||
-                !std::strcmp(key, kHelperStatusFlagsAliasName) ||
-                !std::strcmp(key, kHelperStatusFlagsNamespaceName) ||
-                !std::strcmp(key, kHelperStatusFlagsNamespaceExName))) {
+    if (key && std::strcmp(key, "UOW") == 0) {
         bool isCF = lua_iscfunction(L, 3);
         const void* ptr = lua_topointer(L, 3);
         const char* src = "";
@@ -2417,17 +2495,23 @@ static int Lua_UOWalk(lua_State* L);
 static int Lua_UOWDump(lua_State* L);
 static int Lua_WalkMove(lua_State* L);
 static int Lua_GetPacing(lua_State* L);
-static int Lua_SetPacing(lua_State* L);
-static int Lua_SetInflight(lua_State* L);
-static int Lua_GetWalkMetrics(lua_State* L);
-static int Lua_UOWStatusFlags(lua_State* L);
+static int Lua_UOW_WalkSetPacing(lua_State* L);
+static int Lua_UOW_WalkSetInflight(lua_State* L);
+static int Lua_UOW_WalkGetMetrics(lua_State* L);
+static int Lua_UOW_StatusFlags(lua_State* L);
+static int Lua_UOW_StatusVersion(lua_State* L);
 static int Lua_UOWTestRet(lua_State* L);
 static int Lua_UOWInspect(lua_State* L);
 static int Lua_UOWSelfTest(lua_State* L);
 static int Lua_UOWRebindAll(lua_State* L);
 static int Lua_UOWDebug(lua_State* L);
-static int Lua_UOWDebugStatus(lua_State* L);
-static int Lua_UOWDebugPing(lua_State* L);
+static int Lua_UOW_DebugStatus(lua_State* L);
+static int Lua_UOW_DebugPing(lua_State* L);
+static void RegisterUOWNamespace(lua_State* L);
+static bool VerifyUOW(lua_State* L);
+static void UOW_OnCanonicalReady(lua_State* L, uint32_t gen, DWORD scriptTid);
+static void UOW_OnDestabilized();
+static void OnLuaRegisterTracer(lua_State* L, const char* name);
 static int __cdecl HookSentinelGC(lua_State* L);
 static void ForceRebindAll(const char* reason);
 static bool ResolveRegisterFunction();
@@ -2875,6 +2959,8 @@ static bool PromoteCanonicalState(LuaStateInfo& state, uint64_t now, const char*
                     slotReady,
                     ownerReady,
                     regReady);
+        DWORD scriptTid = state.owner_tid ? state.owner_tid : g_scriptThreadId.load(std::memory_order_acquire);
+        UOW_OnCanonicalReady(state.L_canonical, static_cast<uint32_t>(state.gen), scriptTid);
     } else {
         uint64_t delta = previousReady > destabilized ? previousReady - destabilized : 0;
         LogLuaState("canonical-hold Lc=%p source=%s tick=%llu dest=%llu ready=%llu delta=%llu gates={slot:%d owner:%d reg:%d}",
@@ -6573,9 +6659,7 @@ static WORD HelperFlagForName(const char* name) {
     if (_stricmp(name, kHelperGetWalkMetricsName) == 0)
         return HELPER_FLAG_GET_METRICS;
     if (_stricmp(name, kHelperStatusFlagsName) == 0 ||
-        _stricmp(name, kHelperStatusFlagsAliasName) == 0 ||
-        _stricmp(name, kHelperStatusFlagsNamespaceName) == 0 ||
-        _stricmp(name, kHelperStatusFlagsNamespaceExName) == 0)
+        _stricmp(name, kHelperStatusVersionName) == 0)
         return HELPER_FLAG_STATUS_FLAGS;
     if (_stricmp(name, kHelperTestRetName) == 0)
         return HELPER_FLAG_STATUS_FLAGS;
@@ -6809,21 +6893,7 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
               latest.helper_flags);
 
     if (success && name) {
-        if (_stricmp(name, kHelperStatusFlagsName) == 0) {
-            StoreRealStatusFlags(state);
-            InstallGlobalOverwriteLogger(state);
-            DWORD shimSeh = 0;
-            TryLuaSetGlobal(state, Lua_UOW_StatusFlagsShim, kHelperStatusFlagsName, &shimSeh);
-            LogGlobalFn(state, kHelperStatusFlagsName);
-            LogStatusNamespaceFn(state, kUOWStatusFlagsFieldName);
-        } else if (_stricmp(name, kHelperStatusFlagsAliasName) == 0) {
-            StoreRealStatusFlagsEx(state);
-            InstallGlobalOverwriteLogger(state);
-            DWORD shimSeh = 0;
-            TryLuaSetGlobal(state, Lua_UOW_StatusFlagsExShim, kHelperStatusFlagsAliasName, &shimSeh);
-            LogGlobalFn(state, kHelperStatusFlagsAliasName);
-            LogStatusNamespaceFn(state, kUOWStatusFlagsExFieldName);
-        } else if (_stricmp(name, kHelperTestRetName) == 0) {
+        if (_stricmp(name, kHelperTestRetName) == 0) {
             LogGlobalFn(state, kHelperTestRetName);
         }
     }
@@ -7324,14 +7394,39 @@ static bool BindHelpersOnThread(lua_State* L,
             return stepOk;
         };
 
-        bool walkOk = logStep(kHelperWalkName, [&]() { return RegisterHelper(L, info, kHelperWalkName, Lua_UOWalk, generation); });
-        bool walkMoveOk = logStep(kHelperWalkMoveName, [&]() { return RegisterHelper(L, info, kHelperWalkMoveName, Lua_WalkMove, generation); });
-        bool pacingOk = logStep(kHelperGetPacingName, [&]() { return RegisterHelper(L, info, kHelperGetPacingName, Lua_GetPacing, generation); });
-        bool setPacingOk = logStep(kHelperSetPacingName, [&]() { return RegisterHelper(L, info, kHelperSetPacingName, Lua_SetPacing, generation); });
-        bool setInflightOk = logStep(kHelperSetInflightName, [&]() { return RegisterHelper(L, info, kHelperSetInflightName, Lua_SetInflight, generation); });
-        bool metricsOk = logStep(kHelperGetWalkMetricsName, [&]() { return RegisterHelper(L, info, kHelperGetWalkMetricsName, Lua_GetWalkMetrics, generation); });
-        bool statusFlagsOk = logStep(kHelperStatusFlagsName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsName, Lua_UOWStatusFlags, generation); });
-        bool statusFlagsExOk = logStep(kHelperStatusFlagsAliasName, [&]() { return RegisterHelper(L, info, kHelperStatusFlagsAliasName, Lua_UOWStatusFlags, generation); });
+        lua_State* canonical = info.L_canonical ? info.L_canonical : L;
+        bool namespaceOk = logStep("UOW.Namespace", [&]() {
+            if (!canonical)
+                return false;
+            uint32_t gen32 = static_cast<uint32_t>(info.gen);
+            if (!UowCtxMatches(canonical, gen32)) {
+                Log::Logf(Log::Level::Warn,
+                          Log::Category::Core,
+                          "[UOW][NS][WARN] context mismatch L=%p expected=%p gen=%u ctxGen=%u",
+                          canonical,
+                          g_uowLua.L,
+                          static_cast<unsigned>(gen32),
+                          static_cast<unsigned>(g_uowLua.gen));
+                return false;
+            }
+            if (UOW_HasNamespace(canonical))
+                return VerifyUOW(canonical);
+            if (UOW_IsScriptThread()) {
+                RegisterUOWNamespace(canonical);
+                return VerifyUOW(canonical);
+            }
+            UOW_ScheduleHook(canonical, gen32, g_uowLua.scriptTid, "bind-verify");
+            return false;
+        });
+
+        bool walkOk = namespaceOk;
+        bool walkMoveOk = namespaceOk;
+        bool pacingOk = namespaceOk;
+        bool setPacingOk = namespaceOk;
+        bool setInflightOk = namespaceOk;
+        bool metricsOk = namespaceOk;
+        bool statusFlagsOk = namespaceOk;
+        bool statusVersionOk = namespaceOk;
         bool testRetOk = logStep(kHelperTestRetName, [&]() { return RegisterHelper(L, info, kHelperTestRetName, Lua_UOWTestRet, generation); });
         bool testRetAttempted = true;
 
@@ -7356,8 +7451,8 @@ static bool BindHelpersOnThread(lua_State* L,
             rebindOk = logStep(kHelperRebindName, [&]() { return RegisterHelper(L, info, kHelperRebindName, Lua_UOWRebindAll, generation); });
             selfTestOk = logStep(kHelperSelfTestName, [&]() { return RegisterHelper(L, info, kHelperSelfTestName, Lua_UOWSelfTest, generation); });
             debugCfgOk = logStep(kHelperDebugName, [&]() { return RegisterHelper(L, info, kHelperDebugName, Lua_UOWDebug, generation); });
-            debugStatusOk = logStep(kHelperDebugStatusName, [&]() { return RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOWDebugStatus, generation); });
-            debugPingOk = logStep(kHelperDebugPingName, [&]() { return RegisterHelper(L, info, kHelperDebugPingName, Lua_UOWDebugPing, generation); });
+            debugStatusOk = logStep(kHelperDebugStatusName, [&]() { return RegisterHelper(L, info, kHelperDebugStatusName, Lua_UOW_DebugStatus, generation); });
+            debugPingOk = logStep(kHelperDebugPingName, [&]() { return RegisterHelper(L, info, kHelperDebugPingName, Lua_UOW_DebugPing, generation); });
             dumpAttempted = true;
             inspectAttempted = true;
             rebindAttempted = true;
@@ -7385,7 +7480,7 @@ static bool BindHelpersOnThread(lua_State* L,
             recordMetric(true, setInflightOk);
             recordMetric(true, metricsOk);
             recordMetric(true, statusFlagsOk);
-            recordMetric(true, statusFlagsExOk);
+            recordMetric(true, statusVersionOk);
             recordMetric(testRetAttempted, testRetOk);
             recordMetric(dumpAttempted, dumpOk);
             recordMetric(inspectAttempted, inspectOk);
@@ -7398,7 +7493,7 @@ static bool BindHelpersOnThread(lua_State* L,
             metrics->hookFailure = failureCount;
         }
 
-        bool coreOk = walkOk && walkMoveOk && pacingOk && setPacingOk && setInflightOk && metricsOk && statusFlagsOk && statusFlagsExOk && testRetOk;
+        bool coreOk = walkOk && walkMoveOk && pacingOk && setPacingOk && setInflightOk && metricsOk && statusFlagsOk && statusVersionOk && testRetOk;
         bool debugPackOk = !wantsDebugPack || (dumpOk && inspectOk && rebindOk && selfTestOk && debugCfgOk && debugStatusOk && debugPingOk);
         bool allOk = coreOk && debugPackOk;
         if (allOk) {
@@ -7445,7 +7540,7 @@ static bool BindHelpersOnThread(lua_State* L,
             appendMissing(true, setInflightOk, kHelperSetInflightName);
             appendMissing(true, metricsOk, kHelperGetWalkMetricsName);
             appendMissing(true, statusFlagsOk, kHelperStatusFlagsName);
-            appendMissing(true, statusFlagsExOk, kHelperStatusFlagsAliasName);
+            appendMissing(true, statusVersionOk, kHelperStatusVersionName);
             appendMissing(testRetAttempted, testRetOk, kHelperTestRetName);
             appendMissing(dumpAttempted, dumpOk, kHelperDumpName);
             appendMissing(inspectAttempted, inspectOk, kHelperInspectName);
@@ -7842,7 +7937,7 @@ static int Lua_GetPacing(lua_State* L) {
     return 1;
 }
 
-static int Lua_SetPacing(lua_State* L) {
+static int Lua_UOW_WalkSetPacing(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
     bool coalesced = false;
@@ -7863,7 +7958,7 @@ static int Lua_SetPacing(lua_State* L) {
     return 1;
 }
 
-static int Lua_SetInflight(lua_State* L) {
+static int Lua_UOW_WalkSetInflight(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
     bool coalesced = false;
@@ -7884,7 +7979,7 @@ static int Lua_SetInflight(lua_State* L) {
     return 1;
 }
 
-static int Lua_GetWalkMetrics(lua_State* L) {
+static int Lua_UOW_WalkGetMetrics(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
     bool coalesced = false;
@@ -7907,7 +8002,7 @@ static int Lua_GetWalkMetrics(lua_State* L) {
     return 1;
 }
 
-static int Lua_UOWStatusFlags(lua_State* L) {
+static int Lua_UOW_StatusFlags(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
     bool coalesced = false;
@@ -8172,6 +8267,15 @@ static int Lua_UOWStatusFlags(lua_State* L) {
               "[UOW][statusflags] unknown-key returning table top=%d",
               lua_gettop(L));
     return pushTable();
+}
+
+static int Lua_UOW_StatusVersion(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    EnsureHelperState(L, kHelperStatusVersionName, &ready, &coalesced, nullptr);
+    lua_pushinteger(L, kUOWStatusVersionValue);
+    return 1;
 }
 
 static int Lua_UOWTestRet(lua_State* L) {
@@ -8514,7 +8618,7 @@ static int Lua_UOWDebug(lua_State* L) {
     return 1;
 }
 
-static int Lua_UOWDebugStatus(lua_State* L) {
+static int Lua_UOW_DebugStatus(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
     bool coalesced = false;
@@ -8575,7 +8679,7 @@ static bool RunSmokeSelfTest(std::string& reason) {
     return true;
 }
 
-static int Lua_UOWDebugPing(lua_State* L) {
+static int Lua_UOW_DebugPing(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
     bool coalesced = false;
@@ -8932,6 +9036,9 @@ static int __stdcall RegisterHookImpl(void* ctx, void* func, const char* name) {
     EnsureScriptThread(tid, L);
 
     LogLuaProbe("register name=%s fn=%p ctx=%p tid=%lu", name ? name : "<null>", func, ctx, tid);
+
+    if (L)
+        OnLuaRegisterTracer(L, name);
 
     if (ctx && ctx != g_engineContext.load(std::memory_order_acquire)) {
         g_engineContext.store(ctx, std::memory_order_release);
