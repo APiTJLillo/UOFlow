@@ -2128,6 +2128,12 @@ static void UOW_OnCanonicalReady(lua_State* L, uint32_t gen, DWORD scriptTid) {
     if (!L)
         return;
 
+    // Adopt the script thread as the owner for helper tasks and cancel
+    // any pending helper installs scheduled under old ownership.
+    if (scriptTid)
+        Util::OwnerPump::SetOwnerThreadId(scriptTid);
+    ClearHelperPending(L, gen);
+
     if (UOW_IsScriptThread()) {
         if (UOW_HasNamespace(L)) {
             VerifyUOW(L);
@@ -5038,6 +5044,8 @@ static void EnsureScriptThread(DWORD tid, lua_State* L) {
                   static_cast<unsigned long>(tid),
                   L);
         scriptThreadDiscovered = true;
+        // Handoff helper ownership to the script thread immediately.
+        Util::OwnerPump::SetOwnerThreadId(tid);
     }
 
     if (!scriptThreadDiscovered) {
@@ -5054,6 +5062,8 @@ static void EnsureScriptThread(DWORD tid, lua_State* L) {
                               static_cast<unsigned long>(current),
                               L);
                     scriptThreadDiscovered = true;
+                    // Update helper ownership to match the new script thread.
+                    Util::OwnerPump::SetOwnerThreadId(tid);
                 }
             } else {
                 Log::Logf(Log::Level::Info,

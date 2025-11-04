@@ -7534,7 +7534,9 @@ bool InitSendBuilder(GlobalStateInfo* state)
     bool regionWatchEnabled = ResolveSendBuilderFlag("SB_REGION_WATCH", "sb.regionWatch", true);
     Util::RegionWatch::SetEnabled(regionWatchEnabled);
     Util::RegionWatch::SetCallback([]() {
-        ScanSendBuilder();
+        // Defer scanning slightly to avoid probing pages in the middle of
+        // a protection transition (e.g., NtMapViewOfSection/MapViewOfFile).
+        ScheduleSendBuilderWake("RegionWatchEvent", 100, 200);
     });
     const void* defaultNetCfgPage = reinterpret_cast<void*>(0x310A0000);
     if (void* pivotCfg = uow::netcfg::GetNetworkConfig()) {

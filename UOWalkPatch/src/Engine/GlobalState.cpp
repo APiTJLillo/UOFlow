@@ -14,6 +14,7 @@
 #include "Engine/Movement.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Net/NetCfgPivot.h"
+#include "Win32/SafeProbe.h"
 
 namespace Engine {
 
@@ -431,25 +432,43 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
             void* engineCtx = candidate->engineContext;
             void* networkCfg = candidate->networkConfig;
             if (engineCtx) {
-                __try {
-                    void** vtbl = *reinterpret_cast<void***>(engineCtx);
-                    void* entries[8]{};
-                    for (int i = 0; i < 8; ++i)
-                        entries[i] = vtbl ? vtbl[i] : nullptr;
+                void** vtbl = nullptr;
+                bool vtblOk = false;
+                if (sp::is_readable(engineCtx, sizeof(void*))) {
+                    __try {
+                        vtbl = *reinterpret_cast<void***>(engineCtx);
+                        vtblOk = true;
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        vtblOk = false;
+                    }
+                }
+
+                void* entries[8]{};
+                bool entriesOk = false;
+                if (vtbl && sp::is_readable(vtbl, sizeof(entries))) {
+                    __try {
+                        for (int i = 0; i < 8; ++i)
+                            entries[i] = vtbl[i];
+                        entriesOk = true;
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        entriesOk = false;
+                    }
+                }
+
+                if (vtblOk && entriesOk) {
                     char extra[256];
                     sprintf_s(extra, sizeof(extra),
-                        "  engineContext=%p vtbl=%p entries={%p,%p,%p,%p,%p,%p,%p,%p} networkConfig=%p",
-                        engineCtx, vtbl,
-                        entries[0], entries[1], entries[2], entries[3],
-                        entries[4], entries[5], entries[6], entries[7],
-                        networkCfg);
+                              "  engineContext=%p vtbl=%p entries={%p,%p,%p,%p,%p,%p,%p,%p} networkConfig=%p",
+                              engineCtx, vtbl,
+                              entries[0], entries[1], entries[2], entries[3],
+                              entries[4], entries[5], entries[6], entries[7],
+                              networkCfg);
                     WriteRawLog(extra);
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {
+                } else {
                     char extra[160];
                     sprintf_s(extra, sizeof(extra),
-                        "  engineContext=%p (vtbl read failed) networkConfig=%p",
-                        engineCtx, networkCfg);
+                              "  engineContext=%p (vtbl probe skipped) networkConfig=%p",
+                              engineCtx, networkCfg);
                     WriteRawLog(extra);
                 }
                 Engine::Lua::UpdateEngineContext(engineCtx);
