@@ -122,6 +122,11 @@ bool QueueViaOwnerPump(DWORD ownerTid, const std::shared_ptr<DispatchWork>& work
 
     Util::OwnerPump::RunOnOwner([work]() { RunTaskOnCurrentThread(work); });
 
+    // For Lua helpers, avoid legacy PostThreadMessage wake and related logs.
+    if (work->state && _stricmp(work->state->tag.c_str(), "helpers") == 0) {
+        return TRUE;
+    }
+
     BOOL posted = FALSE;
     DWORD gle = ERROR_INVALID_PARAMETER;
     bool attemptedPost = false;

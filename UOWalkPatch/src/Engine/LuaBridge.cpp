@@ -220,6 +220,7 @@ static std::atomic<int> g_helperInstallInFlight{0};
 // These are implemented later in this file but are used earlier when
 // building the UOW Lua namespace and during destabilization handling.
 static void UOW_OnDestabilized();
+static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/);
 static int Lua_UOW_StatusFlags(lua_State* L);
 static int Lua_UOW_StatusVersion(lua_State* L);
 static int Lua_UOW_WalkSetPacing(lua_State* L);
@@ -2084,6 +2085,19 @@ static void UOW_OneShotHook(lua_State* L, lua_Debug* /*ar*/) {
     RegisterUOWNamespace(L);
     VerifyUOW(L);
     g_uowLua.scheduled = false;
+    // Schedule a later verification pass to detect churn/overwrites.
+    lua_sethook(L, UOW_VerifyHook, LUA_MASKCOUNT, 8192);
+}
+
+static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/) {
+    if (!L)
+        return;
+    if (!UOW_IsScriptThread() || !UowCtxMatches(L, g_uowLua.gen)) {
+        lua_sethook(L, nullptr, 0, 0);
+        return;
+    }
+    VerifyUOW(L);
+    lua_sethook(L, nullptr, 0, 0);
 }
 
 static void UOW_ScheduleHook(lua_State* L, uint32_t gen, DWORD scriptTid, const char* reason) {
@@ -2148,6 +2162,8 @@ static void OnLuaRegisterTracer(lua_State* L, const char* /*name*/) {
         Log::Logf(Log::Level::Info,
                   Log::Category::Core,
                   "[UOW][NS] installed via tracer");
+        // Schedule a later verify pass to detect churn/overwrites.
+        lua_sethook(L, UOW_VerifyHook, LUA_MASKCOUNT, 8192);
     } else {
         VerifyUOW(L);
     }
@@ -2523,6 +2539,7 @@ static void RegisterUOWNamespace(lua_State* L);
 static bool VerifyUOW(lua_State* L);
 static void UOW_OnCanonicalReady(lua_State* L, uint32_t gen, DWORD scriptTid);
 static void UOW_OnDestabilized();
+static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/);
 static void OnLuaRegisterTracer(lua_State* L, const char* name);
 static int __cdecl HookSentinelGC(lua_State* L);
 static void ForceRebindAll(const char* reason);
@@ -5325,8 +5342,7 @@ static void MaybeAdoptOwnerThread(lua_State* L, LuaStateInfo& info) {
 }
 
 static bool IsOwnerThread(const LuaStateInfo& info) {
-    if (Core::Bind::IsCurrentDispatchTag("helpers"))
-        return true;
+    // Do not treat cross-thread 'helpers' dispatch as owner.
     DWORD current = GetCurrentThreadId();
     if (info.owner_tid != 0 && info.owner_tid == current)
         return true;
@@ -5400,7 +5416,10 @@ static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::functio
 
     bool dispatched = false;
     if (taskLabel == "helpers") {
-        dispatched = Core::Bind::DispatchWithFallback(owner, std::move(taskWrapper), taskLabel.c_str());
+        // For Lua helpers, avoid any cross-thread fallback. Only queue to the
+        // owner thread via the OwnerPump and rely on script-thread hooks.
+        (void)Core::Bind::PostToOwner(owner, std::move(taskWrapper), taskLabel.c_str());
+        dispatched = true;
     } else {
         dispatched = Core::Bind::PostToOwner(owner, std::move(taskWrapper), taskLabel.c_str());
     }
@@ -7617,6 +7636,22 @@ static bool BindHelpersWithSeh(lua_State* L,
 static void BindHelpersTask(lua_State* L, uint64_t generation, bool force, const char* reason) {
     if (!L)
         return;
+
+    // Install helpers only from the script thread, with matching context.
+    DWORD scriptTid = g_uowLua.scriptTid;
+    if (scriptTid == 0 || GetCurrentThreadId() != scriptTid || !UowCtxMatches(L, static_cast<uint32_t>(generation))) {
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[UOW][NS] skip install (foreign-thread or stale ctx) tid=%lu scriptTid=%lu L=%p gen=%u ctxGen=%u reason=%s",
+                  static_cast<unsigned long>(GetCurrentThreadId()),
+                  static_cast<unsigned long>(scriptTid),
+                  L,
+                  static_cast<unsigned>(static_cast<uint32_t>(generation)),
+                  static_cast<unsigned>(g_uowLua.gen),
+                  reason ? reason : "unknown");
+        ClearHelperPending(L, generation);
+        return;
+    }
 
     LuaStateInfo info{};
     if (!g_stateRegistry.GetByPointer(L, info)) {
