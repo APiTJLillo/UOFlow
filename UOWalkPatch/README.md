@@ -43,7 +43,7 @@ Lua state.
 
 `UOW.Status.flags` and `UOW.Status.flagsEx` are now exported inside a sealed
 `UOW` namespace. The install path stores the real implementations in the Lua
-registry, refreshes the namespace binding, and can optionally trace overwrites
+registry, refreshes the namespace binding, installs shims for the legacy globals, and can optionally trace overwrites
 by launching with `UOW_TRACE_OVERWRITES=1`, which still hooks `_G.__newindex`
 long enough to report any script attempting to replace the legacy globals.
 
