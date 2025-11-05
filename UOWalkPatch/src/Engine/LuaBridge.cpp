@@ -243,6 +243,9 @@ static int Lua_UOW_DebugDumpWalkAll(lua_State* L);
 static bool SetNestedCFunction(lua_State* L, const char* dotted, lua_CFunction fn, DWORD* outSeh = nullptr) noexcept;
 // Legacy global alias binder (e.g., walk)
 static bool RegisterLegacyGlobal(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn);
+// Introspection + force helpers for UOW.Walk.move
+static void LogMoveBindingState(lua_State* L, const char* stage);
+static void ForceMoveBinding(lua_State* L, const char* reason);
 
 // Minimal bootstrapper to mirror old behavior when we inject late or
 // before the helper pipeline is fully ready. It attempts to make
@@ -2016,6 +2019,10 @@ static void RegisterUOWNamespace(lua_State* L) {
 
     // Legacy global alias: walk() should mirror UOW.Walk.move
     (void)RegisterLegacyGlobal(L, info, "walk", Lua_WalkMove);
+
+    // Mirror old robustness: force and verify the nested binding too.
+    ForceMoveBinding(L, "post-register");
+    LogMoveBindingState(L, "post-register");
 }
 
 static bool VerifyUOW(lua_State* L) {
@@ -2181,6 +2188,8 @@ static void OnLuaRegisterTracer(lua_State* L, const char* /*name*/) {
         }
         (void)RegisterLegacyGlobal(L, info, "walk", Lua_WalkMove);
     }
+    // And ensure the namespaced mover is bound.
+    ForceMoveBinding(L, "register-tracer");
     if (!UowCtxMatches(L, g_uowLua.gen))
         return;
     if (!UOW_IsScriptThread())
@@ -2514,7 +2523,9 @@ static void ScheduleNestedHelperSet(lua_State* L, const char* name, lua_CFunctio
 
     std::thread([state=L, nameStr=std::string(name), fn, gen, delayMs, attempt]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-        PostToOwnerWithTask(state, "helpers-nested", [state, nameStr, fn, gen, attempt]() {
+        // Use the primary helpers pipeline tag for reliability (nested posts
+        // via PostThreadMessage can be disabled in some host setups).
+        PostToOwnerWithTask(state, "helpers", [state, nameStr, fn, gen, attempt]() {
             // Proceed even if ctx/gen changed; nested path will reattempt/gate itself.
             LuaStateInfo info{};
             if (!g_stateRegistry.GetByPointer(state, info))
@@ -2573,9 +2584,8 @@ static void ScheduleLegacyGlobalSet(lua_State* L, const char* name, lua_CFunctio
 
     std::thread([state=L, nameStr=std::string(name), fn, gen, delayMs, attempt]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-        // Use the same owner-pump tag as other helper retries so it is drained
-        // with the regular helpers cycle in late-injection scenarios.
-        PostToOwnerWithTask(state, "helpers-nested", [state, nameStr, fn, gen, attempt]() {
+        // Post using the main helpers pipeline for better delivery reliability.
+        PostToOwnerWithTask(state, "helpers", [state, nameStr, fn, gen, attempt]() {
             // Proceed even if ctx/gen changed; direct global set is idempotent.
             LuaStateInfo info{};
             if (!g_stateRegistry.GetByPointer(state, info))
@@ -6884,6 +6894,62 @@ static bool SetNestedCFunction(lua_State* L, const char* dotted, lua_CFunction f
     return chunkOk;
 }
 
+static void LogMoveBindingState(lua_State* L, const char* stage) {
+    if (!L)
+        return;
+    DWORD seh = 0;
+    int savedTop = 0;
+    (void)sp::seh_probe([&]() {
+        savedTop = lua_gettop(L);
+        int moveType = LUA_TNONE;
+        const void* movePtr = nullptr;
+        const char* typeName = "<unknown>";
+        lua_getglobal(L, "UOW");
+        if (lua_type(L, -1) == LUA_TTABLE) {
+            lua_getfield(L, -1, "Walk");
+            if (lua_type(L, -1) == LUA_TTABLE) {
+                lua_getfield(L, -1, "move");
+                moveType = lua_type(L, -1);
+                typeName = lua_typename(L, moveType);
+                if (moveType == LUA_TFUNCTION)
+                    movePtr = lua_topointer(L, -1);
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  "[UOW][verify] %s: UOW.Walk.move type=%s ptr=%p",
+                  stage ? stage : "move-state",
+                  typeName ? typeName : "<unknown>",
+                  movePtr);
+        lua_settop(L, savedTop);
+    }, &seh);
+    if (seh) {
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[UOW][verify] %s: UOW.Walk.move probe-seh=0x%08lX",
+                  stage ? stage : "move-state",
+                  static_cast<unsigned long>(seh));
+    }
+}
+
+static void ForceMoveBinding(lua_State* L, const char* reason) {
+    if (!L)
+        return;
+    LogMoveBindingState(L, "pre-bind");
+    DWORD seh = 0;
+    bool ok = SetNestedCFunction(L, kHelperWalkMoveNsName, Lua_WalkMove, &seh);
+    Log::Logf(ok ? Log::Level::Info : Log::Level::Warn,
+              Log::Category::Core,
+              "[UOW][ensure] UOW.Walk.move %s ok=%d seh=0x%08lX",
+              reason ? reason : "ensure",
+              ok ? 1 : 0,
+              static_cast<unsigned long>(seh));
+    LogMoveBindingState(L, "post-bind");
+}
+
 static bool RegisterLegacyGlobal(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn) {
     if (!L || !name || !fn)
         return false;
@@ -8342,15 +8408,27 @@ static int Lua_WalkMove(lua_State* L) {
     bool ready = false;
     bool coalesced = false;
     EnsureHelperState(L, kHelperWalkMoveName, &ready, &coalesced, nullptr);
+
     int argc = lua_gettop(L);
-    if (argc < 1 || !lua_isnumber(L, 1)) {
+    // Accept both UOW.Walk.move(dir, run) and UOW.Walk:move(dir, run)
+    // If called with ':', first arg is self (table/userdata), so shift base.
+    int base = 1;
+    if (argc >= 2) {
+        int t1 = lua_type(L, 1);
+        if (t1 == LUA_TTABLE || t1 == LUA_TUSERDATA) {
+            base = 2;
+        }
+    }
+
+    if (argc < base || !lua_isnumber(L, base)) {
         lua_pushboolean(L, 0);
         return 1;
     }
-    int dir = static_cast<int>(lua_tointeger(L, 1));
+
+    int dir = static_cast<int>(lua_tointeger(L, base));
     bool run = false;
-    if (argc >= 2)
-        run = lua_toboolean(L, 2) != 0;
+    if (argc >= base + 1)
+        run = lua_toboolean(L, base + 1) != 0;
     bool ok = false;
     if (::Engine::Movement::IsReady()) {
         ok = ::Engine::Movement::EnqueueMove(static_cast<::Engine::Movement::Dir>(dir & 0x7), run);
