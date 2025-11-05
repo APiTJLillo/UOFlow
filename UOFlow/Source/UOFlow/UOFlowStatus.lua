@@ -16,18 +16,31 @@ local C = {
 }
 
 local ROWS = {
-  { key = "helpers", label = "Helpers" },
-  { key = "engine", label = "EngineCtx" },
-  { key = "send", label = "SendBuilder" },
-  { key = "fw", label = "FW Depth" },
-  { key = "ack", label = "ACK ok/drop" },
-  { key = "pace", label = "Pacing ms" },
+  { key = "UOFlow.Walk.move", label = "Walk.move()" },
+  { key = "nothing", label = "nothing" },
+  { key = "nothing", label = "nothing" },
+  { key = "nothing", label = "nothing" },
+  { key = "nothing", label = "nothing" },
+  { key = "nothing", label = "nothing" },
 }
 
-local BULLET = towstring(string.char(226, 128, 162))
+local BULLET = "+"
 
 local poll -- forward declaration
 local updateRegistered = false
+local function debug_print(...)
+  if type(Debug) ~= "table" or type(Debug.Print) ~= "function" then
+    return
+  end
+  local pieces = {}
+  for i = 1, select("#", ...) do
+    local v = select(i, ...)
+    pieces[#pieces + 1] = tostring(v)
+  end
+  local msg = table.concat(pieces)
+  pcall(Debug.Print, towstring(msg))
+end
+
 
 local function setUpdateHandler(enabled)
   if enabled then
@@ -41,7 +54,6 @@ local function setUpdateHandler(enabled)
   end
 end
 
-
 local function setText(id, s, col)
   if not DoesWindowExist(id) then
     return
@@ -54,6 +66,18 @@ local function setText(id, s, col)
   end
   local c = col or C.text
   LabelSetTextColor(id, c.r, c.g, c.b)
+end
+
+-- Resolve dotted paths like "UOFlow.Walk.move" via _G
+local function getByPath(path)
+  if type(path) ~= "string" or path == "" then return nil end
+  local cur = _G
+  for seg in string.gmatch(path, "[^%.]+") do
+    if type(cur) ~= "table" then return nil end
+    cur = rawget(cur, seg)
+    if cur == nil then return nil end
+  end
+  return cur
 end
 
 local function setDot(id, col)
@@ -81,18 +105,20 @@ function UOFlowStatus.Build()
     return
   end
 
-  UOFlowStatus._rows = ROWS
+  -- Allow external code to override rows before Build()
+  local rows = UOFlowStatus._rows or ROWS
+  UOFlowStatus._rows = rows
 
   WindowSetShowing(list, true)
 
   local y = 0
-  for i, row in ipairs(ROWS) do
+  for i, row in ipairs(rows) do
     local base = list .. "Row" .. i
     if not DoesWindowExist(base) then
       CreateWindowFromTemplate(base, "UOFlowStatusRowTemplate", list)
-      WindowClearAnchors(base)
-      WindowAddAnchor(base, "topleft", list, "topleft", 0, y)
     end
+    WindowClearAnchors(base)
+    WindowAddAnchor(base, "topleft", list, "topleft", 6, y)
     y = y + 18
     WindowSetShowing(base, true)
     setText(base .. "Label", row.label, C.text)
@@ -120,73 +146,29 @@ local function safe_call(fn)
   return nil
 end
 
-local function status_flags()
-  local t = safe_call(UOW_StatusFlags)
-  if type(t) == "table" then
-    return t
-  end
-  return {}
-end
-
 local function doPoll()
-  local m = safe_call(GetWalkMetrics) or {}
-  local flags = status_flags()
+  -- Iterate all configured rows and show availability
+  local rows = UOFlowStatus._rows or ROWS
+  for i, row in ipairs(rows) do
+    local base = W .. "ListRow" .. i
+    if DoesWindowExist(base) then
+      local key = type(row) == "table" and row.key or nil
+      local ok = false
+      if type(key) == "string" and key ~= "" then
+        ok = getByPath(key) ~= nil
+      end
 
-  do
-    local base = W .. "ListRow1"
-    local on = flags.helpers or false
-    setDot(base .. "Dot", on and C.ok or C.bad)
-    setText(base .. "Val", on and "installed" or "installing", on and C.ok or C.bad)
+      setDot(base .. "Dot", ok and C.ok or C.bad)
+      setText(base .. "Val", ok and "installed" or "not installed", ok and C.ok or C.bad)
+    end
   end
 
-  do
-    local base = W .. "ListRow2"
-    local on = flags.engineCtx or false
-    local col = on and C.ok or C.warn
-    setDot(base .. "Dot", col)
-    setText(base .. "Val", on and "ready" or "waiting", col)
-  end
-
-  do
-    local base = W .. "ListRow3"
-    local on = flags.sendReady or false
-    local col = on and C.ok or C.warn
-    setDot(base .. "Dot", col)
-    setText(base .. "Val", on and "ready" or "probing", col)
-  end
-
-  do
-    local base = W .. "ListRow4"
-    local d = flags.fwDepth or m.queueDepth or -1
-    local good = (d or 0) > 0
-    local col = good and C.ok or C.bad
-    setDot(base .. "Dot", col)
-    setText(base .. "Val", d >= 0 and tostring(d) or "n/a", col)
-  end
-
-  do
-    local base = W .. "ListRow5"
-    local okc = tonumber(m.acksOk or m.ack_ok or 0) or 0
-    local drp = tonumber(m.acksDrop or m.ack_drop or 0) or 0
-    local good = okc > 0 and drp == 0
-    local col = good and C.ok or (drp > 0 and C.warn or C.dim)
-    setDot(base .. "Dot", col)
-    setText(base .. "Val", string.format("%d / %d", okc, drp), col)
-  end
-
-  do
-    local base = W .. "ListRow6"
-    local ms = tonumber(m.stepDelay or m.stepDelayMs or safe_call(GetPacing) or 0) or 0
-    local infl = tonumber(m.inflight or 0) or 0
-    local good = infl <= 1 and ms <= 400
-    setDot(base .. "Dot", good and C.ok or C.warn)
-    setText(base .. "Val", string.format("%d (inflight=%d)", ms, infl), C.text)
-  end
 end
 
 poll = doPoll
 
 local accum = 0
+local FRAME_FALLBACK = 0.016
 
 function UOFlowStatus.OnUpdate(timePassed)
   if not DoesWindowExist(W) or not WindowGetShowing(W) then
@@ -197,7 +179,12 @@ function UOFlowStatus.OnUpdate(timePassed)
     return
   end
 
-  accum = accum + (timePassed or 0)
+  local dt = timePassed
+  if type(dt) ~= "number" or dt <= 0 then
+    dt = FRAME_FALLBACK
+  end
+
+  accum = accum + dt
   if accum >= 0.25 then
     poll()
     accum = 0
@@ -255,4 +242,3 @@ function UOFlowStatus.Toggle()
     UOFlowStatus.Show()
   end
 end
-

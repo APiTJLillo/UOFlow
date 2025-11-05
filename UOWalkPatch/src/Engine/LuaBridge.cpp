@@ -43,6 +43,11 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static int __cdecl Lua_Walk(lua_State* L);
 static int __cdecl Lua_BindWalk(lua_State* L);
 
+// (no-op helper removed)
+
+// No special table manipulation needed; the client RegisterLuaFunction
+// can accept dotted names and route them appropriately.
+
 static void LogWalkBindingState(lua_State* L, const char* stage)
 {
     if (!L)
@@ -50,6 +55,8 @@ static void LogWalkBindingState(lua_State* L, const char* stage)
 
     int walkType = LUA_TNONE;
     const void* walkPtr = nullptr;
+    int moveType = LUA_TNONE;
+    const void* movePtr = nullptr;
     int bindType = LUA_TNONE;
     const void* bindPtr = nullptr;
 
@@ -59,6 +66,14 @@ static void LogWalkBindingState(lua_State* L, const char* stage)
         walkType = lua_type(L, -1);
         if (walkType == LUA_TFUNCTION) {
             walkPtr = lua_topointer(L, -1);
+        }
+        lua_pop(L, 1);
+
+        // Try direct global lookup by dotted name if the client treats it specially
+        lua_getglobal(L, "UOFlow.Walk.move");
+        moveType = lua_type(L, -1);
+        if (moveType == LUA_TFUNCTION) {
+            movePtr = lua_topointer(L, -1);
         }
         lua_pop(L, 1);
 
@@ -75,10 +90,12 @@ static void LogWalkBindingState(lua_State* L, const char* stage)
     }
 
     char buf[256];
-    sprintf_s(buf, sizeof(buf), "%s: walk=%s%p bindWalk=%s%p",
+    sprintf_s(buf, sizeof(buf), "%s: walk=%s%p nsMove=%s%p bindWalk=%s%p",
         stage ? stage : "WalkBindingState",
         (walkType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, walkType),
         walkPtr,
+        (moveType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, moveType),
+        movePtr,
         (bindType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, bindType),
         bindPtr);
     WriteRawLog(buf);
@@ -172,22 +189,17 @@ static void ForceWalkBinding(lua_State* L, const char* reason)
     LogWalkBindingState(L, stateBuf);
 
     char buf[224];
-    sprintf_s(buf, sizeof(buf), "%s: ensuring walk binding via client helper (Lua_Walk=%p ctx=%p)",
+    sprintf_s(buf, sizeof(buf), "%s: ensuring UOFlow.Walk.move binding via client helper (Lua_Walk=%p ctx=%p)",
         tag,
         desiredPtr,
         g_clientContext);
     WriteRawLog(buf);
 
-    bool helperOk = RegisterViaClient(L, Lua_Walk, "walk");
+    bool helperOk = RegisterViaClient(L, Lua_Walk, "UOFlow.Walk.move");
     if (helperOk) {
-        WriteRawLog("ForceWalkBinding: client helper rebound walk successfully");
+        WriteRawLog("ForceWalkBinding: client helper ensured UOFlow.Walk.move successfully");
     } else {
-        WriteRawLog("ForceWalkBinding: client helper failed; will rely on direct Lua binding");
-        if (RegisterFunctionSafe(L, Lua_Walk, "walk")) {
-            WriteRawLog("ForceWalkBinding: direct Lua binding ensured walk global");
-        } else {
-            WriteRawLog("ForceWalkBinding: direct Lua binding failed");
-        }
+        WriteRawLog("ForceWalkBinding: client helper failed for UOFlow.Walk.move");
     }
 
     sprintf_s(stateBuf, sizeof(stateBuf), "%s post-bind", tag);
@@ -328,17 +340,13 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
     void* walkPtr = reinterpret_cast<void*>(walkInt);
     void* bindPtr = reinterpret_cast<void*>(bindInt);
     if (name && ctx) {
-        if (_stricmp(name, "walk") == 0 && func == walkPtr) {
-            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-                if (RegisterFunctionSafe(L, Lua_Walk, "walk")) {
-                    LogWalkBindingState(L, "Hook_Register post-walk");
-                }
+        if (_stricmp(name, "UOFlow.Walk.move") == 0 && func == walkPtr) {
+            if (auto L2 = static_cast<lua_State*>(Engine::LuaState())) {
+                LogWalkBindingState(L2, "Hook_Register post-UOFlow.Walk.move");
             }
         } else if (_stricmp(name, "bindWalk") == 0 && func == bindPtr) {
-            if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-                if (RegisterFunctionSafe(L, Lua_BindWalk, "bindWalk")) {
-                    LogWalkBindingState(L, "Hook_Register post-bindWalk");
-                }
+            if (auto L2 = static_cast<lua_State*>(Engine::LuaState())) {
+                LogWalkBindingState(L2, "Hook_Register post-bindWalk");
             }
         }
     }
@@ -447,33 +455,23 @@ void RegisterOurLuaFunctions()
     }
 
     if (movementReady && !walkReg) {
-        WriteRawLog("Registering walk Lua function...");
-        bool registered = RegisterViaClient(L, Lua_Walk, "walk");
-        if (!registered) {
-            char buf[128];
-            sprintf_s(buf, sizeof(buf), "walk registration using lua_State=%p", static_cast<void*>(L));
-            WriteRawLog(buf);
-            if (RegisterFunctionSafe(L, Lua_Walk, "walk")) {
-                registered = true;
-            } else {
-                WriteRawLog("Failed to register walk; will retry");
-                return;
-            }
-        }
-        if (registered) {
-            WriteRawLog("Successfully registered walk");
+        WriteRawLog("Registering UOFlow.Walk.move function via client helper...");
+        if (RegisterViaClient(L, Lua_Walk, "UOFlow.Walk.move")) {
             char buf[160];
-            sprintf_s(buf, sizeof(buf), "walk registration used fn=%p (Lua_Walk=%p)",
+            sprintf_s(buf, sizeof(buf), "UOFlow.Walk.move registration used fn=%p (Lua_Walk=%p)",
                 reinterpret_cast<void*>(Lua_Walk), reinterpret_cast<void*>(&Lua_Walk));
             WriteRawLog(buf);
             walkReg = true;
+        } else {
+            WriteRawLog("Failed to register UOFlow.Walk.move; will retry");
+            return;
         }
     }
     else if (!movementReady && !walkReg) {
-        WriteRawLog("walk function prerequisites missing");
+        WriteRawLog("UOFlow.Walk.move prerequisites missing");
     }
 
-    WriteRawLog("Ensuring walk binding via helper registration");
+    WriteRawLog("Ensuring UOFlow.Walk.move binding via helper registration");
     ForceWalkBinding(L, "post-register");
 
     static bool bindReg = false;

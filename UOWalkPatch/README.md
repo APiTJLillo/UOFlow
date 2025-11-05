@@ -33,7 +33,8 @@ next to the DLL if possible, otherwise in `%WINDIR%\Temp`.
 ## Lua functions
 
 The patch exposes a couple of helper calls to Lua. `DummyPrint` simply logs a
-message and `walk` triggers the client's internal movement routine. For sending
+message and `UOFlow.Walk.move` triggers the client's internal movement routine.
+For sending
 arbitrary packets without Lua, the DLL exports a `SendRaw` function that
 forwards a byte buffer through the client's network layer. Internally the DLL
 hooks the Winsock send-family (`send`, `WSASend`, `WSASendTo`, `sendto`) to

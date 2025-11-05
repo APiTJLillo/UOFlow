@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Interface>
+<Interface xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../Interface.xsd">
   <Scripts>
-    <Script file="Source/UOFlowStatus.lua"/>
+    <Script file="Source/UOFlow/UOFlowStatus.lua"/>
   </Scripts>
 
   <Windows>
@@ -9,10 +9,10 @@
     <!-- Root HUD window -->
     <Window name="UOFlowStatusWindowTemplate" movable="true" layer="secondary">
       <Size>
-        <AbsPoint x="220" y="120"/>
+        <AbsPoint x="320" y="120"/>
       </Size>
       <Anchors>
-        <Anchor point="topleft" relativeTo="Root" relativePoint="topleft">
+        <Anchor point="topleft" relativePoint="topleft">
           <AbsPoint x="40" y="100"/>
         </Anchor>
       </Anchors>
@@ -23,28 +23,20 @@
       </EventHandlers>
 
       <Windows>
-        <FullResizeImage name="$parentChrome" inherits="UO_Default_Inner_Window_Frame">
+        <FullResizeImage name="$parentChrome" inherits="UO_Default_Inner_Window_Frame" layer="background" handleinput="false">
           <Anchors>
             <Anchor point="topleft" relativePoint="topleft"/>
             <Anchor point="bottomright" relativePoint="bottomright"/>
           </Anchors>
         </FullResizeImage>
 
-        <Label name="$parentTitle" font="UO_DefaultText" text="UOFlow Status">
-          <Anchors>
-            <Anchor point="topleft" relativePoint="topleft">
-              <AbsPoint x="8" y="6"/>
-            </Anchor>
-          </Anchors>
-        </Label>
-
-        <Window name="$parentList">
+        <Window name="$parentList" clipchildren="true">
           <Size>
-            <AbsPoint x="208" y="90"/>
+            <AbsPoint x="300" y="90"/>
           </Size>
           <Anchors>
             <Anchor point="topleft" relativePoint="topleft">
-              <AbsPoint x="6" y="24"/>
+              <AbsPoint x="105" y="5"/>
             </Anchor>
           </Anchors>
         </Window>
@@ -54,28 +46,29 @@
     <!-- One status row: dot + label + value -->
     <Window name="UOFlowStatusRowTemplate" layer="secondary">
       <Size>
-        <AbsPoint x="208" y="16"/>
+        <AbsPoint x="300" y="16"/>
       </Size>
 
       <Windows>
-        <Label name="$parentDot" font="UO_DefaultText" text="">
-          <Anchors>
-            <Anchor point="topleft" relativePoint="topleft"/>
-          </Anchors>
-        </Label>
 
         <Label name="$parentLabel" font="UO_DefaultText" text="">
+          <Size>
+            <AbsPoint x="110" y="16"/>
+          </Size>
           <Anchors>
-            <Anchor point="topleft" relativeTo="$parentDot" relativePoint="topright">
-              <AbsPoint x="6" y="-2"/>
+            <Anchor point="topleft" relativePoint="topright">
+              <AbsPoint x="6" y="0"/>
             </Anchor>
           </Anchors>
         </Label>
 
         <Label name="$parentVal" font="UO_DefaultText" text="">
+          <Size>
+            <AbsPoint x="90" y="16"/>
+          </Size>
           <Anchors>
-            <Anchor point="topleft" relativeTo="$parentLabel" relativePoint="topright">
-              <AbsPoint x="80" y="0"/>
+            <Anchor point="topleft" relativePoint="topright">
+              <AbsPoint x="100" y="0"/>
             </Anchor>
           </Anchors>
         </Label>
@@ -84,4 +77,3 @@
 
   </Windows>
 </Interface>
-
