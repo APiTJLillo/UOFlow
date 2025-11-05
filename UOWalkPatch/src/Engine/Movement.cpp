@@ -844,6 +844,8 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
         Engine::Lua::ScheduleWalkBinding();
     }
 
+    // Avoid calling into Lua from movement update to prevent re-entrancy issues.
+
     return rc;
 }
 

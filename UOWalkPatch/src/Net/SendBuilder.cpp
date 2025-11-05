@@ -141,6 +141,8 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
     LONG previous = InterlockedExchange(&g_needWalkReg, 0);
     if (previous != 0)
         Engine::Lua::ScheduleWalkBinding();
+    // Use network activity as a safe-ish place to poll late Lua installs (throttled internally).
+    Engine::Lua::PollLateInstalls();
     g_sendPacket(thisPtr, pkt, len);
 }
 

@@ -3,13 +3,29 @@
 #include <cctype>
 #include <cstring>
 #include <minhook.h>
+#include <psapi.h>
+#include <string>
+#include <cstdlib>
+#include <string>
 
 #include "Core/Logging.hpp"
+#include "Core/PatternScan.hpp"
+#include "Core/Config.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
 #include "LuaPlus.h"
+
+// LuaPlus.h intentionally exposes only a subset of the Lua C API.
+// Declare the few additional APIs we need for stack manipulation + pcall usage.
+extern "C" {
+    LUA_API void lua_insert(lua_State* L, int idx);
+    LUA_API void lua_pushvalue(lua_State* L, int idx);
+}
+#ifndef LUA_MULTRET
+#define LUA_MULTRET (-1)
+#endif
 
 
 namespace {
@@ -39,10 +55,17 @@ enum ContextLogBits : unsigned {
     static volatile LONG g_pendingRegistration = 0;
     static thread_local bool g_inScriptRegistration = false;
 
+    // Late-install control for action wrappers
+    static volatile LONG g_actionWrappersInstalled = 0;
+    static volatile LONG g_targetApiSeen = 0;
+    static DWORD g_targetApiTimestamp = 0;
+
     // Captured originals for key client Lua C functions we want to trace.
     static LuaFn g_origUserActionCastSpell = nullptr;
     static LuaFn g_origUserActionCastSpellOnId = nullptr;
     static LuaFn g_origUserActionUseSkill = nullptr;
+
+    static volatile LONG g_directActionHooksInstalled = 0;
 }
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
@@ -51,6 +74,7 @@ static int __cdecl Lua_BindWalk(lua_State* L);
 static int __cdecl Lua_UserActionCastSpell_W(lua_State* L);
 static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L);
 static int __cdecl Lua_UserActionUseSkill_W(lua_State* L);
+static int CallSavedOriginal(lua_State* L, const char* savedName);
 
 // (no-op helper removed)
 
@@ -125,6 +149,160 @@ static bool RegisterFunctionSafe(lua_State* L, lua_CFunction fn, const char* nam
         sprintf_s(buf, sizeof(buf), "Exception registering Lua function '%s'", name ? name : "<null>");
         WriteRawLog(buf);
         return false;
+    }
+}
+
+// Save _G[name] as _G[name__orig] and replace it with our wrapper using only the Lua API.
+static bool SaveAndReplace(lua_State* L, const char* name, lua_CFunction wrapper)
+{
+    if (!L || !name || !wrapper) return false;
+    int top = lua_gettop(L);
+    lua_getglobal(L, name);
+    if (lua_type(L, -1) != LUA_TFUNCTION) {
+        lua_settop(L, top);
+        return false;
+    }
+    // Save original as name__orig (lua_setfield pops the value)
+    std::string saved = std::string(name) + "__orig";
+    lua_setfield(L, LUA_GLOBALSINDEX, saved.c_str());
+    // Set wrapper
+    lua_pushcfunction(L, wrapper);
+    lua_setglobal(L, name);
+    char buf[192];
+    sprintf_s(buf, sizeof(buf), "SaveAndReplace: wrapped %s with %p (saved as %s)", name,
+              reinterpret_cast<void*>(wrapper), saved.c_str());
+    WriteRawLog(buf);
+    lua_settop(L, top);
+    return true;
+}
+
+// Attempt action wrapper install after target APIs appear and a small delay has passed.
+static void TryInstallActionWrappers()
+{
+    if (InterlockedCompareExchange(&g_actionWrappersInstalled, 0, 0) != 0)
+        return;
+    auto L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L) return;
+
+    __try {
+        // Gated logging to avoid spam while waiting for globals to exist
+        static DWORD s_nextMissingLogMs = 0;
+        DWORD now = GetTickCount();
+        auto tryWrap = [&](const char* n, lua_CFunction w) -> bool {
+            int t0 = lua_gettop(L);
+            lua_getglobal(L, n);
+            bool present = (lua_type(L, -1) == LUA_TFUNCTION);
+            lua_pop(L, 1);
+            if (!present) {
+                if (now >= s_nextMissingLogMs) {
+                    char b[160];
+                    sprintf_s(b, sizeof(b), "TryInstallActionWrappers: '%s' not found; will retry", n);
+                    WriteRawLog(b);
+                }
+                return false;
+            }
+            return SaveAndReplace(L, n, w);
+        };
+
+        bool any = false;
+        any |= tryWrap("UserActionCastSpell", &Lua_UserActionCastSpell_W);
+        any |= tryWrap("UserActionCastSpellOnId", &Lua_UserActionCastSpellOnId_W);
+        any |= tryWrap("UserActionUseSkill", &Lua_UserActionUseSkill_W);
+        if (any) {
+            InterlockedExchange(&g_actionWrappersInstalled, 1);
+            WriteRawLog("TryInstallActionWrappers: installed action wrappers via Lua API");
+        }
+        if (now >= s_nextMissingLogMs) {
+            s_nextMissingLogMs = now + 1000;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("TryInstallActionWrappers: exception while probing Lua globals; will retry later");
+    }
+}
+
+// Find and hook action C functions directly by scanning for registration sites:
+//   push "UserActionCastSpell"; push <fn>; push <ctx>; call RegisterLuaFunction
+static BYTE* FindActionFuncByName(const char* actionName)
+{
+    if (!actionName || !g_registerTarget)
+        return nullptr;
+
+    HMODULE hExe = GetModuleHandleA(nullptr);
+    if (!hExe) return nullptr;
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), hExe, &mi, sizeof(mi)))
+        return nullptr;
+
+    // Locate the ASCII string in the image
+    BYTE* base = static_cast<BYTE*>(mi.lpBaseOfDll);
+    SIZE_T size = mi.SizeOfImage;
+    SIZE_T nameLen = strlen(actionName) + 1; // include NUL
+    BYTE* strAddr = FindBytes(base, size, reinterpret_cast<const BYTE*>(actionName), nameLen);
+    if (!strAddr)
+        return nullptr;
+
+    // Search for code sequence: 68 <strAddr> 68 <fnAddr> 5? E8 <rel32 to g_registerTarget>
+    // Scan the entire image; verify the E8 target matches g_registerTarget
+    for (BYTE* p = base; p + 16 < base + size; ++p)
+    {
+        if (p[0] != 0x68) continue; // push imm32
+        DWORD imm = *reinterpret_cast<DWORD*>(p + 1);
+        if (imm != reinterpret_cast<DWORD>(strAddr))
+            continue;
+
+        BYTE* q = p + 5;
+        if (q[0] != 0x68) // push imm32 (fn)
+            continue;
+        DWORD fnImm = *reinterpret_cast<DWORD*>(q + 1);
+        BYTE* r = q + 5;
+        if (!(r[0] >= 0x50 && r[0] <= 0x57)) // push r32 (context)
+            continue;
+        BYTE* callSite = r + 1;
+        if (callSite[0] != 0xE8)
+            continue;
+        INT32 rel = *reinterpret_cast<INT32*>(callSite + 1);
+        BYTE* callee = callSite + 5 + rel;
+        if (reinterpret_cast<void*>(callee) != g_registerTarget)
+            continue;
+        return reinterpret_cast<BYTE*>(fnImm);
+    }
+    return nullptr;
+}
+
+static void TryInstallDirectActionHooks()
+{
+    if (InterlockedCompareExchange(&g_directActionHooksInstalled, 0, 0) != 0)
+        return;
+
+    HMODULE hExe = GetModuleHandleA(nullptr);
+    if (!hExe) return;
+
+    MH_STATUS init = MH_Initialize();
+    (void)init; // ignore already-initialized status
+
+    bool any = false;
+    auto hookOne = [&](const char* name, LuaFn& orig, lua_CFunction wrapper) {
+        if (orig) return; // already captured via register hook
+        BYTE* target = FindActionFuncByName(name);
+        if (!target)
+            return;
+        if (MH_CreateHook(reinterpret_cast<void*>(target), wrapper, reinterpret_cast<void**>(&orig)) == MH_OK &&
+            MH_EnableHook(reinterpret_cast<void*>(target)) == MH_OK)
+        {
+            char buf[192];
+            sprintf_s(buf, sizeof(buf), "DirectHook: hooked %s at %p (orig=%p)", name, target, reinterpret_cast<void*>(orig));
+            WriteRawLog(buf);
+            any = true;
+        }
+    };
+
+    hookOne("UserActionCastSpell", g_origUserActionCastSpell, &Lua_UserActionCastSpell_W);
+    hookOne("UserActionCastSpellOnId", g_origUserActionCastSpellOnId, &Lua_UserActionCastSpellOnId_W);
+    hookOne("UserActionUseSkill", g_origUserActionUseSkill, &Lua_UserActionUseSkill_W);
+
+    if (any) {
+        InterlockedExchange(&g_directActionHooksInstalled, 1);
     }
 }
 
@@ -373,9 +551,26 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
                 WriteRawLog("Hook_Register: wrapped UserActionUseSkill");
             }
         }
+        else if (_stricmp(name, "RequestTargetInfo") == 0)
+        {
+            g_targetApiTimestamp = GetTickCount();
+            InterlockedExchange(&g_targetApiSeen, 1);
+        }
+        else if (_stricmp(name, "ClearCurrentTarget") == 0)
+        {
+            g_targetApiTimestamp = GetTickCount();
+            InterlockedExchange(&g_targetApiSeen, 1);
+        }
     }
 
     int rc = g_clientRegister ? g_clientRegister(ctx, outFunc, name) : 0;
+
+    // If targeting APIs have been registered, attempt late wrapper install now
+    if (name && ( _stricmp(name, "RequestTargetInfo") == 0 || _stricmp(name, "ClearCurrentTarget") == 0)) {
+        g_targetApiTimestamp = GetTickCount();
+        InterlockedExchange(&g_targetApiSeen, 1);
+        TryInstallActionWrappers();
+    }
 
     uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
     uintptr_t bindInt = reinterpret_cast<uintptr_t>(&Lua_BindWalk);
@@ -393,14 +588,12 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         }
     }
 
-    if (!g_inScriptRegistration) {
-        if (InterlockedExchange(&g_pendingRegistration, 0)) {
-            g_inScriptRegistration = true;
-            Engine::Lua::RegisterOurLuaFunctions();
-            g_inScriptRegistration = false;
-        }
-    }
+    // Avoid calling back into broader Lua registration from within the client's
+    // RegisterLuaFunction path to minimize risk during world load.
+    // Previously this invoked RegisterOurLuaFunctions() here; that proved risky.
 
+    // Attempt late install of action wrappers once target APIs are present
+    TryInstallActionWrappers();
     return rc;
 }
 
@@ -448,14 +641,20 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
 {
     WriteRawLog("[Lua] UserActionCastSpell() wrapper invoked");
     DumpStackTag("CastSpell");
-    if (g_origUserActionCastSpell) {
-        int rc = 0;
-        __try { rc = g_origUserActionCastSpell(L); }
-        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionCastSpell original threw"); }
-        WriteRawLog("[Lua] UserActionCastSpell() wrapper exit (orig ptr)");
+    // Prefer saved original in Lua state; fall back to captured pointer.
+    int rc = CallSavedOriginal(L, "UserActionCastSpell__orig");
+    if (rc >= 0) {
+        WriteRawLog("[Lua] UserActionCastSpell() wrapper exit (saved)");
         return rc;
     }
-    WriteRawLog("[Lua] UserActionCastSpell original not captured");
+    if (g_origUserActionCastSpell) {
+        int out = 0;
+        __try { out = g_origUserActionCastSpell(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionCastSpell original threw"); }
+        WriteRawLog("[Lua] UserActionCastSpell() wrapper exit (orig ptr)");
+        return out;
+    }
+    WriteRawLog("[Lua] UserActionCastSpell original missing (saved and ptr)");
     return 0;
 }
 
@@ -463,14 +662,19 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
 {
     WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper invoked");
     DumpStackTag("CastSpellOnId");
-    if (g_origUserActionCastSpellOnId) {
-        int rc = 0;
-        __try { rc = g_origUserActionCastSpellOnId(L); }
-        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionCastSpellOnId original threw"); }
-        WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper exit (orig ptr)");
+    int rc = CallSavedOriginal(L, "UserActionCastSpellOnId__orig");
+    if (rc >= 0) {
+        WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper exit (saved)");
         return rc;
     }
-    WriteRawLog("[Lua] UserActionCastSpellOnId original not captured");
+    if (g_origUserActionCastSpellOnId) {
+        int out = 0;
+        __try { out = g_origUserActionCastSpellOnId(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionCastSpellOnId original threw"); }
+        WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper exit (orig ptr)");
+        return out;
+    }
+    WriteRawLog("[Lua] UserActionCastSpellOnId original missing (saved and ptr)");
     return 0;
 }
 
@@ -478,15 +682,44 @@ static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
 {
     WriteRawLog("[Lua] UserActionUseSkill() wrapper invoked");
     DumpStackTag("UseSkill");
-    if (g_origUserActionUseSkill) {
-        int rc = 0;
-        __try { rc = g_origUserActionUseSkill(L); }
-        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionUseSkill original threw"); }
-        WriteRawLog("[Lua] UserActionUseSkill() wrapper exit (orig ptr)");
+    int rc = CallSavedOriginal(L, "UserActionUseSkill__orig");
+    if (rc >= 0) {
+        WriteRawLog("[Lua] UserActionUseSkill() wrapper exit (saved)");
         return rc;
     }
-    WriteRawLog("[Lua] UserActionUseSkill original not captured");
+    if (g_origUserActionUseSkill) {
+        int out = 0;
+        __try { out = g_origUserActionUseSkill(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionUseSkill original threw"); }
+        WriteRawLog("[Lua] UserActionUseSkill() wrapper exit (orig ptr)");
+        return out;
+    }
+    WriteRawLog("[Lua] UserActionUseSkill original missing (saved and ptr)");
     return 0;
+}
+
+static int CallSavedOriginal(lua_State* L, const char* savedName)
+{
+    if (!L || !savedName)
+        return -1;
+    int nargs = lua_gettop(L);
+    // Fetch saved original function
+    lua_getglobal(L, savedName);
+    if (lua_type(L, -1) != LUA_TFUNCTION) {
+        lua_pop(L, 1);
+        return -1;
+    }
+    // Move function below the existing arguments and call
+    lua_insert(L, 1);
+    int status = lua_pcall(L, nargs, LUA_MULTRET, 0);
+    if (status != 0) {
+        WriteRawLog("CallSavedOriginal: lua_pcall error invoking saved original");
+        // On error, Lua left error message on the stack; clear it
+        lua_settop(L, 0);
+        return 0;
+    }
+    // Return all results left on the stack
+    return lua_gettop(L);
 }
 
 static int __cdecl Lua_BindWalk(lua_State* L)
@@ -500,92 +733,17 @@ namespace Engine::Lua {
 
 void RegisterOurLuaFunctions()
 {
-    static bool dummyReg = false;
-    static bool walkReg = false;
-    static lua_State* lastState = nullptr;
-    static bool lastMovementReady = false;
-
+    // Keep hook resolution but avoid registering Lua functions or forcing bindings at boot.
     ResolveRegisterFunction();
 
     if (Engine::RefreshLuaStateFromSlot()) {
-        WriteRawLog("Lua state refreshed from global slot; pending re-registration");
+        WriteRawLog("Lua state refreshed from global slot");
     }
 
-    auto L = static_cast<lua_State*>(Engine::LuaState());
-    if (!L) {
-        char buf[160];
-        auto slotAddr = Engine::GlobalStateSlotAddress();
-        auto slotValue = Engine::GlobalStateSlotValue();
-        sprintf_s(buf, sizeof(buf),
-            "Lua state not available yet (slot=%p value=%p)",
-            reinterpret_cast<void*>(slotAddr),
-            slotValue);
-        WriteRawLog(buf);
-        return;
-    }
+    // Perform safe late wrapper install once target APIs exist
+    TryInstallActionWrappers();
 
-    bool movementReady = Engine::MovementReady();
-
-    if (L != lastState || movementReady != lastMovementReady) {
-        dummyReg = false;
-        walkReg = false;
-        lastState = L;
-        lastMovementReady = movementReady;
-        WriteRawLog("Lua or movement state changed; reset registration flags");
-    }
-
-    if (!dummyReg) {
-        WriteRawLog("Registering DummyPrint Lua function...");
-        bool registered = RegisterViaClient(L, Lua_DummyPrint, "DummyPrint");
-        if (!registered) {
-            char buf[128];
-            sprintf_s(buf, sizeof(buf), "DummyPrint registration using lua_State=%p", static_cast<void*>(L));
-            WriteRawLog(buf);
-            if (RegisterFunctionSafe(L, Lua_DummyPrint, "DummyPrint")) {
-                registered = true;
-            } else {
-                WriteRawLog("Failed to register DummyPrint; postponing remaining registrations");
-                return;
-            }
-        }
-        if (registered) {
-            WriteRawLog("Successfully registered DummyPrint");
-            dummyReg = true;
-        }
-    }
-
-    if (movementReady && !walkReg) {
-        WriteRawLog("Registering UOFlow.Walk.move function via client helper...");
-        if (RegisterViaClient(L, Lua_Walk, "UOFlow.Walk.move")) {
-            char buf[160];
-            sprintf_s(buf, sizeof(buf), "UOFlow.Walk.move registration used fn=%p (Lua_Walk=%p)",
-                reinterpret_cast<void*>(Lua_Walk), reinterpret_cast<void*>(&Lua_Walk));
-            WriteRawLog(buf);
-            walkReg = true;
-        } else {
-            WriteRawLog("Failed to register UOFlow.Walk.move; will retry");
-            return;
-        }
-    }
-    else if (!movementReady && !walkReg) {
-        WriteRawLog("UOFlow.Walk.move prerequisites missing");
-    }
-
-    WriteRawLog("Ensuring UOFlow.Walk.move binding via helper registration");
-    ForceWalkBinding(L, "post-register");
-
-    static bool bindReg = false;
-    if (!bindReg) {
-        WriteRawLog("Registering bindWalk Lua function...");
-        if (RegisterViaClient(L, Lua_BindWalk, "bindWalk") || RegisterFunctionSafe(L, Lua_BindWalk, "bindWalk")) {
-            WriteRawLog("Successfully registered bindWalk");
-            bindReg = true;
-        } else {
-            WriteRawLog("Failed to register bindWalk (will retry) ");
-        }
-    }
-
-    WriteRawLog("RegisterOurLuaFunctions completed");
+    WriteRawLog("RegisterOurLuaFunctions no-op (late wrappers only)");
 }
 
 void UpdateEngineContext(void* context)
@@ -615,9 +773,46 @@ void ScheduleWalkBinding()
 
 bool InitLuaBridge()
 {
-    ResolveRegisterFunction();
+    // Prefer configuration file, fall back to environment variable for compatibility.
+    bool enableHook = false;
+    if (auto v = Core::Config::TryGetBool("UOWP_ENABLE_LUA_REGISTER_HOOK"))
+        enableHook = *v;
+    else if (const char* env = std::getenv("UOWP_ENABLE_LUA_REGISTER_HOOK"))
+        enableHook = (env[0] == '1' || env[0] == 'y' || env[0] == 'Y' || env[0] == 't' || env[0] == 'T');
+
+    if (enableHook) {
+        WriteRawLog("InitLuaBridge: enabling RegisterLuaFunction hook (cfg/env)");
+        ResolveRegisterFunction();
+    } else {
+        WriteRawLog("InitLuaBridge: RegisterLuaFunction hook disabled (set UOWP_ENABLE_LUA_REGISTER_HOOK=1 in uowalkpatch.cfg)");
+    }
+    // Also try direct signature-based hooks for action functions (works even if client registered them before our hook)
+    TryInstallDirectActionHooks();
     Engine::RequestWalkRegistration();
     return true;
+}
+
+// Lightweight polling entry-point to retry late installs from a game-thread context
+void PollLateInstalls()
+{
+    static DWORD s_lastTryTick = 0;
+    DWORD now = GetTickCount();
+    if (now - s_lastTryTick < 500)
+        return;
+    s_lastTryTick = now;
+    // Optionally enable the RegisterLuaFunction hook late (via cfg/env)
+    if (!g_registerResolved) {
+        bool late = false;
+        if (auto v = Core::Config::TryGetBool("UOWP_ENABLE_LUA_REGISTER_HOOK_LATE"))
+            late = *v;
+        else if (const char* lateEnv = std::getenv("UOWP_ENABLE_LUA_REGISTER_HOOK_LATE"))
+            late = (lateEnv[0] == '1' || lateEnv[0] == 'y' || lateEnv[0] == 'Y' || lateEnv[0] == 't' || lateEnv[0] == 'T');
+        if (late) {
+            ResolveRegisterFunction();
+        }
+    }
+    TryInstallActionWrappers();
+    TryInstallDirectActionHooks();
 }
 
 void ShutdownLuaBridge()
