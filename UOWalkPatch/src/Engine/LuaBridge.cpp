@@ -14,6 +14,7 @@
 
 namespace {
     using ClientRegisterFn = int(__stdcall*)(void*, void*, const char*);
+    using LuaFn = int(__cdecl*)(lua_State*);
 
     ClientRegisterFn g_clientRegister = nullptr;
     ClientRegisterFn g_origRegister = nullptr;
@@ -35,13 +36,21 @@ enum ContextLogBits : unsigned {
     kLogBindWalk = 1u << 1,
 };
 
-static volatile LONG g_pendingRegistration = 0;
-static thread_local bool g_inScriptRegistration = false;
+    static volatile LONG g_pendingRegistration = 0;
+    static thread_local bool g_inScriptRegistration = false;
+
+    // Captured originals for key client Lua C functions we want to trace.
+    static LuaFn g_origUserActionCastSpell = nullptr;
+    static LuaFn g_origUserActionCastSpellOnId = nullptr;
+    static LuaFn g_origUserActionUseSkill = nullptr;
 }
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static int __cdecl Lua_Walk(lua_State* L);
 static int __cdecl Lua_BindWalk(lua_State* L);
+static int __cdecl Lua_UserActionCastSpell_W(lua_State* L);
+static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L);
+static int __cdecl Lua_UserActionUseSkill_W(lua_State* L);
 
 // (no-op helper removed)
 
@@ -333,7 +342,40 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         InterlockedExchange(&g_pendingRegistration, 1);
     }
 
-    int rc = g_clientRegister ? g_clientRegister(ctx, func, name) : 0;
+    // Optionally replace certain client Lua C functions with wrappers
+    void* outFunc = func;
+    if (name && func)
+    {
+        if (_stricmp(name, "UserActionCastSpell") == 0)
+        {
+            if (!g_origUserActionCastSpell)
+            {
+                g_origUserActionCastSpell = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_UserActionCastSpell_W);
+                WriteRawLog("Hook_Register: wrapped UserActionCastSpell");
+            }
+        }
+        else if (_stricmp(name, "UserActionCastSpellOnId") == 0)
+        {
+            if (!g_origUserActionCastSpellOnId)
+            {
+                g_origUserActionCastSpellOnId = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_UserActionCastSpellOnId_W);
+                WriteRawLog("Hook_Register: wrapped UserActionCastSpellOnId");
+            }
+        }
+        else if (_stricmp(name, "UserActionUseSkill") == 0 || _stricmp(name, "UserActionUsePrimaryAbility") == 0)
+        {
+            if (!g_origUserActionUseSkill)
+            {
+                g_origUserActionUseSkill = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_UserActionUseSkill_W);
+                WriteRawLog("Hook_Register: wrapped UserActionUseSkill");
+            }
+        }
+    }
+
+    int rc = g_clientRegister ? g_clientRegister(ctx, outFunc, name) : 0;
 
     uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
     uintptr_t bindInt = reinterpret_cast<uintptr_t>(&Lua_BindWalk);
@@ -387,6 +429,64 @@ static int __cdecl Lua_Walk(lua_State* L)
     WriteRawLog(ok ? "Lua_Walk -> walk enqueued" : "Lua_Walk -> walk failed");
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
+}
+
+// Helpers to dump a small callstack for correlation between first and second cast
+static void DumpStackTag(const char* tag)
+{
+    void* frames[8]{};
+    USHORT captured = RtlCaptureStackBackTrace(2, 8, frames, nullptr);
+    for (USHORT i = 0; i < captured; ++i)
+    {
+        char buf[96];
+        sprintf_s(buf, sizeof(buf), "[%s] #%u: %p", tag ? tag : "LuaWrap", i, frames[i]);
+        WriteRawLog(buf);
+    }
+}
+
+static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
+{
+    WriteRawLog("[Lua] UserActionCastSpell() wrapper invoked");
+    DumpStackTag("CastSpell");
+    if (g_origUserActionCastSpell) {
+        int rc = 0;
+        __try { rc = g_origUserActionCastSpell(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionCastSpell original threw"); }
+        WriteRawLog("[Lua] UserActionCastSpell() wrapper exit (orig ptr)");
+        return rc;
+    }
+    WriteRawLog("[Lua] UserActionCastSpell original not captured");
+    return 0;
+}
+
+static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
+{
+    WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper invoked");
+    DumpStackTag("CastSpellOnId");
+    if (g_origUserActionCastSpellOnId) {
+        int rc = 0;
+        __try { rc = g_origUserActionCastSpellOnId(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionCastSpellOnId original threw"); }
+        WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper exit (orig ptr)");
+        return rc;
+    }
+    WriteRawLog("[Lua] UserActionCastSpellOnId original not captured");
+    return 0;
+}
+
+static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
+{
+    WriteRawLog("[Lua] UserActionUseSkill() wrapper invoked");
+    DumpStackTag("UseSkill");
+    if (g_origUserActionUseSkill) {
+        int rc = 0;
+        __try { rc = g_origUserActionUseSkill(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionUseSkill original threw"); }
+        WriteRawLog("[Lua] UserActionUseSkill() wrapper exit (orig ptr)");
+        return rc;
+    }
+    WriteRawLog("[Lua] UserActionUseSkill original not captured");
+    return 0;
 }
 
 static int __cdecl Lua_BindWalk(lua_State* L)
