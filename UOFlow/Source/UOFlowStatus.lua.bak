@@ -24,23 +24,10 @@ local ROWS = {
   { key = "pace", label = "Pacing ms" },
 }
 
-local BULLET = "+"
+local BULLET = towstring(string.char(226, 128, 162))
 
 local poll -- forward declaration
 local updateRegistered = false
-local function debug_print(...)
-  if type(Debug) ~= "table" or type(Debug.Print) ~= "function" then
-    return
-  end
-  local pieces = {}
-  for i = 1, select("#", ...) do
-    local v = select(i, ...)
-    pieces[#pieces + 1] = tostring(v)
-  end
-  local msg = table.concat(pieces)
-  pcall(Debug.Print, towstring(msg))
-end
-
 
 local function setUpdateHandler(enabled)
   if enabled then
@@ -53,6 +40,7 @@ local function setUpdateHandler(enabled)
     updateRegistered = false
   end
 end
+
 
 local function setText(id, s, col)
   if not DoesWindowExist(id) then
@@ -102,9 +90,9 @@ function UOFlowStatus.Build()
     local base = list .. "Row" .. i
     if not DoesWindowExist(base) then
       CreateWindowFromTemplate(base, "UOFlowStatusRowTemplate", list)
+      WindowClearAnchors(base)
+      WindowAddAnchor(base, "topleft", list, "topleft", 0, y)
     end
-    WindowClearAnchors(base)
-    WindowAddAnchor(base, "topleft", list, "topleft", 6, y)
     y = y + 18
     WindowSetShowing(base, true)
     setText(base .. "Label", row.label, C.text)
@@ -143,17 +131,6 @@ end
 local function doPoll()
   local m = safe_call(GetWalkMetrics) or {}
   local flags = status_flags()
-  debug_print(string.format(
-    "UOFlowStatus.poll: helpers=%s engine=%s sendReady=%s fwDepth=%s acks=%s/%s stepDelay=%s inflight=%s",
-    tostring(flags.helpers),
-    tostring(flags.engineCtx),
-    tostring(flags.sendReady),
-    tostring(flags.fwDepth or m.queueDepth),
-    tostring(m.acksOk or m.ack_ok or 0),
-    tostring(m.acksDrop or m.ack_drop or 0),
-    tostring(m.stepDelay or m.stepDelayMs or safe_call(GetPacing) or "n/a"),
-    tostring(m.inflight or "n/a")
-  ))
 
   do
     local base = W .. "ListRow1"
@@ -206,10 +183,10 @@ local function doPoll()
     setText(base .. "Val", string.format("%d (inflight=%d)", ms, infl), C.text)
   end
 end
+
 poll = doPoll
 
 local accum = 0
-local FRAME_FALLBACK = 0.016
 
 function UOFlowStatus.OnUpdate(timePassed)
   if not DoesWindowExist(W) or not WindowGetShowing(W) then
@@ -220,12 +197,7 @@ function UOFlowStatus.OnUpdate(timePassed)
     return
   end
 
-  local dt = timePassed
-  if type(dt) ~= "number" or dt <= 0 then
-    dt = FRAME_FALLBACK
-  end
-
-  accum = accum + dt
+  accum = accum + (timePassed or 0)
   if accum >= 0.25 then
     poll()
     accum = 0
@@ -283,6 +255,4 @@ function UOFlowStatus.Toggle()
     UOFlowStatus.Show()
   end
 end
-
-
 

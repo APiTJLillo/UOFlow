@@ -174,7 +174,6 @@ void LoadConfig() {
             size_t cursor = 0;
             size_t linesProcessed = 0;
             size_t rawLineNumber = 0;
-            std::string currentSection;
             while (cursor < contents.size()) {
                 size_t lineEnd = contents.find_first_of("\r\n", cursor);
                 size_t segmentEnd = (lineEnd == std::string::npos) ? contents.size() : lineEnd;
@@ -197,12 +196,6 @@ void LoadConfig() {
                     cursor = nextCursor;
                     continue;
                 }
-                if (cleaned.front() == '[' && cleaned.back() == ']') {
-                    std::string section = Trim(cleaned.substr(1, cleaned.size() - 2));
-                    currentSection = ToUpperAscii(section);
-                    cursor = nextCursor;
-                    continue;
-                }
                 size_t eq = cleaned.find('=');
                 if (eq == std::string::npos) {
                     cursor = nextCursor;
@@ -214,9 +207,7 @@ void LoadConfig() {
                     cursor = nextCursor;
                     continue;
                 }
-                std::string upperKey = ToUpperAscii(key);
-                std::string fullKey = currentSection.empty() ? upperKey : (currentSection + "." + upperKey);
-                g_state.values[fullKey] = value;
+                g_state.values[ToUpperAscii(key)] = value;
                 ++linesProcessed;
                 if (linesProcessed <= 8) {
                     char lineLog[256];
@@ -355,122 +346,6 @@ std::optional<uint32_t> TryGetMilliseconds(const std::string& key, LookupResult*
     if (!value)
         return std::nullopt;
     return static_cast<uint32_t>(*value);
-}
-
-uint32_t GetSendBuilderSettleTimeoutMs() {
-    constexpr uint32_t kDefaultTimeoutMs = 30'000;
-    uint32_t timeoutMs = kDefaultTimeoutMs;
-
-    if (auto cfgTimeout = TryGetMilliseconds("SendBuilder.settle_timeout_ms")) {
-        timeoutMs = *cfgTimeout;
-    }
-
-    if (auto envTimeout = TryGetEnv("SB_SETTLE_TIMEOUT_MS")) {
-        int64_t parsed = 0;
-        if (StrToInt64(*envTimeout, parsed) && parsed >= 0) {
-            if (parsed > static_cast<int64_t>(UINT32_MAX))
-                parsed = static_cast<int64_t>(UINT32_MAX);
-            timeoutMs = static_cast<uint32_t>(parsed);
-        }
-    }
-
-    if (timeoutMs == 0)
-        timeoutMs = kDefaultTimeoutMs;
-
-    return timeoutMs;
-}
-
-bool SendBuilderAllowCallsitePivot() {
-    if (auto env = TryGetEnvBool("SB_ALLOW_CALLSITE_PIVOT"))
-        return *env;
-    if (auto cfg = TryGetBool("SendBuilder.allow_callsite_pivot"))
-        return *cfg;
-    return false;
-}
-
-bool SendBuilderAllowDbMgrPivot() {
-    if (auto env = TryGetEnvBool("SB_ALLOW_DBMGR_PIVOT"))
-        return *env;
-    if (auto cfg = TryGetBool("SendBuilder.allow_dbmgr_pivot"))
-        return *cfg;
-    return true;
-}
-
-uint32_t HelpersPostAckTimeoutMs() {
-    constexpr uint32_t kDefaultTimeoutMs = 750;
-    uint32_t timeoutMs = kDefaultTimeoutMs;
-
-    if (auto cfgTimeout = TryGetMilliseconds("Helpers.post_ack_timeout_ms"))
-        timeoutMs = *cfgTimeout;
-
-    if (auto envTimeout = TryGetEnv("HELPERS_POST_ACK_TIMEOUT_MS")) {
-        int64_t parsed = 0;
-        if (StrToInt64(*envTimeout, parsed) && parsed >= 0) {
-            if (parsed > static_cast<int64_t>(UINT32_MAX))
-                parsed = static_cast<int64_t>(UINT32_MAX);
-            timeoutMs = static_cast<uint32_t>(parsed);
-        }
-    }
-
-    return timeoutMs;
-}
-
-bool HelpersAllowApcFallback() {
-    if (auto env = TryGetEnvBool("HELPERS_ALLOW_APC_FALLBACK"))
-        return *env;
-    if (auto cfg = TryGetBool("Helpers.allow_apc_fallback"))
-        return *cfg;
-    return true;
-}
-
-bool HelpersAllowRemoteThreadFallback() {
-    if (auto env = TryGetEnvBool("HELPERS_ALLOW_REMOTE_THREAD_FALLBACK"))
-        return *env;
-    if (auto cfg = TryGetBool("Helpers.allow_remote_thread_fallback"))
-        return *cfg;
-    return true;
-}
-
-bool HelpersIgnoreGlobalSettleIfSbReady() {
-    if (auto env = TryGetEnvBool("HELPERS_IGNORE_GLOBAL_SETTLE_IF_SB_READY"))
-        return *env;
-    if (auto cfg = TryGetBool("Helpers.ignore_global_settle_if_sb_ready"))
-        return *cfg;
-    return true;
-}
-
-std::optional<std::string> GetLoggingLevel() {
-    if (auto env = TryGetEnv("LOG_LEVEL"))
-        return env;
-    if (auto cfg = TryGetValue("LOGGING.LEVEL"))
-        return cfg;
-    return std::nullopt;
-}
-
-std::optional<uint32_t> GetLoggingBurstDebugMs() {
-    if (auto env = TryGetEnv("LOGGING_BURST_DEBUG_MS")) {
-        int64_t parsed = 0;
-        if (StrToInt64(*env, parsed) && parsed >= 0 && parsed <= static_cast<int64_t>(UINT32_MAX))
-            return static_cast<uint32_t>(parsed);
-    }
-    return TryGetMilliseconds("LOGGING.BURST_DEBUG_MS");
-}
-
-std::optional<uint32_t> GetLoggingDebounceMs() {
-    if (auto env = TryGetEnv("LOGGING_DEBOUNCE_MS")) {
-        int64_t parsed = 0;
-        if (StrToInt64(*env, parsed) && parsed >= 0 && parsed <= static_cast<int64_t>(UINT32_MAX))
-            return static_cast<uint32_t>(parsed);
-    }
-    return TryGetMilliseconds("LOGGING.DEBOUNCE_SAME_LINE_MS");
-}
-
-std::optional<std::string> GetLoggingCategories() {
-    if (auto env = TryGetEnv("LOGGING_CATEGORIES"))
-        return env;
-    if (auto cfg = TryGetValue("LOGGING.CATEGORIES"))
-        return cfg;
-    return std::nullopt;
 }
 
 std::string ConfigSourcePath() {

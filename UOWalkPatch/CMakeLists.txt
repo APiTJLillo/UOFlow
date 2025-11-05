@@ -12,22 +12,24 @@ set_property(GLOBAL PROPERTY FIND_LIBRARY_USE_LIB32_PATHS TRUE)
 set(LUAPLUS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/external/luaplus")
 set(LUAPLUS_INCLUDE_DIR "${LUAPLUS_ROOT}/include")
 
-# Find lib.exe in Visual Studio Developer Command Prompt environment
-find_program(VS_LIB_EXE lib REQUIRED)
+# Default to the prebuilt import library shipped in-tree
+set(LUAPLUS_LIBRARY "${LUAPLUS_ROOT}/luaplus_1100.lib")
 
-# Generate import library at build time
-add_custom_command(
-    OUTPUT "${CMAKE_BINARY_DIR}/luaplus_1100.lib"
-    COMMAND ${VS_LIB_EXE} /def:"${CMAKE_CURRENT_SOURCE_DIR}/luaplus.def" /machine:x86 /out:"${CMAKE_BINARY_DIR}/luaplus_1100.lib"
-    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/luaplus.def"
-    COMMENT "Generating LuaPlus import library"
-)
-
-add_custom_target(luaplus_import_lib
-    DEPENDS "${CMAKE_BINARY_DIR}/luaplus_1100.lib"
-)
-
-set(LUAPLUS_LIBRARY "${CMAKE_BINARY_DIR}/luaplus_1100.lib")
+# Optionally generate the import library at build time if lib.exe is available
+find_program(VS_LIB_EXE lib)
+if(VS_LIB_EXE)
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/luaplus_1100.lib"
+        COMMAND ${VS_LIB_EXE} /def:"${CMAKE_CURRENT_SOURCE_DIR}/luaplus.def" /machine:x86 /out:"${CMAKE_BINARY_DIR}/luaplus_1100.lib"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/luaplus.def"
+        COMMENT "Generating LuaPlus import library"
+    )
+    add_custom_target(luaplus_import_lib
+        DEPENDS "${CMAKE_BINARY_DIR}/luaplus_1100.lib"
+    )
+    # Prefer the generated lib if available
+    set(LUAPLUS_LIBRARY "${CMAKE_BINARY_DIR}/luaplus_1100.lib")
+endif()
 
 add_subdirectory(external/minhook/src)
 
@@ -46,6 +48,7 @@ if(MSVC)
         /EHa       # Enable SEH exceptions
         /MP        # Multi-processor compilation
         /wd4996   # Disable deprecation warnings
+        /Zi        # Generate debug info
         /Gy       # Function-level linking
         /Gm-      # Disable minimal rebuild
         /GS-      # Disable buffer security check
@@ -70,37 +73,16 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 # Add the DLL project
 add_library(UOWalkPatchDLL SHARED
     src/dllmain.cpp
-    src/Core/Config.cpp
-    src/Core/CoreFlags.cpp
     src/Core/Logging.cpp
-    src/Core/Startup.cpp
     src/Core/PatternScan.cpp
     src/Core/Utils.cpp
-    src/Core/Bind.cpp
-    src/Core/EarlyTrace.cpp
     src/Core/MinHookHelpers.cpp
-    src/Core/CrashHandler.cpp
-    src/Core/SafeMem.cpp
-    src/Core/RejectCache.cpp
-    src/Core/TrustedEndpointCache.cpp
-    src/Core/SendRing.cpp
-    src/Win32/SafeProbe.cpp
     src/Net/PacketTrace.cpp
-    src/Net/SendDiscover.cpp
     src/Net/SendBuilder.cpp
-    src/Net/NetCfgPivot.cpp
-    src/Net/SendSampleStore.cpp
     src/Engine/GlobalState.cpp
     src/Engine/Movement.cpp
     src/Engine/LuaBridge.cpp
-    src/Engine/lua_safe.cpp
-    src/Engine/LuaStateRegistry.cpp
-    src/Walk/WalkController.cpp
-    src/Util/OwnerPump.cpp
-    src/Util/RegionWatch.cpp
 )
-
-target_compile_definitions(UOWalkPatchDLL PRIVATE SAFE_LUA_API_GUARD=1)
 
 target_include_directories(UOWalkPatchDLL PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -118,7 +100,9 @@ target_link_libraries(UOWalkPatchDLL PRIVATE
     ${LUAPLUS_LIBRARY}
     delayimp
 )
-add_dependencies(UOWalkPatchDLL luaplus_import_lib)
+if(TARGET luaplus_import_lib)
+    add_dependencies(UOWalkPatchDLL luaplus_import_lib)
+endif()
 
 # Delay-load LuaPlus so it can be loaded manually from our directory
 target_link_options(UOWalkPatchDLL PRIVATE "/DELAYLOAD:luaplus_1100.dll")
@@ -151,40 +135,9 @@ add_custom_command(
   COMMENT "Copying luaplus_1100.dll next to UOWalkPatchDLL"
 )
 
-target_link_libraries(UOWalkPatchDLL PRIVATE
-    "${CMAKE_SOURCE_DIR}/external/luaplus/luaplus_1100.lib")
+## Link to LuaPlus via LUAPLUS_LIBRARY only (handled above)
 
 # Set DLL-specific flags
-option(UOWALK_RELEASE_SYMBOLS "Emit full debug symbols and keep functions in Release builds" OFF)
-
-set(UOWALK_RELEASE_LINK_OPTIONS
-    /SUBSYSTEM:WINDOWS
-    /SAFESEH:NO
-    /NXCOMPAT:NO
-    /MACHINE:X86
-    /NODEFAULTLIB:msvcrt.lib
-    /MAP
-)
-
-if(UOWALK_RELEASE_SYMBOLS)
-    list(APPEND UOWALK_RELEASE_LINK_OPTIONS
-        /DEBUG:FULL
-        /INCREMENTAL:NO
-        /OPT:NOREF
-        /OPT:NOICF
-    )
-    target_compile_options(UOWalkPatchDLL PRIVATE $<$<CONFIG:Release>:/Z7>)
-    target_compile_options(UOWalkPatchDLL PRIVATE $<$<NOT:$<CONFIG:Release>>:/Zi>)
-else()
-    list(APPEND UOWALK_RELEASE_LINK_OPTIONS
-        /DEBUG
-        /INCREMENTAL:NO
-        /OPT:REF
-        /OPT:ICF
-    )
-    target_compile_options(UOWalkPatchDLL PRIVATE /Zi)
-endif()
-
 target_link_options(UOWalkPatchDLL PRIVATE
     $<$<CONFIG:Debug>:
         /SUBSYSTEM:WINDOWS
@@ -196,9 +149,18 @@ target_link_options(UOWalkPatchDLL PRIVATE
         /OPT:NOREF
         /OPT:NOICF
         /NODEFAULTLIB:msvcrt.lib
-        /MAP
     >
-    $<$<CONFIG:Release>:${UOWALK_RELEASE_LINK_OPTIONS}>
+    $<$<CONFIG:Release>:
+        /SUBSYSTEM:WINDOWS
+        /SAFESEH:NO
+        /NXCOMPAT:NO
+        /MACHINE:X86
+        /DEBUG
+        /INCREMENTAL:NO
+        /OPT:REF
+        /OPT:ICF
+        /NODEFAULTLIB:msvcrt.lib
+    >
 )
 
 # Add the injector executable
@@ -256,21 +218,3 @@ add_custom_command(
         "$<TARGET_FILE:UOWalkPatchDLL>"
         "$<TARGET_FILE_DIR:UOInjector>"
 )
-
-add_executable(DumpAnalyzer tools/DumpAnalyzer.cpp)
-target_link_libraries(DumpAnalyzer PRIVATE dbghelp)
-set_target_properties(DumpAnalyzer PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-
-add_executable(UOWalkPatchTests
-    tests/ScannerStage3Tests.cpp
-)
-
-target_include_directories(UOWalkPatchTests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-set_target_properties(UOWalkPatchTests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-)
-target_link_libraries(UOWalkPatchTests PRIVATE UOWalkPatchDLL)

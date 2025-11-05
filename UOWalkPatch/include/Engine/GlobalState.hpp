@@ -11,10 +11,7 @@ struct GlobalStateInfo {
     uint32_t initFlags;
     void*    networkConfig;
     void*    engineContext;
-    union {
-        void*    globalFacetCache;
-        void*    engineVtable; // alias: observed to hold the engine vtable pointer in recent client builds
-    };
+    void*    globalFacetCache;
     bool     shutdownInitiated;
     void*    resourceNodePtr;
     void*    coreResourceMgr;
@@ -29,6 +26,5 @@ namespace Engine {
     uintptr_t GlobalStateSlotAddress();
     GlobalStateInfo* GlobalStateSlotValue();
     bool RefreshLuaStateFromSlot();
-    std::uint32_t GlobalStateCookie();
     void* FindRegisterLuaFunction();
 }

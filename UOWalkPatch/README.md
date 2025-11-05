@@ -1,7 +1,7 @@
 # UOWalkPatch
 
 This utility injects a helper stub into the running Ultima Online Enhanced Client. The stub registers additional Lua natives which expand the built in macro functionality. Signatures for client functions are defined in `signatures.json`.
-`command_list.json` contains a reference list of skills and spells for use with the `processCommand` signature. 
+`command_list.json` contains a reference list of skills and spells for use with the `processCommand` signature.
 
 ## Building
 
@@ -40,12 +40,6 @@ hooks the Winsock send-family (`send`, `WSASend`, `WSASendTo`, `sendto`) to
 surface the game's packet wrapper and capture the network manager pointer. The
 Lua functions are registered automatically when the helper locates the client's
 Lua state.
-
-`UOW.Status.flags` and `UOW.Status.flagsEx` are now exported inside a sealed
-`UOW` namespace. The install path stores the real implementations in the Lua
-registry, refreshes the namespace binding, installs shims for the legacy globals, and can optionally trace overwrites
-by launching with `UOW_TRACE_OVERWRITES=1`, which still hooks `_G.__newindex`
-long enough to report any script attempting to replace the legacy globals.
 
 ## Troubleshooting
 

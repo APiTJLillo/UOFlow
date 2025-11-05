@@ -24,10 +24,6 @@ namespace Walk::Controller {
                             std::uint32_t tickMs);
     void ApplyInflightOverride(std::uint32_t maxInflight, std::uint32_t cycleBudget);
     std::uint32_t GetInflightCount();
-    void NotifyAckOk();
     void NotifyAckSoftFail();
     void NotifyResync(const char* reason);
-    std::uint32_t GetStepDelayMs();
-    void SetStepDelayMs(std::uint32_t ms);
-    void SetMaxInflight(std::uint32_t count);
 }

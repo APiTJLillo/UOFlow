@@ -26,20 +26,5 @@
       "bridge": "process_bridge",
       "proto": "bool (__cdecl*)(const char* cmd)"
     }
-  ],
-  "movement": {
-    "vtbl_movement_player_rtti": {
-      "note": "RTTI name anchor for UObjectComponentMovementPlayer",
-      "ascii": "UObjectComponentMovementPlayer"
-    },
-    "vtbl_move_player_rtti": {
-      "note": "RTTI name anchor for UOMovePlayer/UOMoveCharacter",
-      "ascii": "UOMovePlayer"
-    },
-    "add_server_request_prologue": {
-      "pattern": "55 8B EC 83 EC ?? 56 8B F1",
-      "mask": "xxxxx?xxx",
-      "note": "thiscall AddServerRequest(self, req, run, flags, queued) masked prologue"
-    }
   ]
 }

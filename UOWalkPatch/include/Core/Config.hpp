@@ -29,19 +29,6 @@ namespace Core::Config {
     std::optional<unsigned> TryGetUInt(const std::string& key, LookupResult* outMeta = nullptr);
     std::optional<uint32_t> TryGetMilliseconds(const std::string& key, LookupResult* outMeta = nullptr);
 
-    uint32_t GetSendBuilderSettleTimeoutMs();
-    bool SendBuilderAllowCallsitePivot();
-    bool SendBuilderAllowDbMgrPivot();
-    uint32_t HelpersPostAckTimeoutMs();
-    bool HelpersAllowApcFallback();
-    bool HelpersAllowRemoteThreadFallback();
-    bool HelpersIgnoreGlobalSettleIfSbReady();
-
-    std::optional<std::string> GetLoggingLevel();
-    std::optional<uint32_t> GetLoggingBurstDebugMs();
-    std::optional<uint32_t> GetLoggingDebounceMs();
-    std::optional<std::string> GetLoggingCategories();
-
     std::string ConfigSourcePath();
 
 } // namespace Core::Config

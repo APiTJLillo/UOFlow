@@ -156,7 +156,7 @@ void NotifyRange(const char* source,
 
     Log::Logf(Log::Level::Info,
               Log::Category::Hooks,
-              "[SB][WATCH] netcfg %08llX -> RW/COMMIT; scheduling scan",
+              "[SB][WATCH] netcfg %08llX -> RW/COMMIT; scanning now",
               static_cast<unsigned long long>(baseForLog));
 
     cb();

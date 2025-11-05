@@ -1,20 +1,14 @@
 #include <windows.h>
 #include <psapi.h>
 #include <dbghelp.h>
-#include <atomic>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
-#include "Core/CoreFlags.hpp"
 #include "Core/Logging.hpp"
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/LuaBridge.hpp"
 #include "Engine/Movement.hpp"
-#include "Net/SendBuilder.hpp"
-#include "Net/NetCfgPivot.h"
-#include "Win32/SafeProbe.h"
 
 namespace Engine {
 
@@ -27,28 +21,15 @@ static LONG g_once = 0;
 static PVOID g_vehHandle = nullptr;
 static bool g_luaStateCaptured = false;
 static GlobalStateInfo* g_lastValidatedInfo = nullptr;
-static std::atomic<std::uint32_t> g_globalStateCookie{0};
-static BYTE* g_guardPageBase = nullptr;
-static SIZE_T g_guardPageSize = 0;
-static HANDLE g_pollThread = nullptr;
-static volatile LONG g_stopPoll = 0;
-static std::atomic<bool> g_pollThreadStarted{false};
-
-namespace Lua {
-    void OnGlobalStateValidated(const GlobalStateInfo* info, std::uint32_t cookie);
-}
 
 // Forward declarations
 static void* FindGlobalStateInfo();
 static void* FindOwnerOfLuaState(void* lua);
 static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate);
 static void InstallWriteWatch();
-static void StartGlobalStatePoll();
 static DWORD WINAPI WaitForLua(LPVOID);
 static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x);
 static GlobalStateInfo* ReadSlotUnsafe();
-static DWORD WINAPI PollGlobalStateSlot(LPVOID);
-static bool HelpersAwaitingGlobalState();
 
 void* FindRegisterLuaFunction() {
     HMODULE hExe = GetModuleHandleA(nullptr);
@@ -267,16 +248,6 @@ static void* FindGlobalStateInfo() {
                             "  Resource Mgr: %p",
                             info, info->luaState, info->databaseManager, info->resourceManager);
                         WriteRawLog(buffer);
-                        if (info->databaseManager)
-                            Net::NotifyGlobalStateManager(info->databaseManager);
-                        Net::PivotFromDbMgr(info->databaseManager);
-                        uow::netcfg::GlobalStateInfo pivotInfo{};
-                        pivotInfo.lua = info->luaState;
-                        pivotInfo.dbMgr = info->databaseManager;
-                        pivotInfo.scriptCtx = info->scriptContext;
-                        pivotInfo.resourceMgr = info->resourceManager;
-                        pivotInfo.networkConfigSlot = info ? &info->networkConfig : nullptr;
-                        uow::netcfg::OnGlobalStateObserved(pivotInfo);
                         return info;
                     }
                     if (!info)
@@ -417,58 +388,29 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
                 candidate->scriptContext,
                 candidate->resourceManager);
             WriteRawLog(buffer);
-            if (candidate->databaseManager)
-                Net::NotifyGlobalStateManager(candidate->databaseManager);
-            Net::PivotFromDbMgr(candidate->databaseManager);
-            uow::netcfg::GlobalStateInfo pivotInfo{};
-            pivotInfo.lua = candidate->luaState;
-            pivotInfo.dbMgr = candidate->databaseManager;
-            pivotInfo.scriptCtx = candidate->scriptContext;
-            pivotInfo.resourceMgr = candidate->resourceManager;
-            pivotInfo.networkConfigSlot = candidate ? &candidate->networkConfig : nullptr;
-            uow::netcfg::OnGlobalStateObserved(pivotInfo);
-            InterlockedExchange(&g_flags.lua_slot_seen, 1);
 
             void* engineCtx = candidate->engineContext;
             void* networkCfg = candidate->networkConfig;
             if (engineCtx) {
-                void** vtbl = nullptr;
-                bool vtblOk = false;
-                if (sp::is_readable(engineCtx, sizeof(void*))) {
-                    __try {
-                        vtbl = *reinterpret_cast<void***>(engineCtx);
-                        vtblOk = true;
-                    } __except (EXCEPTION_EXECUTE_HANDLER) {
-                        vtblOk = false;
-                    }
-                }
-
-                void* entries[8]{};
-                bool entriesOk = false;
-                if (vtbl && sp::is_readable(vtbl, sizeof(entries))) {
-                    __try {
-                        for (int i = 0; i < 8; ++i)
-                            entries[i] = vtbl[i];
-                        entriesOk = true;
-                    } __except (EXCEPTION_EXECUTE_HANDLER) {
-                        entriesOk = false;
-                    }
-                }
-
-                if (vtblOk && entriesOk) {
+                __try {
+                    void** vtbl = *reinterpret_cast<void***>(engineCtx);
+                    void* entries[8]{};
+                    for (int i = 0; i < 8; ++i)
+                        entries[i] = vtbl ? vtbl[i] : nullptr;
                     char extra[256];
                     sprintf_s(extra, sizeof(extra),
-                              "  engineContext=%p vtbl=%p entries={%p,%p,%p,%p,%p,%p,%p,%p} networkConfig=%p",
-                              engineCtx, vtbl,
-                              entries[0], entries[1], entries[2], entries[3],
-                              entries[4], entries[5], entries[6], entries[7],
-                              networkCfg);
+                        "  engineContext=%p vtbl=%p entries={%p,%p,%p,%p,%p,%p,%p,%p} networkConfig=%p",
+                        engineCtx, vtbl,
+                        entries[0], entries[1], entries[2], entries[3],
+                        entries[4], entries[5], entries[6], entries[7],
+                        networkCfg);
                     WriteRawLog(extra);
-                } else {
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {
                     char extra[160];
                     sprintf_s(extra, sizeof(extra),
-                              "  engineContext=%p (vtbl probe skipped) networkConfig=%p",
-                              engineCtx, networkCfg);
+                        "  engineContext=%p (vtbl read failed) networkConfig=%p",
+                        engineCtx, networkCfg);
                     WriteRawLog(extra);
                 }
                 Engine::Lua::UpdateEngineContext(engineCtx);
@@ -485,10 +427,6 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
             g_luaState = candidate->luaState;
             g_luaStateCaptured = true;
             g_lastValidatedInfo = candidate;
-            std::uint32_t cookie = g_globalStateCookie.fetch_add(1, std::memory_order_acq_rel) + 1;
-            Lua::OnGlobalStateValidated(candidate, cookie);
-
-            Net::InitSendBuilder(candidate);
 
             // The Lua VM is now known; ensure helper registration runs
             RequestWalkRegistration();
@@ -503,31 +441,11 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
 
 static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x) {
     if (x->ExceptionRecord->ExceptionCode == STATUS_GUARD_PAGE_VIOLATION &&
-        x->ExceptionRecord->NumberParameters >= 2)
+        x->ExceptionRecord->NumberParameters >= 2 &&
+        (void*)x->ExceptionRecord->ExceptionInformation[1] == g_globalStateSlot)
     {
-        void* faultAddr = reinterpret_cast<void*>(x->ExceptionRecord->ExceptionInformation[1]);
-
-        bool onWatchedPage = false;
-        if (g_guardPageBase && g_guardPageSize)
-        {
-            BYTE* addr = static_cast<BYTE*>(faultAddr);
-            BYTE* base = g_guardPageBase;
-            BYTE* end = base + g_guardPageSize;
-            onWatchedPage = addr >= base && addr < end;
-        }
-        else if (faultAddr == g_globalStateSlot)
-        {
-            onWatchedPage = true;
-        }
-
-        if (!onWatchedPage)
-            return EXCEPTION_CONTINUE_SEARCH;
-
         DWORD oldProtect;
-        VirtualProtect(g_guardPageBase ? g_guardPageBase : reinterpret_cast<BYTE*>(g_globalStateSlot),
-                       g_guardPageSize ? g_guardPageSize : sizeof(void*),
-                       PAGE_READWRITE,
-                       &oldProtect);
+        VirtualProtect(g_globalStateSlot, sizeof(void*), PAGE_READWRITE, &oldProtect);
 
         GlobalStateInfo* info = ReadSlotUnsafe();
         ValidateGlobalState(info);
@@ -540,8 +458,7 @@ static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x) {
 static void InstallWriteWatch() {
     if (!g_globalStateSlot) return;
 
-    bool firstInstall = (InterlockedExchange(&g_once, 1) == 0);
-    if (firstInstall) {
+    if (InterlockedExchange(&g_once, 1) == 0) {
         char buffer[128];
         sprintf_s(buffer, sizeof(buffer), "Installing write watch on slot %p", g_globalStateSlot);
         WriteRawLog(buffer);
@@ -552,8 +469,6 @@ static void InstallWriteWatch() {
 
         DWORD oldProtect;
         if (VirtualProtect(page, si.dwPageSize, PAGE_READWRITE | PAGE_GUARD, &oldProtect)) {
-            g_guardPageBase = page;
-            g_guardPageSize = si.dwPageSize;
             g_vehHandle = AddVectoredExceptionHandler(1, VehHandler);
             WriteRawLog("Guard-page write watch installed successfully");
         }
@@ -563,8 +478,6 @@ static void InstallWriteWatch() {
             WriteRawLog(buffer);
         }
     }
-
-    StartGlobalStatePoll();
 }
 
 static GlobalStateInfo* ReadSlotUnsafe()
@@ -582,99 +495,22 @@ static GlobalStateInfo* ReadSlotUnsafe()
     return value;
 }
 
-static bool HelpersAwaitingGlobalState()
-{
-    const char* stage = Engine::Lua::GetHelperStageSummary();
-    if (!stage)
-        return true;
-    return std::strcmp(stage, "waiting_for_global_state") == 0;
-}
-
-static DWORD WINAPI PollGlobalStateSlot(LPVOID)
-{
-    constexpr DWORD kInitialDelayMs = 150;
-    constexpr DWORD kPollIntervalMs = 500;
-    constexpr DWORD kMaxAttempts = 10;
-
-    Sleep(kInitialDelayMs);
-
-    for (DWORD attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        if (InterlockedCompareExchange(&g_stopPoll, 0, 0) != 0)
-            break;
-        if (g_globalStateInfo && g_luaStateCaptured)
-            break;
-        if (!HelpersAwaitingGlobalState())
-            break;
-
-        GlobalStateInfo* slotVal = ReadSlotUnsafe();
-        if (slotVal) {
-            GlobalStateInfo* validated = ValidateGlobalState(slotVal);
-            if (validated && validated == g_globalStateInfo &&
-                g_globalStateInfo && g_globalStateInfo->luaState && g_globalStateInfo->databaseManager) {
-                Log::Logf(Log::Level::Info,
-                          Log::Category::Core,
-                          "[CORE] GlobalState polled OK @ %p",
-                          validated);
-                InterlockedExchange(&g_stopPoll, 1);
-                break;
-            }
-        }
-
-        if (attempt + 1 < kMaxAttempts)
-            Sleep(kPollIntervalMs);
-    }
-
-    g_pollThreadStarted.store(false, std::memory_order_release);
-    InterlockedExchange(&g_stopPoll, 1);
-    return 0;
-}
-
-static void StartGlobalStatePoll()
-{
-    if (!g_globalStateSlot)
-        return;
-
-    bool expected = false;
-    if (!g_pollThreadStarted.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
-        return;
-
-    InterlockedExchange(&g_stopPoll, 0);
-    HANDLE thread = CreateThread(nullptr, 0, PollGlobalStateSlot, nullptr, 0, nullptr);
-    if (!thread) {
-        g_pollThreadStarted.store(false, std::memory_order_release);
-        WriteRawLog("Failed to create GlobalState poll thread");
-        g_pollThread = nullptr;
-        return;
-    }
-    g_pollThread = thread;
-}
-
 static DWORD WINAPI WaitForLua(LPVOID) {
     WriteRawLog("Starting Lua state scan thread...");
 
     while (!g_luaStateCaptured && !g_stopScan) {
         GlobalStateInfo* info = (GlobalStateInfo*)FindGlobalStateInfo();
         if (info && info->luaState) {
-            GlobalStateInfo* active = ValidateGlobalState(info);
-            if (!active)
-                active = info;
-
-            g_globalStateInfo = active;
-            g_luaState = active ? active->luaState : nullptr;
-            if (g_luaState)
-                g_luaStateCaptured = true;
+            g_globalStateInfo = info;
+            g_luaState = info->luaState;
 
             char buffer[128];
             sprintf_s(buffer, sizeof(buffer), "Scanner found Lua State @ %p", g_luaState);
             WriteRawLog(buffer);
-            InterlockedExchange(&g_flags.lua_slot_seen, 1);
 
             // Queue Lua helper registration for the next safe point
             RequestWalkRegistration();
-            Engine::Lua::OnStateObserved(static_cast<lua_State*>(g_luaState),
-                                         active ? active->scriptContext : nullptr,
-                                         0,
-                                         false);
+
             return 0;
         }
         Sleep(200);
@@ -687,8 +523,6 @@ static DWORD WINAPI WaitForLua(LPVOID) {
 bool InitGlobalStateWatch() {
     g_stopScan = 0;
     g_luaStateCaptured = false;
-    InterlockedExchange(&g_stopPoll, 0);
-    g_pollThreadStarted.store(false, std::memory_order_release);
     g_scanThread = CreateThread(nullptr, 0, WaitForLua, nullptr, 0, nullptr);
     if (!g_scanThread) {
         WriteRawLog("Failed to create scanner thread");
@@ -699,7 +533,6 @@ bool InitGlobalStateWatch() {
 
 void ShutdownGlobalStateWatch() {
     g_stopScan = 1;
-    InterlockedExchange(&g_stopPoll, 1);
     if (g_scanThread) {
         WaitForSingleObject(g_scanThread, 1000);
         CloseHandle(g_scanThread);
@@ -709,14 +542,6 @@ void ShutdownGlobalStateWatch() {
         RemoveVectoredExceptionHandler(g_vehHandle);
         g_vehHandle = nullptr;
     }
-    if (g_pollThread) {
-        WaitForSingleObject(g_pollThread, 1000);
-        CloseHandle(g_pollThread);
-        g_pollThread = nullptr;
-    }
-    g_pollThreadStarted.store(false, std::memory_order_release);
-    g_guardPageBase = nullptr;
-    g_guardPageSize = 0;
 }
 
 void ReportLuaState(void* L) {
@@ -727,13 +552,10 @@ void ReportLuaState(void* L) {
     g_luaStateCaptured = true;
     char buffer[128];
     sprintf_s(buffer, sizeof(buffer), "Captured Lua state @ %p", L);
-   WriteRawLog(buffer);
+    WriteRawLog(buffer);
 
     g_globalStateInfo = (GlobalStateInfo*)FindOwnerOfLuaState(L);
     if (g_globalStateInfo) {
-        GlobalStateInfo* validated = ValidateGlobalState(g_globalStateInfo);
-        if (validated)
-            g_globalStateInfo = validated;
         DumpMemory("GlobalStateInfo", g_globalStateInfo, 0x40);
         if (g_scanThread) {
             WaitForSingleObject(g_scanThread, INFINITE);
@@ -744,8 +566,6 @@ void ReportLuaState(void* L) {
 
     // The Lua VM was recreated; request re-registration of helpers
     RequestWalkRegistration();
-    Engine::Lua::OnStateObserved(static_cast<lua_State*>(L),
-                                 g_globalStateInfo ? g_globalStateInfo->scriptContext : nullptr);
 }
 
 void* LuaState() {
@@ -778,14 +598,9 @@ bool RefreshLuaStateFromSlot()
             "Refreshing Lua state from slot: info=%p lua=%p", slotVal, slotVal->luaState);
         WriteRawLog(buffer);
         ValidateGlobalState(slotVal);
-        Engine::Lua::OnStateObserved(static_cast<lua_State*>(slotVal->luaState),
-                                     slotVal->scriptContext);
     }
     return changed;
 }
 
-std::uint32_t GlobalStateCookie() {
-    return g_globalStateCookie.load(std::memory_order_acquire);
-}
-
 } // namespace Engine
+
