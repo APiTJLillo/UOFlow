@@ -229,11 +229,26 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
 static WORD HelperFlagForName(const char* name);
 static int Lua_UOW_StatusFlags(lua_State* L);
 static int Lua_UOW_StatusVersion(lua_State* L);
+static int Lua_UOWalk(lua_State* L);
+static int Lua_WalkMove(lua_State* L);
 static int Lua_UOW_WalkSetPacing(lua_State* L);
 static int Lua_UOW_WalkSetInflight(lua_State* L);
 static int Lua_UOW_WalkGetMetrics(lua_State* L);
 static int Lua_UOW_DebugPing(lua_State* L);
 static int Lua_UOW_DebugStatus(lua_State* L);
+static int Lua_BindWalkHere(lua_State* L);
+static int Lua_UOWDump(lua_State* L);
+static int Lua_UOW_DebugDumpWalkAll(lua_State* L);
+// Forward decl for nested helper writer
+static bool SetNestedCFunction(lua_State* L, const char* dotted, lua_CFunction fn, DWORD* outSeh = nullptr) noexcept;
+// Legacy global alias binder (e.g., walk)
+static bool RegisterLegacyGlobal(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn);
+
+// Minimal bootstrapper to mirror old behavior when we inject late or
+// before the helper pipeline is fully ready. It attempts to make
+// _G.walk and bindWalk available immediately and schedules retries if
+// the VM is temporarily unstable.
+static void BootstrapWalkGlobals();
 
 enum class CtxValidationResult {
     Ok = 0,
@@ -612,6 +627,8 @@ static void LoadHelperRetryPolicy() {
     policy.ownerConfirmMs = std::clamp<uint32_t>(policy.ownerConfirmMs, 250u, 5000u);
     policy.minSettleMs = std::clamp<uint32_t>(policy.minSettleMs, 100u, 5000u);
     policy.debounceMs = std::clamp<uint32_t>(policy.debounceMs, 50u, 2000u);
+    if (policy.debounceMs == 0)
+        policy.debounceMs = 300u; // default debounce to coalesce bursts
 
     g_helperRetryPolicy = policy;
 
@@ -1520,6 +1537,7 @@ static void MaybeEmitHelperSummary(uint64_t now, bool force = false) {
 
 static constexpr const char* kHelperWalkName = "uow_walk";
 static constexpr const char* kHelperWalkMoveName = "WalkMove";
+static constexpr const char* kHelperWalkMoveNsName = "UOW.Walk.move";
 static constexpr const char* kHelperGetPacingName = "GetPacing";
 static constexpr const char* kHelperSetPacingName = "UOW.Walk.set_pacing";
 static constexpr const char* kHelperSetInflightName = "UOW.Walk.set_inflight";
@@ -1535,6 +1553,10 @@ static constexpr const char* kHelperSelfTestName = "uow_selftest";
 static constexpr const char* kHelperDebugName = "uow_debug";
 static constexpr const char* kHelperDebugStatusName = "UOW.Debug.status";
 static constexpr const char* kHelperDebugPingName = "UOW.Debug.ping";
+// Convenience helpers for environments that don't see global aliases
+static constexpr const char* kHelperBindWalkHereName = "bindWalk";                // simple global
+static constexpr const char* kHelperBindWalkHereNsName = "UOW.Debug.bind_walk_here"; // namespaced
+static constexpr const char* kHelperDumpWalkAllNsName = "UOW.Debug.dump_walk_all";   // namespaced
 static char g_hookSentinelKey = 0;
 
 
@@ -1959,6 +1981,9 @@ static void RegisterUOWNamespace(lua_State* L) {
 
     uint64_t gen = info.gen ? info.gen : g_uowLua.gen;
 
+    // Bind UOW.Walk.move to the proven simple mover for consistent boolean returns.
+    bool okMove = RegisterHelper(L, info, kHelperWalkMoveNsName,  Lua_WalkMove,         gen);
+    bool okMoveRaw = RegisterHelper(L, info, "UOW.Walk.move_raw", Lua_WalkMove,         gen);
     bool ok1 = RegisterHelper(L, info, kHelperStatusFlagsName,    Lua_UOW_StatusFlags,   gen);
     bool ok2 = RegisterHelper(L, info, kHelperStatusVersionName,  Lua_UOW_StatusVersion, gen);
     bool ok3 = RegisterHelper(L, info, kHelperSetPacingName,      Lua_UOW_WalkSetPacing, gen);
@@ -1966,17 +1991,31 @@ static void RegisterUOWNamespace(lua_State* L) {
     bool ok5 = RegisterHelper(L, info, kHelperGetWalkMetricsName, Lua_UOW_WalkGetMetrics, gen);
     bool ok6 = RegisterHelper(L, info, kHelperDebugPingName,      Lua_UOW_DebugPing, gen);
     bool ok7 = RegisterHelper(L, info, kHelperDebugStatusName,    Lua_UOW_DebugStatus, gen);
+    // Optional utilities for recovery and diagnostics
+    bool ok8 = RegisterHelper(L, info, kHelperBindWalkHereName,   Lua_BindWalkHere, gen);
+    bool ok9 = RegisterHelper(L, info, kHelperBindWalkHereNsName, Lua_BindWalkHere, gen);
+    bool ok10 = RegisterHelper(L, info, kHelperDumpWalkAllNsName, Lua_UOW_DebugDumpWalkAll, gen);
+    bool okDump = RegisterHelper(L, info, kHelperDumpName,        Lua_UOWDump, gen);
 
     Log::Logf(Log::Level::Info,
               Log::Category::Core,
-              "[UOW][NS] namespace installed via registrar ok=[%d,%d,%d,%d,%d,%d,%d]",
+              "[UOW][NS] namespace installed via registrar ok=[move:%d,move_raw:%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]",
+              okMove ? 1 : 0,
+              okMoveRaw ? 1 : 0,
               ok1 ? 1 : 0,
               ok2 ? 1 : 0,
               ok3 ? 1 : 0,
               ok4 ? 1 : 0,
               ok5 ? 1 : 0,
               ok6 ? 1 : 0,
-              ok7 ? 1 : 0);
+              ok7 ? 1 : 0,
+              ok8 ? 1 : 0,
+              ok9 ? 1 : 0,
+              ok10 ? 1 : 0,
+              okDump ? 1 : 0);
+
+    // Legacy global alias: walk() should mirror UOW.Walk.move
+    (void)RegisterLegacyGlobal(L, info, "walk", Lua_WalkMove);
 }
 
 static bool VerifyUOW(lua_State* L) {
@@ -2133,6 +2172,15 @@ static void OnLuaRegisterTracer(lua_State* L, const char* /*name*/) {
         return;
     // Capture the script thread as early as possible.
     EnsureScriptThread(GetCurrentThreadId(), L);
+    // Opportunistically keep legacy walk alias alive like the old build did.
+    {
+        LuaStateInfo info{};
+        if (!g_stateRegistry.GetByPointer(L, info)) {
+            auto snap = g_stateRegistry.Snapshot();
+            if (!snap.empty()) info = snap.front();
+        }
+        (void)RegisterLegacyGlobal(L, info, "walk", Lua_WalkMove);
+    }
     if (!UowCtxMatches(L, g_uowLua.gen))
         return;
     if (!UOW_IsScriptThread())
@@ -2140,6 +2188,17 @@ static void OnLuaRegisterTracer(lua_State* L, const char* /*name*/) {
 
     // Do not mutate here; queue a one-shot install on the script thread.
     UOW_ScheduleHook(L, g_uowLua.gen, g_uowLua.scriptTid, "tracer");
+
+    // Opportunistic rebind for move helpers in case UI scripts rebuilt UOW tables.
+    LuaStateInfo info{};
+    if (!g_stateRegistry.GetByPointer(L, info)) {
+        auto snap = g_stateRegistry.Snapshot();
+        if (!snap.empty())
+            info = snap.front();
+    }
+    uint64_t gen = info.gen ? info.gen : g_uowLua.gen;
+    (void)RegisterHelper(L, info, kHelperWalkMoveNsName, Lua_WalkMove, gen);
+    (void)RegisterHelper(L, info, "UOW.Walk.move_raw", Lua_WalkMove, gen);
 }
 
 static bool IsOverwriteLoggerEnabled() {
@@ -2285,6 +2344,9 @@ private:
 static void InstallPanicAndDebug(lua_State* L, LuaStateInfo& info);
 static void PostToOwnerWithTask(lua_State* L, const char* taskName, std::function<void()> fn);
 static bool IsDebugInstallRetryPending(lua_State* L, uint64_t now, DebugInstallRetryInfo* outInfo = nullptr);
+// Nested helper binding retry (for dotted names like UOW.Walk.move)
+static void ScheduleNestedHelperSet(lua_State* L, const char* name, lua_CFunction fn, uint64_t gen, uint32_t delayMs = 600, uint32_t attempt = 0);
+static void ScheduleLegacyGlobalSet(lua_State* L, const char* name, lua_CFunction fn, uint64_t gen, uint32_t delayMs = 600, uint32_t attempt = 0);
 
 static void ScheduleDebugInstallRetry(lua_State* L, uint32_t delayMs = kDebugInstallStableWindowMs) {
     if (!L)
@@ -2417,6 +2479,128 @@ static bool IsStateStableForInstall(const LuaStateInfo& info, lua_State* L, cons
     return true;
 }
 
+// --- Nested helper binding retry machinery ---
+struct NestedRetryInfo {
+    uint64_t dueTick = 0;
+    uint32_t attempt = 0;
+};
+
+static std::mutex g_nestedRetryMutex;
+static std::unordered_map<std::string, NestedRetryInfo> g_nestedRetry; // key: ptr+":"+name
+
+static std::string MakeNestedKey(lua_State* L, const char* name) {
+    char buf[32];
+    sprintf_s(buf, sizeof(buf), "%p", L);
+    std::string key(buf);
+    key.push_back(':');
+    if (name)
+        key.append(name);
+    return key;
+}
+
+static void ScheduleNestedHelperSet(lua_State* L, const char* name, lua_CFunction fn, uint64_t gen, uint32_t delayMs, uint32_t attempt) {
+    if (!L || !name || !fn)
+        return;
+    const std::string key = MakeNestedKey(L, name);
+
+    uint64_t now = GetDebugTickNow();
+    uint64_t target = now + delayMs;
+    {
+        std::lock_guard<std::mutex> lock(g_nestedRetryMutex);
+        auto& entry = g_nestedRetry[key];
+        entry.dueTick = target;
+        entry.attempt = attempt;
+    }
+
+    std::thread([state=L, nameStr=std::string(name), fn, gen, delayMs, attempt]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        PostToOwnerWithTask(state, "helpers-nested", [state, nameStr, fn, gen, attempt]() {
+            // Proceed even if ctx/gen changed; nested path will reattempt/gate itself.
+            LuaStateInfo info{};
+            if (!g_stateRegistry.GetByPointer(state, info))
+                return;
+            const char* reason = nullptr;
+            if (!IsStateStableForInstall(info, state, &reason)) {
+                // Reschedule with backoff
+                uint32_t nextAttempt = attempt + 1;
+                uint32_t nextDelay = (nextAttempt < 8) ? (400u << nextAttempt) : 4000u;
+                ScheduleNestedHelperSet(state, nameStr.c_str(), fn, gen, nextDelay, nextAttempt);
+                return;
+            }
+            DWORD nestedSeh = 0;
+            bool ok = SetNestedCFunction(state, nameStr.c_str(), fn, &nestedSeh);
+            Log::Logf(ok ? Log::Level::Info : Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "[HOOKS] helper-register nested-try name=%s ok=%d seh=0x%08lX attempt=%u",
+                      nameStr.c_str(),
+                      ok ? 1 : 0,
+                      static_cast<unsigned long>(nestedSeh),
+                      attempt);
+            if (!ok) {
+                uint32_t nextAttempt = attempt + 1;
+                if (nextAttempt <= 6) {
+                    uint32_t nextDelay = (400u << nextAttempt);
+                    ScheduleNestedHelperSet(state, nameStr.c_str(), fn, gen, nextDelay, nextAttempt);
+                }
+            } else {
+                std::lock_guard<std::mutex> lock(g_nestedRetryMutex);
+                g_nestedRetry.erase(MakeNestedKey(state, nameStr.c_str()));
+            }
+        });
+    }).detach();
+}
+
+// --- Legacy global binding retry machinery ---
+struct LegacyRetryInfo {
+    uint64_t dueTick = 0;
+    uint32_t attempt = 0;
+};
+static std::mutex g_legacyRetryMutex;
+static std::unordered_map<std::string, LegacyRetryInfo> g_legacyRetry; // key: ptr+":"+name
+
+static void ScheduleLegacyGlobalSet(lua_State* L, const char* name, lua_CFunction fn, uint64_t gen, uint32_t delayMs, uint32_t attempt) {
+    if (!L || !name || !fn)
+        return;
+    const std::string key = MakeNestedKey(L, name);
+    uint64_t now = GetDebugTickNow();
+    uint64_t target = now + delayMs;
+    {
+        std::lock_guard<std::mutex> lock(g_legacyRetryMutex);
+        auto& entry = g_legacyRetry[key];
+        entry.dueTick = target;
+        entry.attempt = attempt;
+    }
+
+    std::thread([state=L, nameStr=std::string(name), fn, gen, delayMs, attempt]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        // Use the same owner-pump tag as other helper retries so it is drained
+        // with the regular helpers cycle in late-injection scenarios.
+        PostToOwnerWithTask(state, "helpers-nested", [state, nameStr, fn, gen, attempt]() {
+            // Proceed even if ctx/gen changed; direct global set is idempotent.
+            LuaStateInfo info{};
+            if (!g_stateRegistry.GetByPointer(state, info))
+                return;
+            DWORD sehPush = 0, sehSet = 0;
+            bool ok = SafeLuaPushCClosure(state, fn, 0, &sehPush) && SafeLuaSetGlobal(state, nameStr.c_str(), &sehSet);
+            DWORD seh = ok ? 0 : (sehPush ? sehPush : sehSet);
+            Log::Logf(ok ? Log::Level::Info : Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "[HOOKS] legacy-global-try name=%s ok=%d seh=0x%08lX attempt=%u",
+                      nameStr.c_str(), ok ? 1 : 0, static_cast<unsigned long>(seh), attempt);
+            if (!ok) {
+                uint32_t nextAttempt = attempt + 1;
+                if (nextAttempt <= 6) {
+                    uint32_t nextDelay = (400u << nextAttempt);
+                    ScheduleLegacyGlobalSet(state, nameStr.c_str(), fn, gen, nextDelay, nextAttempt);
+                }
+            } else {
+                std::lock_guard<std::mutex> lock(g_legacyRetryMutex);
+                g_legacyRetry.erase(MakeNestedKey(state, nameStr.c_str()));
+            }
+        });
+    }).detach();
+}
+
 static bool DebugInstrumentationEnabled() {
 #if defined(_DEBUG)
     return true;
@@ -2473,23 +2657,14 @@ static int Lua_UOWalk(lua_State* L);
 static int Lua_UOWDump(lua_State* L);
 static int Lua_WalkMove(lua_State* L);
 static int Lua_GetPacing(lua_State* L);
-static int Lua_UOW_WalkSetPacing(lua_State* L);
-static int Lua_UOW_WalkSetInflight(lua_State* L);
-static int Lua_UOW_WalkGetMetrics(lua_State* L);
-static int Lua_UOW_StatusFlags(lua_State* L);
-static int Lua_UOW_StatusVersion(lua_State* L);
 static int Lua_UOWTestRet(lua_State* L);
 static int Lua_UOWInspect(lua_State* L);
 static int Lua_UOWSelfTest(lua_State* L);
 static int Lua_UOWRebindAll(lua_State* L);
 static int Lua_UOWDebug(lua_State* L);
-static int Lua_UOW_DebugStatus(lua_State* L);
-static int Lua_UOW_DebugPing(lua_State* L);
 static void RegisterUOWNamespace(lua_State* L);
 static bool VerifyUOW(lua_State* L);
 static void UOW_OnCanonicalReady(lua_State* L, uint32_t gen, DWORD scriptTid);
-static void UOW_OnDestabilized();
-static void UOW_VerifyHook(lua_State* L, lua_Debug* /*ar*/);
 static void OnLuaRegisterTracer(lua_State* L, const char* name);
 static int __cdecl HookSentinelGC(lua_State* L);
 static void ForceRebindAll(const char* reason);
@@ -3173,6 +3348,13 @@ static LuaStateInfo EnsureHelperState(lua_State* L, const char* helperName, bool
         *outCoalesced = coalesced;
     if (outIsNew)
         *outIsNew = isNew;
+
+    // Opportunistically ensure legacy alias 'walk' exists for newly observed states
+    // or states that lack the HELPER_FLAG_WALK capability. This helps late-bound
+    // macro/script environments see walk() without requiring mover re-installation.
+    if ((info.helper_flags & HELPER_FLAG_WALK) == 0) {
+        (void)RegisterLegacyGlobal(L, info, "walk", Lua_WalkMove);
+    }
     return info;
 }
 
@@ -3196,7 +3378,7 @@ static bool TryBuildInspectSummary(lua_State* target, const LuaStateInfo& info, 
     helperEntries.reserve(5);
 
     const char* helpers[] = {
-        kHelperWalkName,
+        kHelperWalkMoveNsName,
         kHelperWalkMoveName,
         kHelperGetPacingName,
         kHelperSetPacingName,
@@ -3620,6 +3802,8 @@ static bool SafeLuaPushCClosure(lua_State* L, lua_CFunction fn, int n, DWORD* ou
         return false;
     }
 }
+
+// duplicate SafeLuaSetGlobal definition removed (single implementation above)
 
 static bool SafeLuaPushLightUserdata(lua_State* L, const void* ptr, DWORD* outSeh = nullptr) noexcept {
     if (!L || !ptr)
@@ -6536,11 +6720,240 @@ static bool TryLuaSetGlobal(lua_State* /*L*/, lua_CFunction /*fn*/, const char* 
     return false;
 }
 
+// Helpers for safely creating nested tables and assigning a cfunction at a dotted path
+static bool SafeLuaGetField(lua_State* L, int idx, const char* key, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !key)
+        return false;
+    __try {
+        lua_getfield(L, idx, key);
+        if (outSeh) *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh) *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool SafeLuaSetField(lua_State* L, int idx, const char* key, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !key)
+        return false;
+    __try {
+        lua_setfield(L, idx, key);
+        if (outSeh) *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh) *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool EnsureGlobalTable(lua_State* L, const char* name, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !name)
+        return false;
+    DWORD seh = 0;
+    __try {
+        lua_getglobal(L, name);
+        int type = lua_type(L, -1);
+        if (type != LUA_TTABLE) {
+            // replace with new table
+            lua_pop(L, 1);
+            lua_newtable(L);
+            lua_pushvalue(L, -1);
+            lua_setglobal(L, name);
+        }
+        if (outSeh) *outSeh = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outSeh) *outSeh = GetExceptionCode();
+        return false;
+    }
+}
+
+static bool EnsureTableField(lua_State* L, int parentIndex, const char* key, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !key)
+        return false;
+    DWORD seh = 0;
+    int absParent = LuaAbsIndex(L, parentIndex);
+    if (!SafeLuaGetField(L, absParent, key, &seh)) { if (outSeh) *outSeh = seh; return false; }
+    int type = LUA_TNONE;
+    __try { type = lua_type(L, -1); } __except (EXCEPTION_EXECUTE_HANDLER) { if (outSeh) *outSeh = GetExceptionCode(); return false; }
+    if (type != LUA_TTABLE) {
+        __try { lua_pop(L, 1); } __except (EXCEPTION_EXECUTE_HANDLER) { if (outSeh) *outSeh = GetExceptionCode(); return false; }
+        if (!SafeLuaCreateTable(L, 0, 0, &seh)) { if (outSeh) *outSeh = seh; return false; }
+        if (!SafeLuaSetField(L, absParent, key, &seh)) { if (outSeh) *outSeh = seh; return false; }
+        if (!SafeLuaGetField(L, absParent, key, &seh)) { if (outSeh) *outSeh = seh; return false; }
+    }
+    if (outSeh) *outSeh = 0;
+    return true;
+}
+
+static bool SetNestedByChunk(lua_State* L, const char* dotted, const char* rawName, DWORD* outSeh = nullptr) noexcept {
+    if (!L || !dotted || !rawName)
+        return false;
+    // Build a tiny Lua chunk that ensures tables and assigns the function from _G[rawName].
+    // Example for UOW.Walk.move:
+    //   UOW = UOW or {}
+    //   UOW.Walk = UOW.Walk or {}
+    //   UOW.Walk.move = _G['__raw']
+    std::string path(dotted);
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start < path.size()) {
+        std::size_t dot = path.find('.', start);
+        if (dot == std::string::npos) dot = path.size();
+        parts.emplace_back(path.substr(start, dot - start));
+        start = dot + 1;
+    }
+    if (parts.size() < 2)
+        return false;
+    std::string buf;
+    buf.reserve(256);
+    std::string prefix;
+    for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
+        if (!prefix.empty()) prefix.push_back('.');
+        prefix.append(parts[i]);
+        buf.append(prefix);
+        buf.append(" = ");
+        buf.append(prefix);
+        buf.append(" or {}\n");
+    }
+    std::string finalPath;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i) finalPath.push_back('.');
+        finalPath.append(parts[i]);
+    }
+    buf.append(finalPath);
+    buf.append(" = _G['");
+    buf.append(rawName);
+    buf.append("']\nreturn true\n");
+
+    DWORD seh = 0;
+    bool ok = SafeLuaDoString(L, buf.c_str(), &seh);
+    if (outSeh) *outSeh = seh;
+    return ok;
+}
+
+static bool SetNestedCFunction(lua_State* L, const char* dotted, lua_CFunction fn, DWORD* outSeh) noexcept {
+    if (!L || !dotted || !fn)
+        return false;
+    // Tokenize dotted path
+    char nameBuf[128];
+    strncpy_s(nameBuf, dotted, _TRUNCATE);
+    std::vector<const char*> parts;
+    for (char* tok = nameBuf; *tok; ) {
+        parts.push_back(tok);
+        while (*tok && *tok != '.') ++tok;
+        if (*tok == '.') { *tok = '\0'; ++tok; }
+    }
+    if (parts.size() < 2)
+        return false; // not dotted
+
+    LuaStackGuard guard(L);
+    DWORD seh = 0;
+    if (!EnsureGlobalTable(L, parts[0], &seh)) { if (outSeh) *outSeh = seh; return false; }
+    int current = lua_gettop(L); // UOW table on stack
+
+    // Walk intermediates
+    for (size_t i = 1; i + 1 < parts.size(); ++i) {
+        if (!EnsureTableField(L, current, parts[i], &seh)) { if (outSeh) *outSeh = seh; return false; }
+        // Update current to the newly pushed field-table
+        current = LuaAbsIndex(L, lua_gettop(L));
+    }
+
+    // Set final field on current table via direct C-API first
+    const char* leaf = parts.back();
+    if (SafeLuaPushCClosure(L, fn, 0, &seh) && SafeLuaSetField(L, current, leaf, &seh)) {
+        if (outSeh) *outSeh = 0;
+        return true;
+    }
+    // Direct write failed (e.g., transient instability). Try chunk-based fallback:
+    // publish the function under a temporary global and set nested path from Lua code.
+    // Compose a stable temporary name per leaf.
+    char rawName[96];
+    _snprintf_s(rawName, sizeof(rawName), _TRUNCATE, "__UOW_raw_%s", leaf);
+    // Ensure the cfunction is available in _G[rawName]
+    DWORD pubSeh = 0;
+    bool pubOk = SafeLuaPushCClosure(L, fn, 0, &pubSeh) && SafeLuaSetGlobal(L, rawName, &pubSeh);
+    if (!pubOk) {
+        if (outSeh) *outSeh = pubSeh ? pubSeh : seh;
+        return false;
+    }
+    DWORD chunkSeh = 0;
+    bool chunkOk = SetNestedByChunk(L, dotted, rawName, &chunkSeh);
+    if (outSeh) *outSeh = chunkSeh;
+    return chunkOk;
+}
+
+static bool RegisterLegacyGlobal(lua_State* L, const LuaStateInfo& info, const char* name, lua_CFunction fn) {
+    if (!L || !name || !fn)
+        return false;
+    // Prefer the game's RegisterLuaFunction path to avoid direct VM writes.
+    // This also works for simple globals like "walk" and is more stable than
+    // touching the Lua stack directly.
+    {
+        uint64_t gen = info.gen ? info.gen : g_uowLua.gen;
+        // Try the regular helper registrar first. It will no-op if the script
+        // thread/state is not ready yet.
+        if (RegisterHelper(L, info, name, fn, gen)) {
+            DWORD ownerTid = info.owner_tid ? info.owner_tid : GetCurrentThreadId();
+            lua_State* target = info.L_canonical ? info.L_canonical : L;
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS] legacy-global via-registrar name=%s L=%p owner=%lu gen=%llu",
+                      name,
+                      target,
+                      static_cast<unsigned long>(ownerTid),
+                      static_cast<unsigned long long>(gen));
+            // Mirror old behavior: also set the global directly for the active state.
+            DWORD sehPubPush = 0, sehPubSet = 0;
+            bool pubOk = SafeLuaPushCClosure(target, fn, 0, &sehPubPush) && SafeLuaSetGlobal(target, name, &sehPubSet);
+            Log::Logf(pubOk ? Log::Level::Info : Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "[HOOKS] legacy-global post-registrar %s name=%s L=%p seh=0x%08lX",
+                      pubOk ? "ok" : "fail",
+                      name,
+                      target,
+                      static_cast<unsigned long>(pubOk ? 0 : (sehPubPush ? sehPubPush : sehPubSet)));
+            if (!pubOk) {
+                // Schedule retries with backoff until the VM is stable enough to accept globals.
+                uint64_t gen = info.gen ? info.gen : g_uowLua.gen;
+                ScheduleLegacyGlobalSet(target, name, fn, gen, 600, 0);
+            }
+            return true;
+        }
+    }
+
+    // Fallback: bind directly via Lua API with SEH guards (old behavior).
+    bool ok = false;
+    DWORD sehPush = 0, sehSet = 0;
+    ok = SafeLuaPushCClosure(L, fn, 0, &sehPush) && SafeLuaSetGlobal(L, name, &sehSet);
+    DWORD seh = ok ? 0 : (sehPush ? sehPush : sehSet);
+    Log::Logf(ok ? Log::Level::Info : Log::Level::Warn,
+              Log::Category::Hooks,
+              "[HOOKS] legacy-global %s name=%s L=%p seh=0x%08lX",
+              ok ? "ok" : "fail",
+              name,
+              L,
+              static_cast<unsigned long>(seh));
+    if (!ok) {
+        uint64_t gen = info.gen ? info.gen : g_uowLua.gen;
+        ScheduleLegacyGlobalSet(L, name, fn, gen, 400, 0);
+    }
+    return ok;
+}
+
 static WORD HelperFlagForName(const char* name) {
     if (!name)
         return 0;
     if (_stricmp(name, kHelperWalkName) == 0)
         return HELPER_FLAG_WALK;
+    // Treat legacy global alias as the same capability as the namespaced mover.
+    if (_stricmp(name, "walk") == 0)
+        return HELPER_FLAG_WALK;
+    if (_stricmp(name, kHelperWalkMoveNsName) == 0)
+        return HELPER_FLAG_WALK; // namespaced alias of uow_walk
+    if (_stricmp(name, "UOW.Walk.move_raw") == 0)
+        return HELPER_FLAG_WALK; // raw alias for testing/explicit C mover
     if (_stricmp(name, kHelperWalkMoveName) == 0)
         return HELPER_FLAG_WALK_MOVE;
     if (_stricmp(name, kHelperGetPacingName) == 0)
@@ -6570,6 +6983,11 @@ static WORD HelperFlagForName(const char* name) {
         return HELPER_FLAG_DEBUG_STATUS;
     if (_stricmp(name, kHelperDebugPingName) == 0)
         return HELPER_FLAG_DEBUG_PING;
+    if (_stricmp(name, kHelperBindWalkHereName) == 0 ||
+        _stricmp(name, kHelperBindWalkHereNsName) == 0)
+        return HELPER_FLAG_WALK;
+    if (_stricmp(name, kHelperDumpWalkAllNsName) == 0)
+        return HELPER_FLAG_DEBUG;
     return 0;
 }
 
@@ -6716,8 +7134,34 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
                   reason);
     }
 
-    // No direct Lua C API fallback; rely solely on client registrar.
-    bool success = clientOk;
+    // For dotted names (UOW.*.*), ensure nested path assignment, but only when
+    // the VM is stable. If not stable or a probe fails, schedule retries with backoff.
+    bool nestedOk = false;
+    if (name && std::strchr(name, '.') != nullptr) {
+        const char* stableReason = nullptr;
+        if (IsStateStableForInstall(latest, state, &stableReason)) {
+            DWORD nestedSeh = 0;
+            nestedOk = SetNestedCFunction(state, name, fn, &nestedSeh);
+            Log::Logf(nestedOk ? Log::Level::Info : Log::Level::Warn,
+                      Log::Category::Hooks,
+                      "[HOOKS] helper-register nested name=%s ok=%d seh=0x%08lX",
+                      safeName,
+                      nestedOk ? 1 : 0,
+                      static_cast<unsigned long>(nestedSeh));
+            if (!nestedOk) {
+                ScheduleNestedHelperSet(state, name, fn, generation, 800, 0);
+            }
+        } else {
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS] helper-register nested-defer name=%s reason=%s",
+                      safeName,
+                      stableReason ? stableReason : "unstable");
+            ScheduleNestedHelperSet(state, name, fn, generation, 800, 0);
+        }
+    }
+
+    bool success = clientOk || nestedOk;
     if (success) {
         uint64_t now = GetTickCount64();
         auto updater = [&](LuaStateInfo& stateRef) {
@@ -6745,6 +7189,25 @@ static bool DoRegisterHelperOnScriptThread(lua_State* ownerState,
     if (success && name) {
         if (_stricmp(name, kHelperTestRetName) == 0) {
             LogGlobalFn(state, kHelperTestRetName);
+        }
+        // Ensure legacy global alias for walk when our mover is installed.
+        // Some clients have multiple Lua states; broadcast the alias to all
+        // known states so `walk` resolves regardless of which state is active.
+        if (_stricmp(name, kHelperWalkMoveNsName) == 0 || _stricmp(name, kHelperWalkMoveName) == 0) {
+            // Best-effort pass: use registrar-first path in RegisterLegacyGlobal,
+            // which avoids direct VM writes when possible.
+            auto snapshot = g_stateRegistry.Snapshot();
+            if (!snapshot.empty()) {
+                for (const auto& st : snapshot) {
+                    lua_State* targetL = st.L_canonical ? st.L_canonical : state;
+                    (void)RegisterLegacyGlobal(targetL, st, "walk", Lua_WalkMove);
+                }
+            } else {
+                LuaStateInfo aliasInfo = latest;
+                if (!g_stateRegistry.GetByPointer(state, aliasInfo) && state && state != target)
+                    g_stateRegistry.GetByPointer(target, aliasInfo);
+                (void)RegisterLegacyGlobal(state, aliasInfo, "walk", Lua_WalkMove);
+            }
         }
     }
 
@@ -6855,6 +7318,45 @@ static bool RegisterHelper(lua_State* L, const LuaStateInfo& info, const char* n
     }
 
     lua_State* ownerState = scriptState ? scriptState : L;
+
+    // Debounce repeated attempts for this helper name (300ms window)
+    LuaStateInfo preLatest{};
+    bool havePreLatest = g_stateRegistry.GetByPointer(L, preLatest);
+    if (!havePreLatest && scriptState && scriptState != L)
+        havePreLatest = g_stateRegistry.GetByPointer(scriptState, preLatest);
+    if (!havePreLatest)
+        preLatest = info;
+
+    if (name && name[0] != '\0') {
+        static std::mutex s_helperDebounceMutex;
+        static std::unordered_map<std::string, DWORD> s_lastAttemptMs;
+        DWORD now = GetTickCount();
+        bool shouldSkip = false;
+        {
+            std::lock_guard<std::mutex> lock(s_helperDebounceMutex);
+            auto it = s_lastAttemptMs.find(name);
+            if (it != s_lastAttemptMs.end()) {
+                DWORD delta = now - it->second;
+                if (delta < 300) {
+                    shouldSkip = true;
+                } else {
+                    it->second = now;
+                }
+            } else {
+                s_lastAttemptMs.emplace(name, now);
+            }
+        }
+        if (shouldSkip) {
+            bool already = allowFlagless ? false : ((preLatest.helper_flags & flag) != 0);
+            Log::Logf(Log::Level::Info,
+                      Log::Category::Hooks,
+                      "[HOOKS] helper-register debounce skip name=%s installed=%d",
+                      safeName,
+                      already ? 1 : 0);
+            return already;
+        }
+    }
+
     (void)ScriptThreadRegisterHelper(ownerState, L, info, name, fn, generation);
 
     ProcessPendingLuaTasks(scriptState);
@@ -7240,9 +7742,9 @@ static bool BindHelpersOnThread(lua_State* L,
             return false;
         });
 
-        bool walkOk = namespaceOk;
-        bool walkMoveOk = namespaceOk;
-        bool pacingOk = namespaceOk;
+        bool walkOk = logStep(kHelperWalkMoveNsName, [&]() { return RegisterHelper(L, info, kHelperWalkMoveNsName, Lua_UOWalk, generation); });
+        bool walkMoveOk = logStep(kHelperWalkMoveName, [&]() { return RegisterHelper(L, info, kHelperWalkMoveName, Lua_WalkMove, generation); });
+        bool pacingOk = logStep(kHelperGetPacingName, [&]() { return RegisterHelper(L, info, kHelperGetPacingName, Lua_GetPacing, generation); });
         bool setPacingOk = namespaceOk;
         bool setInflightOk = namespaceOk;
         bool metricsOk = namespaceOk;
@@ -7354,7 +7856,7 @@ static bool BindHelpersOnThread(lua_State* L,
                     missing.append(",");
                 missing.append(name);
             };
-            appendMissing(true, walkOk, kHelperWalkName);
+            appendMissing(true, walkOk, kHelperWalkMoveNsName);
             appendMissing(true, walkMoveOk, kHelperWalkMoveName);
             appendMissing(true, pacingOk, kHelperGetPacingName);
             appendMissing(true, setPacingOk, kHelperSetPacingName);
@@ -7749,6 +8251,92 @@ static int Lua_UOWDump(lua_State* L) {
     return 0;
 }
 
+// Try to set walk into the caller's environment (_ENV upvalue on the caller),
+// falling back to setting the global if needed. Returns true on any successful set.
+static bool TryBindWalkInCallerEnv(lua_State* L, lua_CFunction moverFn) noexcept {
+    if (!L || !moverFn)
+        return false;
+    bool envOk = false;
+    DWORD seh = 0;
+    __try {
+        lua_Debug ar{};
+        if (lua_getstack(L, 1, &ar) != 0) {
+            if (lua_getinfo(L, "f", &ar) != 0) {
+                int funcIndex = lua_gettop(L);
+                const char* upName = lua_getupvalue(L, funcIndex, 1);
+                if (upName && std::strcmp(upName, "_ENV") == 0) {
+                    // stack: ... func _ENV
+                    int envIndex = lua_gettop(L);
+                    if (lua_type(L, envIndex) == LUA_TTABLE) {
+                        lua_pushcclosure(L, moverFn, 0);
+                        lua_setfield(L, envIndex, "walk");
+                        envOk = true;
+                    }
+                    lua_pop(L, 1); // pop _ENV value
+                }
+                lua_pop(L, 1); // pop func
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        seh = GetExceptionCode();
+        (void)seh;
+        envOk = false;
+    }
+
+    // Always ensure global alias as a fallback.
+    DWORD setSeh = 0;
+    (void)SafeLuaPushCClosure(L, moverFn, 0, &setSeh);
+    (void)SafeLuaSetGlobal(L, "walk", &setSeh);
+    return envOk || (setSeh == 0);
+}
+
+// bindWalk / UOW.Debug.bind_walk_here
+static int Lua_BindWalkHere(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    EnsureHelperState(L, kHelperWalkMoveName, &ready, &coalesced, nullptr);
+    bool ok = TryBindWalkInCallerEnv(L, Lua_WalkMove);
+    LogLuaProbe("bind-walk-here ok=%d", ok ? 1 : 0);
+    // Return the function so callers can do: walk = bindWalk()
+    lua_pushcclosure(L, Lua_WalkMove, 0);
+    return 1;
+}
+
+// UOW.Debug.dump_walk_all
+static int Lua_UOW_DebugDumpWalkAll(lua_State* L) {
+    EnsureScriptThread(GetCurrentThreadId(), L);
+    bool ready = false;
+    bool coalesced = false;
+    LuaStateInfo info = EnsureHelperState(L, kHelperDebugName, &ready, &coalesced, nullptr);
+    (void)info;
+    auto snapshot = g_stateRegistry.Snapshot();
+    for (const auto& st : snapshot) {
+        lua_State* target = st.L_canonical ? st.L_canonical : st.L_reported;
+        if (!target)
+            continue;
+        DWORD seh = 0;
+        const char* typeName = "<err>";
+        const void* ptr = nullptr;
+        int typeTag = LUA_TNONE;
+        (void)sp::seh_probe([&]() {
+            lua_getglobal(target, "walk");
+            typeTag = lua_type(target, -1);
+            typeName = lua_typename(target, typeTag);
+            ptr = lua_topointer(target, -1);
+            lua_pop(target, 1);
+        }, &seh);
+        Log::Logf(Log::Level::Info,
+                  Log::Category::Core,
+                  seh ? "[WALK][DUMP] L=%p type=%s ptr=%p seh=0x%08lX" : "[WALK][DUMP] L=%p type=%s ptr=%p",
+                  target,
+                  typeName ? typeName : "?",
+                  ptr,
+                  static_cast<unsigned long>(seh));
+    }
+    return 0;
+}
+
 static int Lua_WalkMove(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
@@ -8139,7 +8727,7 @@ static int Lua_UOWalk(lua_State* L) {
     EnsureScriptThread(GetCurrentThreadId(), L);
     bool ready = false;
     bool coalesced = false;
-    EnsureHelperState(L, kHelperWalkName, &ready, &coalesced, nullptr);
+    EnsureHelperState(L, kHelperWalkMoveNsName, &ready, &coalesced, nullptr);
     int argc = lua_gettop(L);
     if (argc >= 1 && lua_type(L, 1) == LUA_TTABLE) {
         if (!Walk::Controller::IsEnabled()) {
@@ -8465,18 +9053,8 @@ static int Lua_UOWDebug(lua_State* L) {
 }
 
 static int Lua_UOW_DebugStatus(lua_State* L) {
-    EnsureScriptThread(GetCurrentThreadId(), L);
-    bool ready = false;
-    bool coalesced = false;
-    LuaStateInfo info = EnsureHelperState(L, kHelperDebugStatusName, &ready, &coalesced, nullptr);
-
-    LuaStateInfo targetInfo{};
-    if (!g_stateRegistry.GetByPointer(info.L_canonical ? info.L_canonical : L, targetInfo))
-        targetInfo = info;
-
-    bool enabled = DebugInstrumentationEnabled() && (targetInfo.gc_sentinel_ref == 1);
-    lua_pushboolean(L, enabled ? 1 : 0);
-    return 1;
+    // Return a structured health table, same as Debug.ping
+    return Lua_UOW_DebugPing(L);
 }
 
 static bool RunSmokeSelfTest(std::string& reason) {
@@ -9293,9 +9871,3 @@ uint32_t GetSehTrapCount() {
 
 
 } // namespace Engine::Lua
-
-
-
-
-
-

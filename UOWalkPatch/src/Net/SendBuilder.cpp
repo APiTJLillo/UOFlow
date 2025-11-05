@@ -206,6 +206,22 @@ static SendBuilderState g_runtimeState{};
 static std::mutex g_runtimeStateMutex;
 static constexpr DWORD kNetCfgSettleIntervalMs = 300;
 static constexpr DWORD kNetCfgSettleTimeoutMs = 30'000;
+static constexpr std::uint32_t kNetCfgSettleMaxAttempts = 128;
+static constexpr DWORD kNetCfgSettleMaxIntervalMs = 4000;
+
+static DWORD NetCfgComputeBackoffMs(std::uint32_t attemptIndex) noexcept {
+    // Exponential backoff starting at base, capped at max
+    DWORD base = kNetCfgSettleIntervalMs;
+    std::uint32_t shift = attemptIndex < 6 ? attemptIndex : 6; // cap growth
+    DWORD scaled = base;
+    while (shift-- > 0) {
+        if (scaled > (std::numeric_limits<DWORD>::max)() / 2) { scaled = kNetCfgSettleMaxIntervalMs; break; }
+        scaled <<= 1;
+    }
+    if (scaled > kNetCfgSettleMaxIntervalMs)
+        scaled = kNetCfgSettleMaxIntervalMs;
+    return scaled;
+}
 static constexpr std::uint32_t kNetCfgSettleLogEvery = 5;
 static std::once_flag g_missingManagerLogOnce;
 static std::mutex g_movementQueueMutex;
@@ -1771,7 +1787,11 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
         }
     }
 
-    g_netCfgRetryNextTick = nowTick + kNetCfgSettleIntervalMs;
+    // Exponential backoff for next probe
+    {
+        DWORD delayMs = NetCfgComputeBackoffMs(g_netCfgRetryIndex);
+        g_netCfgRetryNextTick = nowTick + delayMs;
+    }
     g_nextNetCfgProbeTick = g_netCfgRetryNextTick;
 
     if (g_netCfgRetryStartTick != 0 && (nowTick - g_netCfgRetryStartTick) >= kNetCfgSettleTimeoutMs) {
@@ -1792,6 +1812,16 @@ static void ServiceNetCfgRetryLoop(DWORD nowTick)
                   Log::Category::Core,
                   "[CORE][SB] networkConfig settle timeout; continuing with fallback pivot");
         ScheduleScan("settle-timeout", true);
+    }
+
+    // Hard cap attempts per launch to avoid endless settle loops
+    if (g_netCfgRetryIndex >= kNetCfgSettleMaxAttempts) {
+        StopNetCfgRetryLoop();
+        Log::Logf(Log::Level::Warn,
+                  Log::Category::Core,
+                  "[CORE][SB] netcfg settle attempt cap reached (%u); continuing with fallback pivot",
+                  static_cast<unsigned>(g_netCfgRetryIndex));
+        ScheduleScan("settle-cap", true);
     }
 }
 
