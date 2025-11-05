@@ -7,6 +7,7 @@
 #include "Core/Utils.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/GlobalState.hpp"
+#include "Core/ActionTrace.hpp"
 #include "Engine/LuaBridge.hpp"
 
 // Define the global variable that was previously only declared as extern
@@ -132,6 +133,17 @@ static void HookSendBuilderFromNetMgr()
 
 static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int len)
 {
+    // Annotate proximity to last high-level action (e.g., CastSpell) for correlation
+    Trace::LastAction last{};
+    if (Trace::GetLastAction(last)) {
+        DWORD now = GetTickCount();
+        DWORD dt = now - last.tick;
+        if (dt <= Trace::GetWindowMs()) {
+            char info[160];
+            sprintf_s(info, sizeof(info), "SendPacket near %s dt=%lu ms", last.name, static_cast<unsigned long>(dt));
+            WriteRawLog(info);
+        }
+    }
     DumpMemory("PLAIN-SendPacket", const_cast<void*>(pkt), len);
 
     if (!g_netMgr)

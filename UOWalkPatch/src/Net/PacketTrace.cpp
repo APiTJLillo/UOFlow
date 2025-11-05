@@ -20,9 +20,11 @@ static int (WSAAPI* g_real_WSARecv)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, L
 static int (WSAAPI* g_real_WSARecvFrom)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD, sockaddr*, LPINT, LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE) = nullptr;
 static int (WSAAPI* g_real_recvfrom)(SOCKET, char*, int, int, sockaddr*, int*) = nullptr;
 static bool shouldLogTraces = false;
+static volatile LONG g_sendCounter = 0;
 
 static void TraceOutbound(const char* buf, int len)
 {
+    InterlockedIncrement(&g_sendCounter);
     if(shouldLogTraces)
         Logf("send-family len=%d id=%02X", len, (unsigned char)buf[0]);
     int dumpLen = len > 64 ? 64 : len;
@@ -243,5 +245,9 @@ void ShutdownPacketTrace()
     RemoveHooks();
 }
 
-} // namespace Net
+unsigned GetSendCounter()
+{
+    return static_cast<unsigned>(InterlockedCompareExchange(&g_sendCounter, 0, 0));
+}
 
+} // namespace Net

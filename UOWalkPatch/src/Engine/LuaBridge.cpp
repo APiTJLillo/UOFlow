@@ -11,6 +11,8 @@
 #include "Core/Logging.hpp"
 #include "Core/PatternScan.hpp"
 #include "Core/Config.hpp"
+#include "Net/PacketTrace.hpp"
+#include "Core/ActionTrace.hpp"
 #include "Net/SendBuilder.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/Movement.hpp"
@@ -22,6 +24,7 @@
 extern "C" {
     LUA_API void lua_insert(lua_State* L, int idx);
     LUA_API void lua_pushvalue(lua_State* L, int idx);
+    LUA_API const char* lua_tolstring(lua_State* L, int idx, size_t* len);
 }
 #ifndef LUA_MULTRET
 #define LUA_MULTRET (-1)
@@ -64,6 +67,16 @@ enum ContextLogBits : unsigned {
     static LuaFn g_origUserActionCastSpell = nullptr;
     static LuaFn g_origUserActionCastSpellOnId = nullptr;
     static LuaFn g_origUserActionUseSkill = nullptr;
+    static LuaFn g_origUserActionIsTargetModeCompat = nullptr;
+    static LuaFn g_origUserActionIsActionTypeTargetModeCompat = nullptr;
+    static LuaFn g_origRequestTargetInfo = nullptr;
+    static LuaFn g_origClearCurrentTarget = nullptr;
+    // Additional originals for gating and ability paths
+    static LuaFn g_origUserActionIsSkillAvalible = nullptr; // name spelled as in client
+    static LuaFn g_origHS_ShowTargetingCursor = nullptr;
+    static LuaFn g_origHS_HideTargetingCursor = nullptr;
+    static LuaFn g_origUserActionUseWeaponAbility = nullptr;
+    static LuaFn g_origUserActionUsePrimaryAbility = nullptr;
 
     static volatile LONG g_directActionHooksInstalled = 0;
 }
@@ -74,7 +87,28 @@ static int __cdecl Lua_BindWalk(lua_State* L);
 static int __cdecl Lua_UserActionCastSpell_W(lua_State* L);
 static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L);
 static int __cdecl Lua_UserActionUseSkill_W(lua_State* L);
+static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L);
+static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L);
+static int __cdecl Lua_RequestTargetInfo_W(lua_State* L);
+static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L);
+static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L);
+static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L);
+static int __cdecl Lua_RequestTargetInfo_W(lua_State* L);
+static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L);
+// Prototypes for additional wrappers
+static int __cdecl Lua_UserActionIsSkillAvalible_W(lua_State* L);
+static int __cdecl Lua_HS_ShowTargetingCursor_W(lua_State* L);
+static int __cdecl Lua_HS_HideTargetingCursor_W(lua_State* L);
+static int __cdecl Lua_UserActionUseWeaponAbility_W(lua_State* L);
+static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L);
+
+// Forward declarations for logging helpers
+static void LogLuaArgs(lua_State* L, const char* func, int maxArgs = 3);
+static void LogLuaReturns(lua_State* L, const char* func, int nret);
 static int CallSavedOriginal(lua_State* L, const char* savedName);
+
+// Configurable verbosity for Lua arg/ret logging
+static bool g_traceLuaVerbose = false;
 
 // (no-op helper removed)
 
@@ -208,6 +242,15 @@ static void TryInstallActionWrappers()
         any |= tryWrap("UserActionCastSpell", &Lua_UserActionCastSpell_W);
         any |= tryWrap("UserActionCastSpellOnId", &Lua_UserActionCastSpellOnId_W);
         any |= tryWrap("UserActionUseSkill", &Lua_UserActionUseSkill_W);
+        any |= tryWrap("UserActionUsePrimaryAbility", &Lua_UserActionUsePrimaryAbility_W);
+        any |= tryWrap("UserActionUseWeaponAbility", &Lua_UserActionUseWeaponAbility_W);
+        any |= tryWrap("UserActionIsTargetModeCompat", &Lua_UserActionIsTargetModeCompat_W);
+        any |= tryWrap("UserActionIsActionTypeTargetModeCompat", &Lua_UserActionIsActionTypeTargetModeCompat_W);
+        any |= tryWrap("RequestTargetInfo", &Lua_RequestTargetInfo_W);
+        any |= tryWrap("ClearCurrentTarget", &Lua_ClearCurrentTarget_W);
+        any |= tryWrap("UserActionIsSkillAvalible", &Lua_UserActionIsSkillAvalible_W);
+        any |= tryWrap("HS_ShowTargetingCursor", &Lua_HS_ShowTargetingCursor_W);
+        any |= tryWrap("HS_HideTargetingCursor", &Lua_HS_HideTargetingCursor_W);
         if (any) {
             InterlockedExchange(&g_actionWrappersInstalled, 1);
             WriteRawLog("TryInstallActionWrappers: installed action wrappers via Lua API");
@@ -300,6 +343,15 @@ static void TryInstallDirectActionHooks()
     hookOne("UserActionCastSpell", g_origUserActionCastSpell, &Lua_UserActionCastSpell_W);
     hookOne("UserActionCastSpellOnId", g_origUserActionCastSpellOnId, &Lua_UserActionCastSpellOnId_W);
     hookOne("UserActionUseSkill", g_origUserActionUseSkill, &Lua_UserActionUseSkill_W);
+    hookOne("UserActionUsePrimaryAbility", g_origUserActionUsePrimaryAbility, &Lua_UserActionUsePrimaryAbility_W);
+    hookOne("UserActionUseWeaponAbility", g_origUserActionUseWeaponAbility, &Lua_UserActionUseWeaponAbility_W);
+    hookOne("UserActionIsTargetModeCompat", g_origUserActionIsTargetModeCompat, &Lua_UserActionIsTargetModeCompat_W);
+    hookOne("UserActionIsActionTypeTargetModeCompat", g_origUserActionIsActionTypeTargetModeCompat, &Lua_UserActionIsActionTypeTargetModeCompat_W);
+    hookOne("RequestTargetInfo", g_origRequestTargetInfo, &Lua_RequestTargetInfo_W);
+    hookOne("ClearCurrentTarget", g_origClearCurrentTarget, &Lua_ClearCurrentTarget_W);
+    hookOne("UserActionIsSkillAvalible", g_origUserActionIsSkillAvalible, &Lua_UserActionIsSkillAvalible_W);
+    hookOne("HS_ShowTargetingCursor", g_origHS_ShowTargetingCursor, &Lua_HS_ShowTargetingCursor_W);
+    hookOne("HS_HideTargetingCursor", g_origHS_HideTargetingCursor, &Lua_HS_HideTargetingCursor_W);
 
     if (any) {
         InterlockedExchange(&g_directActionHooksInstalled, 1);
@@ -551,15 +603,90 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
                 WriteRawLog("Hook_Register: wrapped UserActionUseSkill");
             }
         }
+        else if (_stricmp(name, "UserActionIsTargetModeCompat") == 0)
+        {
+            if (!g_origUserActionIsTargetModeCompat)
+            {
+                g_origUserActionIsTargetModeCompat = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_UserActionIsTargetModeCompat_W);
+                WriteRawLog("Hook_Register: wrapped UserActionIsTargetModeCompat");
+            }
+        }
+        else if (_stricmp(name, "UserActionIsActionTypeTargetModeCompat") == 0)
+        {
+            if (!g_origUserActionIsActionTypeTargetModeCompat)
+            {
+                g_origUserActionIsActionTypeTargetModeCompat = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_UserActionIsActionTypeTargetModeCompat_W);
+                WriteRawLog("Hook_Register: wrapped UserActionIsActionTypeTargetModeCompat");
+            }
+        }
         else if (_stricmp(name, "RequestTargetInfo") == 0)
         {
+            if (!g_origRequestTargetInfo)
+            {
+                g_origRequestTargetInfo = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_RequestTargetInfo_W);
+                WriteRawLog("Hook_Register: wrapped RequestTargetInfo");
+            }
             g_targetApiTimestamp = GetTickCount();
             InterlockedExchange(&g_targetApiSeen, 1);
         }
         else if (_stricmp(name, "ClearCurrentTarget") == 0)
         {
+            if (!g_origClearCurrentTarget)
+            {
+                g_origClearCurrentTarget = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_ClearCurrentTarget_W);
+                WriteRawLog("Hook_Register: wrapped ClearCurrentTarget");
+            }
             g_targetApiTimestamp = GetTickCount();
             InterlockedExchange(&g_targetApiSeen, 1);
+        }
+        else if (_stricmp(name, "UserActionIsSkillAvalible") == 0)
+        {
+            if (!g_origUserActionIsSkillAvalible)
+            {
+                g_origUserActionIsSkillAvalible = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_UserActionIsSkillAvalible_W);
+                WriteRawLog("Hook_Register: wrapped UserActionIsSkillAvalible");
+            }
+        }
+        else if (_stricmp(name, "HS_ShowTargetingCursor") == 0)
+        {
+            if (!g_origHS_ShowTargetingCursor)
+            {
+                g_origHS_ShowTargetingCursor = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_HS_ShowTargetingCursor_W);
+                WriteRawLog("Hook_Register: wrapped HS_ShowTargetingCursor");
+            }
+        }
+        else if (_stricmp(name, "HS_HideTargetingCursor") == 0)
+        {
+            if (!g_origHS_HideTargetingCursor)
+            {
+                g_origHS_HideTargetingCursor = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_HS_HideTargetingCursor_W);
+                WriteRawLog("Hook_Register: wrapped HS_HideTargetingCursor");
+            }
+        }
+        else if (_stricmp(name, "UserActionUseWeaponAbility") == 0)
+        {
+            if (!g_origUserActionUseWeaponAbility)
+            {
+                g_origUserActionUseWeaponAbility = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_UserActionUseWeaponAbility_W);
+                WriteRawLog("Hook_Register: wrapped UserActionUseWeaponAbility");
+            }
+        }
+        else if (_stricmp(name, "UserActionUsePrimaryAbility") == 0)
+        {
+            if (!g_origUserActionUsePrimaryAbility)
+            {
+                g_origUserActionUsePrimaryAbility = reinterpret_cast<LuaFn>(func);
+                outFunc = reinterpret_cast<void*>(&Lua_UserActionUsePrimaryAbility_W);
+                WriteRawLog("Hook_Register: wrapped UserActionUsePrimaryAbility");
+            }
         }
     }
 
@@ -631,8 +758,25 @@ static void DumpStackTag(const char* tag)
     USHORT captured = RtlCaptureStackBackTrace(2, 8, frames, nullptr);
     for (USHORT i = 0; i < captured; ++i)
     {
-        char buf[96];
-        sprintf_s(buf, sizeof(buf), "[%s] #%u: %p", tag ? tag : "LuaWrap", i, frames[i]);
+        HMODULE mod = nullptr;
+        char modName[MAX_PATH] = {0};
+        DWORD modBase = 0;
+        DWORD addr = reinterpret_cast<DWORD>(frames[i]);
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(frames[i]), &mod))
+        {
+            MODULEINFO mi{};
+            if (GetModuleInformation(GetCurrentProcess(), mod, &mi, sizeof(mi)))
+            {
+                modBase = reinterpret_cast<DWORD>(mi.lpBaseOfDll);
+            }
+            GetModuleBaseNameA(GetCurrentProcess(), mod, modName, ARRAYSIZE(modName));
+        }
+        char buf[160];
+        if (modName[0])
+            sprintf_s(buf, sizeof(buf), "[%s] #%u: %s+0x%X (%p)", tag ? tag : "LuaWrap", i, modName, addr - modBase, frames[i]);
+        else
+            sprintf_s(buf, sizeof(buf), "[%s] #%u: %p", tag ? tag : "LuaWrap", i, frames[i]);
         WriteRawLog(buf);
     }
 }
@@ -640,11 +784,18 @@ static void DumpStackTag(const char* tag)
 static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
 {
     WriteRawLog("[Lua] UserActionCastSpell() wrapper invoked");
+    Trace::MarkAction("CastSpell");
     DumpStackTag("CastSpell");
+    unsigned sentBefore = Net::GetSendCounter();
     // Prefer saved original in Lua state; fall back to captured pointer.
     int rc = CallSavedOriginal(L, "UserActionCastSpell__orig");
     if (rc >= 0) {
         WriteRawLog("[Lua] UserActionCastSpell() wrapper exit (saved)");
+        if (g_traceLuaVerbose && rc > 0)
+            LogLuaReturns(L, "UserActionCastSpell", rc);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] CastSpell -> packet observed");
+        else WriteRawLog("[Lua] CastSpell -> no packet sent");
         return rc;
     }
     if (g_origUserActionCastSpell) {
@@ -652,6 +803,11 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
         __try { out = g_origUserActionCastSpell(L); }
         __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionCastSpell original threw"); }
         WriteRawLog("[Lua] UserActionCastSpell() wrapper exit (orig ptr)");
+        if (g_traceLuaVerbose && out > 0)
+            LogLuaReturns(L, "UserActionCastSpell", out);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] CastSpell -> packet observed");
+        else WriteRawLog("[Lua] CastSpell -> no packet sent");
         return out;
     }
     WriteRawLog("[Lua] UserActionCastSpell original missing (saved and ptr)");
@@ -661,10 +817,17 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
 static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
 {
     WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper invoked");
+    Trace::MarkAction("CastSpellOnId");
     DumpStackTag("CastSpellOnId");
+    unsigned sentBefore = Net::GetSendCounter();
     int rc = CallSavedOriginal(L, "UserActionCastSpellOnId__orig");
     if (rc >= 0) {
         WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper exit (saved)");
+        if (g_traceLuaVerbose && rc > 0)
+            LogLuaReturns(L, "UserActionCastSpellOnId", rc);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] CastSpellOnId -> packet observed");
+        else WriteRawLog("[Lua] CastSpellOnId -> no packet sent");
         return rc;
     }
     if (g_origUserActionCastSpellOnId) {
@@ -672,6 +835,11 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
         __try { out = g_origUserActionCastSpellOnId(L); }
         __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionCastSpellOnId original threw"); }
         WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper exit (orig ptr)");
+        if (g_traceLuaVerbose && out > 0)
+            LogLuaReturns(L, "UserActionCastSpellOnId", out);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] CastSpellOnId -> packet observed");
+        else WriteRawLog("[Lua] CastSpellOnId -> no packet sent");
         return out;
     }
     WriteRawLog("[Lua] UserActionCastSpellOnId original missing (saved and ptr)");
@@ -681,10 +849,17 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
 static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
 {
     WriteRawLog("[Lua] UserActionUseSkill() wrapper invoked");
+    Trace::MarkAction("UseSkill");
     DumpStackTag("UseSkill");
+    unsigned sentBefore = Net::GetSendCounter();
     int rc = CallSavedOriginal(L, "UserActionUseSkill__orig");
     if (rc >= 0) {
         WriteRawLog("[Lua] UserActionUseSkill() wrapper exit (saved)");
+        if (g_traceLuaVerbose && rc > 0)
+            LogLuaReturns(L, "UserActionUseSkill", rc);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] UseSkill -> packet observed");
+        else WriteRawLog("[Lua] UseSkill -> no packet sent");
         return rc;
     }
     if (g_origUserActionUseSkill) {
@@ -692,12 +867,269 @@ static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
         __try { out = g_origUserActionUseSkill(L); }
         __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionUseSkill original threw"); }
         WriteRawLog("[Lua] UserActionUseSkill() wrapper exit (orig ptr)");
+        if (g_traceLuaVerbose && out > 0)
+            LogLuaReturns(L, "UserActionUseSkill", out);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] UseSkill -> packet observed");
+        else WriteRawLog("[Lua] UseSkill -> no packet sent");
         return out;
     }
     WriteRawLog("[Lua] UserActionUseSkill original missing (saved and ptr)");
     return 0;
 }
 
+// Additional wrappers to trace gating/abilities and targeting cursor
+static int __cdecl Lua_UserActionIsSkillAvalible_W(lua_State* L)
+{
+    WriteRawLog("[Lua] UserActionIsSkillAvalible() wrapper invoked");
+    Trace::MarkAction("IsSkillAvalible");
+    LogLuaArgs(L, "UserActionIsSkillAvalible");
+    int rc = 0;
+    if (g_origUserActionIsSkillAvalible) {
+        __try { rc = g_origUserActionIsSkillAvalible(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionIsSkillAvalible original threw"); }
+    }
+    LogLuaReturns(L, "UserActionIsSkillAvalible", rc);
+    return rc;
+}
+
+static int __cdecl Lua_HS_ShowTargetingCursor_W(lua_State* L)
+{
+    WriteRawLog("[Lua] HS_ShowTargetingCursor() wrapper invoked");
+    Trace::MarkAction("HS_ShowTargetingCursor");
+    LogLuaArgs(L, "HS_ShowTargetingCursor");
+    int rc = 0;
+    if (g_origHS_ShowTargetingCursor) {
+        __try { rc = g_origHS_ShowTargetingCursor(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] HS_ShowTargetingCursor original threw"); }
+    }
+    LogLuaReturns(L, "HS_ShowTargetingCursor", rc);
+    return rc;
+}
+
+static int __cdecl Lua_HS_HideTargetingCursor_W(lua_State* L)
+{
+    WriteRawLog("[Lua] HS_HideTargetingCursor() wrapper invoked");
+    Trace::MarkAction("HS_HideTargetingCursor");
+    LogLuaArgs(L, "HS_HideTargetingCursor");
+    int rc = 0;
+    if (g_origHS_HideTargetingCursor) {
+        __try { rc = g_origHS_HideTargetingCursor(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] HS_HideTargetingCursor original threw"); }
+    }
+    LogLuaReturns(L, "HS_HideTargetingCursor", rc);
+    return rc;
+}
+
+static int __cdecl Lua_UserActionUseWeaponAbility_W(lua_State* L)
+{
+    WriteRawLog("[Lua] UserActionUseWeaponAbility() wrapper invoked");
+    Trace::MarkAction("UseWeaponAbility");
+    DumpStackTag("UseWeaponAbility");
+    unsigned sentBefore = Net::GetSendCounter();
+    int rc = CallSavedOriginal(L, "UserActionUseWeaponAbility__orig");
+    if (rc >= 0) {
+        WriteRawLog("[Lua] UserActionUseWeaponAbility() wrapper exit (saved)");
+        if (g_traceLuaVerbose && rc > 0)
+            LogLuaReturns(L, "UserActionUseWeaponAbility", rc);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] UseWeaponAbility -> packet observed");
+        else WriteRawLog("[Lua] UseWeaponAbility -> no packet sent");
+        return rc;
+    }
+    if (g_origUserActionUseWeaponAbility) {
+        int out = 0;
+        __try { out = g_origUserActionUseWeaponAbility(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionUseWeaponAbility original threw"); }
+        WriteRawLog("[Lua] UserActionUseWeaponAbility() wrapper exit (orig ptr)");
+        if (g_traceLuaVerbose && out > 0)
+            LogLuaReturns(L, "UserActionUseWeaponAbility", out);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] UseWeaponAbility -> packet observed");
+        else WriteRawLog("[Lua] UseWeaponAbility -> no packet sent");
+        return out;
+    }
+    WriteRawLog("[Lua] UserActionUseWeaponAbility original missing (saved and ptr)");
+    return 0;
+}
+
+static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L)
+{
+    WriteRawLog("[Lua] UserActionUsePrimaryAbility() wrapper invoked");
+    Trace::MarkAction("UsePrimaryAbility");
+    DumpStackTag("UsePrimaryAbility");
+    unsigned sentBefore = Net::GetSendCounter();
+    int rc = CallSavedOriginal(L, "UserActionUsePrimaryAbility__orig");
+    if (rc >= 0) {
+        WriteRawLog("[Lua] UserActionUsePrimaryAbility() wrapper exit (saved)");
+        if (g_traceLuaVerbose && rc > 0)
+            LogLuaReturns(L, "UserActionUsePrimaryAbility", rc);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] UsePrimaryAbility -> packet observed");
+        else WriteRawLog("[Lua] UsePrimaryAbility -> no packet sent");
+        return rc;
+    }
+    if (g_origUserActionUsePrimaryAbility) {
+        int out = 0;
+        __try { out = g_origUserActionUsePrimaryAbility(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionUsePrimaryAbility original threw"); }
+        WriteRawLog("[Lua] UserActionUsePrimaryAbility() wrapper exit (orig ptr)");
+        if (g_traceLuaVerbose && out > 0)
+            LogLuaReturns(L, "UserActionUsePrimaryAbility", out);
+        unsigned sentAfter = Net::GetSendCounter();
+        if (sentAfter > sentBefore) WriteRawLog("[Lua] UsePrimaryAbility -> packet observed");
+        else WriteRawLog("[Lua] UsePrimaryAbility -> no packet sent");
+        return out;
+    }
+    WriteRawLog("[Lua] UserActionUsePrimaryAbility original missing (saved and ptr)");
+    return 0;
+}
+
+// Generic Lua arg/ret logging helpers for gating insight
+static void LogLuaArgs(lua_State* L, const char* func, int maxArgs)
+{
+    if (!L || !g_traceLuaVerbose) return;
+    int top = lua_gettop(L);
+    char buf[256];
+    sprintf_s(buf, sizeof(buf), "[Lua] %s args: top=%d", func ? func : "<fn>", top);
+    WriteRawLog(buf);
+    int n = top < maxArgs ? top : maxArgs;
+    for (int i = 1; i <= n; ++i) {
+        int t = lua_type(L, i);
+        const char* tn = lua_typename(L, t);
+        switch (t) {
+        case LUA_TNUMBER:
+        {
+            int v = lua_tointeger(L, i);
+            sprintf_s(buf, sizeof(buf), "  arg%d (%s) = %d", i, tn, v);
+            break;
+        }
+        case LUA_TBOOLEAN:
+        {
+            int v = lua_toboolean(L, i);
+            sprintf_s(buf, sizeof(buf), "  arg%d (%s) = %s", i, tn, v ? "true" : "false");
+            break;
+        }
+        case LUA_TSTRING:
+        {
+            const char* s = lua_tolstring(L, i, nullptr);
+            sprintf_s(buf, sizeof(buf), "  arg%d (%s) = %s", i, tn, s ? s : "<null>");
+            break;
+        }
+        default:
+            sprintf_s(buf, sizeof(buf), "  arg%d (%s)", i, tn ? tn : "?");
+            break;
+        }
+        WriteRawLog(buf);
+    }
+}
+
+static void LogLuaReturns(lua_State* L, const char* func, int nret)
+{
+    if (!L || nret <= 0 || !g_traceLuaVerbose) return;
+    int topAfter = lua_gettop(L);
+    char buf[256];
+    sprintf_s(buf, sizeof(buf), "[Lua] %s returns: nret=%d", func ? func : "<fn>", nret);
+    WriteRawLog(buf);
+    int start = topAfter - nret + 1;
+    if (start < 1) start = 1;
+    for (int i = start; i <= topAfter; ++i) {
+        int t = lua_type(L, i);
+        const char* tn = lua_typename(L, t);
+        switch (t) {
+        case LUA_TNUMBER:
+        {
+            int v = lua_tointeger(L, i);
+            sprintf_s(buf, sizeof(buf), "  ret%d (%s) = %d", i - start + 1, tn, v);
+            break;
+        }
+        case LUA_TBOOLEAN:
+        {
+            int v = lua_toboolean(L, i);
+            sprintf_s(buf, sizeof(buf), "  ret%d (%s) = %s", i - start + 1, tn, v ? "true" : "false");
+            break;
+        }
+        case LUA_TSTRING:
+        {
+            const char* s = lua_tolstring(L, i, nullptr);
+            sprintf_s(buf, sizeof(buf), "  ret%d (%s) = %s", i - start + 1, tn, s ? s : "<null>");
+            break;
+        }
+        default:
+            sprintf_s(buf, sizeof(buf), "  ret%d (%s)", i - start + 1, tn ? tn : "?");
+            break;
+        }
+        WriteRawLog(buf);
+    }
+}
+
+static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L)
+{
+    WriteRawLog("[Lua] UserActionIsTargetModeCompat() wrapper invoked");
+    Trace::MarkAction("IsTargetModeCompat");
+    LogLuaArgs(L, "UserActionIsTargetModeCompat");
+    static volatile LONG s_dumpCount1 = 0;
+    if (InterlockedIncrement(&s_dumpCount1) <= 6)
+        DumpStackTag("IsTargetModeCompat");
+    int rc = 0;
+    if (g_origUserActionIsTargetModeCompat) {
+        __try { rc = g_origUserActionIsTargetModeCompat(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionIsTargetModeCompat original threw"); }
+    }
+    LogLuaReturns(L, "UserActionIsTargetModeCompat", rc);
+    return rc;
+}
+
+static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L)
+{
+    WriteRawLog("[Lua] UserActionIsActionTypeTargetModeCompat() wrapper invoked");
+    Trace::MarkAction("IsActionTypeTargetModeCompat");
+    LogLuaArgs(L, "UserActionIsActionTypeTargetModeCompat");
+    static volatile LONG s_dumpCount2 = 0;
+    if (InterlockedIncrement(&s_dumpCount2) <= 6)
+        DumpStackTag("IsActionTypeTargetModeCompat");
+    int rc = 0;
+    if (g_origUserActionIsActionTypeTargetModeCompat) {
+        __try { rc = g_origUserActionIsActionTypeTargetModeCompat(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionIsActionTypeTargetModeCompat original threw"); }
+    }
+    LogLuaReturns(L, "UserActionIsActionTypeTargetModeCompat", rc);
+    return rc;
+}
+
+static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
+{
+    WriteRawLog("[Lua] RequestTargetInfo() wrapper invoked");
+    Trace::MarkAction("RequestTargetInfo");
+    LogLuaArgs(L, "RequestTargetInfo");
+    static volatile LONG s_dumpCountRTI = 0;
+    if (InterlockedIncrement(&s_dumpCountRTI) <= 4)
+        DumpStackTag("RequestTargetInfo");
+    int rc = 0;
+    if (g_origRequestTargetInfo) {
+        __try { rc = g_origRequestTargetInfo(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] RequestTargetInfo original threw"); }
+    }
+    LogLuaReturns(L, "RequestTargetInfo", rc);
+    return rc;
+}
+
+static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L)
+{
+    WriteRawLog("[Lua] ClearCurrentTarget() wrapper invoked");
+    Trace::MarkAction("ClearCurrentTarget");
+    LogLuaArgs(L, "ClearCurrentTarget");
+    static volatile LONG s_dumpCountCCT = 0;
+    if (InterlockedIncrement(&s_dumpCountCCT) <= 4)
+        DumpStackTag("ClearCurrentTarget");
+    int rc = 0;
+    if (g_origClearCurrentTarget) {
+        __try { rc = g_origClearCurrentTarget(L); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] ClearCurrentTarget original threw"); }
+    }
+    LogLuaReturns(L, "ClearCurrentTarget", rc);
+    return rc;
+}
 static int CallSavedOriginal(lua_State* L, const char* savedName)
 {
     if (!L || !savedName)
@@ -779,6 +1211,12 @@ bool InitLuaBridge()
         enableHook = *v;
     else if (const char* env = std::getenv("UOWP_ENABLE_LUA_REGISTER_HOOK"))
         enableHook = (env[0] == '1' || env[0] == 'y' || env[0] == 'Y' || env[0] == 't' || env[0] == 'T');
+
+    // Trace verbosity (optional): TRACE_LUA_VERBOSE or trace.lua.verbose
+    if (auto v = Core::Config::TryGetBool("TRACE_LUA_VERBOSE"))
+        g_traceLuaVerbose = *v;
+    else if (auto v2 = Core::Config::TryGetBool("trace.lua.verbose"))
+        g_traceLuaVerbose = *v2;
 
     if (enableHook) {
         WriteRawLog("InitLuaBridge: enabling RegisterLuaFunction hook (cfg/env)");

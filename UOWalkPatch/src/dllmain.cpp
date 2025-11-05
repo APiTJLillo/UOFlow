@@ -10,6 +10,8 @@
 #include "../include/Engine/LuaBridge.hpp"
 #include "../include/Net/PacketTrace.hpp"
 #include "../include/Net/SendBuilder.hpp"
+#include "../include/Core/Config.hpp"
+#include "../include/Core/ActionTrace.hpp"
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 {
@@ -70,6 +72,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Log::LogLoadedModules();
         if (!Core::MinHookHelpers::Init())
             return FALSE;
+
+        // Optional: configure correlation window from cfg/env
+        if (auto ms = Core::Config::TryGetMilliseconds("TRACE_WINDOW_MS"))
+            Trace::SetWindowMs(*ms);
+        else if (auto ms2 = Core::Config::TryGetMilliseconds("trace.windowMs"))
+            Trace::SetWindowMs(*ms2);
 
         if (!Engine::InitGlobalStateWatch())
             return FALSE;
