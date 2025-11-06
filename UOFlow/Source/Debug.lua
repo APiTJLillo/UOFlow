@@ -55,3 +55,50 @@ end
 function Debug.Dump(name, value, memo)
 	Debug.DumpToConsole(name, value, memo)
 end
+
+
+local function uow_log(...)
+	local fn = nil
+	if type(d) == 'function' then
+		fn = d
+	elseif Debug and type(Debug.Print) == 'function' then
+		fn = Debug.Print
+	end
+	if not fn then
+		return
+	end
+	fn(...)
+end
+
+function uow_selftest_cast_twice(spellId, waitMs)
+	uow_log('== cast twice test ==', spellId, waitMs)
+	if type(spellId) ~= 'number' then
+		uow_log('spellId must be numeric')
+		return false, false
+	end
+
+	local ok1, res1 = pcall(UserActionCastSpell, spellId)
+	uow_log('cast1', ok1, res1)
+
+	local delayMs = tonumber(waitMs) or 0
+	if delayMs > 0 then
+		if WindowUtils and type(WindowUtils.SendOverheadText) == 'function' then
+			local msg = towstring(string.format('wait %d ms', delayMs))
+			pcall(WindowUtils.SendOverheadText, msg, 66, true, false)
+		end
+		if type(Delay) == 'function' then
+			pcall(Delay, delayMs)
+		else
+			uow_log('Delay helper unavailable; skipping sleep', delayMs)
+		end
+	end
+
+	if type(ClearCurrentTarget) == 'function' then
+		local okClear, resClear = pcall(ClearCurrentTarget)
+		uow_log('ClearCurrentTarget', okClear, resClear)
+	end
+
+	local ok2, res2 = pcall(UserActionCastSpell, spellId)
+	uow_log('cast2', ok2, res2)
+	return ok1 and res1, ok2 and res2
+end
