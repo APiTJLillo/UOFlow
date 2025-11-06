@@ -10,9 +10,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstddef>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <memory>
 
 #include "Core/Logging.hpp"
 #include "Core/PatternScan.hpp"
@@ -24,6 +26,7 @@
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
 #include "Util/OwnerPump.hpp"
+#include "Core/Utils.hpp"
 #include "LuaPlus.h"
 
 // LuaPlus.h intentionally exposes only a subset of the Lua C API.
@@ -105,7 +108,12 @@ enum ContextLogBits : unsigned {
     static std::atomic<uint32_t> g_lastCastToken{0};
     static volatile LONG g_castSpellCalleeDumps = 0;
 
-    static thread_local std::vector<void*> g_castSpellLastRAs;
+    struct CastSpellFrameBuffer {
+        USHORT count = 0;
+        void* frames[16]{};
+    };
+
+    static thread_local CastSpellFrameBuffer g_castSpellLastRAs;
     static thread_local uint32_t g_tlsCurrentCastToken = 0;
 
     static std::mutex g_castSpellCalleeMutex;
@@ -114,6 +122,40 @@ enum ContextLogBits : unsigned {
     static std::unordered_map<uint32_t, unsigned> g_castSpellPathIds;
     static std::unordered_map<uint32_t, unsigned> g_castSpellPathCounts;
     static unsigned g_castSpellNextPathId = 1;
+
+   struct GateCallProbe {
+       uint8_t* callSite = nullptr;
+       void* target = nullptr;
+       void* trampoline = nullptr;
+       uint8_t* stub = nullptr;
+       uint32_t id = 0;
+       std::atomic<uint32_t> hits{0};
+       std::atomic<uint32_t> zeroHits{0};
+       uint16_t retImm = 0;
+       std::vector<uint8_t*> callSites;
+   };
+
+    static std::mutex g_gateProbeMutex;
+    static std::unordered_map<void*, std::unique_ptr<GateCallProbe>> g_gateProbes;
+    static std::atomic<uint32_t> g_gateProbeSeed{1};
+
+    static volatile LONG g_logBudgetTarget = 96;
+    static volatile LONG g_logBudgetActionType = 96;
+    static bool g_logBudgetTargetUnlimited = false;
+    static bool g_logBudgetActionTypeUnlimited = false;
+    static bool g_enableCastGateProbes = true;
+
+    struct GateInvokeTls {
+        GateCallProbe* probe = nullptr;
+        uintptr_t ecx = 0;
+        uintptr_t edx = 0;
+        uintptr_t args[4]{};
+    };
+
+    static thread_local GateInvokeTls g_gateInvokeTls;
+    static std::atomic<uint32_t> g_gate3350LogCount{0};
+    static std::atomic<uint32_t> g_gate3350ZeroLogCount{0};
+    static constexpr uintptr_t kGateHelper00AA3350 = 0x00AA3350;
 }
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
@@ -153,8 +195,9 @@ static uint32_t CurrentCastToken();
 static void UowTracePushSpell(int spell);
 static void UowTraceCollectRAs();
 static void* ResolveCalleeFromRA(void* ret);
-static void DumpCastSpellCallees(const std::vector<void*>& frames);
-static void LogCastSpellPath(uint32_t token, const std::vector<void*>& frames, bool isOwnerPath);
+static void DumpCastSpellCallees(const CastSpellFrameBuffer& frames);
+static void LogCastSpellPath(uint32_t token, const CastSpellFrameBuffer& frames, bool isOwnerPath);
+static uint16_t DetectRetImm(void* target);
 
 struct ValueProbe {
     bool pathValid = false;
@@ -176,6 +219,12 @@ static CastSpellSnapshot CaptureCastSpellSnapshot(lua_State* L);
 static void LogCastSpellSnapshot(const char* phase, uint32_t token, int spellId, const CastSpellSnapshot& snap);
 static int InvokeClientLuaFn(LuaFn fn, const char* tag, lua_State* L);
 static bool ProbeValueUnsafe(lua_State* L, const char* const* path, size_t length, ValueProbe& probe);
+static void InstallGateProbeForCallSite(uint8_t* callSite);
+static uint8_t* AllocateGateStub(GateCallProbe* probe);
+static void GateInvokeShared();
+static void __stdcall GateLogReturn(GateCallProbe* probe, uintptr_t retValue);
+static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, uintptr_t edx, uintptr_t* argBase);
+static void LogGateHelper00AA3350(GateCallProbe* probe, uintptr_t retValue);
 
 // Configurable verbosity for Lua arg/ret logging
 static bool g_traceLuaVerbose = false;
@@ -325,12 +374,16 @@ static void UowTracePushSpell(int spell)
 
 static void UowTraceCollectRAs()
 {
-    g_castSpellLastRAs.clear();
+    g_castSpellLastRAs.count = 0;
     void* frames[16]{};
     USHORT captured = RtlCaptureStackBackTrace(1, 16, frames, nullptr);
-    for (USHORT i = 0; i < captured; ++i) {
-        g_castSpellLastRAs.push_back(frames[i]);
+    USHORT out = 0;
+    for (USHORT i = 0; i < captured && out < 16; ++i) {
+        if (!frames[i])
+            continue;
+        g_castSpellLastRAs.frames[out++] = frames[i];
     }
+    g_castSpellLastRAs.count = out;
 }
 
 static void* ResolveCalleeFromRA(void* ret)
@@ -350,16 +403,23 @@ static void* ResolveCalleeFromRA(void* ret)
     }
 }
 
-static void DumpCastSpellCallees(const std::vector<void*>& frames)
+static void DumpCastSpellCallees(const CastSpellFrameBuffer& frames)
 {
-    if (frames.empty())
+    if (frames.count == 0)
         return;
 
     std::unordered_set<void*> unique;
-    for (void* ra : frames) {
-        if (auto* callee = ResolveCalleeFromRA(ra)) {
-            unique.insert(callee);
-        }
+    for (USHORT i = 0; i < frames.count; ++i) {
+        void* ra = frames.frames[i];
+        if (!ra)
+            continue;
+        auto* callSite = reinterpret_cast<uint8_t*>(ra) - 5;
+        if (g_enableCastGateProbes)
+            InstallGateProbeForCallSite(callSite);
+        void* callee = ResolveCalleeFromRA(ra);
+        if (!callee)
+            continue;
+        unique.insert(callee);
     }
     if (unique.empty())
         return;
@@ -374,12 +434,13 @@ static void DumpCastSpellCallees(const std::vector<void*>& frames)
     }
 }
 
-static uint32_t HashCallPath(const std::vector<void*>& frames)
+static uint32_t HashCallPath(const CastSpellFrameBuffer& frames)
 {
     const uint32_t fnvOffset = 2166136261u;
     const uint32_t fnvPrime = 16777619u;
     uint32_t hash = fnvOffset;
-    for (void* frame : frames) {
+    for (USHORT i = 0; i < frames.count; ++i) {
+        void* frame = frames.frames[i];
         uintptr_t value = reinterpret_cast<uintptr_t>(frame);
         for (int i = 0; i < static_cast<int>(sizeof(value)); ++i) {
             hash ^= static_cast<uint32_t>((value >> (i * 8)) & 0xFFu);
@@ -391,9 +452,9 @@ static uint32_t HashCallPath(const std::vector<void*>& frames)
     return hash;
 }
 
-static void LogCastSpellPath(uint32_t token, const std::vector<void*>& frames, bool isOwnerPath)
+static void LogCastSpellPath(uint32_t token, const CastSpellFrameBuffer& frames, bool isOwnerPath)
 {
-    if (frames.empty())
+    if (frames.count == 0)
         return;
 
     uint32_t hash = HashCallPath(frames);
@@ -414,8 +475,278 @@ static void LogCastSpellPath(uint32_t token, const std::vector<void*>& frames, b
 
     if (count <= 8) {
         char buf[192];
-        sprintf_s(buf, sizeof(buf), "[Lua] CastSpell path tok=%u pathId=%u hash=%08X owner=%s depth=%zu count=%u",
-                  token, pathId, hash, isOwnerPath ? "yes" : "no", frames.size(), count);
+        sprintf_s(buf, sizeof(buf), "[Lua] CastSpell path tok=%u pathId=%u hash=%08X owner=%s depth=%u count=%u",
+                  token, pathId, hash, isOwnerPath ? "yes" : "no", frames.count, count);
+        WriteRawLog(buf);
+    }
+}
+
+static uint16_t DetectRetImm(void* target)
+{
+    if (!target)
+        return 0;
+    uint8_t* code = static_cast<uint8_t*>(target);
+    __try {
+        for (size_t i = 0; i < 256; ++i) {
+            uint8_t op = code[i];
+            if (op == 0xC3)
+                return 0;
+            if (op == 0xC2) {
+                if (i + 2 >= 256)
+                    break;
+                return *reinterpret_cast<uint16_t*>(code + i + 1);
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return 0;
+}
+
+static uint8_t* AllocateGateStub(GateCallProbe* probe)
+{
+    if (!probe)
+        return nullptr;
+    uint8_t* stub = static_cast<uint8_t*>(VirtualAlloc(nullptr, 32, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
+    if (!stub)
+        return nullptr;
+    uintptr_t probePtr = reinterpret_cast<uintptr_t>(probe);
+    stub[0] = 0x68; // push imm32 (probe pointer)
+    *reinterpret_cast<uint32_t*>(stub + 1) = static_cast<uint32_t>(probePtr);
+    stub[5] = 0xE8; // call rel32 GateInvokeShared
+    intptr_t rel = reinterpret_cast<intptr_t>(&GateInvokeShared) - reinterpret_cast<intptr_t>(stub + 9);
+    *reinterpret_cast<int32_t*>(stub + 6) = static_cast<int32_t>(rel);
+    size_t flush = 11;
+    if (probe->retImm == 0) {
+        stub[10] = 0xC3; // ret
+        flush = 11;
+    } else {
+        stub[10] = 0xC2; // ret imm16
+        *reinterpret_cast<uint16_t*>(stub + 11) = probe->retImm;
+        flush = 13;
+    }
+    FlushInstructionCache(GetCurrentProcess(), stub, flush);
+    return stub;
+}
+
+static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, uintptr_t edx, uintptr_t* argBase)
+{
+    g_gateInvokeTls.probe = probe;
+    g_gateInvokeTls.ecx = ecx;
+    g_gateInvokeTls.edx = edx;
+    for (size_t i = 0; i < 4; ++i)
+        g_gateInvokeTls.args[i] = 0;
+    if (!argBase)
+        return;
+
+    __try {
+        for (size_t i = 0; i < 4; ++i)
+            g_gateInvokeTls.args[i] = argBase[i];
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        for (size_t i = 0; i < 4; ++i)
+            g_gateInvokeTls.args[i] = 0;
+    }
+}
+
+static void DumpGateMemorySafe(const char* label, uintptr_t address, size_t length)
+{
+    if (!address || !length)
+        return;
+    __try {
+        Core::Utils::DumpMemory(label, reinterpret_cast<void*>(address), length);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "[Gate3350] failed to dump %s at %p", label, reinterpret_cast<void*>(address));
+        WriteRawLog(buf);
+    }
+}
+
+static void LogGateHelper00AA3350(GateCallProbe* probe, uintptr_t retValue)
+{
+    if (!probe)
+        return;
+    if (reinterpret_cast<uintptr_t>(probe->target) != kGateHelper00AA3350)
+        return;
+    if (g_gateInvokeTls.probe != probe)
+        return;
+
+    GateInvokeTls snap = g_gateInvokeTls;
+    uint32_t seq = g_gate3350LogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    bool isZero = (retValue == 0);
+    uint32_t zeroSeq = isZero ? (g_gate3350ZeroLogCount.fetch_add(1, std::memory_order_relaxed) + 1)
+                              : g_gate3350ZeroLogCount.load(std::memory_order_relaxed);
+
+    if (!isZero && seq > 8)
+        return;
+
+    char buf[320];
+    sprintf_s(buf, sizeof(buf),
+        "[Gate3350] ret=0x%08IX zero=%s seq=%u zeroSeq=%u ecx=%p edx=%p args={%p,%p,%p,%p} tok=%u spell=%d",
+        static_cast<unsigned int>(retValue),
+        isZero ? "yes" : "no",
+        seq,
+        isZero ? zeroSeq : 0u,
+        reinterpret_cast<void*>(snap.ecx),
+        reinterpret_cast<void*>(snap.edx),
+        reinterpret_cast<void*>(snap.args[0]),
+        reinterpret_cast<void*>(snap.args[1]),
+        reinterpret_cast<void*>(snap.args[2]),
+        reinterpret_cast<void*>(snap.args[3]),
+        g_lastCastToken.load(std::memory_order_acquire),
+        g_castSpellCurSpell.load(std::memory_order_relaxed));
+    WriteRawLog(buf);
+
+    if (isZero && zeroSeq <= 8) {
+        DumpGateMemorySafe("Gate3350.ecx", snap.ecx, 64);
+        DumpGateMemorySafe("Gate3350.arg0", snap.args[0], 64);
+    }
+}
+
+static void __stdcall GateLogReturn(GateCallProbe* probe, uintptr_t retValue)
+{
+    if (!probe) {
+        g_gateInvokeTls = GateInvokeTls{};
+        return;
+    }
+
+    uint32_t total = probe->hits.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint32_t zeroTotal = (retValue == 0)
+        ? (probe->zeroHits.fetch_add(1, std::memory_order_relaxed) + 1)
+        : probe->zeroHits.load(std::memory_order_relaxed);
+
+    bool logZero = (retValue == 0);
+    bool logThis = (total <= 16) || (logZero && zeroTotal <= 16);
+    if (logThis) {
+        int spell = g_castSpellCurSpell.load(std::memory_order_relaxed);
+        uint32_t tok = g_lastCastToken.load(std::memory_order_acquire);
+        char buf[256];
+        sprintf_s(buf, sizeof(buf),
+            "[CastSpellGate] id=%u site=%p target=%p ret=0x%08IX tok=%u spell=%d hits=%u zero=%u",
+            probe->id,
+            probe->callSite,
+            probe->target,
+            static_cast<unsigned int>(retValue),
+            tok,
+            spell,
+            total,
+            zeroTotal);
+        WriteRawLog(buf);
+    }
+
+    LogGateHelper00AA3350(probe, retValue);
+    g_gateInvokeTls = GateInvokeTls{};
+}
+
+static void __declspec(naked) GateInvokeShared()
+{
+    __asm {
+        push esi
+        push edi
+        push ebx
+        sub esp, 8
+        mov DWORD PTR [esp], ecx                // locals[0] = original ECX
+        mov DWORD PTR [esp + 4], edx            // locals[1] = original EDX
+        mov esi, DWORD PTR [esp + 24]           // load GateCallProbe*
+        lea ebx, DWORD PTR [esp + 28]           // pointer to first stack argument
+        mov eax, DWORD PTR [esp]                // original ECX
+        mov edx, DWORD PTR [esp + 4]            // original EDX
+        push ebx                                // arg4: arg base
+        push edx                                // arg3: original EDX
+        push eax                                // arg2: original ECX
+        push esi                                // arg1: probe pointer
+        call GateStorePreInvoke
+        mov ecx, DWORD PTR [esp]                // restore original ECX
+        mov edx, DWORD PTR [esp + 4]            // restore original EDX
+        mov eax, DWORD PTR [esi + 8]            // trampoline field (offset 8)
+        call eax                                // invoke original target
+        mov DWORD PTR [esp], ecx                // stash post-call ECX
+        mov DWORD PTR [esp + 4], edx            // stash post-call EDX
+        mov edi, eax                            // preserve return value
+        push edi                                // arg2: return value
+        push esi                                // arg1: probe pointer
+        call GateLogReturn
+        mov ecx, DWORD PTR [esp]                // restore post-call ECX
+        mov edx, DWORD PTR [esp + 4]            // restore post-call EDX
+        mov eax, edi                            // restore return value
+        add esp, 8                              // release local storage
+        pop ebx
+        pop edi
+        pop esi
+        ret 4                                   // pop probe pointer argument
+    }
+}
+
+static void InstallGateProbeForCallSite(uint8_t* callSite)
+{
+    if (!g_enableCastGateProbes)
+        return;
+    if (!callSite)
+        return;
+    if (callSite[0] != 0xE8)
+        return;
+    if (!IsInMainModule(callSite))
+        return;
+
+    int32_t rel = *reinterpret_cast<int32_t*>(callSite + 1);
+    void* target = callSite + 5 + rel;
+    if (!target)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_gateProbeMutex);
+    auto it = g_gateProbes.find(target);
+    GateCallProbe* probe = nullptr;
+    if (it == g_gateProbes.end()) {
+        auto fresh = std::make_unique<GateCallProbe>();
+        probe = fresh.get();
+        probe->target = target;
+        probe->callSite = callSite;
+        probe->id = g_gateProbeSeed.fetch_add(1, std::memory_order_relaxed);
+        probe->retImm = DetectRetImm(target);
+        probe->stub = AllocateGateStub(probe);
+        if (!probe->stub) {
+            WriteRawLog("[CastSpellGate] failed to allocate stub for gate detour");
+            return;
+        }
+
+        MH_STATUS init = MH_Initialize();
+        (void)init; // allow already-initialized
+        MH_STATUS createRc = MH_CreateHook(target, probe->stub, reinterpret_cast<void**>(&probe->trampoline));
+        if (createRc != MH_OK) {
+            char buf[256];
+            sprintf_s(buf, sizeof(buf),
+                "[CastSpellGate] MH_CreateHook failed target=%p rc=%d", target, static_cast<int>(createRc));
+            WriteRawLog(buf);
+            VirtualFree(probe->stub, 0, MEM_RELEASE);
+            return;
+        }
+        MH_STATUS enableRc = MH_EnableHook(target);
+        if (enableRc != MH_OK) {
+            char buf[256];
+            sprintf_s(buf, sizeof(buf),
+                "[CastSpellGate] MH_EnableHook failed target=%p rc=%d", target, static_cast<int>(enableRc));
+            WriteRawLog(buf);
+            MH_RemoveHook(target);
+            VirtualFree(probe->stub, 0, MEM_RELEASE);
+            return;
+        }
+
+        char buf[256];
+        sprintf_s(buf, sizeof(buf),
+            "[CastSpellGate] probe installed id=%u target=%p stub@%p tramp=%p retImm=%u",
+            probe->id, probe->target, probe->stub, probe->trampoline, static_cast<unsigned>(probe->retImm));
+        WriteRawLog(buf);
+        probe->callSites.push_back(callSite);
+        g_gateProbes.emplace(target, std::move(fresh));
+    } else {
+        probe = it->second.get();
+        probe->callSites.push_back(callSite);
+        char buf[192];
+        sprintf_s(buf, sizeof(buf),
+            "[CastSpellGate] callsite %p linked to existing probe id=%u target=%p retImm=%u",
+            callSite, probe->id, probe->target, static_cast<unsigned>(probe->retImm));
         WriteRawLog(buf);
     }
 }
@@ -2039,35 +2370,51 @@ static void LogLuaErrorTop(lua_State* L, const char* context, int maxSlots)
 
 static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L)
 {
-    WriteRawLog("[Lua] UserActionIsTargetModeCompat() wrapper invoked");
+    bool verbose = true;
+    if (!g_logBudgetTargetUnlimited) {
+        LONG remaining = InterlockedDecrement(&g_logBudgetTarget);
+        verbose = (remaining >= 0);
+    }
+    if (verbose) {
+        WriteRawLog("[Lua] UserActionIsTargetModeCompat() wrapper invoked");
+        LogLuaArgs(L, "UserActionIsTargetModeCompat");
+    }
     Trace::MarkAction("IsTargetModeCompat");
-    LogLuaArgs(L, "UserActionIsTargetModeCompat");
     static volatile LONG s_dumpCount1 = 0;
-    if (InterlockedIncrement(&s_dumpCount1) <= 6)
+    if (verbose && InterlockedIncrement(&s_dumpCount1) <= 6)
         DumpStackTag("IsTargetModeCompat");
     int rc = 0;
     if (g_origUserActionIsTargetModeCompat) {
         __try { rc = g_origUserActionIsTargetModeCompat(L); }
         __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionIsTargetModeCompat original threw"); }
     }
-    LogLuaReturns(L, "UserActionIsTargetModeCompat", rc);
+    if (verbose)
+        LogLuaReturns(L, "UserActionIsTargetModeCompat", rc);
     return rc;
 }
 
 static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L)
 {
-    WriteRawLog("[Lua] UserActionIsActionTypeTargetModeCompat() wrapper invoked");
+    bool verbose = true;
+    if (!g_logBudgetActionTypeUnlimited) {
+        LONG remaining = InterlockedDecrement(&g_logBudgetActionType);
+        verbose = (remaining >= 0);
+    }
+    if (verbose) {
+        WriteRawLog("[Lua] UserActionIsActionTypeTargetModeCompat() wrapper invoked");
+        LogLuaArgs(L, "UserActionIsActionTypeTargetModeCompat");
+    }
     Trace::MarkAction("IsActionTypeTargetModeCompat");
-    LogLuaArgs(L, "UserActionIsActionTypeTargetModeCompat");
     static volatile LONG s_dumpCount2 = 0;
-    if (InterlockedIncrement(&s_dumpCount2) <= 6)
+    if (verbose && InterlockedIncrement(&s_dumpCount2) <= 6)
         DumpStackTag("IsActionTypeTargetModeCompat");
     int rc = 0;
     if (g_origUserActionIsActionTypeTargetModeCompat) {
         __try { rc = g_origUserActionIsActionTypeTargetModeCompat(L); }
         __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] UserActionIsActionTypeTargetModeCompat original threw"); }
     }
-    LogLuaReturns(L, "UserActionIsActionTypeTargetModeCompat", rc);
+    if (verbose)
+        LogLuaReturns(L, "UserActionIsActionTypeTargetModeCompat", rc);
     return rc;
 }
 
@@ -2203,6 +2550,30 @@ bool InitLuaBridge()
         g_traceLuaVerbose = *v;
     else if (auto v2 = Core::Config::TryGetBool("trace.lua.verbose"))
         g_traceLuaVerbose = *v2;
+
+    auto applyBudget = [](volatile LONG& budget, bool& unlimited, int value) {
+        if (value <= 0) {
+            unlimited = true;
+            budget = 0;
+        } else {
+            unlimited = false;
+            budget = static_cast<LONG>(value);
+        }
+    };
+    if (auto v = Core::Config::TryGetInt("TRACE_LUA_COMPAT_LIMIT")) {
+        applyBudget(g_logBudgetTarget, g_logBudgetTargetUnlimited, *v);
+        applyBudget(g_logBudgetActionType, g_logBudgetActionTypeUnlimited, *v);
+    }
+    if (auto v = Core::Config::TryGetInt("TRACE_LUA_TARGET_COMPAT_LIMIT"))
+        applyBudget(g_logBudgetTarget, g_logBudgetTargetUnlimited, *v);
+    if (auto v = Core::Config::TryGetInt("TRACE_LUA_ACTIONTYPE_COMPAT_LIMIT"))
+        applyBudget(g_logBudgetActionType, g_logBudgetActionTypeUnlimited, *v);
+    if (auto v = Core::Config::TryGetBool("CAST_SPELL_GATE_PROBES"))
+        g_enableCastGateProbes = *v;
+    else if (const char* envProbe = std::getenv("CAST_SPELL_GATE_PROBES"))
+        g_enableCastGateProbes = (envProbe[0] == '1' || envProbe[0] == 'y' || envProbe[0] == 'Y' || envProbe[0] == 't' || envProbe[0] == 'T');
+    if (!g_enableCastGateProbes)
+        WriteRawLog("InitLuaBridge: cast gate probes disabled via config/env");
 
     if (enableHook) {
         WriteRawLog("InitLuaBridge: enabling RegisterLuaFunction hook (cfg/env)");
