@@ -115,7 +115,7 @@ static void LogLuaArgs(lua_State* L, const char* func, int maxArgs = 3);
 static void LogLuaReturns(lua_State* L, const char* func, int nret);
 static void LogLuaErrorTop(lua_State* L, const char* context, int maxSlots = 6);
 static void LogLuaClosureUpvalues(lua_State* L, int funcIndex, const char* context, int maxUpvalues = 4);
-static void LogSavedOriginalUpvalues(lua_State* L, const char* savedName, const char* context, volatile LONG* gate, int maxUpvalues = 4);
+static void LogSavedOriginalUpvalues(lua_State* L, const char* savedName, const char* globalName, const char* context, volatile LONG* gate, int maxUpvalues = 4);
 static int CallSavedOriginal(lua_State* L, const char* savedName);
 
 // Configurable verbosity for Lua arg/ret logging
@@ -1004,7 +1004,7 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionCastSpell/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionCastSpell__orig", "UserActionCastSpell/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionCastSpell__orig", "UserActionCastSpell", "UserActionCastSpell/upvalues", &s_upvalueLogs);
             }
         }
         return rc;
@@ -1029,7 +1029,7 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionCastSpell/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionCastSpell__orig", "UserActionCastSpell/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionCastSpell__orig", "UserActionCastSpell", "UserActionCastSpell/upvalues", &s_upvalueLogs);
             }
         }
         return out;
@@ -1067,7 +1067,7 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionCastSpellOnId/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
             }
         }
         return rc;
@@ -1092,7 +1092,7 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionCastSpellOnId/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
             }
         }
         return out;
@@ -1121,7 +1121,7 @@ static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionUseSkill/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionUseSkill__orig", "UserActionUseSkill/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionUseSkill__orig", "UserActionUseSkill", "UserActionUseSkill/upvalues", &s_upvalueLogs);
             }
         }
         return rc;
@@ -1140,7 +1140,7 @@ static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionUseSkill/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionUseSkill__orig", "UserActionUseSkill/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionUseSkill__orig", "UserActionUseSkill", "UserActionUseSkill/upvalues", &s_upvalueLogs);
             }
         }
         return out;
@@ -1212,7 +1212,7 @@ static int __cdecl Lua_UserActionUseWeaponAbility_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionUseWeaponAbility/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionUseWeaponAbility__orig", "UserActionUseWeaponAbility/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionUseWeaponAbility__orig", "UserActionUseWeaponAbility", "UserActionUseWeaponAbility/upvalues", &s_upvalueLogs);
             }
         }
         return rc;
@@ -1231,7 +1231,7 @@ static int __cdecl Lua_UserActionUseWeaponAbility_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionUseWeaponAbility/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionUseWeaponAbility__orig", "UserActionUseWeaponAbility/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionUseWeaponAbility__orig", "UserActionUseWeaponAbility", "UserActionUseWeaponAbility/upvalues", &s_upvalueLogs);
             }
         }
         return out;
@@ -1260,7 +1260,7 @@ static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionUsePrimaryAbility/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionUsePrimaryAbility__orig", "UserActionUsePrimaryAbility/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionUsePrimaryAbility__orig", "UserActionUsePrimaryAbility", "UserActionUsePrimaryAbility/upvalues", &s_upvalueLogs);
             }
         }
         return rc;
@@ -1279,7 +1279,7 @@ static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L)
             LONG order = InterlockedIncrement(&s_noPacketLogs);
             if (order <= 8) {
                 LogLuaErrorTop(L, "UserActionUsePrimaryAbility/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionUsePrimaryAbility__orig", "UserActionUsePrimaryAbility/upvalues", &s_upvalueLogs);
+                LogSavedOriginalUpvalues(L, "UserActionUsePrimaryAbility__orig", "UserActionUsePrimaryAbility", "UserActionUsePrimaryAbility/upvalues", &s_upvalueLogs);
             }
         }
         return out;
@@ -1448,7 +1448,7 @@ static void LogLuaClosureUpvalues(lua_State* L, int funcIndex, const char* conte
     lua_settop(L, topBefore);
 }
 
-static void LogSavedOriginalUpvalues(lua_State* L, const char* savedName, const char* context, volatile LONG* gate, int maxUpvalues)
+static void LogSavedOriginalUpvalues(lua_State* L, const char* savedName, const char* globalName, const char* context, volatile LONG* gate, int maxUpvalues)
 {
     if (!L || !savedName || maxUpvalues <= 0)
         return;
@@ -1458,11 +1458,27 @@ static void LogSavedOriginalUpvalues(lua_State* L, const char* savedName, const 
 
     int top = lua_gettop(L);
     lua_getglobal(L, savedName);
-    if (lua_type(L, -1) == LUA_TFUNCTION) {
+    int savedType = lua_type(L, -1);
+    if (savedType == LUA_TFUNCTION) {
         LogLuaClosureUpvalues(L, -1, context ? context : savedName, maxUpvalues);
+        lua_settop(L, top);
+        return;
     } else {
+        lua_pop(L, 1);
+        if (globalName && *globalName) {
+            lua_getglobal(L, globalName);
+            if (lua_type(L, -1) == LUA_TFUNCTION) {
+                char buf[192];
+                sprintf_s(buf, sizeof(buf), "[Lua] %s saved original missing; inspecting global '%s' instead", context ? context : globalName, globalName);
+                WriteRawLog(buf);
+                LogLuaClosureUpvalues(L, -1, context ? context : globalName, maxUpvalues);
+                lua_settop(L, top);
+                return;
+            }
+            lua_pop(L, 1);
+        }
         char buf[192];
-        sprintf_s(buf, sizeof(buf), "[Lua] %s missing saved original '%s' (type=%s)", context ? context : "closure", savedName, lua_typename(L, lua_type(L, -1)));
+        sprintf_s(buf, sizeof(buf), "[Lua] %s missing saved original '%s' (type=%s)", context ? context : "closure", savedName, lua_typename(L, savedType));
         WriteRawLog(buf);
     }
     lua_settop(L, top);
