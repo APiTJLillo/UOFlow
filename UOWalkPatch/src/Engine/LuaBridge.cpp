@@ -7,6 +7,8 @@
 #include <string>
 #include <cstdlib>
 #include <string>
+#include <vector>
+#include <algorithm>
 
 #include "Core/Logging.hpp"
 #include "Core/PatternScan.hpp"
@@ -25,9 +27,15 @@ extern "C" {
     LUA_API void lua_insert(lua_State* L, int idx);
     LUA_API void lua_pushvalue(lua_State* L, int idx);
     LUA_API const char* lua_tolstring(lua_State* L, int idx, size_t* len);
+    LUA_API lua_Number lua_tonumber(lua_State* L, int idx);
+    LUA_API const char* lua_getupvalue(lua_State* L, int funcIndex, int n);
 }
 #ifndef LUA_MULTRET
 #define LUA_MULTRET (-1)
+#endif
+
+#ifndef LUA_REGISTRYINDEX
+#define LUA_REGISTRYINDEX (-10000)
 #endif
 
 
@@ -105,10 +113,18 @@ static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L);
 // Forward declarations for logging helpers
 static void LogLuaArgs(lua_State* L, const char* func, int maxArgs = 3);
 static void LogLuaReturns(lua_State* L, const char* func, int nret);
+static void LogLuaErrorTop(lua_State* L, const char* context, int maxSlots = 6);
+static void LogLuaClosureUpvalues(lua_State* L, int funcIndex, const char* context, int maxUpvalues = 4);
+static void LogSavedOriginalUpvalues(lua_State* L, const char* savedName, const char* context, volatile LONG* gate, int maxUpvalues = 4);
 static int CallSavedOriginal(lua_State* L, const char* savedName);
 
 // Configurable verbosity for Lua arg/ret logging
 static bool g_traceLuaVerbose = false;
+
+static std::vector<const void*> g_loggedCallScanTargets;
+static void LogCallersForTarget(const char* name, const void* target);
+static void NoteCapturedActionTarget(const char* name, const void* target);
+static bool IsInMainModule(const void* address);
 
 // (no-op helper removed)
 
@@ -210,6 +226,147 @@ static bool SaveAndReplace(lua_State* L, const char* name, lua_CFunction wrapper
     return true;
 }
 
+static bool IsInMainModule(const void* address)
+{
+    if (!address)
+        return false;
+
+    HMODULE module = GetModuleHandleA(nullptr);
+    if (!module)
+        return false;
+
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), module, &mi, sizeof(mi)))
+        return false;
+
+    auto base = reinterpret_cast<uintptr_t>(mi.lpBaseOfDll);
+    auto size = static_cast<uintptr_t>(mi.SizeOfImage);
+    auto value = reinterpret_cast<uintptr_t>(address);
+    return value >= base && value < base + size;
+}
+
+static void LogCallersForTarget(const char* name, const void* target)
+{
+    if (!target)
+        return;
+
+    if (std::find(g_loggedCallScanTargets.begin(), g_loggedCallScanTargets.end(), target) != g_loggedCallScanTargets.end())
+        return;
+
+    g_loggedCallScanTargets.push_back(target);
+
+    HMODULE module = GetModuleHandleA(nullptr);
+    if (!module)
+        return;
+
+    const auto* base = reinterpret_cast<const BYTE*>(module);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return;
+
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (!nt || nt->Signature != IMAGE_NT_SIGNATURE)
+        return;
+
+    const IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION(nt);
+    std::vector<const void*> callers;
+
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section)
+    {
+        if (!(section->Characteristics & IMAGE_SCN_MEM_EXECUTE))
+            continue;
+
+        const BYTE* secBase = base + section->VirtualAddress;
+        DWORD secSize = section->Misc.VirtualSize ? section->Misc.VirtualSize : section->SizeOfRawData;
+        if (secSize < 5)
+            continue;
+
+        for (DWORD offset = 0; offset + 5 <= secSize; ++offset)
+        {
+            if (secBase[offset] != 0xE8)
+                continue;
+
+            INT32 rel = *reinterpret_cast<const INT32*>(secBase + offset + 1);
+            const BYTE* dest = secBase + offset + 5 + rel;
+            if (dest == target)
+            {
+                callers.push_back(secBase + offset);
+            }
+        }
+    }
+
+    if (callers.empty())
+    {
+        char buf[192];
+        sprintf_s(buf, sizeof(buf), "CallScan: no callers found for %s @ %p", name ? name : "<unknown>", target);
+        WriteRawLog(buf);
+        return;
+    }
+
+    std::sort(callers.begin(), callers.end());
+    callers.erase(std::unique(callers.begin(), callers.end()), callers.end());
+
+    char buf[192];
+    sprintf_s(buf, sizeof(buf), "CallScan: %zu callers for %s @ %p", callers.size(),
+        name ? name : "<unknown>", target);
+    WriteRawLog(buf);
+
+    for (size_t i = 0; i < callers.size(); ++i)
+    {
+        const void* callSite = callers[i];
+        char modName[MAX_PATH] = { 0 };
+        HMODULE callerModule = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(callSite), &callerModule))
+        {
+            GetModuleBaseNameA(GetCurrentProcess(), callerModule, modName, ARRAYSIZE(modName));
+        }
+
+        MODULEINFO mi{};
+        uintptr_t modBase = 0;
+        if (callerModule && GetModuleInformation(GetCurrentProcess(), callerModule, &mi, sizeof(mi)))
+        {
+            modBase = reinterpret_cast<uintptr_t>(mi.lpBaseOfDll);
+        }
+
+        uintptr_t addr = reinterpret_cast<uintptr_t>(callSite);
+        unsigned long long offset = (modBase && addr >= modBase) ?
+            static_cast<unsigned long long>(addr - modBase) :
+            static_cast<unsigned long long>(addr);
+
+        if (modName[0])
+        {
+            sprintf_s(buf, sizeof(buf), "  caller #%zu: %s+0x%llX (%p)", i, modName, offset, callSite);
+        }
+        else
+        {
+            sprintf_s(buf, sizeof(buf), "  caller #%zu: %p", i, callSite);
+        }
+        WriteRawLog(buf);
+    }
+}
+
+static void NoteCapturedActionTarget(const char* name, const void* target)
+{
+    if (!name || !target)
+        return;
+
+    if (!IsInMainModule(target))
+        return;
+
+    bool shouldLog = false;
+    if (_stricmp(name, "UserActionIsTargetModeCompat") == 0 ||
+        _stricmp(name, "UserActionIsActionTypeTargetModeCompat") == 0 ||
+        _stricmp(name, "UserActionCastSpell") == 0 ||
+        _stricmp(name, "UserActionCastSpellOnId") == 0)
+    {
+        shouldLog = true;
+    }
+
+    if (shouldLog)
+        LogCallersForTarget(name, target);
+}
+
 // Attempt action wrapper install after target APIs appear and a small delay has passed.
 static void TryInstallActionWrappers()
 {
@@ -260,7 +417,14 @@ static void TryInstallActionWrappers()
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        WriteRawLog("TryInstallActionWrappers: exception while probing Lua globals; will retry later");
+        static DWORD s_nextExceptionLogMs = 0;
+        DWORD now = GetTickCount();
+        if (g_traceLuaVerbose || now >= s_nextExceptionLogMs) {
+            WriteRawLog("TryInstallActionWrappers: exception while probing Lua globals; will retry later");
+            if (!g_traceLuaVerbose) {
+                s_nextExceptionLogMs = now + 5000;
+            }
+        }
     }
 }
 
@@ -336,6 +500,7 @@ static void TryInstallDirectActionHooks()
             char buf[192];
             sprintf_s(buf, sizeof(buf), "DirectHook: hooked %s at %p (orig=%p)", name, target, reinterpret_cast<void*>(orig));
             WriteRawLog(buf);
+            NoteCapturedActionTarget(name, reinterpret_cast<void*>(orig));
             any = true;
         }
     };
@@ -581,6 +746,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionCastSpell)
             {
                 g_origUserActionCastSpell = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_UserActionCastSpell_W);
                 WriteRawLog("Hook_Register: wrapped UserActionCastSpell");
             }
@@ -590,6 +756,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionCastSpellOnId)
             {
                 g_origUserActionCastSpellOnId = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_UserActionCastSpellOnId_W);
                 WriteRawLog("Hook_Register: wrapped UserActionCastSpellOnId");
             }
@@ -599,6 +766,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionUseSkill)
             {
                 g_origUserActionUseSkill = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_UserActionUseSkill_W);
                 WriteRawLog("Hook_Register: wrapped UserActionUseSkill");
             }
@@ -608,8 +776,13 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionIsTargetModeCompat)
             {
                 g_origUserActionIsTargetModeCompat = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_UserActionIsTargetModeCompat_W);
                 WriteRawLog("Hook_Register: wrapped UserActionIsTargetModeCompat");
+            }
+            else
+            {
+                NoteCapturedActionTarget(name, func);
             }
         }
         else if (_stricmp(name, "UserActionIsActionTypeTargetModeCompat") == 0)
@@ -617,8 +790,13 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionIsActionTypeTargetModeCompat)
             {
                 g_origUserActionIsActionTypeTargetModeCompat = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_UserActionIsActionTypeTargetModeCompat_W);
                 WriteRawLog("Hook_Register: wrapped UserActionIsActionTypeTargetModeCompat");
+            }
+            else
+            {
+                NoteCapturedActionTarget(name, func);
             }
         }
         else if (_stricmp(name, "RequestTargetInfo") == 0)
@@ -626,8 +804,13 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origRequestTargetInfo)
             {
                 g_origRequestTargetInfo = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_RequestTargetInfo_W);
                 WriteRawLog("Hook_Register: wrapped RequestTargetInfo");
+            }
+            else
+            {
+                NoteCapturedActionTarget(name, func);
             }
             g_targetApiTimestamp = GetTickCount();
             InterlockedExchange(&g_targetApiSeen, 1);
@@ -637,8 +820,13 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origClearCurrentTarget)
             {
                 g_origClearCurrentTarget = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_ClearCurrentTarget_W);
                 WriteRawLog("Hook_Register: wrapped ClearCurrentTarget");
+            }
+            else
+            {
+                NoteCapturedActionTarget(name, func);
             }
             g_targetApiTimestamp = GetTickCount();
             InterlockedExchange(&g_targetApiSeen, 1);
@@ -648,6 +836,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionIsSkillAvalible)
             {
                 g_origUserActionIsSkillAvalible = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_UserActionIsSkillAvalible_W);
                 WriteRawLog("Hook_Register: wrapped UserActionIsSkillAvalible");
             }
@@ -657,6 +846,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origHS_ShowTargetingCursor)
             {
                 g_origHS_ShowTargetingCursor = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_HS_ShowTargetingCursor_W);
                 WriteRawLog("Hook_Register: wrapped HS_ShowTargetingCursor");
             }
@@ -666,6 +856,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origHS_HideTargetingCursor)
             {
                 g_origHS_HideTargetingCursor = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_HS_HideTargetingCursor_W);
                 WriteRawLog("Hook_Register: wrapped HS_HideTargetingCursor");
             }
@@ -675,6 +866,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionUseWeaponAbility)
             {
                 g_origUserActionUseWeaponAbility = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_UserActionUseWeaponAbility_W);
                 WriteRawLog("Hook_Register: wrapped UserActionUseWeaponAbility");
             }
@@ -684,6 +876,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionUsePrimaryAbility)
             {
                 g_origUserActionUsePrimaryAbility = reinterpret_cast<LuaFn>(func);
+                NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_UserActionUsePrimaryAbility_W);
                 WriteRawLog("Hook_Register: wrapped UserActionUsePrimaryAbility");
             }
@@ -786,6 +979,11 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
     WriteRawLog("[Lua] UserActionCastSpell() wrapper invoked");
     Trace::MarkAction("CastSpell");
     DumpStackTag("CastSpell");
+    static volatile LONG s_noPacketLogs = 0;
+    static volatile LONG s_upvalueLogs = 0;
+    if (g_traceLuaVerbose) {
+        LogLuaArgs(L, "UserActionCastSpell");
+    }
     unsigned sentBefore = Net::GetSendCounter();
     // Prefer saved original in Lua state; fall back to captured pointer.
     int rc = CallSavedOriginal(L, "UserActionCastSpell__orig");
@@ -794,8 +992,21 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
         if (g_traceLuaVerbose && rc > 0)
             LogLuaReturns(L, "UserActionCastSpell", rc);
         unsigned sentAfter = Net::GetSendCounter();
-        if (sentAfter > sentBefore) WriteRawLog("[Lua] CastSpell -> packet observed");
-        else WriteRawLog("[Lua] CastSpell -> no packet sent");
+        unsigned delta = sentAfter - sentBefore;
+        char detail[160];
+        sprintf_s(detail, sizeof(detail),
+            "[Lua] UserActionCastSpell rc=%d packets(before=%u after=%u delta=%u)",
+            rc, sentBefore, sentAfter, delta);
+        WriteRawLog(detail);
+        if (delta > 0) WriteRawLog("[Lua] CastSpell -> packet observed");
+        else {
+            WriteRawLog("[Lua] CastSpell -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionCastSpell/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionCastSpell__orig", "UserActionCastSpell/upvalues", &s_upvalueLogs);
+            }
+        }
         return rc;
     }
     if (g_origUserActionCastSpell) {
@@ -806,8 +1017,21 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
         if (g_traceLuaVerbose && out > 0)
             LogLuaReturns(L, "UserActionCastSpell", out);
         unsigned sentAfter = Net::GetSendCounter();
-        if (sentAfter > sentBefore) WriteRawLog("[Lua] CastSpell -> packet observed");
-        else WriteRawLog("[Lua] CastSpell -> no packet sent");
+        unsigned delta = sentAfter - sentBefore;
+        char detail[160];
+        sprintf_s(detail, sizeof(detail),
+            "[Lua] UserActionCastSpell rc=%d packets(before=%u after=%u delta=%u)",
+            out, sentBefore, sentAfter, delta);
+        WriteRawLog(detail);
+        if (delta > 0) WriteRawLog("[Lua] CastSpell -> packet observed");
+        else {
+            WriteRawLog("[Lua] CastSpell -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionCastSpell/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionCastSpell__orig", "UserActionCastSpell/upvalues", &s_upvalueLogs);
+            }
+        }
         return out;
     }
     WriteRawLog("[Lua] UserActionCastSpell original missing (saved and ptr)");
@@ -819,6 +1043,11 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
     WriteRawLog("[Lua] UserActionCastSpellOnId() wrapper invoked");
     Trace::MarkAction("CastSpellOnId");
     DumpStackTag("CastSpellOnId");
+    static volatile LONG s_noPacketLogs = 0;
+    static volatile LONG s_upvalueLogs = 0;
+    if (g_traceLuaVerbose) {
+        LogLuaArgs(L, "UserActionCastSpellOnId");
+    }
     unsigned sentBefore = Net::GetSendCounter();
     int rc = CallSavedOriginal(L, "UserActionCastSpellOnId__orig");
     if (rc >= 0) {
@@ -826,8 +1055,21 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
         if (g_traceLuaVerbose && rc > 0)
             LogLuaReturns(L, "UserActionCastSpellOnId", rc);
         unsigned sentAfter = Net::GetSendCounter();
-        if (sentAfter > sentBefore) WriteRawLog("[Lua] CastSpellOnId -> packet observed");
-        else WriteRawLog("[Lua] CastSpellOnId -> no packet sent");
+        unsigned delta = sentAfter - sentBefore;
+        char detail[176];
+        sprintf_s(detail, sizeof(detail),
+            "[Lua] UserActionCastSpellOnId rc=%d packets(before=%u after=%u delta=%u)",
+            rc, sentBefore, sentAfter, delta);
+        WriteRawLog(detail);
+        if (delta > 0) WriteRawLog("[Lua] CastSpellOnId -> packet observed");
+        else {
+            WriteRawLog("[Lua] CastSpellOnId -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionCastSpellOnId/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
+            }
+        }
         return rc;
     }
     if (g_origUserActionCastSpellOnId) {
@@ -838,8 +1080,21 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
         if (g_traceLuaVerbose && out > 0)
             LogLuaReturns(L, "UserActionCastSpellOnId", out);
         unsigned sentAfter = Net::GetSendCounter();
-        if (sentAfter > sentBefore) WriteRawLog("[Lua] CastSpellOnId -> packet observed");
-        else WriteRawLog("[Lua] CastSpellOnId -> no packet sent");
+        unsigned delta = sentAfter - sentBefore;
+        char detail[176];
+        sprintf_s(detail, sizeof(detail),
+            "[Lua] UserActionCastSpellOnId rc=%d packets(before=%u after=%u delta=%u)",
+            out, sentBefore, sentAfter, delta);
+        WriteRawLog(detail);
+        if (delta > 0) WriteRawLog("[Lua] CastSpellOnId -> packet observed");
+        else {
+            WriteRawLog("[Lua] CastSpellOnId -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionCastSpellOnId/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
+            }
+        }
         return out;
     }
     WriteRawLog("[Lua] UserActionCastSpellOnId original missing (saved and ptr)");
@@ -851,6 +1106,8 @@ static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
     WriteRawLog("[Lua] UserActionUseSkill() wrapper invoked");
     Trace::MarkAction("UseSkill");
     DumpStackTag("UseSkill");
+    static volatile LONG s_noPacketLogs = 0;
+    static volatile LONG s_upvalueLogs = 0;
     unsigned sentBefore = Net::GetSendCounter();
     int rc = CallSavedOriginal(L, "UserActionUseSkill__orig");
     if (rc >= 0) {
@@ -859,7 +1116,14 @@ static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
             LogLuaReturns(L, "UserActionUseSkill", rc);
         unsigned sentAfter = Net::GetSendCounter();
         if (sentAfter > sentBefore) WriteRawLog("[Lua] UseSkill -> packet observed");
-        else WriteRawLog("[Lua] UseSkill -> no packet sent");
+        else {
+            WriteRawLog("[Lua] UseSkill -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionUseSkill/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionUseSkill__orig", "UserActionUseSkill/upvalues", &s_upvalueLogs);
+            }
+        }
         return rc;
     }
     if (g_origUserActionUseSkill) {
@@ -871,7 +1135,14 @@ static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
             LogLuaReturns(L, "UserActionUseSkill", out);
         unsigned sentAfter = Net::GetSendCounter();
         if (sentAfter > sentBefore) WriteRawLog("[Lua] UseSkill -> packet observed");
-        else WriteRawLog("[Lua] UseSkill -> no packet sent");
+        else {
+            WriteRawLog("[Lua] UseSkill -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionUseSkill/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionUseSkill__orig", "UserActionUseSkill/upvalues", &s_upvalueLogs);
+            }
+        }
         return out;
     }
     WriteRawLog("[Lua] UserActionUseSkill original missing (saved and ptr)");
@@ -926,6 +1197,8 @@ static int __cdecl Lua_UserActionUseWeaponAbility_W(lua_State* L)
     WriteRawLog("[Lua] UserActionUseWeaponAbility() wrapper invoked");
     Trace::MarkAction("UseWeaponAbility");
     DumpStackTag("UseWeaponAbility");
+    static volatile LONG s_noPacketLogs = 0;
+    static volatile LONG s_upvalueLogs = 0;
     unsigned sentBefore = Net::GetSendCounter();
     int rc = CallSavedOriginal(L, "UserActionUseWeaponAbility__orig");
     if (rc >= 0) {
@@ -934,7 +1207,14 @@ static int __cdecl Lua_UserActionUseWeaponAbility_W(lua_State* L)
             LogLuaReturns(L, "UserActionUseWeaponAbility", rc);
         unsigned sentAfter = Net::GetSendCounter();
         if (sentAfter > sentBefore) WriteRawLog("[Lua] UseWeaponAbility -> packet observed");
-        else WriteRawLog("[Lua] UseWeaponAbility -> no packet sent");
+        else {
+            WriteRawLog("[Lua] UseWeaponAbility -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionUseWeaponAbility/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionUseWeaponAbility__orig", "UserActionUseWeaponAbility/upvalues", &s_upvalueLogs);
+            }
+        }
         return rc;
     }
     if (g_origUserActionUseWeaponAbility) {
@@ -946,7 +1226,14 @@ static int __cdecl Lua_UserActionUseWeaponAbility_W(lua_State* L)
             LogLuaReturns(L, "UserActionUseWeaponAbility", out);
         unsigned sentAfter = Net::GetSendCounter();
         if (sentAfter > sentBefore) WriteRawLog("[Lua] UseWeaponAbility -> packet observed");
-        else WriteRawLog("[Lua] UseWeaponAbility -> no packet sent");
+        else {
+            WriteRawLog("[Lua] UseWeaponAbility -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionUseWeaponAbility/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionUseWeaponAbility__orig", "UserActionUseWeaponAbility/upvalues", &s_upvalueLogs);
+            }
+        }
         return out;
     }
     WriteRawLog("[Lua] UserActionUseWeaponAbility original missing (saved and ptr)");
@@ -958,6 +1245,8 @@ static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L)
     WriteRawLog("[Lua] UserActionUsePrimaryAbility() wrapper invoked");
     Trace::MarkAction("UsePrimaryAbility");
     DumpStackTag("UsePrimaryAbility");
+    static volatile LONG s_noPacketLogs = 0;
+    static volatile LONG s_upvalueLogs = 0;
     unsigned sentBefore = Net::GetSendCounter();
     int rc = CallSavedOriginal(L, "UserActionUsePrimaryAbility__orig");
     if (rc >= 0) {
@@ -966,7 +1255,14 @@ static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L)
             LogLuaReturns(L, "UserActionUsePrimaryAbility", rc);
         unsigned sentAfter = Net::GetSendCounter();
         if (sentAfter > sentBefore) WriteRawLog("[Lua] UsePrimaryAbility -> packet observed");
-        else WriteRawLog("[Lua] UsePrimaryAbility -> no packet sent");
+        else {
+            WriteRawLog("[Lua] UsePrimaryAbility -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionUsePrimaryAbility/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionUsePrimaryAbility__orig", "UserActionUsePrimaryAbility/upvalues", &s_upvalueLogs);
+            }
+        }
         return rc;
     }
     if (g_origUserActionUsePrimaryAbility) {
@@ -978,7 +1274,14 @@ static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L)
             LogLuaReturns(L, "UserActionUsePrimaryAbility", out);
         unsigned sentAfter = Net::GetSendCounter();
         if (sentAfter > sentBefore) WriteRawLog("[Lua] UsePrimaryAbility -> packet observed");
-        else WriteRawLog("[Lua] UsePrimaryAbility -> no packet sent");
+        else {
+            WriteRawLog("[Lua] UsePrimaryAbility -> no packet sent");
+            LONG order = InterlockedIncrement(&s_noPacketLogs);
+            if (order <= 8) {
+                LogLuaErrorTop(L, "UserActionUsePrimaryAbility/noPacket");
+                LogSavedOriginalUpvalues(L, "UserActionUsePrimaryAbility__orig", "UserActionUsePrimaryAbility/upvalues", &s_upvalueLogs);
+            }
+        }
         return out;
     }
     WriteRawLog("[Lua] UserActionUsePrimaryAbility original missing (saved and ptr)");
@@ -1060,6 +1363,171 @@ static void LogLuaReturns(lua_State* L, const char* func, int nret)
             break;
         }
         WriteRawLog(buf);
+    }
+}
+
+static int LuaAbsIndex(lua_State* L, int idx)
+{
+    if (!L)
+        return idx;
+    if (idx > 0 || idx <= LUA_REGISTRYINDEX)
+        return idx;
+    return lua_gettop(L) + idx + 1;
+}
+
+static void LogLuaClosureUpvalues(lua_State* L, int funcIndex, const char* context, int maxUpvalues)
+{
+    if (!L || maxUpvalues <= 0)
+        return;
+
+    int absIdx = LuaAbsIndex(L, funcIndex);
+    int topBefore = lua_gettop(L);
+    const void* fnPtr = lua_topointer(L, absIdx);
+
+    char header[256];
+    sprintf_s(header, sizeof(header), "[Lua] %s closure=%p upvalues", context ? context : "closure", fnPtr);
+    WriteRawLog(header);
+
+    bool any = false;
+    for (int i = 1; i <= maxUpvalues; ++i) {
+        const char* name = lua_getupvalue(L, absIdx, i);
+        if (!name)
+            break;
+        any = true;
+        int t = lua_type(L, -1);
+        const char* tn = lua_typename(L, t);
+        char line[256];
+        switch (t) {
+        case LUA_TNUMBER:
+        {
+            lua_Number v = lua_tonumber(L, -1);
+            sprintf_s(line, sizeof(line), "  upvalue#%d (%s) = %.3f", i, tn ? tn : "number", static_cast<double>(v));
+            break;
+        }
+        case LUA_TBOOLEAN:
+        {
+            int v = lua_toboolean(L, -1);
+            sprintf_s(line, sizeof(line), "  upvalue#%d (%s) = %s", i, tn ? tn : "boolean", v ? "true" : "false");
+            break;
+        }
+        case LUA_TSTRING:
+        {
+            size_t len = 0;
+            const char* s = lua_tolstring(L, -1, &len);
+            if (s && len > 96) len = 96;
+            sprintf_s(line, sizeof(line), "  upvalue#%d (%s) = %.*s", i, tn ? tn : "string", static_cast<int>(len), s ? s : "");
+            break;
+        }
+        case LUA_TLIGHTUSERDATA:
+        case LUA_TUSERDATA:
+        case LUA_TFUNCTION:
+        case LUA_TTABLE:
+        case LUA_TTHREAD:
+        {
+            const void* ptr = lua_topointer(L, -1);
+            sprintf_s(line, sizeof(line), "  upvalue#%d (%s) = %p", i, tn ? tn : "ptr", ptr);
+            break;
+        }
+        case LUA_TNIL:
+            sprintf_s(line, sizeof(line), "  upvalue#%d (%s) = nil", i, tn ? tn : "nil");
+            break;
+        default:
+        {
+            sprintf_s(line, sizeof(line), "  upvalue#%d (%s)", i, tn ? tn : "?");
+            break;
+        }
+        }
+        WriteRawLog(line);
+        lua_pop(L, 1);
+    }
+
+    if (!any) {
+        WriteRawLog("  <no upvalues>");
+    }
+
+    lua_settop(L, topBefore);
+}
+
+static void LogSavedOriginalUpvalues(lua_State* L, const char* savedName, const char* context, volatile LONG* gate, int maxUpvalues)
+{
+    if (!L || !savedName || maxUpvalues <= 0)
+        return;
+    LONG order = gate ? InterlockedIncrement(gate) : 1;
+    if (gate && order > 3)
+        return;
+
+    int top = lua_gettop(L);
+    lua_getglobal(L, savedName);
+    if (lua_type(L, -1) == LUA_TFUNCTION) {
+        LogLuaClosureUpvalues(L, -1, context ? context : savedName, maxUpvalues);
+    } else {
+        char buf[192];
+        sprintf_s(buf, sizeof(buf), "[Lua] %s missing saved original '%s' (type=%s)", context ? context : "closure", savedName, lua_typename(L, lua_type(L, -1)));
+        WriteRawLog(buf);
+    }
+    lua_settop(L, top);
+}
+
+static void LogLuaErrorTop(lua_State* L, const char* context, int maxSlots)
+{
+    if (!L) return;
+    __try {
+        int top = lua_gettop(L);
+        char buf[256];
+        sprintf_s(buf, sizeof(buf), "[Lua] %s stack snapshot: top=%d", context ? context : "LuaStack", top);
+        WriteRawLog(buf);
+        if (top <= 0)
+            return;
+        int start = top - maxSlots + 1;
+        if (start < 1)
+            start = 1;
+        for (int idx = start; idx <= top; ++idx) {
+            int t = lua_type(L, idx);
+            const char* tn = lua_typename(L, t);
+            switch (t) {
+            case LUA_TNUMBER:
+            {
+                lua_Number v = lua_tonumber(L, idx);
+                sprintf_s(buf, sizeof(buf), "  slot%d (%s) = %.3f", idx, tn ? tn : "number", static_cast<double>(v));
+                break;
+            }
+            case LUA_TBOOLEAN:
+            {
+                int v = lua_toboolean(L, idx);
+                sprintf_s(buf, sizeof(buf), "  slot%d (%s) = %s", idx, tn ? tn : "boolean", v ? "true" : "false");
+                break;
+            }
+            case LUA_TSTRING:
+            {
+                size_t len = 0;
+                const char* s = lua_tolstring(L, idx, &len);
+                if (s && len > 96) len = 96;
+                sprintf_s(buf, sizeof(buf), "  slot%d (%s) = %.*s", idx, tn ? tn : "string", static_cast<int>(len), s ? s : "");
+                break;
+            }
+            case LUA_TNIL:
+            {
+                sprintf_s(buf, sizeof(buf), "  slot%d (%s) = nil", idx, tn ? tn : "nil");
+                break;
+            }
+            case LUA_TFUNCTION:
+            case LUA_TTABLE:
+            case LUA_TUSERDATA:
+            case LUA_TLIGHTUSERDATA:
+            {
+                const void* ptr = lua_topointer(L, idx);
+                sprintf_s(buf, sizeof(buf), "  slot%d (%s) = %p", idx, tn ? tn : "ptr", ptr);
+                break;
+            }
+            default:
+                sprintf_s(buf, sizeof(buf), "  slot%d (%s)", idx, tn ? tn : "?");
+                break;
+            }
+            WriteRawLog(buf);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("[Lua] LogLuaErrorTop: exception while inspecting stack");
     }
 }
 
