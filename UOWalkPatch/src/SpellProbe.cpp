@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
@@ -30,6 +31,10 @@ static SpellProbeState g_probe;
 static INIT_ONCE g_lockOnce = INIT_ONCE_STATIC_INIT;
 static CRITICAL_SECTION g_lock;
 static bool g_lockReady = false;
+
+static int g_defaultArgCount = 4;
+static int g_defaultMaxHits = 16;
+static int g_defaultRateMs = 50;
 
 static BOOL CALLBACK InitLockOnce(PINIT_ONCE, PVOID, PVOID*) {
     InitializeCriticalSection(&g_lock);
@@ -362,6 +367,31 @@ static bool ParseUnsigned(const char* text, uintptr_t& out) {
 }
 
 } // namespace
+
+void SpellProbe_SetDefaults(int argCount, int maxHits, int debounceMs) {
+    g_defaultArgCount = std::clamp(argCount, 0, 4);
+    g_defaultMaxHits = (maxHits <= 0) ? 0 : maxHits;
+    g_defaultRateMs = (debounceMs <= 0) ? 0 : debounceMs;
+}
+
+void SpellProbe_EnsureArmed(uintptr_t entry) {
+    if (!entry)
+        return;
+    EnsureLock();
+    if (!g_lockReady)
+        return;
+    EnterCriticalSection(&g_lock);
+    if (g_probe.installed && g_probe.entry == entry) {
+        LeaveCriticalSection(&g_lock);
+        return;
+    }
+    LeaveCriticalSection(&g_lock);
+    SpellProbe_Install(entry, g_defaultArgCount, g_defaultMaxHits, g_defaultRateMs);
+}
+
+void SpellProbe_DisarmAll() {
+    SpellProbe_Remove();
+}
 
 uintptr_t ResolveModulePlusOffset(const char* spec) {
     if (!spec)

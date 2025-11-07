@@ -29,6 +29,7 @@
 #include "Util/OwnerPump.hpp"
 #include "Core/Utils.hpp"
 #include "LuaPlus.h"
+#include "CastCorrelator.h"
 
 // LuaPlus.h intentionally exposes only a subset of the Lua C API.
 // Declare the few additional APIs we need for stack manipulation + pcall usage.
@@ -2240,6 +2241,7 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     }
     UowTracePushSpell(spellId);
+    CastCorrelator::OnCastAttempt(static_cast<uint32_t>(spellId < 0 ? 0 : spellId));
 
     CastSpellSnapshot snapshotBefore = CaptureCastSpellSnapshot(L);
     LogCastSpellSnapshot("pre", token, spellId, snapshotBefore);
@@ -2365,6 +2367,7 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
             targetId = static_cast<int>(lua_tointeger(L, 2));
     }
     UowTracePushSpell(spellId);
+    CastCorrelator::OnCastAttempt(static_cast<uint32_t>(spellId < 0 ? 0 : spellId));
     uint32_t tok = CurrentCastToken();
     char intro[192];
     sprintf_s(intro, sizeof(intro), "[Lua] UserActionCastSpellOnId() wrapper invoked tok=%u spell=%d target=%d", tok, spellId, targetId);

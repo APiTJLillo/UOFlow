@@ -15,6 +15,7 @@
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
 #include "Net/SendBuilder.hpp"
+#include "CastCorrelator.h"
 
 namespace {
 
@@ -94,6 +95,24 @@ static void TraceOutbound(const char* apiTag, const char* buf, int len)
 {
     InterlockedIncrement(&g_sendCounter);
     unsigned char packetId = buf ? static_cast<unsigned char>(buf[0]) : 0;
+    DWORD now = GetTickCount();
+
+    bool needCorrStack = CastCorrelator::ShouldCaptureStack(packetId);
+    CastCorrelator::SendEvent corrEvent{};
+    if (needCorrStack) {
+        corrEvent.apiTag = apiTag;
+        corrEvent.buffer = buf;
+        corrEvent.length = len;
+        corrEvent.packetId = packetId;
+        corrEvent.tick = static_cast<uint32_t>(now);
+        corrEvent.targetFilterArmed = (g_packetIdFilterEnabled && g_packetIdFilter == 0x2E);
+        corrEvent.frameCount = RtlCaptureStackBackTrace(
+            2,
+            CastCorrelator::kMaxRecordedFrames,
+            corrEvent.frames,
+            nullptr);
+    }
+
     if(shouldLogTraces)
         Logf("%s len=%d id=%02X", apiTag ? apiTag : "send-family", len, packetId);
     int dumpLen = len > 64 ? 64 : len;
@@ -103,6 +122,8 @@ static void TraceOutbound(const char* apiTag, const char* buf, int len)
         unsigned counter = Net::GetSendCounter();
         Engine::Lua::NotifySendPacket(counter, buf, len);
     }
+    if (needCorrStack && corrEvent.frameCount > 0)
+        CastCorrelator::OnSendEvent(corrEvent);
     if (ShouldCaptureWinsockStack(packetId)) {
         LogWinsockStack(apiTag ? apiTag : "winsock");
     }
