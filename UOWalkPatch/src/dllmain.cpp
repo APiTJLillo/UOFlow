@@ -2,6 +2,7 @@
 #include <minhook.h>
 #include <cstdio>
 #include <cwchar>
+#include <string>
 
 #include "../include/Core/Logging.hpp"
 #include "../include/Core/MinHookHelpers.hpp"
@@ -12,6 +13,72 @@
 #include "../include/Net/SendBuilder.hpp"
 #include "../include/Core/Config.hpp"
 #include "../include/Core/ActionTrace.hpp"
+#include "SpellProbe.h"
+
+namespace {
+
+bool ReadBoolSetting(const char* cfgKey, const char* envKey) {
+    if (cfgKey) {
+        if (auto cfg = Core::Config::TryGetBool(cfgKey))
+            return *cfg;
+    }
+    if (envKey) {
+        if (auto env = Core::Config::TryGetEnvBool(envKey))
+            return *env;
+    }
+    return false;
+}
+
+bool DebugProfileEnabled() {
+    return ReadBoolSetting("UOW_DEBUG_ENABLE", "UOW_DEBUG_ENABLE");
+}
+
+void MaybeInstallSpellProbe() {
+    if (!ReadBoolSetting("SPELL_PROBE_ENABLE", "SPELL_PROBE_ENABLE"))
+        return;
+
+    if (!DebugProfileEnabled()) {
+        WriteRawLog("[spell.probe] debug profile disabled; skipping SpellProbe arm");
+        return;
+    }
+
+    auto addrText = Core::Config::TryGetValue("SPELL_PROBE_ADDR");
+    if (!addrText) {
+        if (auto envAddr = Core::Config::TryGetEnv("SPELL_PROBE_ADDR"))
+            addrText = envAddr;
+    }
+    if (!addrText || addrText->empty()) {
+        WriteRawLog("[spell.probe] SPELL_PROBE_ADDR missing; skipping");
+        return;
+    }
+
+    uintptr_t addr = ResolveModulePlusOffset(addrText->c_str());
+    if (!addr) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[spell.probe] unable to resolve SPELL_PROBE_ADDR=\"%s\"",
+                  addrText->c_str());
+        WriteRawLog(buf);
+        return;
+    }
+
+    int argCount = 4;
+    if (auto cfgArgs = Core::Config::TryGetInt("SPELL_PROBE_ARGS"))
+        argCount = *cfgArgs;
+
+    int maxHits = 16;
+    if (auto cfgHits = Core::Config::TryGetInt("SPELL_PROBE_HITS"))
+        maxHits = *cfgHits;
+
+    int rateMs = 50;
+    if (auto cfgRate = Core::Config::TryGetInt("SPELL_PROBE_RATE_MS"))
+        rateMs = *cfgRate;
+
+    SpellProbe_Install(addr, argCount, maxHits, rateMs);
+}
+
+} // namespace
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 {
@@ -86,6 +153,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Net::InitPacketTrace();
         Net::InitSendBuilder(const_cast<GlobalStateInfo*>(Engine::Info()));
         Engine::Lua::InitLuaBridge();
+        MaybeInstallSpellProbe();
         break;
     }
     case DLL_PROCESS_DETACH:
@@ -95,6 +163,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Engine::ShutdownMovementHooks();
         Engine::ShutdownGlobalStateWatch();
         Core::MinHookHelpers::Shutdown();
+        SpellProbe_Remove();
         Log::Shutdown();
         break;
     }

@@ -80,6 +80,7 @@ add_library(UOWalkPatchDLL SHARED
     src/Core/PatternScan.cpp
     src/Core/Utils.cpp
     src/Core/MinHookHelpers.cpp
+    src/SpellProbe.cpp
     src/Net/PacketTrace.cpp
     src/Net/SendBuilder.cpp
     src/Engine/GlobalState.cpp
