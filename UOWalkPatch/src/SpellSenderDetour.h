@@ -4,6 +4,7 @@
 
 struct SpellSenderOptions {
     bool enable = true;
+    bool logCtx = true;
     int dumpBytes = 16;
     int maxHits = 64;
     int debounceMs = 25;

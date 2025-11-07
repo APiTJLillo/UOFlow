@@ -9,6 +9,7 @@ CAST_CORR_ENABLE=1
 CAST_CORR_WINDOW_MS=400     # correlation window (ms) after UserActionCastSpell
 CAST_CORR_LEN_HINT=9        # expected cast packet length (tweak as needed)
 CAST_SENDER_DETOUR_ENABLE=1 # auto-detour the cast sender helper
+CAST_SENDER_LOG_CTX=1       # include ctx-word/payload-source logs
 CAST_SENDER_DUMP_BYTES=16   # bytes of payload to dump from EDX
 CAST_SENDER_MAX_HITS=64     # entries logged before auto-quiet
 CAST_SENDER_DEBOUNCE_MS=25  # debounce between ENTER/LEAVE logs

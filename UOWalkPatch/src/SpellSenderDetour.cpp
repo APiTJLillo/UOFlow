@@ -25,10 +25,52 @@ SenderState g_state{};
 std::mutex g_detourMutex;
 std::atomic<int> g_hitCount{0};
 std::atomic<uint32_t> g_lastTick{0};
-thread_local bool g_tlsLogActive = false;
+
+constexpr size_t kReturnStackMax = 128;
+
+struct SpellSenderTls {
+    bool overflowWarned = false;
+    bool underflowWarned = false;
+    bool leaveDepthWarned = false;
+    bool leaveFlagWarned = false;
+    uint32_t depth = 0;
+    uintptr_t returnAddrs[kReturnStackMax]{};
+    uint8_t logFlags[kReturnStackMax]{};
+};
+
+thread_local SpellSenderTls g_tls{};
 
 extern "C" void* g_SpellSender_Trampoline = nullptr;
 extern "C" uintptr_t g_SpellSender_Target = 0;
+
+extern "C" uint32_t __stdcall SpellSender_PushReturn(uintptr_t retAddr) {
+    if (!retAddr)
+        return 0;
+    if (g_tls.depth < kReturnStackMax) {
+        g_tls.returnAddrs[g_tls.depth] = retAddr;
+        g_tls.logFlags[g_tls.depth] = 0;
+        ++g_tls.depth;
+        return 1;
+    }
+    if (!g_tls.overflowWarned) {
+        g_tls.overflowWarned = true;
+        WriteRawLog("[CastSender] return stack overflow; detour may misbehave");
+    }
+    return 0;
+}
+
+extern "C" uintptr_t __stdcall SpellSender_PopReturn() {
+    if (g_tls.depth == 0) {
+        if (!g_tls.underflowWarned) {
+            g_tls.underflowWarned = true;
+            WriteRawLog("[CastSender] return stack underflow");
+        }
+        return 0;
+    }
+    uint32_t slot = --g_tls.depth;
+    g_tls.logFlags[slot] = 0;
+    return g_tls.returnAddrs[slot];
+}
 
 bool DebugProfileEnabled() {
     if (auto cfg = Core::Config::TryGetBool("UOW_DEBUG_ENABLE"))
@@ -89,51 +131,144 @@ bool ShouldEmit(DWORD now) {
     return true;
 }
 
-extern "C" void __cdecl SpellSender_OnEnter(uintptr_t entry, uint32_t ecx, uint32_t edx, uintptr_t esp) {
+bool IsReadablePointer(uintptr_t ptr) {
+    if (!ptr)
+        return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(reinterpret_cast<void*>(ptr), &mbi, sizeof(mbi)))
+        return false;
+    if (mbi.State != MEM_COMMIT)
+        return false;
+    if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))
+        return false;
+    const DWORD kWritable =
+        PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    return (mbi.Protect & kWritable) != 0;
+}
+
+extern "C" void __cdecl SpellSender_OnEnter(uintptr_t entry, uint32_t ecx, uint32_t edx, uintptr_t argBase) {
     DWORD now = GetTickCount();
     bool allowed = ShouldEmit(now);
-    g_tlsLogActive = allowed;
+    if (g_tls.depth > 0)
+        g_tls.logFlags[g_tls.depth - 1] = allowed ? 1 : 0;
     if (!allowed)
         return;
 
-    uint32_t args[3]{};
-    for (int i = 0; i < 3; ++i) {
-        uintptr_t addr = esp + 4u + static_cast<uintptr_t>(i) * 4u;
+    constexpr int kLoggedArgs = 4;
+    uint32_t args[kLoggedArgs]{};
+    uintptr_t stackBase = argBase ? (argBase + 4u) : 0;
+    for (int i = 0; i < kLoggedArgs; ++i) {
+        uintptr_t addr = stackBase + static_cast<uintptr_t>(i) * 4u;
         if (!ReadDword(addr, args[i]))
             args[i] = 0;
     }
+    const auto validLen = [](uint32_t value) {
+        return value > 0 && value <= 0x10000;
+    };
+    const char* lenSrc = "a2";
     uint32_t len = args[2];
+    if (!validLen(len)) {
+        len = args[3];
+        lenSrc = "a3";
+    }
+    if (!validLen(len))
+        len = 0;
     size_t dumpLen = 0;
     uint8_t dumpBuf[64]{};
-    if (edx && g_state.opts.dumpBytes > 0) {
+    uintptr_t ctxWords[4]{};
+    bool haveCtxWords = false;
+    bool logCtxDetails = g_state.opts.logCtx;
+    if (logCtxDetails && args[0] &&
+        CopyBytes(args[0], reinterpret_cast<uint8_t*>(ctxWords), sizeof(ctxWords)) == sizeof(ctxWords))
+        haveCtxWords = true;
+
+    char payloadSrc[32] = "n/a";
+    uintptr_t payloadPtr = 0;
+    uintptr_t ctxProbe = 0;
+    if (edx && IsReadablePointer(edx)) {
+        payloadPtr = edx;
+        strcpy_s(payloadSrc, sizeof(payloadSrc), "edx");
+    } else if (args[0] && IsReadablePointer(args[0])) {
+        for (int i = 0; i < 6; ++i) {
+            uint32_t word = 0;
+            if (!ReadDword(args[0] + static_cast<uintptr_t>(i) * 4u, word))
+                continue;
+            uintptr_t candidate = word;
+            if (!IsReadablePointer(candidate))
+                continue;
+            payloadPtr = candidate;
+            ctxProbe = args[0] + static_cast<uintptr_t>(i) * 4u;
+            sprintf_s(payloadSrc, sizeof(payloadSrc), "ctx+0x%X", i * 4);
+            break;
+        }
+    }
+
+    if (payloadPtr && g_state.opts.dumpBytes > 0) {
         size_t want = g_state.opts.dumpBytes;
         if (len > 0 && len < want)
             want = len;
         if (want > sizeof(dumpBuf))
             want = sizeof(dumpBuf);
-        dumpLen = CopyBytes(edx, dumpBuf, want);
+        dumpLen = CopyBytes(payloadPtr, dumpBuf, want);
     }
 
     char line[256];
     sprintf_s(line,
               sizeof(line),
-              "[CastSender:ENTER] addr=%p ecx=%08X edx=%p len=%u a0=%08X a1=%08X a2=%08X",
+              "[CastSender:ENTER] addr=%p ecx=%08X edx=%p buf=%p(%s) len=%u(%s) a0=%08X a1=%08X a2=%08X a3=%08X",
               reinterpret_cast<void*>(entry),
               ecx,
               reinterpret_cast<void*>(edx),
+              reinterpret_cast<void*>(payloadPtr),
+              payloadSrc,
               len,
+              lenSrc,
               args[0],
               args[1],
-              args[2]);
+              args[2],
+              args[3]);
     WriteRawLog(line);
+    if (ctxProbe && logCtxDetails) {
+        char ctxLine[160];
+        sprintf_s(ctxLine,
+                  sizeof(ctxLine),
+                  "[CastSender] buf derived from ctx word @ %p",
+                  reinterpret_cast<void*>(ctxProbe));
+        WriteRawLog(ctxLine);
+    }
+    if (haveCtxWords && logCtxDetails) {
+        char ctxDump[256];
+        sprintf_s(ctxDump,
+                  sizeof(ctxDump),
+                  "[CastSender:CTX] base=%p w0=%08X w1=%08X w2=%08X w3=%08X",
+                  reinterpret_cast<void*>(args[0]),
+                  ctxWords[0],
+                  ctxWords[1],
+                  ctxWords[2],
+                  ctxWords[3]);
+        WriteRawLog(ctxDump);
+    }
     if (dumpLen)
         LogDump(dumpBuf, dumpLen);
 }
 
 extern "C" void __cdecl SpellSender_OnLeave(uintptr_t entry, uint32_t eax) {
-    if (!g_tlsLogActive)
+    if (g_tls.depth == 0) {
+        if (!g_tls.leaveDepthWarned) {
+            g_tls.leaveDepthWarned = true;
+            WriteRawLog("[CastSender] OnLeave saw empty TLS depth; return handshake missing?");
+        }
         return;
-    g_tlsLogActive = false;
+    }
+    uint32_t slot = g_tls.depth - 1;
+    if (!g_tls.logFlags[slot]) {
+        if (!g_tls.leaveFlagWarned) {
+            g_tls.leaveFlagWarned = true;
+            WriteRawLog("[CastSender] OnLeave suppressed (flag cleared); check debounce/max hits");
+        }
+        return;
+    }
+    g_tls.logFlags[slot] = 0;
     char buf[128];
     sprintf_s(buf,
               sizeof(buf),
@@ -145,32 +280,45 @@ extern "C" void __cdecl SpellSender_OnLeave(uintptr_t entry, uint32_t eax) {
 
 extern "C" void __declspec(naked) SpellSender_Detour() {
     __asm {
+        pop esi                            // original return address
+        push esi
+        call SpellSender_PushReturn
+        push eax                           // record push-return success flag
         pushfd
         pushad
-        mov ebx, [esp + 4]    // original ECX
-        mov esi, [esp + 8]    // original EDX
-        mov edi, [esp + 16]   // original ESP
-        push edi
-        push esi
-        push ebx
-        mov eax, g_SpellSender_Target
-        push eax
+        mov ebx, [esp + 24]                // saved ECX
+        mov ecx, [esp + 20]                // saved EDX
+        lea eax, [esp + 40]                // pointer to first argument (past pushad/pushfd/flag)
+        push eax                           // arg4: argument base
+        push ecx                           // arg3: original EDX
+        push ebx                           // arg2: original ECX
+        mov edx, g_SpellSender_Target
+        push edx                           // arg1: entry address
         call SpellSender_OnEnter
         add esp, 16
         popad
         popfd
-        push offset SpellSender_Post
-        mov eax, g_SpellSender_Trampoline
-        jmp eax
-SpellSender_Post:
-        push eax
-        mov edx, g_SpellSender_Target
-        push dword ptr [esp]
+        pop ebx                            // retrieve success flag
+        test ebx, ebx
+        jz SpellSender_NoReturn
+        push offset SpellSender_ReturnThunk
+        jmp g_SpellSender_Trampoline
+
+SpellSender_ReturnThunk:
+        mov edx, eax
+        mov eax, g_SpellSender_Target
         push edx
+        push eax
         call SpellSender_OnLeave
         add esp, 8
-        pop eax
+        mov eax, edx
+        call SpellSender_PopReturn
+        push eax
         ret
+
+SpellSender_NoReturn:
+        push esi                           // restore original return address
+        jmp g_SpellSender_Trampoline
     }
 }
 
@@ -246,7 +394,7 @@ void SpellSenderDetour_EnsureArmed(uintptr_t entryAddr) {
     g_SpellSender_Target = entryAddr;
     g_hitCount.store(0, std::memory_order_release);
     g_lastTick.store(0, std::memory_order_release);
-    g_tlsLogActive = false;
+    g_tls = SpellSenderTls{};
 
     char buf[160];
     sprintf_s(buf,

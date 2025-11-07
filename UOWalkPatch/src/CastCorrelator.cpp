@@ -35,7 +35,6 @@ bool g_announcedTarget = false;
 uintptr_t g_moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
 SpellSenderOptions g_senderOpts{};
 bool g_senderDetourEnabled = true;
-bool g_senderConfigured = false;
 
 bool DebugProfileEnabled() {
     if (auto cfg = Core::Config::TryGetBool("UOW_DEBUG_ENABLE"))
@@ -181,6 +180,8 @@ void Init() {
     g_senderOpts = SpellSenderOptions{};
     if (auto cfg = Core::Config::TryGetBool("CAST_SENDER_DETOUR_ENABLE"))
         g_senderOpts.enable = *cfg;
+    if (auto cfgCtx = Core::Config::TryGetBool("CAST_SENDER_LOG_CTX"))
+        g_senderOpts.logCtx = *cfgCtx;
     if (auto cfgDump = Core::Config::TryGetInt("CAST_SENDER_DUMP_BYTES"))
         g_senderOpts.dumpBytes = *cfgDump;
     if (auto cfgHits = Core::Config::TryGetInt("CAST_SENDER_MAX_HITS"))
@@ -194,7 +195,6 @@ void Init() {
         g_senderOpts.debounceMs = 0;
     SpellSenderDetour_Configure(g_senderOpts);
     g_senderDetourEnabled = g_senderOpts.enable;
-    g_senderConfigured = true;
 
     if (g_senderOpts.enable) {
         std::optional<std::string> senderAddr;

@@ -105,7 +105,7 @@ static void TraceOutbound(const char* apiTag, const char* buf, int len)
         corrEvent.length = len;
         corrEvent.packetId = packetId;
         corrEvent.tick = static_cast<uint32_t>(now);
-        corrEvent.targetFilterArmed = (g_packetIdFilterEnabled && g_packetIdFilter == 0x2E);
+        corrEvent.targetFilterArmed = (packetId == 0x2E);
         corrEvent.frameCount = RtlCaptureStackBackTrace(
             2,
             CastCorrelator::kMaxRecordedFrames,
