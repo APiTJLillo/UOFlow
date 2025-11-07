@@ -7,5 +7,6 @@ namespace Net {
     void ShutdownSendBuilder();
     bool SendPacketRaw(const void* bytes, int len);
     bool IsSendReady();
+    bool IsInSendPacketHook();
 }
 

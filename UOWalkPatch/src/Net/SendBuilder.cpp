@@ -1,11 +1,14 @@
 #include <windows.h>
 #include <dbghelp.h>
 #include <cstdio>
+#include <cstdlib>
 #include <minhook.h>
 #include "Core/Logging.hpp"
+#include "Core/Config.hpp"
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
 #include "Net/SendBuilder.hpp"
+#include "Net/PacketTrace.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Core/ActionTrace.hpp"
 #include "Engine/LuaBridge.hpp"
@@ -26,6 +29,10 @@ static void* g_netMgr = nullptr;
 static SendBuilder_t fpSendBuilder = nullptr;
 static bool g_sendBuilderHooked = false;
 static bool g_builderScanned = false;
+static bool g_captureSendStacks = false;
+static volatile LONG g_sendStackBudget = 0;
+static bool g_logSendPackets = false;
+static thread_local bool g_inSendPacketHook = false;
 
 struct BuilderProbeInfo {
     SendBuilder_t original;
@@ -133,6 +140,9 @@ static void HookSendBuilderFromNetMgr()
 
 static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int len)
 {
+    g_inSendPacketHook = true;
+    IncrementSendCounter();
+    unsigned counterSnapshot = Net::GetSendCounter();
     // Annotate proximity to last high-level action (e.g., CastSpell) for correlation
     Trace::LastAction last{};
     if (Trace::GetLastAction(last)) {
@@ -144,7 +154,38 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
             WriteRawLog(info);
         }
     }
+    if (g_captureSendStacks && InterlockedCompareExchange(&g_sendStackBudget, 0, 0) > 0) {
+        LONG left = InterlockedDecrement(&g_sendStackBudget);
+        if (left >= 0) {
+            void* frames[32] = {};
+            USHORT captured = RtlCaptureStackBackTrace(0, 32, frames, nullptr);
+            WriteRawLog("[SendStack] capturing call stack for SendPacket");
+            for (USHORT i = 0; i < captured; ++i) {
+                if (!frames[i])
+                    continue;
+                char line[128];
+                sprintf_s(line, sizeof(line), "[SendStack] #%u: %p", static_cast<unsigned>(i), frames[i]);
+                WriteRawLog(line);
+            }
+        }
+    }
     DumpMemory("PLAIN-SendPacket", const_cast<void*>(pkt), len);
+    if (g_logSendPackets) {
+        unsigned char id = 0;
+        if (pkt && len > 0) {
+            __try {
+                id = *static_cast<const unsigned char*>(pkt);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                id = 0;
+            }
+        }
+        char msg[192];
+        sprintf_s(msg, sizeof(msg),
+            "[SendPacket] counter=%u len=%d id=%02X this=%p",
+            counterSnapshot, len, id, thisPtr);
+        WriteRawLog(msg);
+    }
+    Engine::Lua::NotifySendPacket(counterSnapshot, pkt, len);
 
     if (!g_netMgr)
         g_netMgr = thisPtr;
@@ -156,6 +197,7 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
     // Use network activity as a safe-ish place to poll late Lua installs (throttled internally).
     Engine::Lua::PollLateInstalls();
     g_sendPacket(thisPtr, pkt, len);
+    g_inSendPacketHook = false;
 }
 
 static void FindSendPacket()
@@ -193,6 +235,24 @@ bool InitSendBuilder(GlobalStateInfo* state)
     g_state = state;
     FindSendPacket();
     HookSendPacket();
+    if (auto flag = Core::Config::TryGetBool("LOG_SEND_STACKS"))
+        g_captureSendStacks = *flag;
+    else if (const char* env = std::getenv("LOG_SEND_STACKS"))
+        g_captureSendStacks = (env[0] == '1' || env[0] == 'y' || env[0] == 'Y' || env[0] == 't' || env[0] == 'T');
+    int stackLimit = 4;
+    if (auto limit = Core::Config::TryGetInt("LOG_SEND_STACKS_LIMIT"))
+        stackLimit = *limit;
+    else if (const char* envLimit = std::getenv("LOG_SEND_STACKS_LIMIT"))
+        stackLimit = std::atoi(envLimit);
+    if (stackLimit < 0)
+        stackLimit = 0;
+    InterlockedExchange(&g_sendStackBudget, stackLimit);
+    if (auto logPackets = Core::Config::TryGetBool("LOG_SEND_PACKET_EVENTS"))
+        g_logSendPackets = *logPackets;
+    else if (const char* envLogPackets = std::getenv("LOG_SEND_PACKET_EVENTS"))
+        g_logSendPackets = (envLogPackets[0] == '1' || envLogPackets[0] == 'y' || envLogPackets[0] == 'Y' || envLogPackets[0] == 't' || envLogPackets[0] == 'T');
+    if (g_logSendPackets)
+        WriteRawLog("LOG_SEND_PACKET_EVENTS enabled");
     return true;
 }
 
@@ -234,5 +294,9 @@ bool IsSendReady()
     return g_sendPacket && g_netMgr;
 }
 
-} // namespace Net
+bool IsInSendPacketHook()
+{
+    return g_inSendPacketHook;
+}
 
+} // namespace Net
