@@ -29,12 +29,13 @@ std::atomic<uint32_t> g_lastTick{0};
 constexpr size_t kReturnStackMax = 128;
 
 struct SpellSenderTls {
-    bool overflowWarned = false;
-    bool underflowWarned = false;
-    bool leaveDepthWarned = false;
-    bool leaveFlagWarned = false;
-    uint32_t depth = 0;
+    bool returnOverflowWarned = false;
+    bool returnUnderflowWarned = false;
+    bool logOverflowWarned = false;
+    bool logUnderflowWarned = false;
+    uint32_t returnDepth = 0;
     uintptr_t returnAddrs[kReturnStackMax]{};
+    uint32_t logDepth = 0;
     uint8_t logFlags[kReturnStackMax]{};
 };
 
@@ -46,30 +47,31 @@ extern "C" uintptr_t g_SpellSender_Target = 0;
 extern "C" uint32_t __stdcall SpellSender_PushReturn(uintptr_t retAddr) {
     if (!retAddr)
         return 0;
-    if (g_tls.depth < kReturnStackMax) {
-        g_tls.returnAddrs[g_tls.depth] = retAddr;
-        g_tls.logFlags[g_tls.depth] = 0;
-        ++g_tls.depth;
+    uint32_t slot = g_tls.returnDepth;
+    if (slot < kReturnStackMax) {
+        g_tls.returnAddrs[slot] = retAddr;
+        g_tls.returnDepth = slot + 1;
         return 1;
     }
-    if (!g_tls.overflowWarned) {
-        g_tls.overflowWarned = true;
+    if (!g_tls.returnOverflowWarned) {
+        g_tls.returnOverflowWarned = true;
         WriteRawLog("[CastSender] return stack overflow; detour may misbehave");
     }
     return 0;
 }
 
 extern "C" uintptr_t __stdcall SpellSender_PopReturn() {
-    if (g_tls.depth == 0) {
-        if (!g_tls.underflowWarned) {
-            g_tls.underflowWarned = true;
+    if (g_tls.returnDepth == 0) {
+        if (!g_tls.returnUnderflowWarned) {
+            g_tls.returnUnderflowWarned = true;
             WriteRawLog("[CastSender] return stack underflow");
         }
         return 0;
     }
-    uint32_t slot = --g_tls.depth;
-    g_tls.logFlags[slot] = 0;
-    return g_tls.returnAddrs[slot];
+    uint32_t slot = --g_tls.returnDepth;
+    uintptr_t addr = g_tls.returnAddrs[slot];
+    g_tls.returnAddrs[slot] = 0;
+    return addr;
 }
 
 bool DebugProfileEnabled() {
@@ -131,6 +133,32 @@ bool ShouldEmit(DWORD now) {
     return true;
 }
 
+void PushLogFlag(bool allowed) {
+    uint32_t slot = g_tls.logDepth++;
+    if (slot < kReturnStackMax) {
+        g_tls.logFlags[slot] = allowed ? 1u : 0u;
+        return;
+    }
+    if (!g_tls.logOverflowWarned) {
+        g_tls.logOverflowWarned = true;
+        WriteRawLog("[CastSender] log stack overflow; suppressing ENTER/LEAVE pairing");
+    }
+}
+
+bool PopLogFlag() {
+    if (g_tls.logDepth == 0) {
+        if (!g_tls.logUnderflowWarned) {
+            g_tls.logUnderflowWarned = true;
+            WriteRawLog("[CastSender] log stack underflow; check detour balance");
+        }
+        return false;
+    }
+    uint32_t slot = --g_tls.logDepth;
+    if (slot < kReturnStackMax)
+        return g_tls.logFlags[slot] != 0;
+    return false;
+}
+
 bool IsReadablePointer(uintptr_t ptr) {
     if (!ptr)
         return false;
@@ -149,8 +177,7 @@ bool IsReadablePointer(uintptr_t ptr) {
 extern "C" void __cdecl SpellSender_OnEnter(uintptr_t entry, uint32_t ecx, uint32_t edx, uintptr_t argBase) {
     DWORD now = GetTickCount();
     bool allowed = ShouldEmit(now);
-    if (g_tls.depth > 0)
-        g_tls.logFlags[g_tls.depth - 1] = allowed ? 1 : 0;
+    PushLogFlag(allowed);
     if (!allowed)
         return;
 
@@ -253,22 +280,8 @@ extern "C" void __cdecl SpellSender_OnEnter(uintptr_t entry, uint32_t ecx, uint3
 }
 
 extern "C" void __cdecl SpellSender_OnLeave(uintptr_t entry, uint32_t eax) {
-    if (g_tls.depth == 0) {
-        if (!g_tls.leaveDepthWarned) {
-            g_tls.leaveDepthWarned = true;
-            WriteRawLog("[CastSender] OnLeave saw empty TLS depth; return handshake missing?");
-        }
+    if (!PopLogFlag())
         return;
-    }
-    uint32_t slot = g_tls.depth - 1;
-    if (!g_tls.logFlags[slot]) {
-        if (!g_tls.leaveFlagWarned) {
-            g_tls.leaveFlagWarned = true;
-            WriteRawLog("[CastSender] OnLeave suppressed (flag cleared); check debounce/max hits");
-        }
-        return;
-    }
-    g_tls.logFlags[slot] = 0;
     char buf[128];
     sprintf_s(buf,
               sizeof(buf),
@@ -278,17 +291,21 @@ extern "C" void __cdecl SpellSender_OnLeave(uintptr_t entry, uint32_t eax) {
     WriteRawLog(buf);
 }
 
+extern "C" void SpellSender_Return();
+
+extern "C" void SpellSender_Return();
+
 extern "C" void __declspec(naked) SpellSender_Detour() {
     __asm {
-        pop esi                            // original return address
-        push esi
-        call SpellSender_PushReturn
-        push eax                           // record push-return success flag
         pushfd
         pushad
-        mov ebx, [esp + 24]                // saved ECX
-        mov ecx, [esp + 20]                // saved EDX
-        lea eax, [esp + 40]                // pointer to first argument (past pushad/pushfd/flag)
+        mov eax, [esp + 36]                // original return address
+        push eax
+        call SpellSender_PushReturn
+        mov esi, eax                       // success flag
+        mov ebx, [esp + 24]                // original ECX
+        mov ecx, [esp + 20]                // original EDX
+        lea eax, [esp + 36]                // pointer to caller stack (return slot)
         push eax                           // arg4: argument base
         push ecx                           // arg3: original EDX
         push ebx                           // arg2: original ECX
@@ -296,29 +313,42 @@ extern "C" void __declspec(naked) SpellSender_Detour() {
         push edx                           // arg1: entry address
         call SpellSender_OnEnter
         add esp, 16
+        test esi, esi
+        jz SpellSender_SkipPatch
+        mov dword ptr [esp + 36], offset SpellSender_Return
+SpellSender_SkipPatch:
         popad
         popfd
-        pop ebx                            // retrieve success flag
-        test ebx, ebx
-        jz SpellSender_NoReturn
-        push offset SpellSender_ReturnThunk
+        test esi, esi
+        jz SpellSender_FallbackCall
         jmp g_SpellSender_Trampoline
 
-SpellSender_ReturnThunk:
-        mov edx, eax
-        mov eax, g_SpellSender_Target
-        push edx
-        push eax
+SpellSender_FallbackCall:
+        call g_SpellSender_Trampoline
+        ret
+    }
+}
+
+extern "C" void __declspec(naked) SpellSender_Return() {
+    __asm {
+        push eax                           // save return value
+        pushfd
+        pushad
+        mov edx, g_SpellSender_Target
+        push dword ptr [esp + 36]          // arg2: saved return value
+        push edx                           // arg1: entry address
         call SpellSender_OnLeave
         add esp, 8
-        mov eax, edx
+        popad
+        popfd
+        pop eax                            // restore return value
         call SpellSender_PopReturn
-        push eax
-        ret
+        test eax, eax
+        jz SpellSender_ReturnDirect
+        jmp eax
 
-SpellSender_NoReturn:
-        push esi                           // restore original return address
-        jmp g_SpellSender_Trampoline
+SpellSender_ReturnDirect:
+        ret
     }
 }
 
@@ -334,6 +364,7 @@ void DisarmLocked() {
     g_SpellSender_Target = 0;
     g_hitCount.store(0, std::memory_order_release);
     g_lastTick.store(0, std::memory_order_release);
+    g_tls = SpellSenderTls{};
     WriteRawLog("[CastSender] detour disarmed");
 }
 

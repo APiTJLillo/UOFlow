@@ -217,6 +217,27 @@ void Init() {
         }
     }
 
+    std::optional<std::string> targetAddr;
+    if (auto cfgTarget = Core::Config::TryGetValue("TARGET_SENDER_ADDR"))
+        targetAddr = *cfgTarget;
+    else if (auto envTarget = Core::Config::TryGetEnv("TARGET_SENDER_ADDR"))
+        targetAddr = *envTarget;
+    if (targetAddr && !targetAddr->empty()) {
+        uintptr_t resolvedTarget = ResolveModulePlusOffset(targetAddr->c_str());
+        if (resolvedTarget) {
+            g_targetFrame.store(resolvedTarget, std::memory_order_release);
+            LogTargetFrame(resolvedTarget);
+            g_announcedTarget = true;
+        } else {
+            char warn[192];
+            sprintf_s(warn,
+                      sizeof(warn),
+                      "[CastCorrelator] TARGET_SENDER_ADDR invalid: %s",
+                      targetAddr->c_str());
+            WriteRawLog(warn);
+        }
+    }
+
     EnterCriticalSection(&g_lock);
     for (auto& win : g_windows)
         CloseWindowLocked(win);

@@ -9,6 +9,8 @@ CAST_CORR_ENABLE=1
 CAST_CORR_WINDOW_MS=400     # correlation window (ms) after UserActionCastSpell
 CAST_CORR_LEN_HINT=9        # expected cast packet length (tweak as needed)
 CAST_SENDER_DETOUR_ENABLE=1 # auto-detour the cast sender helper
+CAST_SENDER_ADDR=UOSA.exe+0x2486A4  # default small-send wrapper
+TARGET_SENDER_ADDR=UOSA.exe+0x24B6A2
 CAST_SENDER_LOG_CTX=1       # include ctx-word/payload-source logs
 CAST_SENDER_DUMP_BYTES=16   # bytes of payload to dump from EDX
 CAST_SENDER_MAX_HITS=64     # entries logged before auto-quiet
@@ -20,7 +22,7 @@ TRACE_PACKET_ID_FILTER=0x2E # set while hunting the target helper
 ## Workflow
 
 1. **Lock in the cursor helper (id `0x2E`).**  
-   Enable `TRACE_PACKET_STACKS=1` and set `TRACE_PACKET_ID_FILTER=0x2E`. When the targeting packet fires you’ll see `[CastCorrelator] target sender frame set to UOSA.exe+0x……` in the log. That frame is stored so cast correlation won’t confuse targeting and casting helpers.
+   Enable `TRACE_PACKET_STACKS=1` and set `TRACE_PACKET_ID_FILTER=0x2E`. When the targeting packet fires you’ll see `[CastCorrelator] target sender frame set to UOSA.exe+0x……` in the log. That frame is stored so cast correlation won’t confuse targeting and casting helpers. Already know the cursor helper? Set `TARGET_SENDER_ADDR=UOSA.exe+0x24B6A2` (or whatever offset you captured) and the correlator will arm it immediately on attach.
 
 2. **Let the correlator pick the cast sender.**  
    With `CAST_CORR_ENABLE=1`, every `UserActionCastSpell`/`UserActionCastSpellOnId` call opens a 400 ms window. The next outbound Winsock packet whose stack’s first non-system frame lives in `UOSA.exe` (and whose length matches `CAST_CORR_LEN_HINT`) is marked as the cast candidate:
