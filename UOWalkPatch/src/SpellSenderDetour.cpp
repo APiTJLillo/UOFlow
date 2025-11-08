@@ -1,10 +1,10 @@
 #include "SpellSenderDetour.h"
 
 #include <windows.h>
-#include <minhook.h>
-
+#include <intrin.h>
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -17,8 +17,10 @@ namespace {
 struct SenderState {
     SpellSenderOptions opts{};
     uintptr_t entry = 0;
-    void* trampoline = nullptr;
     bool armed = false;
+    void** vtableSlot = nullptr;
+    using SendPacketFn = int(__thiscall*)(void*, void*, void*);
+    SendPacketFn original = nullptr;
 };
 
 SenderState g_state{};
@@ -29,49 +31,34 @@ std::atomic<uint32_t> g_lastTick{0};
 constexpr size_t kReturnStackMax = 128;
 
 struct SpellSenderTls {
-    bool returnOverflowWarned = false;
-    bool returnUnderflowWarned = false;
     bool logOverflowWarned = false;
     bool logUnderflowWarned = false;
-    uint32_t returnDepth = 0;
-    uintptr_t returnAddrs[kReturnStackMax]{};
+    bool pendingRetValid = false;
+    bool pendingLeaveLog = false;
     uint32_t logDepth = 0;
     uint8_t logFlags[kReturnStackMax]{};
+    uintptr_t pendingRetAddr = 0;
 };
 
 thread_local SpellSenderTls g_tls{};
 
-extern "C" void* g_SpellSender_Trampoline = nullptr;
-extern "C" uintptr_t g_SpellSender_Target = 0;
+int __stdcall SpellSender_SendPacketHookImpl(void* self, void* packetCtx, void* refCtx, void* returnAddr);
+extern "C" int __fastcall SpellSender_SendPacketHook(void* self, void* unused, void* packetCtx, void* refCtx);
+extern "C" void __cdecl SpellSender_OnEnter(uintptr_t entry, uint32_t ecx, uint32_t edx, uintptr_t argBase);
+extern "C" void __cdecl SpellSender_OnLeave(uintptr_t entry, uint32_t eax);
+void** LocateVtableSlot(uintptr_t entryAddr);
 
-extern "C" uint32_t __stdcall SpellSender_PushReturn(uintptr_t retAddr) {
-    if (!retAddr)
-        return 0;
-    uint32_t slot = g_tls.returnDepth;
-    if (slot < kReturnStackMax) {
-        g_tls.returnAddrs[slot] = retAddr;
-        g_tls.returnDepth = slot + 1;
-        return 1;
-    }
-    if (!g_tls.returnOverflowWarned) {
-        g_tls.returnOverflowWarned = true;
-        WriteRawLog("[CastSender] return stack overflow; detour may misbehave");
-    }
-    return 0;
-}
-
-extern "C" uintptr_t __stdcall SpellSender_PopReturn() {
-    if (g_tls.returnDepth == 0) {
-        if (!g_tls.returnUnderflowWarned) {
-            g_tls.returnUnderflowWarned = true;
-            WriteRawLog("[CastSender] return stack underflow");
-        }
-        return 0;
-    }
-    uint32_t slot = --g_tls.returnDepth;
-    uintptr_t addr = g_tls.returnAddrs[slot];
-    g_tls.returnAddrs[slot] = 0;
-    return addr;
+void SpellSender_LogPopReturn(uintptr_t retAddr) {
+    if (!g_tls.pendingLeaveLog)
+        return;
+    g_tls.pendingLeaveLog = false;
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[CastSender:TRACE] popRA=%p thread=%lu",
+              reinterpret_cast<void*>(retAddr),
+              GetCurrentThreadId());
+    WriteRawLog(buf);
 }
 
 bool DebugProfileEnabled() {
@@ -112,6 +99,114 @@ void LogDump(const uint8_t* data, size_t len) {
     WriteRawLog(line);
 }
 
+bool LooksLikeStdPrologue(uintptr_t addr) {
+    uint8_t bytes[3]{};
+    if (CopyBytes(addr, bytes, sizeof(bytes)) != sizeof(bytes))
+        return false;
+    return bytes[0] == 0x55 && bytes[1] == 0x8B && bytes[2] == 0xEC;
+}
+
+bool LooksLikeHotpatchPrologue(uintptr_t addr) {
+    uint8_t bytes[5]{};
+    if (CopyBytes(addr, bytes, sizeof(bytes)) != sizeof(bytes))
+        return false;
+    return bytes[0] == 0x8B && bytes[1] == 0xFF && LooksLikeStdPrologue(addr + 2);
+}
+
+bool LooksLikeFpoPrologue(uintptr_t addr) {
+    uint8_t bytes[8]{};
+    size_t copied = CopyBytes(addr, bytes, sizeof(bytes));
+    if (copied < 4)
+        return false;
+    size_t idx = 0;
+    bool sawPush = false;
+    while (idx < copied) {
+        uint8_t op = bytes[idx];
+        if (op == 0x53 || op == 0x56 || op == 0x57 || op == 0x51 || op == 0x52) {
+            sawPush = true;
+            ++idx;
+            continue;
+        }
+        break;
+    }
+    if (!sawPush)
+        return false;
+    if (idx + 2 <= copied && bytes[idx] == 0x83 && bytes[idx + 1] == 0xEC)
+        return true;
+    if (idx + 5 <= copied && bytes[idx] == 0x81 && bytes[idx + 1] == 0xEC)
+        return true;
+    return false;
+}
+
+bool LooksLikeMultiPushPrologue(uintptr_t addr) {
+    uint8_t bytes[16]{};
+    size_t copied = CopyBytes(addr, bytes, sizeof(bytes));
+    if (copied == 0)
+        return false;
+    size_t idx = 0;
+    size_t pushCount = 0;
+    while (idx < copied) {
+        uint8_t op = bytes[idx];
+        if (op >= 0x50 && op <= 0x57) {
+            ++pushCount;
+            ++idx;
+            continue;
+        }
+        break;
+    }
+    return pushCount >= 3;
+}
+
+uintptr_t NormalizeEntryAddress(uintptr_t addr, const char** matchedKind = nullptr) {
+    if (matchedKind)
+        *matchedKind = nullptr;
+    if (!addr)
+        return 0;
+    constexpr size_t kMaxScan = 0x200;
+    uintptr_t bestMatch = 0;
+    const char* bestKindLocal = nullptr;
+    bool foundMatch = false;
+    auto recordMatch = [&](uintptr_t candidate, const char* kind) {
+        bestMatch = candidate;
+        bestKindLocal = kind;
+        foundMatch = true;
+    };
+    for (size_t delta = 0; delta <= kMaxScan; ++delta) {
+        if (addr < delta)
+            break;
+        uintptr_t candidate = addr - delta;
+        if (LooksLikeHotpatchPrologue(candidate)) {
+            recordMatch(candidate, "hotpatch");
+            continue;
+        }
+        if (LooksLikeStdPrologue(candidate)) {
+            recordMatch(candidate, "std");
+            continue;
+        }
+        if (LooksLikeFpoPrologue(candidate)) {
+            recordMatch(candidate, "fpo");
+            continue;
+        }
+        if (LooksLikeMultiPushPrologue(candidate)) {
+            recordMatch(candidate, "push");
+            continue;
+        }
+        uint8_t opcode = 0;
+        if (CopyBytes(candidate, &opcode, sizeof(opcode)) != sizeof(opcode))
+            continue;
+        if (opcode == 0xC3 || opcode == 0xC2)
+            break;
+    }
+    if (foundMatch) {
+        if (matchedKind)
+            *matchedKind = bestKindLocal;
+        return bestMatch;
+    }
+    if (matchedKind)
+        *matchedKind = "none";
+    return addr;
+}
+
 bool ShouldEmit(DWORD now) {
     if (!g_state.opts.enable)
         return false;
@@ -145,18 +240,24 @@ void PushLogFlag(bool allowed) {
     }
 }
 
-bool PopLogFlag() {
+enum class LogFlagPopResult {
+    kUnderflow,
+    kSuppressed,
+    kAllowed,
+};
+
+LogFlagPopResult PopLogFlag() {
     if (g_tls.logDepth == 0) {
         if (!g_tls.logUnderflowWarned) {
             g_tls.logUnderflowWarned = true;
             WriteRawLog("[CastSender] log stack underflow; check detour balance");
         }
-        return false;
+        return LogFlagPopResult::kUnderflow;
     }
     uint32_t slot = --g_tls.logDepth;
-    if (slot < kReturnStackMax)
-        return g_tls.logFlags[slot] != 0;
-    return false;
+    if (slot >= kReturnStackMax)
+        return LogFlagPopResult::kUnderflow;
+    return g_tls.logFlags[slot] != 0 ? LogFlagPopResult::kAllowed : LogFlagPopResult::kSuppressed;
 }
 
 bool IsReadablePointer(uintptr_t ptr) {
@@ -174,12 +275,116 @@ bool IsReadablePointer(uintptr_t ptr) {
     return (mbi.Protect & kWritable) != 0;
 }
 
+bool ReadStructField(uintptr_t base, uint32_t offset, uint32_t& out) {
+    return ReadDword(base + offset, out);
+}
+
+uint32_t EstimatePayloadLength(uintptr_t ctx) {
+    if (!ctx)
+        return 0;
+    uint32_t v28 = 0, v18 = 0, v1c = 0, v20 = 0, v14 = 0, v0c = 0;
+    if (!ReadStructField(ctx, 0x28, v28) || !ReadStructField(ctx, 0x18, v18) ||
+        !ReadStructField(ctx, 0x1C, v1c) || !ReadStructField(ctx, 0x20, v20) ||
+        !ReadStructField(ctx, 0x14, v14) || !ReadStructField(ctx, 0x0C, v0c))
+        return 0;
+    int part1 = static_cast<int>(v28) - static_cast<int>(v18);
+    part1 = (part1 >> 2) - 1;
+    if (part1 < 0)
+        part1 = 0;
+    int part2 = (static_cast<int>(v1c) - static_cast<int>(v20)) >> 3;
+    int part3 = (static_cast<int>(v14) - static_cast<int>(v0c)) >> 3;
+    int total = (part1 << 5) + part2 + part3;
+    if (total < 0)
+        total = 0;
+    return static_cast<uint32_t>(total);
+}
+
+uintptr_t FindPayloadPointer(uintptr_t ctx) {
+    if (!ctx || !IsReadablePointer(ctx))
+        return 0;
+    for (int i = 0; i < 6; ++i) {
+        uint32_t word = 0;
+        if (!ReadDword(ctx + static_cast<uintptr_t>(i) * 4u, word))
+            continue;
+        uintptr_t candidate = static_cast<uintptr_t>(word);
+        if (IsReadablePointer(candidate))
+            return candidate;
+    }
+    return 0;
+}
+
+void** LocateVtableSlot(uintptr_t entryAddr) {
+    HMODULE module = GetModuleHandleW(nullptr);
+    if (!module)
+        return nullptr;
+    auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
+    auto nt = reinterpret_cast<IMAGE_NT_HEADERS*>(reinterpret_cast<uint8_t*>(module) + dos->e_lfanew);
+    auto section = IMAGE_FIRST_SECTION(nt);
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+        const DWORD readableFlags = IMAGE_SCN_MEM_READ;
+        if ((section[i].Characteristics & readableFlags) == 0)
+            continue;
+        uint8_t* start = reinterpret_cast<uint8_t*>(module) + section[i].VirtualAddress;
+        size_t size = section[i].Misc.VirtualSize;
+        size_t count = size / sizeof(uintptr_t);
+        auto data = reinterpret_cast<uintptr_t*>(start);
+        for (size_t j = 0; j < count; ++j) {
+            if (data[j] == entryAddr)
+                return reinterpret_cast<void**>(&data[j]);
+        }
+    }
+    return nullptr;
+}
+
+int __stdcall SpellSender_SendPacketHookImpl(void* self, void* packetCtx, void* refCtx, void* returnAddr) {
+    if (!g_state.original)
+        return 0;
+    uint32_t length = EstimatePayloadLength(reinterpret_cast<uintptr_t>(packetCtx));
+    uintptr_t fakeArgs[4]{
+        reinterpret_cast<uintptr_t>(packetCtx),
+        reinterpret_cast<uintptr_t>(refCtx),
+        length,
+        length
+    };
+    uintptr_t argBase = reinterpret_cast<uintptr_t>(fakeArgs) - sizeof(uintptr_t);
+    g_tls.pendingRetAddr = reinterpret_cast<uintptr_t>(returnAddr);
+    g_tls.pendingRetValid = true;
+    uintptr_t payloadPtr = FindPayloadPointer(reinterpret_cast<uintptr_t>(packetCtx));
+
+    SpellSender_OnEnter(g_state.entry,
+                        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(self)),
+                        static_cast<uint32_t>(payloadPtr),
+                        argBase);
+
+    int result = g_state.original(self, packetCtx, refCtx);
+
+    SpellSender_OnLeave(g_state.entry, static_cast<uint32_t>(result));
+    g_tls.pendingRetValid = false;
+    return result;
+}
+
+extern "C" int __fastcall SpellSender_SendPacketHook(void* self, void*, void* packetCtx, void* refCtx) {
+    void* returnAddr = _ReturnAddress();
+    return SpellSender_SendPacketHookImpl(self, packetCtx, refCtx, returnAddr);
+}
+
 extern "C" void __cdecl SpellSender_OnEnter(uintptr_t entry, uint32_t ecx, uint32_t edx, uintptr_t argBase) {
     DWORD now = GetTickCount();
     bool allowed = ShouldEmit(now);
     PushLogFlag(allowed);
     if (!allowed)
         return;
+    if (g_tls.pendingRetValid) {
+        char trace[192];
+        sprintf_s(trace,
+                  sizeof(trace),
+                  "[CastSender:TRACE] savedRA=%p stub=%p thread=%lu",
+                  reinterpret_cast<void*>(g_tls.pendingRetAddr),
+                  reinterpret_cast<void*>(&SpellSender_SendPacketHook),
+                  GetCurrentThreadId());
+        WriteRawLog(trace);
+        g_tls.pendingRetValid = false;
+    }
 
     constexpr int kLoggedArgs = 4;
     uint32_t args[kLoggedArgs]{};
@@ -280,8 +485,10 @@ extern "C" void __cdecl SpellSender_OnEnter(uintptr_t entry, uint32_t ecx, uint3
 }
 
 extern "C" void __cdecl SpellSender_OnLeave(uintptr_t entry, uint32_t eax) {
-    if (!PopLogFlag())
+    auto logResult = PopLogFlag();
+    if (logResult != LogFlagPopResult::kAllowed)
         return;
+    g_tls.pendingLeaveLog = true;
     char buf[128];
     sprintf_s(buf,
               sizeof(buf),
@@ -289,79 +496,22 @@ extern "C" void __cdecl SpellSender_OnLeave(uintptr_t entry, uint32_t eax) {
               reinterpret_cast<void*>(entry),
               eax);
     WriteRawLog(buf);
-}
-
-extern "C" void SpellSender_Return();
-
-extern "C" void SpellSender_Return();
-
-extern "C" void __declspec(naked) SpellSender_Detour() {
-    __asm {
-        pushfd
-        pushad
-        mov eax, [esp + 36]                // original return address
-        push eax
-        call SpellSender_PushReturn
-        mov esi, eax                       // success flag
-        mov ebx, [esp + 24]                // original ECX
-        mov ecx, [esp + 20]                // original EDX
-        lea eax, [esp + 36]                // pointer to caller stack (return slot)
-        push eax                           // arg4: argument base
-        push ecx                           // arg3: original EDX
-        push ebx                           // arg2: original ECX
-        mov edx, g_SpellSender_Target
-        push edx                           // arg1: entry address
-        call SpellSender_OnEnter
-        add esp, 16
-        test esi, esi
-        jz SpellSender_SkipPatch
-        mov dword ptr [esp + 36], offset SpellSender_Return
-SpellSender_SkipPatch:
-        popad
-        popfd
-        test esi, esi
-        jz SpellSender_FallbackCall
-        jmp g_SpellSender_Trampoline
-
-SpellSender_FallbackCall:
-        call g_SpellSender_Trampoline
-        ret
-    }
-}
-
-extern "C" void __declspec(naked) SpellSender_Return() {
-    __asm {
-        push eax                           // save return value
-        pushfd
-        pushad
-        mov edx, g_SpellSender_Target
-        push dword ptr [esp + 36]          // arg2: saved return value
-        push edx                           // arg1: entry address
-        call SpellSender_OnLeave
-        add esp, 8
-        popad
-        popfd
-        pop eax                            // restore return value
-        call SpellSender_PopReturn
-        test eax, eax
-        jz SpellSender_ReturnDirect
-        jmp eax
-
-SpellSender_ReturnDirect:
-        ret
-    }
+    SpellSender_LogPopReturn(g_tls.pendingRetAddr);
 }
 
 void DisarmLocked() {
     if (!g_state.armed)
         return;
-    MH_DisableHook(reinterpret_cast<void*>(g_state.entry));
-    MH_RemoveHook(reinterpret_cast<void*>(g_state.entry));
+    if (g_state.vtableSlot && g_state.original) {
+        DWORD oldProtect = 0;
+        VirtualProtect(g_state.vtableSlot, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect);
+        *g_state.vtableSlot = reinterpret_cast<void*>(g_state.original);
+        VirtualProtect(g_state.vtableSlot, sizeof(void*), oldProtect, &oldProtect);
+    }
     g_state.entry = 0;
-    g_state.trampoline = nullptr;
+    g_state.original = nullptr;
+    g_state.vtableSlot = nullptr;
     g_state.armed = false;
-    g_SpellSender_Trampoline = nullptr;
-    g_SpellSender_Target = 0;
     g_hitCount.store(0, std::memory_order_release);
     g_lastTick.store(0, std::memory_order_release);
     g_tls = SpellSenderTls{};
@@ -387,42 +537,64 @@ void SpellSenderDetour_Disarm() {
     DisarmLocked();
 }
 
-void SpellSenderDetour_EnsureArmed(uintptr_t entryAddr) {
-    if (!entryAddr)
+void SpellSenderDetour_EnsureArmed(uintptr_t frameAddr) {
+    if (!frameAddr)
         return;
     if (!DebugProfileEnabled())
+        return;
+    const char* prologueKind = nullptr;
+    uintptr_t normalized = NormalizeEntryAddress(frameAddr, &prologueKind);
+    if (!normalized)
         return;
     std::lock_guard<std::mutex> lock(g_detourMutex);
     if (!g_state.opts.enable)
         return;
-    if (g_state.armed && g_state.entry == entryAddr)
+    if (g_state.armed && g_state.entry == normalized)
         return;
     if (g_state.armed)
         DisarmLocked();
 
-    void* trampoline = nullptr;
-    if (MH_CreateHook(reinterpret_cast<void*>(entryAddr),
-                      reinterpret_cast<LPVOID>(&SpellSender_Detour),
-                      reinterpret_cast<LPVOID*>(&trampoline)) != MH_OK) {
+    long long delta = static_cast<long long>(static_cast<intptr_t>(frameAddr) -
+                                             static_cast<intptr_t>(normalized));
+    char resolveBuf[256];
+    sprintf_s(resolveBuf,
+              sizeof(resolveBuf),
+              "[CastSender] frame resolved frame=%p entry=%p kind=%s delta=%lld",
+              reinterpret_cast<void*>(frameAddr),
+              reinterpret_cast<void*>(normalized),
+              prologueKind ? prologueKind : "n/a",
+              delta);
+    WriteRawLog(resolveBuf);
+
+    void** slot = LocateVtableSlot(normalized);
+    if (!slot) {
         char buf[160];
         sprintf_s(buf,
                   sizeof(buf),
-                  "[CastSender] failed to create detour at %p",
-                  reinterpret_cast<void*>(entryAddr));
+                  "[CastSender] unable to locate vtable slot (frame=%p entry=%p)",
+                  reinterpret_cast<void*>(frameAddr),
+                  reinterpret_cast<void*>(normalized));
         WriteRawLog(buf);
         return;
     }
-    if (MH_EnableHook(reinterpret_cast<void*>(entryAddr)) != MH_OK) {
-        MH_RemoveHook(reinterpret_cast<void*>(entryAddr));
-        WriteRawLog("[CastSender] failed to enable detour hook");
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(slot, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        char protBuf[192];
+        sprintf_s(protBuf,
+                  sizeof(protBuf),
+                  "[CastSender] failed to change protection on vtable slot (frame=%p entry=%p)",
+                  reinterpret_cast<void*>(frameAddr),
+                  reinterpret_cast<void*>(normalized));
+        WriteRawLog(protBuf);
         return;
     }
-
-    g_state.entry = entryAddr;
+    auto original = reinterpret_cast<SenderState::SendPacketFn>(*slot);
+    *slot = reinterpret_cast<void*>(&SpellSender_SendPacketHook);
+    VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+    g_state.entry = normalized;
     g_state.armed = true;
-    g_state.trampoline = trampoline;
-    g_SpellSender_Trampoline = trampoline;
-    g_SpellSender_Target = entryAddr;
+    g_state.original = original;
+    g_state.vtableSlot = slot;
     g_hitCount.store(0, std::memory_order_release);
     g_lastTick.store(0, std::memory_order_release);
     g_tls = SpellSenderTls{};
@@ -431,6 +603,6 @@ void SpellSenderDetour_EnsureArmed(uintptr_t entryAddr) {
     sprintf_s(buf,
               sizeof(buf),
               "[CastSender] detour armed at %p",
-              reinterpret_cast<void*>(entryAddr));
+              reinterpret_cast<void*>(normalized));
     WriteRawLog(buf);
 }
