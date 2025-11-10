@@ -41,6 +41,7 @@ extern "C" {
     LUA_API const char* lua_getupvalue(lua_State* L, int funcIndex, int n);
     LUA_API void lua_getfenv(lua_State* L, int idx);
     LUA_API void lua_replace(lua_State* L, int idx);
+    LUA_API void lua_pushinteger(lua_State* L, lua_Integer n);
 }
 #ifndef LUA_MULTRET
 #define LUA_MULTRET (-1)
@@ -177,7 +178,10 @@ enum ContextLogBits : unsigned {
         uintptr_t args[4]{};
     };
 
-    static thread_local GateInvokeTls g_gateInvokeTls;
+    static constexpr size_t kGateInvokeDefaultReserve = 32;
+    static constexpr size_t kGateInvokeMaxDepth = 256;
+    static thread_local std::vector<GateInvokeTls> g_gateInvokeStack;
+    static thread_local bool g_gateInvokeOverflowLogged = false;
 
     static std::atomic<DWORD> g_gateOwnerThread{0};
     static std::atomic<DWORD> g_gateArmExpiry{0};
@@ -206,6 +210,22 @@ enum ContextLogBits : unsigned {
     static std::atomic<bool> g_gateLogOverflow{false};
     static std::atomic<uint32_t> g_gateReturnLogCount{0};
     static std::atomic<uint32_t> g_gateReturnZeroCount{0};
+    static std::atomic<uint32_t> g_gatePendingToken{0};
+    static std::atomic<int> g_gatePendingSpell{0};
+
+    struct SpellGateReplayContext {
+        GateCallProbe* probe = nullptr;
+        uintptr_t ecx = 0;
+        uintptr_t edx = 0;
+        uintptr_t args[4]{};
+        DWORD captureTick = 0;
+        uint32_t token = 0;
+        uintptr_t lastRet = 0;
+    };
+
+    static std::mutex g_spellReplayMutex;
+    static std::unordered_map<int, SpellGateReplayContext> g_spellReplayCache;
+    static std::atomic<bool> g_spellBindingReady{false};
 
     static constexpr uintptr_t kGateTargets[] = {
         0x00AA3350, // candidate #1
@@ -220,6 +240,7 @@ enum ContextLogBits : unsigned {
         "00AA3660"
     };
     static constexpr size_t kGateTargetCount = sizeof(kGateTargets) / sizeof(kGateTargets[0]);
+    static char g_gateResolvedName[32] = {};
 
     static uintptr_t g_gateSelectedTarget = kGateTargets[0];
     static const char* g_gateSelectedName = kGateTargetNames[0];
@@ -229,6 +250,7 @@ enum ContextLogBits : unsigned {
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static int __cdecl Lua_Walk(lua_State* L);
 static int __cdecl Lua_BindWalk(lua_State* L);
+static int __cdecl Lua_UOW_Spell_Cast(lua_State* L);
 static int __cdecl Lua_UserActionCastSpell_W(lua_State* L);
 static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L);
 static int __cdecl Lua_UserActionUseSkill_W(lua_State* L);
@@ -266,8 +288,12 @@ static void* ResolveCalleeFromRA(void* ret);
 static void DumpCastSpellCallees(const CastSpellFrameBuffer& frames, unsigned pathId, uint32_t token, bool packetSent);
 static unsigned LogCastSpellPath(uint32_t token, const CastSpellFrameBuffer& frames, bool isOwnerPath);
 static uint16_t DetectRetImm(void* target);
+static void* ResolveGateJumpTarget(void* target, int& depthOut);
 static void GateInvokeShared();
-static void GateRecordEvent(GateCallProbe* probe, uintptr_t retValue);
+static void GateResetInvokeStack();
+static GateInvokeTls* GatePushInvokeFrame(GateCallProbe* probe);
+static bool GatePopInvokeFrame(GateCallProbe* probe, GateInvokeTls& outSnap);
+static void GateRecordEvent(GateCallProbe* probe, uintptr_t retValue, const GateInvokeTls* snap);
 static void GateFlushEvents(const char* reason);
 static bool GateArmForCast();
 static void GateDisarmForCast(const char* reason);
@@ -298,7 +324,11 @@ static uint8_t* AllocateGateStub(GateCallProbe* probe);
 static void GateInvokeShared();
 static void __stdcall GateLogReturn(GateCallProbe* probe, uintptr_t retValue);
 static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, uintptr_t edx, uintptr_t* argBase);
-static void LogGateHelperSelected(GateCallProbe* probe, uintptr_t retValue);
+static void LogGateHelperSelected(GateCallProbe* probe, const GateInvokeTls* snap, uintptr_t retValue);
+static void MaybeLearnSpellGateContext(GateCallProbe* probe, const GateInvokeTls& snap, uintptr_t retValue);
+static bool SpellContextsEqual(const SpellGateReplayContext& a, const SpellGateReplayContext& b);
+static bool InvokeSpellGateDirect(const SpellGateReplayContext& ctx);
+static void ForceSpellBinding(lua_State* L, const char* reason);
 
 // Configurable verbosity for Lua arg/ret logging
 static bool g_traceLuaVerbose = false;
@@ -616,10 +646,99 @@ static uint16_t DetectRetImm(void* target)
     return 0;
 }
 
+static void* ResolveGateJumpTarget(void* target, int& depthOut)
+{
+    depthOut = 0;
+    if (!target)
+        return nullptr;
+
+    uint8_t* current = static_cast<uint8_t*>(target);
+    constexpr int kMaxDepth = 8;
+
+    for (int depth = 0; depth < kMaxDepth; ++depth) {
+        uint8_t opcode = 0;
+        __try {
+            opcode = current[0];
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            break;
+        }
+
+        if (opcode == 0xE9) {
+            int32_t rel = 0;
+            __try {
+                rel = *reinterpret_cast<int32_t*>(current + 1);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                break;
+            }
+            current = current + 5 + rel;
+            ++depthOut;
+            continue;
+        }
+
+        if (opcode == 0xEB) {
+            int8_t rel8 = 0;
+            __try {
+                rel8 = *reinterpret_cast<int8_t*>(current + 1);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                break;
+            }
+            current = current + 2 + rel8;
+            ++depthOut;
+            continue;
+        }
+
+        if (opcode == 0xFF) {
+            uint8_t modrm = 0;
+            __try {
+                modrm = current[1];
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                break;
+            }
+
+            if (modrm == 0x25) { // JMP [disp32]
+                uint32_t disp = 0;
+                __try {
+                    disp = *reinterpret_cast<uint32_t*>(current + 2);
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {
+                    break;
+                }
+                uint8_t** slot = reinterpret_cast<uint8_t**>(disp);
+                uint8_t* next = nullptr;
+                __try {
+                    next = *slot;
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {
+                    break;
+                }
+                if (!next)
+                    break;
+                current = next;
+                ++depthOut;
+                continue;
+            }
+        }
+
+        break;
+    }
+
+    return current;
+}
+
 static bool GateArmForCast()
 {
     if (!g_enableCastGateProbes)
         return false;
+
+    if (g_gatePendingToken.load(std::memory_order_acquire) != 0) {
+        GateDisarmForCast("GateArm:pending_flush");
+        g_gatePendingToken.store(0, std::memory_order_release);
+        g_gatePendingSpell.store(0, std::memory_order_release);
+    }
 
     DWORD tid = GetCurrentThreadId();
     DWORD expected = 0;
@@ -733,10 +852,78 @@ static void GateDisarmForCast(const char* reason)
             tid,
             g_gateSelectedName ? g_gateSelectedName : "unknown");
         WriteRawLog(msg);
+        GateResetInvokeStack();
     }
+
+    g_gatePendingToken.store(0, std::memory_order_release);
+    g_gatePendingSpell.store(0, std::memory_order_release);
 }
 
-static void GateRecordEvent(GateCallProbe* probe, uintptr_t retValue)
+static void GateResetInvokeStack()
+{
+    g_gateInvokeOverflowLogged = false;
+    g_gateInvokeStack.clear();
+}
+
+static GateInvokeTls* GatePushInvokeFrame(GateCallProbe* probe)
+{
+    if (!probe)
+        return nullptr;
+
+    if (g_gateInvokeStack.capacity() == 0)
+        g_gateInvokeStack.reserve(kGateInvokeDefaultReserve);
+
+    if (g_gateInvokeStack.size() >= kGateInvokeMaxDepth) {
+        if (!g_gateInvokeOverflowLogged) {
+            g_gateInvokeOverflowLogged = true;
+            char buf[192];
+            sprintf_s(buf, sizeof(buf),
+                "[Gate3350] invoke stack overflow (max=%zu) probe=%p",
+                kGateInvokeMaxDepth,
+                probe);
+            WriteRawLog(buf);
+        }
+        return nullptr;
+    }
+    g_gateInvokeStack.emplace_back();
+    GateInvokeTls& slot = g_gateInvokeStack.back();
+    slot = GateInvokeTls{};
+    slot.probe = probe;
+    return &slot;
+}
+
+static bool GatePopInvokeFrame(GateCallProbe* probe, GateInvokeTls& outSnap)
+{
+    if (g_gateInvokeStack.empty())
+        return false;
+
+    GateInvokeTls slot = g_gateInvokeStack.back();
+    g_gateInvokeStack.pop_back();
+    if (probe && slot.probe != probe) {
+        if (InterlockedCompareExchange(&g_gatePreInvokeLogBudget, 0, 0) > 0) {
+            LONG left = InterlockedDecrement(&g_gatePreInvokeLogBudget);
+            if (left >= 0) {
+                char buf[192];
+                sprintf_s(buf, sizeof(buf),
+                    "[Gate3350] invoke stack mismatch probe=%p top=%p depth=%zu",
+                    probe,
+                    slot.probe,
+                    g_gateInvokeStack.size());
+                WriteRawLog(buf);
+            }
+        }
+        if (g_gateInvokeStack.empty())
+            g_gateInvokeOverflowLogged = false;
+        return false;
+    }
+
+    outSnap = slot;
+    if (g_gateInvokeStack.empty())
+        g_gateInvokeOverflowLogged = false;
+    return true;
+}
+
+static void GateRecordEvent(GateCallProbe* probe, uintptr_t retValue, const GateInvokeTls* snap)
 {
     if (!probe)
         return;
@@ -768,8 +955,8 @@ static void GateRecordEvent(GateCallProbe* probe, uintptr_t retValue)
     evt.tid = owner;
     evt.tick = GetTickCount();
     evt.ret = retValue;
-    evt.ecx = g_gateInvokeTls.ecx;
-    evt.arg0 = g_gateInvokeTls.args[0];
+    evt.ecx = snap ? snap->ecx : 0;
+    evt.arg0 = snap ? snap->args[0] : 0;
     evt.name = probe->name;
     g_gateLogRing[slot & (kGateLogCapacity - 1)] = evt;
 }
@@ -822,7 +1009,10 @@ static uint8_t* AllocateGateStub(GateCallProbe* probe)
 
 static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, uintptr_t edx, uintptr_t* argBase)
 {
-    g_gateInvokeTls = GateInvokeTls{};
+    if (!probe) {
+        GateResetInvokeStack();
+        return;
+    }
 
     if (InterlockedCompareExchange(&g_gateStoreEntryBudget, 0, 0) > 0) {
         LONG left = InterlockedDecrement(&g_gateStoreEntryBudget);
@@ -840,7 +1030,7 @@ static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, ui
         }
     }
 
-    if (!probe || !g_enableCastGateProbes) {
+    if (!g_enableCastGateProbes) {
         if (InterlockedCompareExchange(&g_gatePreInvokeLogBudget, 0, 0) > 0) {
             LONG left = InterlockedDecrement(&g_gatePreInvokeLogBudget);
             if (left >= 0) {
@@ -897,11 +1087,13 @@ static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, ui
     }
     g_gateArmExpiry.store(now + 500u, std::memory_order_release);
 
-    g_gateInvokeTls.probe = probe;
-    g_gateInvokeTls.ecx = ecx;
-    g_gateInvokeTls.edx = edx;
+    GateInvokeTls* slot = GatePushInvokeFrame(probe);
+    if (!slot)
+        return;
+    slot->ecx = ecx;
+    slot->edx = edx;
     for (size_t i = 0; i < 4; ++i)
-        g_gateInvokeTls.args[i] = 0;
+        slot->args[i] = 0;
 
     if (InterlockedCompareExchange(&g_gatePreInvokeOkBudget, 0, 0) > 0) {
         LONG left = InterlockedDecrement(&g_gatePreInvokeOkBudget);
@@ -922,11 +1114,22 @@ static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, ui
 
     __try {
         for (size_t i = 0; i < 4; ++i)
-            g_gateInvokeTls.args[i] = argBase[i];
+            slot->args[i] = argBase[i];
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         for (size_t i = 0; i < 4; ++i)
-            g_gateInvokeTls.args[i] = 0;
+            slot->args[i] = 0;
+    }
+
+    // If we're waiting to capture a spell context and the helper is firing,
+    // treat the pre-invoke snapshot as sufficient (some helpers never return).
+    uint32_t pendingTok = g_gatePendingToken.load(std::memory_order_acquire);
+    if (pendingTok != 0) {
+        int pendingSpell = g_gatePendingSpell.load(std::memory_order_acquire);
+        int currentSpell = g_castSpellCurSpell.load(std::memory_order_relaxed);
+        if (pendingSpell > 0 && currentSpell == pendingSpell) {
+            MaybeLearnSpellGateContext(probe, *slot, /*retValue*/0);
+        }
     }
 }
 
@@ -954,17 +1157,117 @@ static void DumpGateMemorySafe(const char* label, uintptr_t address, size_t leng
     }
 }
 
-static void LogGateHelperSelected(GateCallProbe* probe, uintptr_t retValue)
+static bool SpellContextsEqual(const SpellGateReplayContext& a, const SpellGateReplayContext& b)
+{
+    if (a.probe != b.probe || a.ecx != b.ecx || a.edx != b.edx)
+        return false;
+    for (size_t i = 0; i < _countof(a.args); ++i) {
+        if (a.args[i] != b.args[i])
+            return false;
+    }
+    return true;
+}
+
+#if defined(_M_IX86)
+static bool InvokeSpellGateDirect(const SpellGateReplayContext& ctx)
+{
+    if (!ctx.probe || !ctx.probe->trampoline)
+        return false;
+
+    uintptr_t arg0 = ctx.args[0];
+    uintptr_t arg1 = ctx.args[1];
+    uintptr_t arg2 = ctx.args[2];
+    uintptr_t arg3 = ctx.args[3];
+    uintptr_t result = 0;
+    void* target = ctx.probe->trampoline;
+    uintptr_t ecxVal = ctx.ecx;
+    uintptr_t edxVal = ctx.edx;
+
+    __asm {
+        push arg3
+        push arg2
+        push arg1
+        push arg0
+        mov ecx, ecxVal
+        mov edx, edxVal
+        mov eax, target
+        call eax
+        mov result, eax
+        add esp, 16
+    }
+
+    return (result != 0);
+}
+#else
+static bool InvokeSpellGateDirect(const SpellGateReplayContext&)
+{
+    WriteRawLog("[SpellReplay] CastSpellNative unsupported on this architecture");
+    return false;
+}
+#endif
+
+static void MaybeLearnSpellGateContext(GateCallProbe* probe, const GateInvokeTls& snap, uintptr_t retValue)
 {
     if (!probe)
         return;
-    if (g_gateInvokeTls.probe != probe)
+
+    int spellId = g_castSpellCurSpell.load(std::memory_order_relaxed);
+    if (spellId <= 0)
         return;
+
+    SpellGateReplayContext ctx{};
+    ctx.probe = probe;
+    ctx.ecx = snap.ecx;
+    ctx.edx = snap.edx;
+    for (size_t i = 0; i < _countof(ctx.args); ++i)
+        ctx.args[i] = snap.args[i];
+    ctx.captureTick = GetTickCount();
+    ctx.token = g_lastCastToken.load(std::memory_order_acquire);
+    ctx.lastRet = retValue;
+
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(g_spellReplayMutex);
+        auto it = g_spellReplayCache.find(spellId);
+        if (it == g_spellReplayCache.end()) {
+            g_spellReplayCache.emplace(spellId, ctx);
+            changed = true;
+        } else if (!SpellContextsEqual(it->second, ctx)) {
+            it->second = ctx;
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        char buf[256];
+        sprintf_s(buf, sizeof(buf),
+            "[SpellReplay] captured native context spell=%d probe=%s ecx=%p arg0=%p token=%u",
+            spellId,
+            probe->name ? probe->name : "unknown",
+            reinterpret_cast<void*>(ctx.ecx),
+            reinterpret_cast<void*>(ctx.args[0]),
+            ctx.token);
+        WriteRawLog(buf);
+    }
+
+    uint32_t pendingTok = g_gatePendingToken.load(std::memory_order_acquire);
+    if (pendingTok != 0 && pendingTok == ctx.token) {
+        g_gatePendingToken.store(0, std::memory_order_release);
+        g_gatePendingSpell.store(0, std::memory_order_release);
+        GateDisarmForCast("GateLogReturn:capture");
+    }
+}
+
+static void LogGateHelperSelected(GateCallProbe* probe, const GateInvokeTls* snap, uintptr_t retValue)
+{
+    if (!probe || !snap)
+        return;
+
+    MaybeLearnSpellGateContext(probe, *snap, retValue);
 
     if (!GateConsumeBudget(g_gateReturnLogBudget, g_gateReturnLogUnlimited))
         return;
 
-    GateInvokeTls snap = g_gateInvokeTls;
     uint32_t seq = g_gateReturnLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     bool isZero = (retValue == 0);
     uint32_t zeroSeq = isZero ? (g_gateReturnZeroCount.fetch_add(1, std::memory_order_relaxed) + 1)
@@ -977,40 +1280,45 @@ static void LogGateHelperSelected(GateCallProbe* probe, uintptr_t retValue)
         isZero ? "yes" : "no",
         seq,
         isZero ? zeroSeq : 0u,
-        reinterpret_cast<void*>(snap.ecx),
-        reinterpret_cast<void*>(snap.edx),
-        reinterpret_cast<void*>(snap.args[0]),
-        reinterpret_cast<void*>(snap.args[1]),
-        reinterpret_cast<void*>(snap.args[2]),
-        reinterpret_cast<void*>(snap.args[3]),
+        reinterpret_cast<void*>(snap->ecx),
+        reinterpret_cast<void*>(snap->edx),
+        reinterpret_cast<void*>(snap->args[0]),
+        reinterpret_cast<void*>(snap->args[1]),
+        reinterpret_cast<void*>(snap->args[2]),
+        reinterpret_cast<void*>(snap->args[3]),
         g_lastCastToken.load(std::memory_order_acquire),
         g_castSpellCurSpell.load(std::memory_order_relaxed),
         probe->name ? probe->name : "unknown");
     WriteRawLog(buf);
+    MaybeLearnSpellGateContext(probe, *snap, retValue);
 
     if (isZero && GateConsumeBudget(g_gateReturnDumpBudget, g_gateReturnDumpUnlimited)) {
-        DumpGateMemorySafe("Gate3350.ecx", snap.ecx, 64);
-        DumpGateMemorySafe("Gate3350.arg0", snap.args[0], 64);
+        DumpGateMemorySafe("Gate3350.ecx", snap->ecx, 64);
+        DumpGateMemorySafe("Gate3350.arg0", snap->args[0], 64);
     }
 }
 
 static void __stdcall GateLogReturn(GateCallProbe* probe, uintptr_t retValue)
 {
     if (!probe) {
-        g_gateInvokeTls = GateInvokeTls{};
+        GateResetInvokeStack();
         return;
     }
+
+    GateInvokeTls snap{};
+    const GateInvokeTls* snapPtr = nullptr;
+    if (GatePopInvokeFrame(probe, snap))
+        snapPtr = &snap;
 
     uint32_t total = probe->hits.fetch_add(1, std::memory_order_relaxed) + 1;
     uint32_t zeroTotal = (retValue == 0)
         ? (probe->zeroHits.fetch_add(1, std::memory_order_relaxed) + 1)
         : probe->zeroHits.load(std::memory_order_relaxed);
 
-    GateRecordEvent(probe, retValue);
+    GateRecordEvent(probe, retValue, snapPtr);
 
-    if (reinterpret_cast<uintptr_t>(probe->target) == g_gateSelectedTarget)
-        LogGateHelperSelected(probe, retValue);
-    g_gateInvokeTls = GateInvokeTls{};
+    if (snapPtr && reinterpret_cast<uintptr_t>(probe->target) == g_gateSelectedTarget)
+        LogGateHelperSelected(probe, snapPtr, retValue);
 }
 
 static void __declspec(naked) GateInvokeShared()
@@ -1728,6 +2036,33 @@ static void ForceWalkBinding(lua_State* L, const char* reason)
     LogWalkBindingState(L, stateBuf);
 }
 
+static void ForceSpellBinding(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+    if (!g_clientContext)
+        return;
+    if (g_spellBindingReady.load(std::memory_order_acquire))
+        return;
+
+    const char* tag = reason ? reason : "EnsureSpellBinding";
+    char buf[224];
+    sprintf_s(buf, sizeof(buf), "%s: ensuring UOW.Spell.cast binding (ctx=%p)", tag, g_clientContext);
+    WriteRawLog(buf);
+
+    bool primary = RegisterViaClient(L, Lua_UOW_Spell_Cast, "UOW.Spell.cast");
+    bool alias = RegisterViaClient(L, Lua_UOW_Spell_Cast, "UOFlow.Spell.cast");
+    if (primary || alias) {
+        g_spellBindingReady.store(true, std::memory_order_release);
+        char okBuf[192];
+        sprintf_s(okBuf, sizeof(okBuf),
+            "%s: spell helper installed (alias=%s)",
+            tag,
+            alias ? "yes" : "no");
+        WriteRawLog(okBuf);
+    }
+}
+
 static bool ResolveRegisterFunction()
 {
     if (g_registerResolved && g_origRegister)
@@ -2067,6 +2402,20 @@ static int __cdecl Lua_Walk(lua_State* L)
     return 1;
 }
 
+static int __cdecl Lua_UOW_Spell_Cast(lua_State* L)
+{
+    int spellId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER) {
+        spellId = static_cast<int>(lua_tointeger(L, 1));
+    }
+    char buf[128];
+    sprintf_s(buf, sizeof(buf), "[Lua] UOW.Spell.cast invoked spell=%d", spellId);
+    WriteRawLog(buf);
+    bool ok = Engine::Lua::CastSpellNative(spellId);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
 // Helpers to dump a small callstack for correlation between first and second cast
 static void DumpStackTag(const char* tag)
 {
@@ -2348,8 +2697,20 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
         LogCastSpellSnapshot("post", token, spellId, snapshotAfter);
     }
 
-    if (gateArmed)
-        GateDisarmForCast(packetSent ? "UserActionCastSpell:packet" : "UserActionCastSpell:no_packet");
+    if (gateArmed) {
+        if (!packetSent && g_enableCastGateProbes) {
+            g_gatePendingToken.store(token, std::memory_order_release);
+            g_gatePendingSpell.store(spellId, std::memory_order_release);
+            char buf[192];
+            sprintf_s(buf, sizeof(buf),
+                "[Gate3350] pending capture tok=%u spell=%d (awaiting helper)",
+                token,
+                spellId);
+            WriteRawLog(buf);
+        } else {
+            GateDisarmForCast(packetSent ? "UserActionCastSpell:packet" : "UserActionCastSpell:no_packet");
+        }
+    }
 
     g_tlsCurrentCastToken = previousTok;
     return returnValue;
@@ -3028,6 +3389,7 @@ static int __cdecl Lua_BindWalk(lua_State* L)
 {
     WriteRawLog("Lua_BindWalk requested");
     Engine::Lua::EnsureWalkBinding("Lua.BindWalk");
+    ForceSpellBinding(L, "Lua.BindWalk");
     return 0;
 }
 
@@ -3076,6 +3438,126 @@ void ScheduleWalkBinding()
 void NotifySendPacket(unsigned counter, const void* bytes, int len)
 {
     HandleCastPacketSend(counter, bytes, len);
+}
+
+bool UseHotbarSlot(int hotbarId, int slot)
+{
+    if (hotbarId <= 0 || slot <= 0) {
+        WriteRawLog("[Hotbar] UseHotbarSlot requires positive hotbar and slot ids");
+        return false;
+    }
+
+    DWORD ownerTid = g_ownerThreadId.load(std::memory_order_acquire);
+    DWORD tid = GetCurrentThreadId();
+    if (ownerTid != 0 && ownerTid != tid) {
+        char buf[160];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[Hotbar] UseHotbarSlot rejected: owner thread=%u caller=%u",
+                  ownerTid,
+                  tid);
+        WriteRawLog(buf);
+        return false;
+    }
+
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L) {
+        WriteRawLog("[Hotbar] UseHotbarSlot no Lua state available");
+        return false;
+    }
+
+    int top = lua_gettop(L);
+    lua_getglobal(L, "Hotbar");
+    if (lua_type(L, -1) != LUA_TTABLE) {
+        WriteRawLog("[Hotbar] UseHotbarSlot missing global 'Hotbar'");
+        lua_settop(L, top);
+        return false;
+    }
+
+    lua_getfield(L, -1, "UseSlot");
+    lua_replace(L, -2); // drop table, leave function on stack
+    if (lua_type(L, -1) != LUA_TFUNCTION) {
+        WriteRawLog("[Hotbar] UseHotbarSlot missing Hotbar.UseSlot function");
+        lua_settop(L, top);
+        return false;
+    }
+
+    lua_pushinteger(L, hotbarId);
+    lua_pushinteger(L, slot);
+    if (lua_pcall(L, 2, 0, 0) != 0) {
+        const char* err = lua_tolstring(L, -1, nullptr);
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[Hotbar] UseHotbarSlot failed: %s",
+                  err ? err : "<unknown>");
+        WriteRawLog(buf);
+        lua_settop(L, top);
+        return false;
+    }
+
+    lua_settop(L, top);
+    return true;
+}
+
+bool CastSpellNative(int spellId)
+{
+    if (spellId <= 0) {
+        WriteRawLog("[SpellReplay] CastSpellNative requires a positive spell id");
+        return false;
+    }
+
+    DWORD ownerTid = g_ownerThreadId.load(std::memory_order_acquire);
+    DWORD tid = GetCurrentThreadId();
+    if (ownerTid != 0 && ownerTid != tid) {
+        char buf[192];
+        sprintf_s(buf, sizeof(buf),
+                  "[SpellReplay] CastSpellNative rejected: owner thread=%u caller=%u",
+                  ownerTid,
+                  tid);
+        WriteRawLog(buf);
+        return false;
+    }
+
+    SpellGateReplayContext ctx{};
+    bool haveCtx = false;
+    {
+        std::lock_guard<std::mutex> lock(g_spellReplayMutex);
+        auto it = g_spellReplayCache.find(spellId);
+        if (it != g_spellReplayCache.end()) {
+            ctx = it->second;
+            haveCtx = true;
+        }
+    }
+
+    if (!haveCtx) {
+        char buf[256];
+        sprintf_s(buf, sizeof(buf),
+                  "[SpellReplay] no native context for spell=%d (cast via UI once to learn)",
+                  spellId);
+        WriteRawLog(buf);
+        return false;
+    }
+
+    if (!ctx.probe || !ctx.probe->trampoline) {
+        char buf[192];
+        sprintf_s(buf, sizeof(buf),
+                  "[SpellReplay] stored context invalid for spell=%d probe=%p",
+                  spellId,
+                  ctx.probe);
+        WriteRawLog(buf);
+        return false;
+    }
+
+    bool ok = InvokeSpellGateDirect(ctx);
+    char buf[256];
+    sprintf_s(buf, sizeof(buf),
+              "[SpellReplay] CastSpellNative spell=%d -> %s token=%u",
+              spellId,
+              ok ? "success" : "failure",
+              ctx.token);
+    WriteRawLog(buf);
+    return ok;
 }
 
 bool InitLuaBridge()
@@ -3193,6 +3675,21 @@ bool InitLuaBridge()
         g_gateSelectedName = g_gateOverrideName;
         gateOverrideActive = true;
     }
+
+    int gateResolveDepth = 0;
+    void* resolvedTarget = ResolveGateJumpTarget(reinterpret_cast<void*>(g_gateSelectedTarget), gateResolveDepth);
+    if (resolvedTarget && reinterpret_cast<uintptr_t>(resolvedTarget) != g_gateSelectedTarget) {
+        g_gateSelectedTarget = reinterpret_cast<uintptr_t>(resolvedTarget);
+        sprintf_s(g_gateResolvedName, sizeof(g_gateResolvedName), "%p", resolvedTarget);
+        g_gateSelectedName = g_gateResolvedName;
+        char resolveMsg[256];
+        sprintf_s(resolveMsg, sizeof(resolveMsg),
+            "InitLuaBridge: gate target resolved via %d jump(s) -> %s",
+            gateResolveDepth,
+            g_gateResolvedName);
+        WriteRawLog(resolveMsg);
+    }
+
     if (g_enableCastGateProbes) {
         char cfgMsg[192];
         sprintf_s(cfgMsg, sizeof(cfgMsg),
@@ -3238,6 +3735,11 @@ void PollLateInstalls()
     }
     TryInstallActionWrappers();
     TryInstallDirectActionHooks();
+    if (!g_spellBindingReady.load(std::memory_order_acquire)) {
+        if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
+            ForceSpellBinding(L, "PollLateInstalls");
+        }
+    }
 }
 
 void ShutdownLuaBridge()
@@ -3254,3 +3756,13 @@ void ShutdownLuaBridge()
 }
 
 } // namespace Engine::Lua
+
+extern "C" __declspec(dllexport) bool __stdcall UseHotbarSlot(int hotbarId, int slot)
+{
+    return Engine::Lua::UseHotbarSlot(hotbarId, slot);
+}
+
+extern "C" __declspec(dllexport) bool __stdcall CastSpellNative(int spellId)
+{
+    return Engine::Lua::CastSpellNative(spellId);
+}
