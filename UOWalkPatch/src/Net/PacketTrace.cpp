@@ -16,6 +16,7 @@
 #include "Engine/LuaBridge.hpp"
 #include "Net/SendBuilder.hpp"
 #include "CastCorrelator.h"
+#include "TargetCorrelator.h"
 
 namespace {
 
@@ -97,7 +98,9 @@ static void TraceOutbound(const char* apiTag, const char* buf, int len)
     unsigned char packetId = buf ? static_cast<unsigned char>(buf[0]) : 0;
     DWORD now = GetTickCount();
 
-    bool needCorrStack = CastCorrelator::ShouldCaptureStack(packetId);
+    bool needCastStack = CastCorrelator::ShouldCaptureStack(packetId);
+    bool needTargetStack = TargetCorrelator::ShouldCaptureStack(packetId);
+    bool needCorrStack = needCastStack || needTargetStack;
     CastCorrelator::SendEvent corrEvent{};
     if (needCorrStack) {
         corrEvent.apiTag = apiTag;
@@ -122,8 +125,10 @@ static void TraceOutbound(const char* apiTag, const char* buf, int len)
         unsigned counter = Net::GetSendCounter();
         Engine::Lua::NotifySendPacket(counter, buf, len);
     }
-    if (needCorrStack && corrEvent.frameCount > 0)
+    if (needCastStack && corrEvent.frameCount > 0)
         CastCorrelator::OnSendEvent(corrEvent);
+    if (needTargetStack && corrEvent.frameCount > 0)
+        TargetCorrelator::OnSendEvent(corrEvent);
     if (ShouldCaptureWinsockStack(packetId)) {
         LogWinsockStack(apiTag ? apiTag : "winsock");
     }

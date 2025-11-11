@@ -536,6 +536,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\SpellProbe.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\SpellSenderDetour.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\CastCorrelator.cpp" />
+    <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\TargetCorrelator.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Net\PacketTrace.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Net\SendBuilder.cpp" />
     <ClCompile Include="C:\Users\dukey\Source\UOFlow\UOWalkPatch\src\Engine\GlobalState.cpp" />

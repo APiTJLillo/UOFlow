@@ -83,6 +83,7 @@ add_library(UOWalkPatchDLL SHARED
     src/SpellProbe.cpp
     src/SpellSenderDetour.cpp
     src/CastCorrelator.cpp
+    src/TargetCorrelator.cpp
     src/Net/PacketTrace.cpp
     src/Net/SendBuilder.cpp
     src/Engine/GlobalState.cpp

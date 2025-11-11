@@ -15,6 +15,7 @@
 #include "../include/Core/ActionTrace.hpp"
 #include "SpellProbe.h"
 #include "CastCorrelator.h"
+#include "TargetCorrelator.h"
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 {
@@ -90,9 +91,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Net::InitSendBuilder(const_cast<GlobalStateInfo*>(Engine::Info()));
         Engine::Lua::InitLuaBridge();
         CastCorrelator::Init();
+        TargetCorrelator::Init();
         break;
     }
     case DLL_PROCESS_DETACH:
+        TargetCorrelator::Shutdown();
         CastCorrelator::Shutdown();
         SpellProbe_DisarmAll();
         Engine::Lua::ShutdownLuaBridge();

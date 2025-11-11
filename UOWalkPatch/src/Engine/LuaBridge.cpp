@@ -30,6 +30,7 @@
 #include "Core/Utils.hpp"
 #include "LuaPlus.h"
 #include "CastCorrelator.h"
+#include "TargetCorrelator.h"
 
 // LuaPlus.h intentionally exposes only a subset of the Lua C API.
 // Declare the few additional APIs we need for stack manipulation + pcall usage.
@@ -102,6 +103,23 @@ enum ContextLogBits : unsigned {
     static LuaFn g_origUserActionUsePrimaryAbility = nullptr;
 
     static volatile LONG g_directActionHooksInstalled = 0;
+    static bool g_traceTargetPath = false;
+
+    static bool g_directHookConfigLoaded = false;
+    static bool g_directHookEnableCastSpell = true;
+    static bool g_directHookEnableCastSpellOnId = true;
+    static bool g_directHookEnableUseSkill = true;
+    static bool g_directHookEnableUseWeaponAbility = true;
+    static bool g_directHookEnableRequestTargetInfo = true;
+    static bool g_directHookEnableHsShowCursor = true;
+    static bool g_directHookEnableHsHideCursor = true;
+
+    static volatile LONG g_targetCompatBannerLogged = 0;
+    static volatile LONG g_actionTypeCompatBannerLogged = 0;
+
+    static DWORD g_actionWrapperNextLogTick = 0;
+    static bool g_actionWrapperReadyLogged = false;
+    static volatile LONG g_actionWrapperInstallPending = 0;
 
     // Cast spell tracing helpers
     static std::atomic<int> g_castSpellCurSpell{-1};
@@ -445,6 +463,168 @@ static void* CurrentScriptContext()
             return info->scriptContext;
     }
     return nullptr;
+}
+
+static bool ReadHookToggle(const char* cfgKey, const char* envKey, bool defaultValue)
+{
+    if (cfgKey) {
+        if (auto cfg = Core::Config::TryGetBool(cfgKey))
+            return *cfg;
+    }
+    if (envKey) {
+        if (auto env = Core::Config::TryGetEnvBool(envKey))
+            return *env;
+    }
+    return defaultValue;
+}
+
+static void LoadDirectHookPreferences()
+{
+    if (g_directHookConfigLoaded)
+        return;
+    g_directHookEnableCastSpell = ReadHookToggle("HOOK_ENABLE_USERACTION_CAST_SPELL", "HOOK_ENABLE_USERACTION_CAST_SPELL", true);
+    g_directHookEnableCastSpellOnId = ReadHookToggle("HOOK_ENABLE_USERACTION_CAST_SPELL_ON_ID", "HOOK_ENABLE_USERACTION_CAST_SPELL_ON_ID", true);
+    g_directHookEnableUseSkill = ReadHookToggle("HOOK_ENABLE_USERACTION_USE_SKILL", "HOOK_ENABLE_USERACTION_USE_SKILL", true);
+    g_directHookEnableUseWeaponAbility = ReadHookToggle("HOOK_ENABLE_USERACTION_USE_WEAPON_ABILITY", "HOOK_ENABLE_USERACTION_USE_WEAPON_ABILITY", true);
+    g_directHookEnableRequestTargetInfo = ReadHookToggle("HOOK_ENABLE_REQUEST_TARGET_INFO", "HOOK_ENABLE_REQUEST_TARGET_INFO", true);
+    g_directHookEnableHsShowCursor = ReadHookToggle("HOOK_ENABLE_HS_SHOW_TARGETING_CURSOR", "HOOK_ENABLE_HS_SHOW_TARGETING_CURSOR", true);
+    g_directHookEnableHsHideCursor = ReadHookToggle("HOOK_ENABLE_HS_HIDE_TARGETING_CURSOR", "HOOK_ENABLE_HS_HIDE_TARGETING_CURSOR", true);
+
+    // Directly detouring UserActionCastSpell interferes with the spellbook flow because the game
+    // bypasses the Lua trampoline until targeting APIs are live. We now rely solely on the Lua-level
+    // wrapper for this action and force the direct hook off even if requested in the config/env.
+    if (g_directHookEnableCastSpell) {
+        g_directHookEnableCastSpell = false;
+        WriteRawLog("DirectHook: UserActionCastSpell forced disabled (spellbook cast path must run via Lua wrapper)");
+    }
+
+    g_directHookConfigLoaded = true;
+}
+
+static bool EvaluateHasReceivedServerFeatures(lua_State* L, bool& outReady)
+{
+    outReady = false;
+    if (!L)
+        return false;
+    int top = lua_gettop(L);
+    lua_getglobal(L, "HasReceivedServerFeatures");
+    int type = lua_type(L, -1);
+    if (type != LUA_TFUNCTION) {
+        lua_settop(L, top);
+        return false;
+    }
+    if (lua_pcall(L, 0, 1, 0) != 0) {
+        LogLuaErrorTop(L, "HasReceivedServerFeatures", 6);
+        lua_settop(L, top);
+        return false;
+    }
+    outReady = lua_toboolean(L, -1) != 0;
+    lua_settop(L, top);
+    return true;
+}
+
+static bool RequiredActionGlobalsPresent(lua_State* L, const char** missingName)
+{
+    if (missingName)
+        *missingName = nullptr;
+    if (!L)
+        return false;
+    const char* kRequiredFuncs[] = {
+        "UserActionCastSpell",
+        "UserActionCastSpellOnId",
+        "UserActionUseSkill",
+        "UserActionUseWeaponAbility",
+        "RequestTargetInfo",
+        "HS_ShowTargetingCursor",
+        "HS_HideTargetingCursor"
+    };
+    for (const char* name : kRequiredFuncs) {
+        lua_getglobal(L, name);
+        int type = lua_type(L, -1);
+        lua_pop(L, 1);
+        if (type != LUA_TFUNCTION) {
+            if (missingName)
+                *missingName = name;
+            return false;
+        }
+    }
+    lua_getglobal(L, "Actions");
+    int type = lua_type(L, -1);
+    lua_pop(L, 1);
+    if (type != LUA_TTABLE) {
+        if (missingName)
+            *missingName = "Actions";
+        return false;
+    }
+    return true;
+}
+
+static bool ActionWrappersReady(lua_State* L)
+{
+    if (!L)
+        return false;
+    DWORD now = GetTickCount();
+    bool featuresReady = false;
+    if (!EvaluateHasReceivedServerFeatures(L, featuresReady) || !featuresReady) {
+        if (now >= g_actionWrapperNextLogTick) {
+            WriteRawLog("TryInstallActionWrappers: waiting for HasReceivedServerFeatures()");
+            g_actionWrapperNextLogTick = now + 2000;
+        }
+        return false;
+    }
+    const char* missing = nullptr;
+    if (!RequiredActionGlobalsPresent(L, &missing)) {
+        if (now >= g_actionWrapperNextLogTick) {
+            char buf[160];
+            sprintf_s(buf, sizeof(buf),
+                      "TryInstallActionWrappers: '%s' missing; deferring install",
+                      missing ? missing : "<unknown>");
+            WriteRawLog(buf);
+            g_actionWrapperNextLogTick = now + 2000;
+        }
+        return false;
+    }
+    if (!g_actionWrapperReadyLogged) {
+        WriteRawLog("TryInstallActionWrappers: target globals ready; installing wrappers");
+        g_actionWrapperReadyLogged = true;
+    }
+    return true;
+}
+
+static void LogCompatReturnBanner(lua_State* L, const char* name, int results)
+{
+    if (!L || !name)
+        return;
+    char buf[256];
+    if (results <= 0) {
+        sprintf_s(buf, sizeof(buf), "[Lua] %s returned no values", name);
+        WriteRawLog(buf);
+        return;
+    }
+    int idx = lua_gettop(L);
+    int type = lua_type(L, idx);
+    const char* tn = lua_typename(L, type);
+    switch (type) {
+    case LUA_TNUMBER:
+    {
+        int value = lua_tointeger(L, idx);
+        sprintf_s(buf, sizeof(buf), "[Lua] %s return type=%s value=%d", name, tn ? tn : "number", value);
+        break;
+    }
+    case LUA_TBOOLEAN:
+    {
+        int value = lua_toboolean(L, idx);
+        sprintf_s(buf, sizeof(buf), "[Lua] %s return type=%s value=%s", name, tn ? tn : "boolean", value ? "true" : "false");
+        break;
+    }
+    case LUA_TNIL:
+        sprintf_s(buf, sizeof(buf), "[Lua] %s return type=nil", name);
+        break;
+    default:
+        sprintf_s(buf, sizeof(buf), "[Lua] %s return type=%s", name, tn ? tn : "?");
+        break;
+    }
+    WriteRawLog(buf);
 }
 
 static void* CanonicalOwnerContext()
@@ -961,9 +1141,20 @@ static void GateRecordEvent(GateCallProbe* probe, uintptr_t retValue, const Gate
     g_gateLogRing[slot & (kGateLogCapacity - 1)] = evt;
 }
 
+static bool GateLogActive()
+{
+    if (!g_enableCastGateProbes)
+        return false;
+    if (!g_gateArmedFlag.load(std::memory_order_acquire))
+        return false;
+    return g_gateOwnerThread.load(std::memory_order_acquire) != 0;
+}
+
 static void GateMaybeLogInvokeEntry(GateCallProbe* probe)
 {
     if (!probe)
+        return;
+    if (!GateLogActive())
         return;
     LONG current = InterlockedCompareExchange(&g_gateInvokeEntryBudget, 0, 0);
     if (current <= 0)
@@ -1016,7 +1207,7 @@ static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, ui
 
     if (InterlockedCompareExchange(&g_gateStoreEntryBudget, 0, 0) > 0) {
         LONG left = InterlockedDecrement(&g_gateStoreEntryBudget);
-        if (left >= 0) {
+        if (left >= 0 && GateLogActive()) {
             DWORD tid = GetCurrentThreadId();
             DWORD owner = g_gateOwnerThread.load(std::memory_order_acquire);
             char buf[192];
@@ -1052,7 +1243,7 @@ static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, ui
     if (owner == 0 || owner != tid) {
         if (InterlockedCompareExchange(&g_gatePreInvokeLogBudget, 0, 0) > 0) {
             LONG left = InterlockedDecrement(&g_gatePreInvokeLogBudget);
-            if (left >= 0) {
+            if (left >= 0 && GateLogActive()) {
                 char buf[160];
                 sprintf_s(buf, sizeof(buf),
                     "[Gate3350] pre-invoke owner mismatch probe=%p tid=%u owner=%u",
@@ -1793,6 +1984,11 @@ static void NoteCapturedActionTarget(const char* name, const void* target)
         LogCallersForTarget(name, target);
 }
 
+static void RequestActionWrapperInstall()
+{
+    InterlockedExchange(&g_actionWrapperInstallPending, 1);
+}
+
 // Attempt action wrapper install after target APIs appear and a small delay has passed.
 static void TryInstallActionWrappers()
 {
@@ -1800,6 +1996,8 @@ static void TryInstallActionWrappers()
         return;
     auto L = static_cast<lua_State*>(Engine::LuaState());
     if (!L) return;
+    if (!ActionWrappersReady(L))
+        return;
 
     __try {
         // Gated logging to avoid spam while waiting for globals to exist
@@ -1907,6 +2105,7 @@ static void TryInstallDirectActionHooks()
 {
     if (InterlockedCompareExchange(&g_directActionHooksInstalled, 0, 0) != 0)
         return;
+    LoadDirectHookPreferences();
 
     HMODULE hExe = GetModuleHandleA(nullptr);
     if (!hExe) return;
@@ -1915,7 +2114,15 @@ static void TryInstallDirectActionHooks()
     (void)init; // ignore already-initialized status
 
     bool any = false;
-    auto hookOne = [&](const char* name, LuaFn& orig, lua_CFunction wrapper) {
+    auto hookOne = [&](const char* name, LuaFn& orig, lua_CFunction wrapper, bool enabled) {
+        if (!enabled) {
+            if (name) {
+                char msg[192];
+                sprintf_s(msg, sizeof(msg), "DirectHook: %s disabled via config/env", name);
+                WriteRawLog(msg);
+            }
+            return;
+        }
         if (orig) return; // already captured via register hook
         BYTE* target = FindActionFuncByName(name);
         if (!target)
@@ -1931,18 +2138,18 @@ static void TryInstallDirectActionHooks()
         }
     };
 
-    hookOne("UserActionCastSpell", g_origUserActionCastSpell, &Lua_UserActionCastSpell_W);
-    hookOne("UserActionCastSpellOnId", g_origUserActionCastSpellOnId, &Lua_UserActionCastSpellOnId_W);
-    hookOne("UserActionUseSkill", g_origUserActionUseSkill, &Lua_UserActionUseSkill_W);
-    hookOne("UserActionUsePrimaryAbility", g_origUserActionUsePrimaryAbility, &Lua_UserActionUsePrimaryAbility_W);
-    hookOne("UserActionUseWeaponAbility", g_origUserActionUseWeaponAbility, &Lua_UserActionUseWeaponAbility_W);
-    hookOne("UserActionIsTargetModeCompat", g_origUserActionIsTargetModeCompat, &Lua_UserActionIsTargetModeCompat_W);
-    hookOne("UserActionIsActionTypeTargetModeCompat", g_origUserActionIsActionTypeTargetModeCompat, &Lua_UserActionIsActionTypeTargetModeCompat_W);
-    hookOne("RequestTargetInfo", g_origRequestTargetInfo, &Lua_RequestTargetInfo_W);
-    hookOne("ClearCurrentTarget", g_origClearCurrentTarget, &Lua_ClearCurrentTarget_W);
-    hookOne("UserActionIsSkillAvalible", g_origUserActionIsSkillAvalible, &Lua_UserActionIsSkillAvalible_W);
-    hookOne("HS_ShowTargetingCursor", g_origHS_ShowTargetingCursor, &Lua_HS_ShowTargetingCursor_W);
-    hookOne("HS_HideTargetingCursor", g_origHS_HideTargetingCursor, &Lua_HS_HideTargetingCursor_W);
+    hookOne("UserActionCastSpell", g_origUserActionCastSpell, &Lua_UserActionCastSpell_W, g_directHookEnableCastSpell);
+    hookOne("UserActionCastSpellOnId", g_origUserActionCastSpellOnId, &Lua_UserActionCastSpellOnId_W, g_directHookEnableCastSpellOnId);
+    hookOne("UserActionUseSkill", g_origUserActionUseSkill, &Lua_UserActionUseSkill_W, g_directHookEnableUseSkill);
+    hookOne("UserActionUsePrimaryAbility", g_origUserActionUsePrimaryAbility, &Lua_UserActionUsePrimaryAbility_W, true);
+    hookOne("UserActionUseWeaponAbility", g_origUserActionUseWeaponAbility, &Lua_UserActionUseWeaponAbility_W, g_directHookEnableUseWeaponAbility);
+    hookOne("UserActionIsTargetModeCompat", g_origUserActionIsTargetModeCompat, &Lua_UserActionIsTargetModeCompat_W, true);
+    hookOne("UserActionIsActionTypeTargetModeCompat", g_origUserActionIsActionTypeTargetModeCompat, &Lua_UserActionIsActionTypeTargetModeCompat_W, true);
+    hookOne("RequestTargetInfo", g_origRequestTargetInfo, &Lua_RequestTargetInfo_W, g_directHookEnableRequestTargetInfo);
+    hookOne("ClearCurrentTarget", g_origClearCurrentTarget, &Lua_ClearCurrentTarget_W, true);
+    hookOne("UserActionIsSkillAvalible", g_origUserActionIsSkillAvalible, &Lua_UserActionIsSkillAvalible_W, true);
+    hookOne("HS_ShowTargetingCursor", g_origHS_ShowTargetingCursor, &Lua_HS_ShowTargetingCursor_W, g_directHookEnableHsShowCursor);
+    hookOne("HS_HideTargetingCursor", g_origHS_HideTargetingCursor, &Lua_HS_HideTargetingCursor_W, g_directHookEnableHsHideCursor);
 
     if (any) {
         InterlockedExchange(&g_directActionHooksInstalled, 1);
@@ -2204,72 +2411,60 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionCastSpell)
             {
                 g_origUserActionCastSpell = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_UserActionCastSpell_W);
                 WriteRawLog("Hook_Register: wrapped UserActionCastSpell");
             }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_UserActionCastSpell_W);
         }
         else if (_stricmp(name, "UserActionCastSpellOnId") == 0)
         {
             if (!g_origUserActionCastSpellOnId)
             {
                 g_origUserActionCastSpellOnId = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_UserActionCastSpellOnId_W);
                 WriteRawLog("Hook_Register: wrapped UserActionCastSpellOnId");
             }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_UserActionCastSpellOnId_W);
         }
         else if (_stricmp(name, "UserActionUseSkill") == 0 || _stricmp(name, "UserActionUsePrimaryAbility") == 0)
         {
             if (!g_origUserActionUseSkill)
             {
                 g_origUserActionUseSkill = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_UserActionUseSkill_W);
                 WriteRawLog("Hook_Register: wrapped UserActionUseSkill");
             }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_UserActionUseSkill_W);
         }
         else if (_stricmp(name, "UserActionIsTargetModeCompat") == 0)
         {
             if (!g_origUserActionIsTargetModeCompat)
             {
                 g_origUserActionIsTargetModeCompat = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_UserActionIsTargetModeCompat_W);
                 WriteRawLog("Hook_Register: wrapped UserActionIsTargetModeCompat");
             }
-            else
-            {
-                NoteCapturedActionTarget(name, func);
-            }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_UserActionIsTargetModeCompat_W);
         }
         else if (_stricmp(name, "UserActionIsActionTypeTargetModeCompat") == 0)
         {
             if (!g_origUserActionIsActionTypeTargetModeCompat)
             {
                 g_origUserActionIsActionTypeTargetModeCompat = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_UserActionIsActionTypeTargetModeCompat_W);
                 WriteRawLog("Hook_Register: wrapped UserActionIsActionTypeTargetModeCompat");
             }
-            else
-            {
-                NoteCapturedActionTarget(name, func);
-            }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_UserActionIsActionTypeTargetModeCompat_W);
         }
         else if (_stricmp(name, "RequestTargetInfo") == 0)
         {
             if (!g_origRequestTargetInfo)
             {
                 g_origRequestTargetInfo = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_RequestTargetInfo_W);
                 WriteRawLog("Hook_Register: wrapped RequestTargetInfo");
             }
-            else
-            {
-                NoteCapturedActionTarget(name, func);
-            }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_RequestTargetInfo_W);
             g_targetApiTimestamp = GetTickCount();
             InterlockedExchange(&g_targetApiSeen, 1);
         }
@@ -2278,14 +2473,10 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origClearCurrentTarget)
             {
                 g_origClearCurrentTarget = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_ClearCurrentTarget_W);
                 WriteRawLog("Hook_Register: wrapped ClearCurrentTarget");
             }
-            else
-            {
-                NoteCapturedActionTarget(name, func);
-            }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_ClearCurrentTarget_W);
             g_targetApiTimestamp = GetTickCount();
             InterlockedExchange(&g_targetApiSeen, 1);
         }
@@ -2294,50 +2485,50 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             if (!g_origUserActionIsSkillAvalible)
             {
                 g_origUserActionIsSkillAvalible = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_UserActionIsSkillAvalible_W);
                 WriteRawLog("Hook_Register: wrapped UserActionIsSkillAvalible");
             }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_UserActionIsSkillAvalible_W);
         }
         else if (_stricmp(name, "HS_ShowTargetingCursor") == 0)
         {
             if (!g_origHS_ShowTargetingCursor)
             {
                 g_origHS_ShowTargetingCursor = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_HS_ShowTargetingCursor_W);
                 WriteRawLog("Hook_Register: wrapped HS_ShowTargetingCursor");
             }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_HS_ShowTargetingCursor_W);
         }
         else if (_stricmp(name, "HS_HideTargetingCursor") == 0)
         {
             if (!g_origHS_HideTargetingCursor)
             {
                 g_origHS_HideTargetingCursor = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_HS_HideTargetingCursor_W);
                 WriteRawLog("Hook_Register: wrapped HS_HideTargetingCursor");
             }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_HS_HideTargetingCursor_W);
         }
         else if (_stricmp(name, "UserActionUseWeaponAbility") == 0)
         {
             if (!g_origUserActionUseWeaponAbility)
             {
                 g_origUserActionUseWeaponAbility = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_UserActionUseWeaponAbility_W);
                 WriteRawLog("Hook_Register: wrapped UserActionUseWeaponAbility");
             }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_UserActionUseWeaponAbility_W);
         }
         else if (_stricmp(name, "UserActionUsePrimaryAbility") == 0)
         {
             if (!g_origUserActionUsePrimaryAbility)
             {
                 g_origUserActionUsePrimaryAbility = reinterpret_cast<LuaFn>(func);
-                NoteCapturedActionTarget(name, func);
-                outFunc = reinterpret_cast<void*>(&Lua_UserActionUsePrimaryAbility_W);
                 WriteRawLog("Hook_Register: wrapped UserActionUsePrimaryAbility");
             }
+            NoteCapturedActionTarget(name, func);
+            outFunc = reinterpret_cast<void*>(&Lua_UserActionUsePrimaryAbility_W);
         }
     }
 
@@ -2347,7 +2538,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
     if (name && ( _stricmp(name, "RequestTargetInfo") == 0 || _stricmp(name, "ClearCurrentTarget") == 0)) {
         g_targetApiTimestamp = GetTickCount();
         InterlockedExchange(&g_targetApiSeen, 1);
-        TryInstallActionWrappers();
+        RequestActionWrapperInstall();
     }
 
     uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
@@ -2370,8 +2561,8 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
     // RegisterLuaFunction path to minimize risk during world load.
     // Previously this invoked RegisterOurLuaFunctions() here; that proved risky.
 
-    // Attempt late install of action wrappers once target APIs are present
-    TryInstallActionWrappers();
+    // Request late install of action wrappers once target APIs are present
+    RequestActionWrapperInstall();
     return rc;
 }
 
@@ -2730,6 +2921,16 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
     UowTracePushSpell(spellId);
     CastCorrelator::OnCastAttempt(static_cast<uint32_t>(spellId < 0 ? 0 : spellId));
     uint32_t tok = CurrentCastToken();
+    if (g_traceTargetPath) {
+        char buf[224];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[TargetPath] Enter UserActionCastSpellOnId spell=%d target=%d tok=%u",
+                  spellId,
+                  targetId,
+                  tok);
+        WriteRawLog(buf);
+    }
     char intro[192];
     sprintf_s(intro, sizeof(intro), "[Lua] UserActionCastSpellOnId() wrapper invoked tok=%u spell=%d target=%d", tok, spellId, targetId);
     WriteRawLog(intro);
@@ -2764,6 +2965,15 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
                 LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
             }
         }
+        if (g_traceTargetPath) {
+            char buf[160];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[TargetPath] Leave UserActionCastSpellOnId rc=%d tok=%u",
+                      rc,
+                      tok);
+            WriteRawLog(buf);
+        }
         return rc;
     }
     if (g_origUserActionCastSpellOnId) {
@@ -2789,9 +2999,23 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
                 LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
             }
         }
+        if (g_traceTargetPath) {
+            char buf[160];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[TargetPath] Leave UserActionCastSpellOnId rc=%d tok=%u",
+                      out,
+                      tok);
+            WriteRawLog(buf);
+        }
         return out;
     }
     WriteRawLog("[Lua] UserActionCastSpellOnId original missing (saved and ptr)");
+    if (g_traceTargetPath) {
+        char buf[128];
+        sprintf_s(buf, sizeof(buf), "[TargetPath] Leave UserActionCastSpellOnId rc=0 tok=%u (missing)", tok);
+        WriteRawLog(buf);
+    }
     return 0;
 }
 
@@ -2864,6 +3088,11 @@ static int __cdecl Lua_HS_ShowTargetingCursor_W(lua_State* L)
     char intro[160];
     sprintf_s(intro, sizeof(intro), "[Lua] HS_ShowTargetingCursor() wrapper invoked tok=%u", tok);
     WriteRawLog(intro);
+    if (g_traceTargetPath) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "[TargetPath] Enter HS_ShowTargetingCursor tok=%u", tok);
+        WriteRawLog(buf);
+    }
     Trace::MarkAction("HS_ShowTargetingCursor");
     LogLuaArgs(L, "HS_ShowTargetingCursor");
     int rc = 0;
@@ -2875,6 +3104,12 @@ static int __cdecl Lua_HS_ShowTargetingCursor_W(lua_State* L)
     char detail[160];
     sprintf_s(detail, sizeof(detail), "[Lua] HS_ShowTargetingCursor rc=%d tok=%u", rc, tok);
     WriteRawLog(detail);
+    TargetCorrelator::OnCursorShown();
+    if (g_traceTargetPath) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "[TargetPath] Leave HS_ShowTargetingCursor rc=%d tok=%u", rc, tok);
+        WriteRawLog(buf);
+    }
     return rc;
 }
 
@@ -2884,6 +3119,11 @@ static int __cdecl Lua_HS_HideTargetingCursor_W(lua_State* L)
     char intro[160];
     sprintf_s(intro, sizeof(intro), "[Lua] HS_HideTargetingCursor() wrapper invoked tok=%u", tok);
     WriteRawLog(intro);
+    if (g_traceTargetPath) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "[TargetPath] Enter HS_HideTargetingCursor tok=%u", tok);
+        WriteRawLog(buf);
+    }
     Trace::MarkAction("HS_HideTargetingCursor");
     LogLuaArgs(L, "HS_HideTargetingCursor");
     int rc = 0;
@@ -2895,6 +3135,12 @@ static int __cdecl Lua_HS_HideTargetingCursor_W(lua_State* L)
     char detail[160];
     sprintf_s(detail, sizeof(detail), "[Lua] HS_HideTargetingCursor rc=%d tok=%u", rc, tok);
     WriteRawLog(detail);
+    TargetCorrelator::OnCursorHidden();
+    if (g_traceTargetPath) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "[TargetPath] Leave HS_HideTargetingCursor rc=%d tok=%u", rc, tok);
+        WriteRawLog(buf);
+    }
     return rc;
 }
 
@@ -3288,6 +3534,8 @@ static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L)
     }
     if (verbose)
         LogLuaReturns(L, "UserActionIsTargetModeCompat", rc);
+    if (InterlockedCompareExchange(&g_targetCompatBannerLogged, 1, 0) == 0)
+        LogCompatReturnBanner(L, "UserActionIsTargetModeCompat", rc);
     return rc;
 }
 
@@ -3313,6 +3561,8 @@ static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L)
     }
     if (verbose)
         LogLuaReturns(L, "UserActionIsActionTypeTargetModeCompat", rc);
+    if (InterlockedCompareExchange(&g_actionTypeCompatBannerLogged, 1, 0) == 0)
+        LogCompatReturnBanner(L, "UserActionIsActionTypeTargetModeCompat", rc);
     return rc;
 }
 
@@ -3322,7 +3572,13 @@ static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
     char intro[128];
     sprintf_s(intro, sizeof(intro), "[Lua] RequestTargetInfo() wrapper invoked tok=%u", tok);
     WriteRawLog(intro);
+    if (g_traceTargetPath) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "[TargetPath] Enter RequestTargetInfo tok=%u", tok);
+        WriteRawLog(buf);
+    }
     Trace::MarkAction("RequestTargetInfo");
+    TargetCorrelator::OnRequestTarget();
     LogLuaArgs(L, "RequestTargetInfo");
     static volatile LONG s_dumpCountRTI = 0;
     if (InterlockedIncrement(&s_dumpCountRTI) <= 4)
@@ -3336,6 +3592,11 @@ static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
     char detail[128];
     sprintf_s(detail, sizeof(detail), "[Lua] RequestTargetInfo rc=%d tok=%u", rc, tok);
     WriteRawLog(detail);
+    if (g_traceTargetPath) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "[TargetPath] Leave RequestTargetInfo rc=%d tok=%u", rc, tok);
+        WriteRawLog(buf);
+    }
     return rc;
 }
 
@@ -3405,7 +3666,7 @@ void RegisterOurLuaFunctions()
     }
 
     // Perform safe late wrapper install once target APIs exist
-    TryInstallActionWrappers();
+    RequestActionWrapperInstall();
 
     WriteRawLog("RegisterOurLuaFunctions no-op (late wrappers only)");
 }
@@ -3574,6 +3835,10 @@ bool InitLuaBridge()
         g_traceLuaVerbose = *v;
     else if (auto v2 = Core::Config::TryGetBool("trace.lua.verbose"))
         g_traceLuaVerbose = *v2;
+    if (auto traceTarget = Core::Config::TryGetBool("TRACE_TARGET_PATH"))
+        g_traceTargetPath = *traceTarget;
+    else if (const char* traceTargetEnv = std::getenv("TRACE_TARGET_PATH"))
+        g_traceTargetPath = (traceTargetEnv[0] == '1' || traceTargetEnv[0] == 'y' || traceTargetEnv[0] == 'Y' || traceTargetEnv[0] == 't' || traceTargetEnv[0] == 'T');
 
     auto applyBudget = [](volatile LONG& budget, bool& unlimited, int value) {
         if (value <= 0) {
@@ -3711,6 +3976,7 @@ bool InitLuaBridge()
     // Also try direct signature-based hooks for action functions (works even if client registered them before our hook)
     TryInstallDirectActionHooks();
     Engine::RequestWalkRegistration();
+    RequestActionWrapperInstall();
     return true;
 }
 
@@ -3733,7 +3999,22 @@ void PollLateInstalls()
             ResolveRegisterFunction();
         }
     }
-    TryInstallActionWrappers();
+    bool wantActionWrappers = (InterlockedCompareExchange(&g_actionWrapperInstallPending, 0, 0) != 0);
+    if (wantActionWrappers && InterlockedCompareExchange(&g_actionWrappersInstalled, 0, 0) == 0) {
+        static DWORD s_nextWrapperLog = 0;
+        DWORD now = GetTickCount();
+        if (now >= s_nextWrapperLog) {
+            WriteRawLog("PollLateInstalls: attempting action wrapper install");
+            s_nextWrapperLog = now + 1000;
+        }
+        TryInstallActionWrappers();
+        if (InterlockedCompareExchange(&g_actionWrappersInstalled, 0, 0) != 0)
+            InterlockedExchange(&g_actionWrapperInstallPending, 0);
+        else if (now >= s_nextWrapperLog) {
+            WriteRawLog("PollLateInstalls: action wrapper install deferred (prereqs missing)");
+            s_nextWrapperLog = now + 1000;
+        }
+    }
     TryInstallDirectActionHooks();
     if (!g_spellBindingReady.load(std::memory_order_acquire)) {
         if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
