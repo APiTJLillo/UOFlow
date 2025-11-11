@@ -99,7 +99,7 @@ static void TraceOutbound(const char* apiTag, const char* buf, int len)
     DWORD now = GetTickCount();
 
     bool needCastStack = CastCorrelator::ShouldCaptureStack(packetId);
-    bool needTargetStack = TargetCorrelator::ShouldCaptureStack(packetId);
+    bool needTargetStack = g_targetCorr.ShouldCaptureStack(packetId);
     bool needCorrStack = needCastStack || needTargetStack;
     CastCorrelator::SendEvent corrEvent{};
     if (needCorrStack) {
@@ -125,10 +125,12 @@ static void TraceOutbound(const char* apiTag, const char* buf, int len)
         unsigned counter = Net::GetSendCounter();
         Engine::Lua::NotifySendPacket(counter, buf, len);
     }
+    void* topFrame = nullptr;
+    if (needCorrStack && corrEvent.frameCount > 0)
+        topFrame = corrEvent.frames[0];
     if (needCastStack && corrEvent.frameCount > 0)
         CastCorrelator::OnSendEvent(corrEvent);
-    if (needTargetStack && corrEvent.frameCount > 0)
-        TargetCorrelator::OnSendEvent(corrEvent);
+    g_targetCorr.TagIfWithin(packetId, len, topFrame);
     if (ShouldCaptureWinsockStack(packetId)) {
         LogWinsockStack(apiTag ? apiTag : "winsock");
     }

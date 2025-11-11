@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <dbghelp.h>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <minhook.h>
@@ -12,6 +13,7 @@
 #include "Engine/GlobalState.hpp"
 #include "Core/ActionTrace.hpp"
 #include "Engine/LuaBridge.hpp"
+#include "TargetCorrelator.h"
 
 // Define the global variable that was previously only declared as extern
 volatile LONG g_needWalkReg = 0;
@@ -143,6 +145,14 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
     g_inSendPacketHook = true;
     IncrementSendCounter();
     unsigned counterSnapshot = Net::GetSendCounter();
+    unsigned char packetId = 0;
+    if (pkt && len > 0) {
+        __try {
+            packetId = *static_cast<const unsigned char*>(pkt);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            packetId = 0;
+        }
+    }
     // Annotate proximity to last high-level action (e.g., CastSpell) for correlation
     Trace::LastAction last{};
     if (Trace::GetLastAction(last)) {
@@ -171,21 +181,14 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
     }
     DumpMemory("PLAIN-SendPacket", const_cast<void*>(pkt), len);
     if (g_logSendPackets) {
-        unsigned char id = 0;
-        if (pkt && len > 0) {
-            __try {
-                id = *static_cast<const unsigned char*>(pkt);
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                id = 0;
-            }
-        }
         char msg[192];
         sprintf_s(msg, sizeof(msg),
             "[SendPacket] counter=%u len=%d id=%02X this=%p",
-            counterSnapshot, len, id, thisPtr);
+            counterSnapshot, len, packetId, thisPtr);
         WriteRawLog(msg);
     }
     Engine::Lua::NotifySendPacket(counterSnapshot, pkt, len);
+    g_targetCorr.TagIfWithin(packetId, static_cast<std::size_t>(len), nullptr);
 
     if (!g_netMgr)
         g_netMgr = thisPtr;

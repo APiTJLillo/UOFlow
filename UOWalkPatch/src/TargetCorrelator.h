@@ -1,20 +1,27 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
-#include "CastCorrelator.h"
+struct TargetCorrelator {
+    bool armed = false;
+    uint64_t t0 = 0;
+    uint32_t windowMs = 600;
+    bool enabled = false;
+    bool verbose = false;
+    uintptr_t frameHint = 0;
+    bool hintAnnounced = false;
+    uint32_t seq = 0;
+    char reason[64]{};
 
-namespace TargetCorrelator {
+    void Arm(const char* why = nullptr);
+    void Disarm(const char* why = nullptr);
+    bool ShouldCaptureStack(std::uint8_t packetId) const;
+    void TagIfWithin(std::uint8_t packetId, std::size_t len, void* topFrame);
+};
 
-void Init();
-void Shutdown();
-bool IsEnabled();
+extern TargetCorrelator g_targetCorr;
 
-void OnRequestTarget();
-void OnCursorShown();
-void OnCursorHidden();
-
-bool ShouldCaptureStack(unsigned char packetId);
-void OnSendEvent(const CastCorrelator::SendEvent& ev);
-
-} // namespace TargetCorrelator
+void TargetCorrelatorInit();
+void TargetCorrelatorShutdown();
+bool TargetCorrelatorEnabled();

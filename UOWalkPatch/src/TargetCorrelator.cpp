@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <string>
@@ -14,23 +15,34 @@
 
 namespace {
 
-struct TargetState {
-    bool armed = false;
-    DWORD startTick = 0;
-    uint32_t seq = 0;
-    char reason[64];
-};
+CRITICAL_SECTION g_targetCorrLock;
+bool g_targetCorrLockInit = false;
 
-CRITICAL_SECTION g_lock;
-bool g_lockInit = false;
-TargetState g_state{};
-bool g_enabled = false;
-DWORD g_windowMs = 400;
-uintptr_t g_hint = 0;
-bool g_hintAnnounced = false;
-uintptr_t g_moduleBase = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+void EnsureLock()
+{
+    if (!g_targetCorrLockInit) {
+        InitializeCriticalSection(&g_targetCorrLock);
+        g_targetCorrLockInit = true;
+    }
+}
 
-bool DebugProfileEnabled() {
+uint64_t NowMs()
+{
+    return GetTickCount64();
+}
+
+uintptr_t ModuleBase()
+{
+    static uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    if (!base) {
+        HMODULE mod = GetModuleHandleA(nullptr);
+        base = reinterpret_cast<uintptr_t>(mod);
+    }
+    return base;
+}
+
+bool DebugProfileEnabled()
+{
     if (auto cfg = Core::Config::TryGetBool("UOW_DEBUG_ENABLE"))
         return *cfg;
     if (auto env = Core::Config::TryGetEnvBool("UOW_DEBUG_ENABLE"))
@@ -38,50 +50,54 @@ bool DebugProfileEnabled() {
     return false;
 }
 
-void EnsureLock() {
-    if (!g_lockInit) {
-        InitializeCriticalSection(&g_lock);
-        g_lockInit = true;
+bool ReadBool(const char* key, const char* envKey, bool defaultValue = false)
+{
+    if (key) {
+        if (auto cfg = Core::Config::TryGetBool(key))
+            return *cfg;
     }
-}
-
-DWORD NowMs() {
-    return GetTickCount();
-}
-
-uintptr_t EnsureModuleBase() {
-    if (!g_moduleBase) {
-        HMODULE mod = GetModuleHandleA(nullptr);
-        g_moduleBase = reinterpret_cast<uintptr_t>(mod);
+    if (envKey) {
+        if (auto env = Core::Config::TryGetEnvBool(envKey))
+            return *env;
     }
-    return g_moduleBase;
+    return defaultValue;
 }
 
-uintptr_t FirstClientFrame(const void* const* frames, unsigned short count) {
-    if (!frames || count == 0)
+uint32_t ReadWindowMs()
+{
+    uint32_t window = 600;
+    if (auto cfg = Core::Config::TryGetMilliseconds("TARGET_CORR_WINDOW_MS"))
+        window = *cfg;
+    else if (auto env = Core::Config::TryGetEnv("TARGET_CORR_WINDOW_MS"))
+        window = static_cast<uint32_t>(std::strtoul(env->c_str(), nullptr, 10));
+    return std::clamp(window, 50u, 2000u);
+}
+
+uintptr_t ReadFrameHint()
+{
+    std::optional<std::string> hintText;
+    if (auto cfg = Core::Config::TryGetValue("TARGET_SENDER_ADDR"))
+        hintText = *cfg;
+    else if (auto env = Core::Config::TryGetEnv("TARGET_SENDER_ADDR"))
+        hintText = *env;
+    if (!hintText || hintText->empty())
         return 0;
-    uintptr_t base = EnsureModuleBase();
-    if (!base)
-        return 0;
-    for (unsigned short i = 0; i < count; ++i) {
-        auto ptr = reinterpret_cast<uintptr_t>(frames[i]);
-        if (!ptr)
-            continue;
-        HMODULE mod = nullptr;
-        if (!GetModuleHandleExA(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCSTR>(frames[i]),
-                &mod))
-            continue;
-        if (reinterpret_cast<uintptr_t>(mod) == base)
-            return ptr;
+    uintptr_t resolved = ResolveModulePlusOffset(hintText->c_str());
+    if (!resolved) {
+        char warn[192];
+        sprintf_s(warn,
+                  sizeof(warn),
+                  "[TargetCorrelator] TARGET_SENDER_ADDR invalid: %s",
+                  hintText->c_str());
+        WriteRawLog(warn);
     }
-    return 0;
+    return resolved;
 }
 
-void LogHint(uintptr_t frame) {
-    uintptr_t base = EnsureModuleBase();
-    if (!base || !frame)
+void LogHint(uintptr_t frame)
+{
+    uintptr_t base = ModuleBase();
+    if (!frame || !base)
         return;
     char buf[192];
     sprintf_s(buf,
@@ -91,218 +107,179 @@ void LogHint(uintptr_t frame) {
     WriteRawLog(buf);
 }
 
-void ArmInternal(const char* reason, bool forceLog) {
-    if (!g_enabled)
-        return;
-    EnsureLock();
-    DWORD now = NowMs();
-    bool shouldLog = forceLog;
-    TargetState snapshot{};
-    {
-        EnterCriticalSection(&g_lock);
-        snapshot = g_state;
-        char previous[64];
-        strncpy_s(previous, g_state.reason, _TRUNCATE);
-        g_state.armed = true;
-        g_state.startTick = now;
-        if (!snapshot.armed)
-            ++g_state.seq;
-        if (reason)
-            strncpy_s(g_state.reason, reason, _TRUNCATE);
-        else
-            g_state.reason[0] = '\0';
-        bool reasonChanged = false;
-        if (reason) {
-            reasonChanged = _stricmp(previous, reason) != 0;
-        } else {
-            reasonChanged = previous[0] != '\0';
-        }
-        shouldLog = shouldLog || !snapshot.armed || reasonChanged;
-        snapshot = g_state;
-        LeaveCriticalSection(&g_lock);
-    }
-    if (shouldLog) {
-        char buf[224];
-        sprintf_s(buf,
-                  sizeof(buf),
-                  "[TargetCorrelator] armed seq=%u reason=%s window=%lu ms",
-                  snapshot.seq,
-                  (reason && reason[0]) ? reason : (snapshot.reason[0] ? snapshot.reason : "unknown"),
-                  static_cast<unsigned long>(g_windowMs));
-        WriteRawLog(buf);
-    }
-}
-
-void DisarmInternal(const char* reason, bool logReason) {
-    if (!g_lockInit)
-        return;
-    bool wasArmed = false;
-    {
-        EnterCriticalSection(&g_lock);
-        wasArmed = g_state.armed;
-        g_state.armed = false;
-        LeaveCriticalSection(&g_lock);
-    }
-    if (wasArmed && logReason) {
-        char buf[192];
-        sprintf_s(buf,
-                  sizeof(buf),
-                  "[TargetCorrelator] disarmed reason=%s",
-                  reason ? reason : "unspecified");
-        WriteRawLog(buf);
-    }
-}
-
-bool SnapshotState(TargetState& out) {
-    if (!g_lockInit)
-        return false;
-    EnterCriticalSection(&g_lock);
-    out = g_state;
-    LeaveCriticalSection(&g_lock);
-    return out.armed;
-}
-
-void HandleExpiry(const TargetState& snapshot) {
-    DWORD now = NowMs();
-    if (!snapshot.armed)
-        return;
-    DWORD age = now - snapshot.startTick;
-    if (age > g_windowMs) {
-        DisarmInternal("expired", true);
-    }
-}
-
 } // namespace
 
-namespace TargetCorrelator {
+TargetCorrelator g_targetCorr;
 
-void Init() {
+void TargetCorrelator::Arm(const char* why)
+{
+    if (!enabled)
+        return;
     EnsureLock();
-    g_enabled = false;
-    g_hintAnnounced = false;
-    g_hint = 0;
-    g_state = TargetState{};
-    if (!DebugProfileEnabled())
+    EnterCriticalSection(&g_targetCorrLock);
+    armed = true;
+    t0 = NowMs();
+    ++seq;
+    if (why && *why)
+        strncpy_s(reason, why, _TRUNCATE);
+    else
+        reason[0] = '\0';
+    LeaveCriticalSection(&g_targetCorrLock);
+    if (verbose) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[TargetCorrelator] armed seq=%u reason=%s window=%u ms",
+                  seq,
+                  (why && *why) ? why : "unspecified",
+                  windowMs);
+        WriteRawLog(buf);
+    }
+}
+
+void TargetCorrelator::Disarm(const char* why)
+{
+    if (!enabled)
+        return;
+    bool wasArmed = false;
+    char previous[64];
+    EnsureLock();
+    EnterCriticalSection(&g_targetCorrLock);
+    wasArmed = armed;
+    armed = false;
+    strncpy_s(previous, reason, _TRUNCATE);
+    reason[0] = '\0';
+    LeaveCriticalSection(&g_targetCorrLock);
+    if (wasArmed && verbose) {
+        const char* msg = (why && *why) ? why : (previous[0] ? previous : "unspecified");
+        char buf[192];
+        sprintf_s(buf, sizeof(buf), "[TargetCorrelator] disarmed reason=%s", msg);
+        WriteRawLog(buf);
+    }
+}
+
+bool TargetCorrelator::ShouldCaptureStack(std::uint8_t packetId) const
+{
+    return enabled && armed && packetId == 0x2E;
+}
+
+void TargetCorrelator::TagIfWithin(std::uint8_t packetId, std::size_t len, void* topFrame)
+{
+    if (!enabled || packetId != 0x2E)
         return;
 
-    bool enable = false;
-    if (auto cfg = Core::Config::TryGetBool("TARGET_CORR_ENABLE"))
-        enable = *cfg;
-    else if (auto env = Core::Config::TryGetEnvBool("TARGET_CORR_ENABLE"))
-        enable = *env;
-    if (!enable)
+    uint64_t elapsed = 0;
+    bool fire = false;
+    {
+        EnsureLock();
+        EnterCriticalSection(&g_targetCorrLock);
+        if (armed) {
+            elapsed = NowMs() - t0;
+            if (elapsed <= windowMs) {
+                fire = true;
+                armed = false;
+            } else if (verbose) {
+                char buf[192];
+                sprintf_s(buf,
+                          sizeof(buf),
+                          "[TargetCorrelator] expired seq=%u after %llu ms",
+                          seq,
+                          static_cast<unsigned long long>(elapsed));
+                WriteRawLog(buf);
+                armed = false;
+            } else {
+                armed = false;
+            }
+        }
+        LeaveCriticalSection(&g_targetCorrLock);
+    }
+
+    if (!fire)
         return;
 
-    g_windowMs = 400;
-    if (auto cfgWindow = Core::Config::TryGetMilliseconds("TARGET_CORR_WINDOW_MS"))
-        g_windowMs = std::clamp(*cfgWindow, 50u, 2000u);
+    uintptr_t frame = reinterpret_cast<uintptr_t>(topFrame);
+    if (!frameHint && frame) {
+        frameHint = frame;
+        hintAnnounced = false;
+    }
 
-    std::optional<std::string> targetAddr;
-    if (auto cfg = Core::Config::TryGetValue("TARGET_SENDER_ADDR"))
-        targetAddr = *cfg;
-    else if (auto env = Core::Config::TryGetEnv("TARGET_SENDER_ADDR"))
-        targetAddr = *env;
-    if (targetAddr && !targetAddr->empty()) {
-        uintptr_t hint = ResolveModulePlusOffset(targetAddr->c_str());
-        if (hint) {
-            g_hint = hint;
-            LogHint(hint);
-        } else {
-            char warn[192];
-            sprintf_s(warn,
-                      sizeof(warn),
-                      "[TargetCorrelator] TARGET_SENDER_ADDR invalid: %s",
-                      targetAddr->c_str());
-            WriteRawLog(warn);
+    if (frameHint && frame) {
+        if (!hintAnnounced && frameHint == frame) {
+            LogHint(frameHint);
+            hintAnnounced = true;
+        } else if (frameHint != frame) {
+            return;
         }
     }
 
-    g_enabled = true;
-    char buf[160];
-    sprintf_s(buf,
-              sizeof(buf),
-              "[TargetCorrelator] enabled window=%lu ms",
-              static_cast<unsigned long>(g_windowMs));
-    WriteRawLog(buf);
-}
+    uintptr_t base = ModuleBase();
+    char frameBuf[64];
+    if (frame && base && frame >= base)
+        sprintf_s(frameBuf, sizeof(frameBuf), "UOSA.exe+0x%lX", static_cast<unsigned long>(frame - base));
+    else if (frame)
+        sprintf_s(frameBuf, sizeof(frameBuf), "%p", reinterpret_cast<void*>(frame));
+    else
+        strcpy_s(frameBuf, sizeof(frameBuf), "<null>");
 
-void Shutdown() {
-    g_enabled = false;
-    DisarmInternal("shutdown", false);
-}
-
-bool IsEnabled() {
-    return g_enabled;
-}
-
-void OnRequestTarget() {
-    ArmInternal("RequestTargetInfo", false);
-}
-
-void OnCursorShown() {
-    ArmInternal("HS_ShowTargetingCursor", true);
-}
-
-void OnCursorHidden() {
-    DisarmInternal("HS_HideTargetingCursor", true);
-}
-
-bool ShouldCaptureStack(unsigned char packetId) {
-    if (!g_enabled)
-        return false;
-    if (packetId != 0x2E)
-        return false;
-    TargetState snapshot{};
-    if (!SnapshotState(snapshot))
-        return false;
-    DWORD now = NowMs();
-    if (now - snapshot.startTick > g_windowMs)
-        return false;
-    return true;
-}
-
-void OnSendEvent(const CastCorrelator::SendEvent& ev) {
-    if (!g_enabled)
-        return;
-    if (ev.packetId != 0x2E)
-        return;
-    if (ev.frameCount == 0)
-        return;
-
-    TargetState snapshot{};
-    if (!SnapshotState(snapshot))
-        return;
-
-    DWORD now = ev.tick ? ev.tick : NowMs();
-    DWORD age = now - snapshot.startTick;
-    if (age > g_windowMs) {
-        DisarmInternal("expired", true);
-        return;
-    }
-
-    uintptr_t frame = FirstClientFrame(ev.frames, ev.frameCount);
-    if (!frame)
-        return;
-
-    if (!g_hint) {
-        g_hint = frame;
-        LogHint(frame);
-    } else if (g_hint != frame) {
-        return;
-    }
-
-    uintptr_t base = EnsureModuleBase();
     char buf[256];
     sprintf_s(buf,
               sizeof(buf),
-              "[TargetCorrelator] send t=+%lu ms id=%02X len=%d top=UOSA.exe+0x%lX -> TARGET COMMIT",
-              static_cast<unsigned long>(age),
-              ev.packetId,
-              ev.length,
-              base ? static_cast<unsigned long>(frame - base) : 0ul);
+              "[TargetCorrelator] send t=+%llu ms id=%02X len=%zu top=%s -> TARGET COMMIT",
+              static_cast<unsigned long long>(elapsed),
+              packetId,
+              static_cast<unsigned long long>(len),
+              frameBuf);
     WriteRawLog(buf);
-    g_hintAnnounced = true;
-    DisarmInternal("commit", false);
 }
 
-} // namespace TargetCorrelator
+void TargetCorrelatorInit()
+{
+    EnsureLock();
+    g_targetCorr.armed = false;
+    g_targetCorr.t0 = 0;
+    g_targetCorr.seq = 0;
+    g_targetCorr.reason[0] = '\0';
+    g_targetCorr.windowMs = ReadWindowMs();
+    g_targetCorr.frameHint = 0;
+    g_targetCorr.hintAnnounced = false;
+
+    bool enable = ReadBool("uow.debug.target", "UOW_DEBUG_TARGET");
+    if (!enable && DebugProfileEnabled())
+        enable = ReadBool("TARGET_CORR_ENABLE", "TARGET_CORR_ENABLE");
+    g_targetCorr.enabled = enable;
+    g_targetCorr.verbose = enable;
+
+    uintptr_t manualHint = ReadFrameHint();
+    if (manualHint) {
+        g_targetCorr.frameHint = manualHint;
+        g_targetCorr.hintAnnounced = false;
+        LogHint(manualHint);
+    }
+
+    if (g_targetCorr.enabled) {
+        char buf[160];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[TargetCorrelator] enabled window=%u ms",
+                  g_targetCorr.windowMs);
+        WriteRawLog(buf);
+    } else {
+        WriteRawLog("[TargetCorrelator] disabled (set TARGET_CORR_ENABLE=1 or uow.debug.target=1)");
+    }
+}
+
+void TargetCorrelatorShutdown()
+{
+    if (g_targetCorr.enabled)
+        g_targetCorr.Disarm("shutdown");
+    g_targetCorr.enabled = false;
+    if (g_targetCorrLockInit) {
+        DeleteCriticalSection(&g_targetCorrLock);
+        g_targetCorrLockInit = false;
+    }
+}
+
+bool TargetCorrelatorEnabled()
+{
+    return g_targetCorr.enabled;
+}
