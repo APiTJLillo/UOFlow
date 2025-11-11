@@ -839,9 +839,12 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
     }
 
     --g_updateDepth;
-    if (g_updateDepth == 0 && InterlockedExchange(&g_needWalkReg, 0)) {
-        WriteRawLog("H_Update safe point - scheduling Lua helper registration");
-        Engine::Lua::ScheduleWalkBinding();
+    if (g_updateDepth == 0) {
+        Engine::Lua::ScheduleCastWrapRetry("H_Update safe point");
+        if (InterlockedExchange(&g_needWalkReg, 0)) {
+            WriteRawLog("H_Update safe point - scheduling Lua helper registration");
+            Engine::Lua::ScheduleWalkBinding();
+        }
     }
 
     // Avoid calling into Lua from movement update to prevent re-entrancy issues.

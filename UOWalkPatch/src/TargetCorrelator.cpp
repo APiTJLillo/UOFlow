@@ -163,10 +163,12 @@ bool TargetCorrelator::ShouldCaptureStack(std::uint8_t packetId) const
     return enabled && armed && packetId == 0x2E;
 }
 
-void TargetCorrelator::TagIfWithin(std::uint8_t packetId, std::size_t len, void* topFrame)
+std::optional<uint64_t> TargetCorrelator::TagIfWithin(std::uint8_t packetId,
+                                                      std::size_t /*len*/,
+                                                      void* topFrame)
 {
     if (!enabled || packetId != 0x2E)
-        return;
+        return std::nullopt;
 
     uint64_t elapsed = 0;
     bool fire = false;
@@ -195,7 +197,7 @@ void TargetCorrelator::TagIfWithin(std::uint8_t packetId, std::size_t len, void*
     }
 
     if (!fire)
-        return;
+        return std::nullopt;
 
     uintptr_t frame = reinterpret_cast<uintptr_t>(topFrame);
     if (!frameHint && frame) {
@@ -208,28 +210,10 @@ void TargetCorrelator::TagIfWithin(std::uint8_t packetId, std::size_t len, void*
             LogHint(frameHint);
             hintAnnounced = true;
         } else if (frameHint != frame) {
-            return;
+            return std::nullopt;
         }
     }
-
-    uintptr_t base = ModuleBase();
-    char frameBuf[64];
-    if (frame && base && frame >= base)
-        sprintf_s(frameBuf, sizeof(frameBuf), "UOSA.exe+0x%lX", static_cast<unsigned long>(frame - base));
-    else if (frame)
-        sprintf_s(frameBuf, sizeof(frameBuf), "%p", reinterpret_cast<void*>(frame));
-    else
-        strcpy_s(frameBuf, sizeof(frameBuf), "<null>");
-
-    char buf[256];
-    sprintf_s(buf,
-              sizeof(buf),
-              "[TargetCorrelator] send t=+%llu ms id=%02X len=%zu top=%s -> TARGET COMMIT",
-              static_cast<unsigned long long>(elapsed),
-              packetId,
-              static_cast<unsigned long long>(len),
-              frameBuf);
-    WriteRawLog(buf);
+    return elapsed;
 }
 
 void TargetCorrelatorInit()

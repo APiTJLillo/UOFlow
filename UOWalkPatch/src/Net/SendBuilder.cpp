@@ -188,7 +188,18 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
         WriteRawLog(msg);
     }
     Engine::Lua::NotifySendPacket(counterSnapshot, pkt, len);
-    g_targetCorr.TagIfWithin(packetId, static_cast<std::size_t>(len), nullptr);
+    if (auto elapsed = g_targetCorr.TagIfWithin(packetId, static_cast<std::size_t>(len), nullptr)) {
+        char corrBuf[256];
+        sprintf_s(corrBuf,
+                  sizeof(corrBuf),
+                  "[TargetCorrelator] send t=+%llums id=%02X len=%zu top=%p -> TARGET COMMIT",
+                  static_cast<unsigned long long>(*elapsed),
+                  packetId,
+                  static_cast<std::size_t>(len),
+                  nullptr);
+        WriteRawLog(corrBuf);
+        g_targetCorr.Disarm("TARGET COMMIT");
+    }
 
     if (!g_netMgr)
         g_netMgr = thisPtr;

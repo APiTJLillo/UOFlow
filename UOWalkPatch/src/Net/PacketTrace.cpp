@@ -130,7 +130,18 @@ static void TraceOutbound(const char* apiTag, const char* buf, int len)
         topFrame = corrEvent.frames[0];
     if (needCastStack && corrEvent.frameCount > 0)
         CastCorrelator::OnSendEvent(corrEvent);
-    g_targetCorr.TagIfWithin(packetId, len, topFrame);
+    if (auto elapsed = g_targetCorr.TagIfWithin(packetId, static_cast<std::size_t>(len), topFrame)) {
+        char corrBuf[256];
+        sprintf_s(corrBuf,
+                  sizeof(corrBuf),
+                  "[TargetCorrelator] send t=+%llums id=%02X len=%zu top=%p -> TARGET COMMIT",
+                  static_cast<unsigned long long>(*elapsed),
+                  packetId,
+                  static_cast<std::size_t>(len),
+                  topFrame);
+        WriteRawLog(corrBuf);
+        g_targetCorr.Disarm("TARGET COMMIT");
+    }
     if (ShouldCaptureWinsockStack(packetId)) {
         LogWinsockStack(apiTag ? apiTag : "winsock");
     }

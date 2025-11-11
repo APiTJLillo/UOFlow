@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 struct TargetCorrelator {
     bool armed = false;
@@ -17,7 +18,7 @@ struct TargetCorrelator {
     void Arm(const char* why = nullptr);
     void Disarm(const char* why = nullptr);
     bool ShouldCaptureStack(std::uint8_t packetId) const;
-    void TagIfWithin(std::uint8_t packetId, std::size_t len, void* topFrame);
+    std::optional<uint64_t> TagIfWithin(std::uint8_t packetId, std::size_t len, void* topFrame);
 };
 
 extern TargetCorrelator g_targetCorr;

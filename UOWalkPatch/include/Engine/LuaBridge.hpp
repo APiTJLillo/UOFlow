@@ -8,6 +8,7 @@ namespace Engine::Lua {
     void UpdateEngineContext(void* context);
     void EnsureWalkBinding(const char* reason = nullptr);
     void ScheduleWalkBinding();
+    void ScheduleCastWrapRetry(const char* reason = nullptr);
     // Called from safe, game-thread contexts (e.g., movement update) to retry wrapper installs
     void PollLateInstalls();
     // Notified whenever SendPacket executes (used to correlate delayed CastSpell packets).
