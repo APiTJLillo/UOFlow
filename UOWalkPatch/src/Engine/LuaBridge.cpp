@@ -106,6 +106,9 @@ enum ContextLogBits : unsigned {
     static LuaFn g_origHandleSingleLeftClkTarget = nullptr;
     static LuaFn g_origUserActionSpeechSetText = nullptr;
     static LuaFn g_origTextLogAddEntry = nullptr;
+    static LuaFn g_origPrintWStringToChatWindow = nullptr;
+    static LuaFn g_origPrintTidToChatWindow = nullptr;
+    static LuaFn g_origTextLogAddSingleByteEntry = nullptr;
 
     static volatile LONG g_directActionHooksInstalled = 0;
     static bool g_traceTargetPath = false;
@@ -127,6 +130,8 @@ enum ContextLogBits : unsigned {
     static bool g_warnNativeCastOnId = false;
     static bool g_warnNativeRequestTarget = false;
     static bool g_warnNativeHsCursor = false;
+    static bool g_enableTapTargetWrap = false;
+    static bool g_clickTapStateLogged = false;
 
     static volatile LONG g_targetCompatBannerLogged = 0;
     static volatile LONG g_actionTypeCompatBannerLogged = 0;
@@ -154,13 +159,20 @@ enum ContextLogBits : unsigned {
         kWrapperHsHideCursor = 1u << 11,
         kWrapperHandleLeftClick = 1u << 12,
         kWrapperSpeechSetText = 1u << 13,
-        kWrapperTextLogAddEntry = 1u << 14
+        kWrapperTextLogAddEntry = 1u << 14,
+        kWrapperPrintWString = 1u << 15,
+        kWrapperPrintTid = 1u << 16,
+        kWrapperTextLogAddSingleByte = 1u << 17
     };
     static constexpr uint32_t kAllActionWrappers =
         kWrapperCastSpell | kWrapperCastSpellOnId | kWrapperUseSkill | kWrapperUsePrimaryAbility |
         kWrapperUseWeaponAbility | kWrapperTargetCompat | kWrapperActionTypeCompat | kWrapperRequestTargetInfo |
         kWrapperClearCurrentTarget | kWrapperSkillAvailable | kWrapperHsShowCursor | kWrapperHsHideCursor |
-        kWrapperHandleLeftClick | kWrapperSpeechSetText | kWrapperTextLogAddEntry;
+        kWrapperHandleLeftClick | kWrapperSpeechSetText | kWrapperTextLogAddEntry |
+        kWrapperPrintWString | kWrapperPrintTid | kWrapperTextLogAddSingleByte;
+    static constexpr uint32_t kWordWrapperMask =
+        kWrapperSpeechSetText | kWrapperTextLogAddEntry | kWrapperPrintWString |
+        kWrapperPrintTid | kWrapperTextLogAddSingleByte;
     static std::atomic<uint32_t> g_actionWrapperMask{0};
 
     // Cast spell tracing helpers
@@ -331,6 +343,9 @@ static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L);
 static int __cdecl Lua_HandleSingleLeftClkTarget_W(lua_State* L);
 static int __cdecl Lua_UserActionSpeechSetText_W(lua_State* L);
 static int __cdecl Lua_TextLogAddEntry_W(lua_State* L);
+static int __cdecl Lua_PrintWStringToChatWindow_W(lua_State* L);
+static int __cdecl Lua_PrintTidToChatWindow_W(lua_State* L);
+static int __cdecl Lua_TextLogAddSingleByteEntry_W(lua_State* L);
 static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L);
 
 struct LateWrapTarget {
@@ -360,6 +375,7 @@ static void LogLuaErrorTop(lua_State* L, const char* context, int maxSlots = 6);
 static void LogLuaClosureUpvalues(lua_State* L, int funcIndex, const char* context, int maxUpvalues = 4);
 static void LogSavedOriginalUpvalues(lua_State* L, const char* savedName, const char* globalName, const char* context, volatile LONG* gate, int maxUpvalues = 4);
 static void LogLuaTopTypes(lua_State* L, const char* context, int maxSlots = 6);
+static bool SaveAndReplace(lua_State* L, const char* name, lua_CFunction wrapper);
 static int CallSavedOriginal(lua_State* L, const char* savedName);
 static void MaybeUpdateOwnerContext(void* ctx);
 static void* CurrentScriptContext();
@@ -962,16 +978,40 @@ static void ArmWordsLogWindow(uint32_t token)
     g_wordsLoggedToken.store(0, std::memory_order_release);
 }
 
-static void MaybeLogWordsText(lua_State* L, const char* apiName, int argIndex)
+static bool PrepareWordsLog(uint32_t& token)
 {
-    if (!g_debugWords || !L)
-        return;
-    uint32_t token = CurrentCastToken();
+    if (!g_debugWords)
+        return false;
+    token = g_wordsPendingToken.load(std::memory_order_acquire);
     if (token == 0)
-        return;
-    if (g_wordsPendingToken.load(std::memory_order_acquire) != token)
-        return;
+        return false;
     if (g_wordsLoggedToken.load(std::memory_order_acquire) == token)
+        return false;
+    return true;
+}
+
+static void EmitWordsLog(uint32_t token, const char* label, const char* payload)
+{
+    if (!payload || !*payload)
+        return;
+    if (g_wordsLoggedToken.exchange(token, std::memory_order_acq_rel) == token)
+        return;
+    char buf[512];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[CastUI] Words(%s)=\"%s\" tok=%u",
+              label ? label : "text",
+              payload,
+              token);
+    WriteRawLog(buf);
+}
+
+static void MaybeLogWordsText(lua_State* L, const char* apiName, int argIndex, const char* label = nullptr)
+{
+    if (!L)
+        return;
+    uint32_t token = 0;
+    if (!PrepareWordsLog(token))
         return;
     int top = lua_gettop(L);
     if (argIndex <= 0 || argIndex > top)
@@ -979,11 +1019,58 @@ static void MaybeLogWordsText(lua_State* L, const char* apiName, int argIndex)
     const char* text = lua_tolstring(L, argIndex, nullptr);
     if (!text || !*text)
         return;
+    char tag[64];
+    if (label && *label)
+        strncpy_s(tag, sizeof(tag), label, _TRUNCATE);
+    else if (apiName)
+        strncpy_s(tag, sizeof(tag), apiName, _TRUNCATE);
+    else
+        strncpy_s(tag, sizeof(tag), "text", _TRUNCATE);
+    EmitWordsLog(token, tag, text);
+}
+
+static void MaybeLogWordsTid(lua_State* L, const char* apiName, int argIndex)
+{
+    uint32_t token = 0;
+    if (!PrepareWordsLog(token) || !L)
+        return;
+    int top = lua_gettop(L);
+    if (argIndex <= 0 || argIndex > top)
+        return;
+    if (lua_type(L, argIndex) != LUA_TNUMBER)
+        return;
+    int tid = static_cast<int>(lua_tointeger(L, argIndex));
     if (g_wordsLoggedToken.exchange(token, std::memory_order_acq_rel) == token)
         return;
-    char buf[512];
-    sprintf_s(buf, sizeof(buf), "[CastUI] WordsOfPower=\"%s\"", text);
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[CastUI] Words(TID=%d) tok=%u via %s",
+              tid,
+              token,
+              apiName ? apiName : "PrintTidToChatWindow");
     WriteRawLog(buf);
+}
+
+static void GuardLuaStack(lua_State* L, const char* tag, int topBefore, int returns)
+{
+    if (!L)
+        return;
+    if (returns < 0)
+        returns = 0;
+    int topAfter = lua_gettop(L);
+    if (topAfter == returns)
+        return;
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Lua] %s stack drift top_in=%d top_out=%d returns=%d",
+              tag ? tag : "<fn>",
+              topBefore,
+              topAfter,
+              returns);
+    WriteRawLog(buf);
+    lua_settop(L, returns);
 }
 
 static void* CanonicalOwnerContext()
@@ -2379,7 +2466,10 @@ static void TryInstallActionWrappers()
             {"HS_HideTargetingCursor", &Lua_HS_HideTargetingCursor_W, kWrapperHsHideCursor},
             {"HandleSingleLeftClkTarget", &Lua_HandleSingleLeftClkTarget_W, kWrapperHandleLeftClick},
             {"UserActionSpeechSetText", &Lua_UserActionSpeechSetText_W, kWrapperSpeechSetText},
-            {"TextLogAddEntry", &Lua_TextLogAddEntry_W, kWrapperTextLogAddEntry}
+            {"TextLogAddEntry", &Lua_TextLogAddEntry_W, kWrapperTextLogAddEntry},
+            {"PrintWStringToChatWindow", &Lua_PrintWStringToChatWindow_W, kWrapperPrintWString},
+            {"PrintTidToChatWindow", &Lua_PrintTidToChatWindow_W, kWrapperPrintTid},
+            {"TextLogAddSingleByteEntry", &Lua_TextLogAddSingleByteEntry_W, kWrapperTextLogAddSingleByte}
         };
 
         static DWORD s_nextMissingLogMs = 0;
@@ -2388,6 +2478,9 @@ static void TryInstallActionWrappers()
         bool installedAny = false;
         auto tryWrap = [&](const ActionWrapperEntry& entry) {
             if (mask & entry.bit)
+                return;
+            if ((entry.bit == kWrapperHandleLeftClick && !g_enableTapTargetWrap) ||
+                (!g_debugWords && (entry.bit == kWrapperPrintWString || entry.bit == kWrapperPrintTid || entry.bit == kWrapperTextLogAddSingleByte || entry.bit == kWrapperSpeechSetText || entry.bit == kWrapperTextLogAddEntry)))
                 return;
             lua_getglobal(L, entry.name);
             bool present = (lua_type(L, -1) == LUA_TFUNCTION);
@@ -2930,13 +3023,21 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         }
         else if (_stricmp(name, "HandleSingleLeftClkTarget") == 0)
         {
-            if (!g_origHandleSingleLeftClkTarget)
-            {
-                g_origHandleSingleLeftClkTarget = reinterpret_cast<LuaFn>(func);
-                WriteRawLog("Hook_Register: wrapped HandleSingleLeftClkTarget");
+            if (!g_clickTapStateLogged) {
+                WriteRawLog(g_enableTapTargetWrap ? "[ClickTap] wrapper ENABLED" : "[ClickTap] wrapper DISABLED");
+                g_clickTapStateLogged = true;
             }
-            NoteCapturedActionTarget(name, func);
-            outFunc = reinterpret_cast<void*>(&Lua_HandleSingleLeftClkTarget_W);
+            if (!g_enableTapTargetWrap) {
+                outFunc = func;
+            } else {
+                if (!g_origHandleSingleLeftClkTarget)
+                {
+                    g_origHandleSingleLeftClkTarget = reinterpret_cast<LuaFn>(func);
+                    WriteRawLog("Hook_Register: wrapped HandleSingleLeftClkTarget");
+                }
+                NoteCapturedActionTarget(name, func);
+                outFunc = reinterpret_cast<void*>(&Lua_HandleSingleLeftClkTarget_W);
+            }
         }
         else if (_stricmp(name, "UserActionSpeechSetText") == 0)
         {
@@ -2946,7 +3047,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
                 WriteRawLog("Hook_Register: wrapped UserActionSpeechSetText");
             }
             NoteCapturedActionTarget(name, func);
-            outFunc = reinterpret_cast<void*>(&Lua_UserActionSpeechSetText_W);
+            outFunc = g_debugWords ? reinterpret_cast<void*>(&Lua_UserActionSpeechSetText_W) : func;
         }
         else if (_stricmp(name, "TextLogAddEntry") == 0)
         {
@@ -2956,7 +3057,37 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
                 WriteRawLog("Hook_Register: wrapped TextLogAddEntry");
             }
             NoteCapturedActionTarget(name, func);
-            outFunc = reinterpret_cast<void*>(&Lua_TextLogAddEntry_W);
+            outFunc = g_debugWords ? reinterpret_cast<void*>(&Lua_TextLogAddEntry_W) : func;
+        }
+        else if (_stricmp(name, "PrintWStringToChatWindow") == 0)
+        {
+            if (!g_origPrintWStringToChatWindow)
+            {
+                g_origPrintWStringToChatWindow = reinterpret_cast<LuaFn>(func);
+                WriteRawLog("Hook_Register: wrapped PrintWStringToChatWindow");
+            }
+            NoteCapturedActionTarget(name, func);
+            outFunc = g_debugWords ? reinterpret_cast<void*>(&Lua_PrintWStringToChatWindow_W) : func;
+        }
+        else if (_stricmp(name, "PrintTidToChatWindow") == 0)
+        {
+            if (!g_origPrintTidToChatWindow)
+            {
+                g_origPrintTidToChatWindow = reinterpret_cast<LuaFn>(func);
+                WriteRawLog("Hook_Register: wrapped PrintTidToChatWindow");
+            }
+            NoteCapturedActionTarget(name, func);
+            outFunc = g_debugWords ? reinterpret_cast<void*>(&Lua_PrintTidToChatWindow_W) : func;
+        }
+        else if (_stricmp(name, "TextLogAddSingleByteEntry") == 0)
+        {
+            if (!g_origTextLogAddSingleByteEntry)
+            {
+                g_origTextLogAddSingleByteEntry = reinterpret_cast<LuaFn>(func);
+                WriteRawLog("Hook_Register: wrapped TextLogAddSingleByteEntry");
+            }
+            NoteCapturedActionTarget(name, func);
+            outFunc = g_debugWords ? reinterpret_cast<void*>(&Lua_TextLogAddSingleByteEntry_W) : func;
         }
     }
 
@@ -3289,6 +3420,7 @@ static void HandleCastPacketSend(unsigned counter, const void* pkt, int len)
 
 static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
 {
+    int topBefore = lua_gettop(L);
     const uint32_t previousTok = g_tlsCurrentCastToken;
     const uint32_t token = NextCastToken();
     g_tlsCurrentCastToken = token;
@@ -3369,6 +3501,7 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
         if (gateArmed)
             GateDisarmForCast("UserActionCastSpell:missing_orig");
         ReleaseCastPacket(token);
+        GuardLuaStack(L, "UserActionCastSpell", topBefore, 0);
         g_tlsCurrentCastToken = previousTok;
         return 0;
     }
@@ -3436,12 +3569,14 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
         }
     }
 
+    GuardLuaStack(L, "UserActionCastSpell", topBefore, returnValue);
     g_tlsCurrentCastToken = previousTok;
     return returnValue;
 }
 
 static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
 {
+    int topBefore = lua_gettop(L);
     int spellId = 0;
     int targetId = 0;
     if (L) {
@@ -3517,6 +3652,7 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
                       tok);
             WriteRawLog(buf);
         }
+        GuardLuaStack(L, "UserActionCastSpellOnId", topBefore, rc);
         return rc;
     }
     if (g_origUserActionCastSpellOnId) {
@@ -3553,6 +3689,7 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
                       tok);
             WriteRawLog(buf);
         }
+        GuardLuaStack(L, "UserActionCastSpellOnId", topBefore, out);
         return out;
     }
     WriteRawLog("[Lua] UserActionCastSpellOnId original missing (saved and ptr)");
@@ -3561,6 +3698,7 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
         sprintf_s(buf, sizeof(buf), "[TargetPath] Leave UserActionCastSpellOnId rc=0 tok=%u (missing)", tok);
         WriteRawLog(buf);
     }
+    GuardLuaStack(L, "UserActionCastSpellOnId", topBefore, 0);
     return 0;
 }
 
@@ -3629,10 +3767,14 @@ static int __cdecl Lua_UserActionIsSkillAvalible_W(lua_State* L)
 
 static int __cdecl Lua_HS_ShowTargetingCursor_W(lua_State* L)
 {
+    int topBefore = lua_gettop(L);
     uint32_t tok = CurrentCastToken();
     char intro[160];
     sprintf_s(intro, sizeof(intro), "[Lua] HS_ShowTargetingCursor() wrapper invoked tok=%u", tok);
     WriteRawLog(intro);
+    char uiIntro[160];
+    sprintf_s(uiIntro, sizeof(uiIntro), "[TargetUI] ShowCursor enter tok=%u", tok);
+    WriteRawLog(uiIntro);
     if (g_traceTargetPath) {
         char buf[160];
         sprintf_s(buf, sizeof(buf), "[TargetPath] Enter HS_ShowTargetingCursor tok=%u", tok);
@@ -3658,15 +3800,23 @@ static int __cdecl Lua_HS_ShowTargetingCursor_W(lua_State* L)
         sprintf_s(buf, sizeof(buf), "[TargetPath] Leave HS_ShowTargetingCursor rc=%d tok=%u", rc, tok);
         WriteRawLog(buf);
     }
+    char uiExit[160];
+    sprintf_s(uiExit, sizeof(uiExit), "[TargetUI] ShowCursor exit rc=%d tok=%u", rc, tok);
+    WriteRawLog(uiExit);
+    GuardLuaStack(L, "HS_ShowTargetingCursor", topBefore, rc);
     return rc;
 }
 
 static int __cdecl Lua_HS_HideTargetingCursor_W(lua_State* L)
 {
+    int topBefore = lua_gettop(L);
     uint32_t tok = CurrentCastToken();
     char intro[160];
     sprintf_s(intro, sizeof(intro), "[Lua] HS_HideTargetingCursor() wrapper invoked tok=%u", tok);
     WriteRawLog(intro);
+    char uiIntro[160];
+    sprintf_s(uiIntro, sizeof(uiIntro), "[TargetUI] HideCursor enter tok=%u", tok);
+    WriteRawLog(uiIntro);
     if (g_traceTargetPath) {
         char buf[160];
         sprintf_s(buf, sizeof(buf), "[TargetPath] Enter HS_HideTargetingCursor tok=%u", tok);
@@ -3692,6 +3842,10 @@ static int __cdecl Lua_HS_HideTargetingCursor_W(lua_State* L)
         sprintf_s(buf, sizeof(buf), "[TargetPath] Leave HS_HideTargetingCursor rc=%d tok=%u", rc, tok);
         WriteRawLog(buf);
     }
+    char uiExit[160];
+    sprintf_s(uiExit, sizeof(uiExit), "[TargetUI] HideCursor exit rc=%d tok=%u", rc, tok);
+    WriteRawLog(uiExit);
+    GuardLuaStack(L, "HS_HideTargetingCursor", topBefore, rc);
     return rc;
 }
 
@@ -3793,6 +3947,12 @@ static int __cdecl Lua_UserActionUsePrimaryAbility_W(lua_State* L)
 
 static int __cdecl Lua_HandleSingleLeftClkTarget_W(lua_State* L)
 {
+    if (!g_enableTapTargetWrap) {
+        if (g_origHandleSingleLeftClkTarget)
+            return g_origHandleSingleLeftClkTarget(L);
+        return CallSavedOriginal(L, "HandleSingleLeftClkTarget__orig");
+    }
+    int topBefore = lua_gettop(L);
     uint32_t tok = CurrentCastToken();
     int targetId = 0;
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
@@ -3804,6 +3964,13 @@ static int __cdecl Lua_HandleSingleLeftClkTarget_W(lua_State* L)
               tok,
               targetId);
     WriteRawLog(intro);
+    char clickBuf[192];
+    sprintf_s(clickBuf,
+              sizeof(clickBuf),
+              "[ClickTap] click observed tok=%u target=%d",
+              tok,
+              targetId);
+    WriteRawLog(clickBuf);
     if (g_traceTargetPath) {
         char buf[192];
         sprintf_s(buf,
@@ -3815,10 +3982,22 @@ static int __cdecl Lua_HandleSingleLeftClkTarget_W(lua_State* L)
     }
     Trace::MarkAction("HandleSingleLeftClkTarget");
     LogLuaArgs(L, "HandleSingleLeftClkTarget", 2);
+    g_targetCorr.Arm("HandleSingleLeftClkTarget");
     int rc = CallSavedOriginal(L, "HandleSingleLeftClkTarget__orig");
     if (rc < 0 && g_origHandleSingleLeftClkTarget) {
         rc = InvokeClientLuaFn(g_origHandleSingleLeftClkTarget, "HandleSingleLeftClkTarget", L);
     }
+    int topAfter = lua_gettop(L);
+    char stateBuf[256];
+    sprintf_s(stateBuf,
+              sizeof(stateBuf),
+              "[ClickTap] HandleSingleLeftClkTarget invoked nret=%d top_in=%d top_out=%d target=%d tok=%u",
+              rc,
+              topBefore,
+              topAfter,
+              targetId,
+              tok);
+    WriteRawLog(stateBuf);
     if (g_traceLuaVerbose && rc > 0)
         LogLuaReturns(L, "HandleSingleLeftClkTarget", rc);
     if (g_traceTargetPath) {
@@ -3830,34 +4009,93 @@ static int __cdecl Lua_HandleSingleLeftClkTarget_W(lua_State* L)
                   tok);
         WriteRawLog(buf);
     }
+    GuardLuaStack(L, "HandleSingleLeftClkTarget", topBefore, rc);
     return (rc >= 0) ? rc : 0;
 }
 
 static int __cdecl Lua_UserActionSpeechSetText_W(lua_State* L)
 {
+    int topBefore = lua_gettop(L);
     if (g_traceLuaVerbose)
         LogLuaArgs(L, "UserActionSpeechSetText", 4);
-    MaybeLogWordsText(L, "UserActionSpeechSetText", 4);
+    MaybeLogWordsText(L, "UserActionSpeechSetText", 4, "Speech");
     int rc = CallSavedOriginal(L, "UserActionSpeechSetText__orig");
     if (rc < 0 && g_origUserActionSpeechSetText) {
         rc = InvokeClientLuaFn(g_origUserActionSpeechSetText, "UserActionSpeechSetText", L);
     }
     if (g_traceLuaVerbose && rc > 0)
         LogLuaReturns(L, "UserActionSpeechSetText", rc);
+    GuardLuaStack(L, "UserActionSpeechSetText", topBefore, rc);
     return (rc >= 0) ? rc : 0;
 }
 
 static int __cdecl Lua_TextLogAddEntry_W(lua_State* L)
 {
+    int topBefore = lua_gettop(L);
     if (g_traceLuaVerbose)
         LogLuaArgs(L, "TextLogAddEntry", 3);
-    MaybeLogWordsText(L, "TextLogAddEntry", 3);
+    const char* logName = nullptr;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TSTRING)
+        logName = lua_tolstring(L, 1, nullptr);
+    MaybeLogWordsText(L, "TextLogAddEntry", 3, logName);
     int rc = CallSavedOriginal(L, "TextLogAddEntry__orig");
     if (rc < 0 && g_origTextLogAddEntry) {
         rc = InvokeClientLuaFn(g_origTextLogAddEntry, "TextLogAddEntry", L);
     }
     if (g_traceLuaVerbose && rc > 0)
         LogLuaReturns(L, "TextLogAddEntry", rc);
+    GuardLuaStack(L, "TextLogAddEntry", topBefore, rc);
+    return (rc >= 0) ? rc : 0;
+}
+
+static int __cdecl Lua_TextLogAddSingleByteEntry_W(lua_State* L)
+{
+    int topBefore = lua_gettop(L);
+    if (g_traceLuaVerbose)
+        LogLuaArgs(L, "TextLogAddSingleByteEntry", 3);
+    const char* logName = nullptr;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TSTRING)
+        logName = lua_tolstring(L, 1, nullptr);
+    MaybeLogWordsText(L, "TextLogAddSingleByteEntry", 3, logName);
+    int rc = CallSavedOriginal(L, "TextLogAddSingleByteEntry__orig");
+    if (rc < 0 && g_origTextLogAddSingleByteEntry) {
+        rc = InvokeClientLuaFn(g_origTextLogAddSingleByteEntry, "TextLogAddSingleByteEntry", L);
+    }
+    if (g_traceLuaVerbose && rc > 0)
+        LogLuaReturns(L, "TextLogAddSingleByteEntry", rc);
+    GuardLuaStack(L, "TextLogAddSingleByteEntry", topBefore, rc);
+    return (rc >= 0) ? rc : 0;
+}
+
+static int __cdecl Lua_PrintWStringToChatWindow_W(lua_State* L)
+{
+    int topBefore = lua_gettop(L);
+    if (g_traceLuaVerbose)
+        LogLuaArgs(L, "PrintWStringToChatWindow", 2);
+    MaybeLogWordsText(L, "PrintWStringToChatWindow", 1, "WS");
+    int rc = CallSavedOriginal(L, "PrintWStringToChatWindow__orig");
+    if (rc < 0 && g_origPrintWStringToChatWindow) {
+        rc = InvokeClientLuaFn(g_origPrintWStringToChatWindow, "PrintWStringToChatWindow", L);
+    }
+    if (g_traceLuaVerbose && rc > 0)
+        LogLuaReturns(L, "PrintWStringToChatWindow", rc);
+    GuardLuaStack(L, "PrintWStringToChatWindow", topBefore, rc);
+    return (rc >= 0) ? rc : 0;
+}
+
+static int __cdecl Lua_PrintTidToChatWindow_W(lua_State* L)
+{
+    int topBefore = lua_gettop(L);
+    if (g_traceLuaVerbose)
+        LogLuaArgs(L, "PrintTidToChatWindow", 3);
+    MaybeLogWordsTid(L, "PrintTidToChatWindow", 1);
+    int rc = CallSavedOriginal(L, "PrintTidToChatWindow__orig");
+    if (rc < 0 && g_origPrintTidToChatWindow) {
+        rc = InvokeClientLuaFn(g_origPrintTidToChatWindow, "PrintTidToChatWindow", L);
+    }
+    if (g_traceLuaVerbose && rc > 0)
+        LogLuaReturns(L, "PrintTidToChatWindow", rc);
+    GuardLuaStack(L, "PrintTidToChatWindow", topBefore, rc);
     return (rc >= 0) ? rc : 0;
 }
 
@@ -4205,10 +4443,14 @@ static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L)
 
 static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
 {
+    int topBefore = lua_gettop(L);
     uint32_t tok = CurrentCastToken();
     char intro[128];
     sprintf_s(intro, sizeof(intro), "[Lua] RequestTargetInfo() wrapper invoked tok=%u", tok);
     WriteRawLog(intro);
+    char uiIntro[160];
+    sprintf_s(uiIntro, sizeof(uiIntro), "[TargetUI] RequestTargetInfo enter tok=%u", tok);
+    WriteRawLog(uiIntro);
     if (g_traceTargetPath) {
         char buf[160];
         sprintf_s(buf, sizeof(buf), "[TargetPath] Enter RequestTargetInfo tok=%u", tok);
@@ -4237,11 +4479,16 @@ static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
         sprintf_s(buf, sizeof(buf), "[TargetPath] Leave RequestTargetInfo rc=%d tok=%u", rc, tok);
         WriteRawLog(buf);
     }
+    char uiExit[160];
+    sprintf_s(uiExit, sizeof(uiExit), "[TargetUI] RequestTargetInfo exit rc=%d tok=%u", rc, tok);
+    WriteRawLog(uiExit);
+    GuardLuaStack(L, "RequestTargetInfo", topBefore, rc);
     return rc;
 }
 
 static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L)
 {
+    int topBefore = lua_gettop(L);
     uint32_t tok = CurrentCastToken();
     char intro[128];
     sprintf_s(intro, sizeof(intro), "[Lua] ClearCurrentTarget() wrapper invoked tok=%u", tok);
@@ -4261,6 +4508,7 @@ static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L)
     sprintf_s(detail, sizeof(detail), "[Lua] ClearCurrentTarget rc=%d tok=%u", rc, tok);
     WriteRawLog(detail);
     g_targetCorr.Arm("ClearCurrentTarget");
+    GuardLuaStack(L, "ClearCurrentTarget", topBefore, rc);
     return rc;
 }
 static int CallSavedOriginal(lua_State* L, const char* savedName)
@@ -4487,6 +4735,16 @@ bool InitLuaBridge()
         g_debugWords = *opt;
     else
         g_debugWords = true;
+    if (auto opt = ReadBoolOption("uow.debug.taptarget", "UOW_DEBUG_TAPTARGET"))
+        g_enableTapTargetWrap = *opt;
+    else
+        g_enableTapTargetWrap = false;
+    if (!g_enableTapTargetWrap)
+        g_actionWrapperMask.fetch_or(kWrapperHandleLeftClick, std::memory_order_acq_rel);
+    if (!g_debugWords)
+        g_actionWrapperMask.fetch_or(kWordWrapperMask, std::memory_order_acq_rel);
+    WriteRawLog(g_enableTapTargetWrap ? "[ClickTap] wrapper ENABLED" : "[ClickTap] wrapper DISABLED");
+    g_clickTapStateLogged = true;
     if (g_safeCastingMode)
         RequestActionWrapperInstall();
 
@@ -4637,6 +4895,14 @@ bool InitLuaBridge()
     TryInstallDirectActionHooks();
     Engine::RequestWalkRegistration();
     RequestActionWrapperInstall();
+    char flagBuf[160];
+    sprintf_s(flagBuf,
+              sizeof(flagBuf),
+              "[Init] flags: taptarget=%s words=%s target_window_ms=%u",
+              g_enableTapTargetWrap ? "on" : "off",
+              g_debugWords ? "on" : "off",
+              g_targetCorr.windowMs);
+    WriteRawLog(flagBuf);
     return true;
 }
 

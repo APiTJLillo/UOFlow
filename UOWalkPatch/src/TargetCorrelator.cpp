@@ -65,12 +65,16 @@ bool ReadBool(const char* key, const char* envKey, bool defaultValue = false)
 
 uint32_t ReadWindowMs()
 {
-    uint32_t window = 600;
-    if (auto cfg = Core::Config::TryGetMilliseconds("TARGET_CORR_WINDOW_MS"))
+    uint32_t window = 1200;
+    if (auto cfg = Core::Config::TryGetMilliseconds("uow.debug.target_window_ms"))
         window = *cfg;
-    else if (auto env = Core::Config::TryGetEnv("TARGET_CORR_WINDOW_MS"))
+    else if (auto env = Core::Config::TryGetEnv("UOW_DEBUG_TARGET_WINDOW_MS"))
         window = static_cast<uint32_t>(std::strtoul(env->c_str(), nullptr, 10));
-    return std::clamp(window, 50u, 2000u);
+    else if (auto legacy = Core::Config::TryGetMilliseconds("TARGET_CORR_WINDOW_MS"))
+        window = *legacy;
+    else if (auto legacyEnv = Core::Config::TryGetEnv("TARGET_CORR_WINDOW_MS"))
+        window = static_cast<uint32_t>(std::strtoul(legacyEnv->c_str(), nullptr, 10));
+    return std::clamp(window, 200u, 4000u);
 }
 
 uintptr_t ReadFrameHint()

@@ -7,7 +7,7 @@
 struct TargetCorrelator {
     bool armed = false;
     uint64_t t0 = 0;
-    uint32_t windowMs = 600;
+    uint32_t windowMs = 1200;
     bool enabled = false;
     bool verbose = false;
     uintptr_t frameHint = 0;
