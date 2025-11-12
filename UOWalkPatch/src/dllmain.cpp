@@ -66,6 +66,10 @@ bool TryReadEnvIntA(const char* key, int& outValue, const char* tag)
 
 } // namespace
 
+#ifndef UOW_COMMIT_HASH
+#define UOW_COMMIT_HASH "unknown"
+#endif
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 {
     switch (reason)
@@ -74,6 +78,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
     {
         DisableThreadLibraryCalls(hModule);
         Log::Init(hModule);
+        char buildBuf[256];
+        sprintf_s(buildBuf,
+                  sizeof(buildBuf),
+                  "[Build] commit=%s built=%s %s",
+                  UOW_COMMIT_HASH,
+                  __DATE__,
+                  __TIME__);
+        WriteRawLog(buildBuf);
 
         // Determine directory of this DLL
         WCHAR dllDir[MAX_PATH];
@@ -134,22 +146,20 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 
         uint32_t targetWindowOverride = 0;
         const char* targetWindowSource = nullptr;
-        if (auto cfg = Core::Config::TryGetMilliseconds("uow.debug.target_window_ms")) {
+        int envValue = 0;
+        if (TryReadEnvInt(L"UOW_DEBUG_TARGET_WINDOW_MS", envValue, "UOW_DEBUG_TARGET_WINDOW_MS") ||
+            TryReadEnvIntA("UOW_DEBUG_TARGET_WINDOW_MS", envValue, "UOW_DEBUG_TARGET_WINDOW_MS")) {
+            targetWindowOverride = static_cast<uint32_t>(envValue);
+            targetWindowSource = "env:UOW_DEBUG_TARGET_WINDOW_MS";
+        } else if (auto cfg = Core::Config::TryGetMilliseconds("uow.debug.target_window_ms")) {
             targetWindowOverride = *cfg;
             targetWindowSource = "cfg:uow.debug.target_window_ms";
-        } else {
-            int envValue = 0;
-            if (TryReadEnvInt(L"UOW_DEBUG_TARGET_WINDOW_MS", envValue, "UOW_DEBUG_TARGET_WINDOW_MS") ||
-                TryReadEnvIntA("UOW_DEBUG_TARGET_WINDOW_MS", envValue, "UOW_DEBUG_TARGET_WINDOW_MS")) {
-                targetWindowOverride = static_cast<uint32_t>(envValue);
-                targetWindowSource = "env:UOW_DEBUG_TARGET_WINDOW_MS";
-            } else if (auto legacy = Core::Config::TryGetMilliseconds("TARGET_CORR_WINDOW_MS")) {
-                targetWindowOverride = *legacy;
-                targetWindowSource = "cfg:TARGET_CORR_WINDOW_MS";
-            } else if (auto legacyEnv = Core::Config::TryGetEnv("TARGET_CORR_WINDOW_MS")) {
-                targetWindowOverride = static_cast<uint32_t>(std::strtoul(legacyEnv->c_str(), nullptr, 10));
-                targetWindowSource = "env:TARGET_CORR_WINDOW_MS";
-            }
+        } else if (auto legacy = Core::Config::TryGetMilliseconds("TARGET_CORR_WINDOW_MS")) {
+            targetWindowOverride = *legacy;
+            targetWindowSource = "cfg:TARGET_CORR_WINDOW_MS";
+        } else if (auto legacyEnv = Core::Config::TryGetEnv("TARGET_CORR_WINDOW_MS")) {
+            targetWindowOverride = static_cast<uint32_t>(std::strtoul(legacyEnv->c_str(), nullptr, 10));
+            targetWindowSource = "env:TARGET_CORR_WINDOW_MS";
         }
         if (targetWindowOverride > 0) {
             TargetCorrelatorSetWindow(targetWindowOverride);
@@ -159,6 +169,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
                       "[Init] target_window_ms=%u source=%s",
                       TargetCorrelatorGetWindow(),
                       targetWindowSource ? targetWindowSource : "override");
+            WriteRawLog(buf);
+        } else {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[Init] target_window_ms=%u source=default",
+                      TargetCorrelatorGetWindow());
             WriteRawLog(buf);
         }
 

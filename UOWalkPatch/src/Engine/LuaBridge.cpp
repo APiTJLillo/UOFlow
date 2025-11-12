@@ -143,6 +143,8 @@ enum ContextLogBits : unsigned {
     static bool g_warnNativeHsCursor = false;
     static bool g_enableTapTargetWrap = false;
     static bool g_clickTapStateLogged = false;
+    static std::atomic<bool> g_clickTapWrapInstalled{false};
+    static DWORD g_clickTapNextMissingLog = 0;
     static int g_castSpellRegistryRef = LUA_NOREF;
     static int g_castSpellOnIdRegistryRef = LUA_NOREF;
     static const void* const kCastWrapperSentinel = reinterpret_cast<void*>(static_cast<intptr_t>(0xC457C0DE));
@@ -548,10 +550,10 @@ static bool IsRegistryWrapper(lua_State* L, const char* name)
     return wrapped;
 }
 
-static bool InstallRegistryWrapper(lua_State* L,
-                                   const char* name,
-                                   lua_CFunction wrapper,
-                                   int& registryRef)
+    static bool InstallRegistryWrapper(lua_State* L,
+                                       const char* name,
+                                       lua_CFunction wrapper,
+                                       int& registryRef)
 {
     if (!L || !name || !wrapper)
         return false;
@@ -579,6 +581,17 @@ static bool InstallRegistryWrapper(lua_State* L,
     char buf[192];
     sprintf_s(buf, sizeof(buf), "Wrap %s: saved original via registry ref=%d", name, registryRef);
     WriteRawLog(buf);
+    if (_stricmp(name, "HandleSingleLeftClkTarget") == 0) {
+        bool first = !g_clickTapWrapInstalled.exchange(true, std::memory_order_release);
+        if (first) {
+            char clickBuf[160];
+            sprintf_s(clickBuf,
+                      sizeof(clickBuf),
+                      "[ClickTap] HandleSingleLeftClkTarget wrapper installed (ref=%d)",
+                      registryRef);
+            WriteRawLog(clickBuf);
+        }
+    }
     return true;
 }
 
@@ -2593,6 +2606,13 @@ static void TryInstallActionWrappers()
                 bool present = (lua_type(L, -1) == LUA_TFUNCTION);
                 lua_pop(L, 1);
                 if (!present) {
+                    if (entry.bit == kWrapperHandleLeftClick && g_enableTapTargetWrap) {
+                        DWORD tick = GetTickCount();
+                        if (tick >= g_clickTapNextMissingLog) {
+                            WriteRawLog("[ClickTap] HandleSingleLeftClkTarget not yet registered; will retry");
+                            g_clickTapNextMissingLog = tick + 1000;
+                        }
+                    }
                     if (now >= s_nextMissingLogMs) {
                         char msg[192];
                         sprintf_s(msg, sizeof(msg), "TryInstallActionWrappers: '%s' not found; will retry", entry.name);
@@ -2619,6 +2639,14 @@ static void TryInstallActionWrappers()
             if (mask == kAllActionWrappers) {
                 InterlockedExchange(&g_actionWrappersInstalled, 1);
                 WriteRawLog("TryInstallActionWrappers: installed action wrappers via Lua API");
+            }
+            if (g_enableTapTargetWrap) {
+                char clickBuf[128];
+                sprintf_s(clickBuf,
+                          sizeof(clickBuf),
+                          "[ClickTap] install status: %s",
+                          g_clickTapWrapInstalled.load(std::memory_order_acquire) ? "OK" : "PENDING");
+                WriteRawLog(clickBuf);
             }
         }
         if (now >= s_nextMissingLogMs) {
@@ -4862,6 +4890,8 @@ bool InitLuaBridge()
         g_enableTapTargetWrap = *opt;
     else
         g_enableTapTargetWrap = false;
+    g_clickTapWrapInstalled.store(false, std::memory_order_release);
+    g_clickTapNextMissingLog = 0;
     if (!g_enableTapTargetWrap)
         g_actionWrapperMask.fetch_or(kWrapperHandleLeftClick, std::memory_order_acq_rel);
     if (!g_debugWords)
