@@ -13,6 +13,7 @@
 #include "Net/SendBuilder.hpp"
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
+#include "Util/OwnerPump.hpp"
 
 // Move variable definition to global scope
 extern volatile LONG g_needWalkReg;
@@ -504,6 +505,8 @@ static bool ReadVec3Safe(void* ptr, Vec3& out)
 }
 
 static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr, uint32_t dir, int runFlag) {
+    Util::OwnerPump::DrainOnOwnerThread();
+
     if (!g_moveCandidate && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0) {
         g_moveCandidate = thisPtr;
         Logf("Captured movement candidate = %p (thread %lu)", g_moveCandidate, GetCurrentThreadId());

@@ -45,6 +45,7 @@ extern "C" {
     LUA_API void lua_getfenv(lua_State* L, int idx);
     LUA_API void lua_replace(lua_State* L, int idx);
     LUA_API void lua_pushinteger(lua_State* L, lua_Integer n);
+    LUA_API void lua_createtable(lua_State* L, int narr, int nrec);
     LUA_API int lua_iscfunction(lua_State* L, int idx);
     LUA_API void lua_pushlightuserdata(lua_State* L, void* p);
     LUA_API void* lua_touserdata(lua_State* L, int idx);
@@ -333,7 +334,43 @@ enum ContextLogBits : unsigned {
     static uintptr_t g_gateSelectedTarget = kGateTargets[0];
     static const char* g_gateSelectedName = kGateTargetNames[0];
     static char g_gateOverrideName[32] = {};
+
+    enum class TargetCommitKind : std::uint8_t {
+        Object,
+        Ground,
+        Self,
+        Cancel,
+    };
+
+    struct NoClickCastState {
+        bool active = false;
+        bool openLogged = false;
+        int spellId = 0;
+        DWORD startTick = 0;
+        TargetCommitKind openKind = TargetCommitKind::Object;
+        uint8_t firstSendId = 0;
+        bool sendLogged = false;
+        DWORD powerWordsDeadline = 0;
+        bool powerWordsLogged = false;
+        bool powerWordsObserved = false;
+        int powerWordsTid = 0;
+    };
+
+    static NoClickCastState g_noClickState{};
+    static bool g_noClickDiagnostics = false;
+    static bool g_consoleBound = false;
 }
+
+static void NoteNoClickSendPacket(uint8_t id, int len, unsigned counter);
+static void MaybeLogPowerWordsTimeout(const char* stage);
+static void NotePowerWordsTid(int tid);
+static bool IsTargetCursorActive();
+static void ScheduleTargetOpenRequest();
+static void ResetNoClickState(const char* reason);
+static bool EnsureNoClickActive(const char* action);
+static bool EnsureWithinTargetWindow(const char* action);
+static void LogTargetOpen(TargetCommitKind kind);
+static void BindConsoleIfNeeded(lua_State* L, const char* reason);
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static int __cdecl Lua_Walk(lua_State* L);
@@ -363,6 +400,13 @@ static int __cdecl Lua_PrintWStringToChatWindow_W(lua_State* L);
 static int __cdecl Lua_PrintTidToChatWindow_W(lua_State* L);
 static int __cdecl Lua_TextLogAddSingleByteEntry_W(lua_State* L);
 static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L);
+static int __cdecl Lua_uow_cmd_cast(lua_State* L);
+static int __cdecl Lua_uow_cmd_cast_on_id(lua_State* L);
+static int __cdecl Lua_uow_cmd_commit_obj(lua_State* L);
+static int __cdecl Lua_uow_cmd_commit_ground(lua_State* L);
+    static int __cdecl Lua_uow_cmd_cancel_target(lua_State* L);
+    static int __cdecl Lua_uow_cmd_bootstrap(lua_State* L);
+static void EnsureUowCommandBindings(lua_State* L);
 
 struct LateWrapTarget {
     const char* name;
@@ -782,9 +826,12 @@ static void MaybeUpdateOwnerContext(void* ctx)
     std::uint32_t recorded = g_ownerThreadId.load(std::memory_order_acquire);
     if (recorded == 0 || recorded != currentTid) {
         g_ownerThreadId.store(currentTid, std::memory_order_release);
+        Util::OwnerPump::SetOwnerThreadId(currentTid);
         char buf[160];
         sprintf_s(buf, sizeof(buf), "OwnerPump owner thread set: %u (ctx=%p)", currentTid, ctx);
         WriteRawLog(buf);
+        if (auto* L = static_cast<lua_State*>(Engine::LuaState()))
+            BindConsoleIfNeeded(L, "owner_context");
     }
 
     Engine::Lua::ScheduleCastWrapRetry("owner context");
@@ -1164,6 +1211,7 @@ static void MaybeLogWordsTid(lua_State* L, const char* apiName, int argIndex)
               token,
               apiName ? apiName : "PrintTidToChatWindow");
     WriteRawLog(buf);
+    NotePowerWordsTid(tid);
 }
 
 static void GuardLuaStack(lua_State* L, const char* tag, int topBefore, int returns)
@@ -2896,6 +2944,7 @@ static void EnsureReplayHelper(lua_State* L)
         g_replayHelperInstalled.store(true, std::memory_order_release);
         WriteRawLog("EnsureReplayHelper: registered uow_cast_spell_and_target");
     }
+    EnsureUowCommandBindings(L);
 }
 
 static bool ResolveRegisterFunction()
@@ -3404,6 +3453,628 @@ static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L)
     WriteRawLog(exitBuf);
     LogCastUiReturn(L, "Replay", retInfo);
     return results;
+}
+
+static const char* TargetKindName(TargetCommitKind kind)
+{
+    switch (kind) {
+    case TargetCommitKind::Object:
+        return "object";
+    case TargetCommitKind::Ground:
+        return "ground";
+    case TargetCommitKind::Self:
+        return "self";
+    case TargetCommitKind::Cancel:
+        return "cancel";
+    default:
+        return "object";
+    }
+}
+
+static uint32_t EncodeGroundTarget(int x, int y)
+{
+    const uint32_t ux = static_cast<uint32_t>(x) & 0xFFFFu;
+    const uint32_t uy = static_cast<uint32_t>(y) & 0xFFFFu;
+    return 0x40000000u | (uy << 16) | ux;
+}
+
+static constexpr DWORD kPowerWordsWindowMs = 200;
+
+static void NotePowerWordsTid(int tid)
+{
+    if (!g_noClickState.active)
+        return;
+    g_noClickState.powerWordsTid = tid;
+    g_noClickState.powerWordsObserved = true;
+    if (g_noClickState.powerWordsLogged)
+        return;
+    DWORD elapsed = GetTickCount() - g_noClickState.startTick;
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[SpellUI] power-words: OK tid=%d elapsed=%lu ms",
+              tid,
+              static_cast<unsigned long>(elapsed));
+    WriteRawLog(buf);
+    g_noClickState.powerWordsLogged = true;
+}
+
+static void MaybeLogPowerWordsTimeout(const char* stage)
+{
+    if (!g_noClickState.active)
+        return;
+    if (g_noClickState.powerWordsLogged)
+        return;
+    if (g_noClickState.powerWordsDeadline == 0)
+        return;
+    DWORD now = GetTickCount();
+    if (now < g_noClickState.powerWordsDeadline)
+        return;
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[SpellUI] power-words: TIMEOUT stage=%s elapsed=%lu ms",
+              stage ? stage : "unknown",
+              static_cast<unsigned long>(now - g_noClickState.startTick));
+    WriteRawLog(buf);
+    g_noClickState.powerWordsLogged = true;
+}
+
+static bool IsTargetCursorActive()
+{
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L || !g_origUserActionIsTargetModeCompat)
+        return false;
+    int topBefore = lua_gettop(L);
+    int rc = InvokeClientLuaFn(g_origUserActionIsTargetModeCompat, "UserActionIsTargetModeCompat", L);
+    bool compat = false;
+    if (rc > 0) {
+        int topAfter = lua_gettop(L);
+        if (topAfter > 0)
+            compat = lua_toboolean(L, -1) != 0;
+    }
+    lua_settop(L, topBefore);
+    return compat;
+}
+
+static void ScheduleTargetOpenRequest()
+{
+    Util::OwnerPump::Post("no_click.request_target", []() {
+        if (!EnsureNoClickActive("request_target"))
+            return;
+        auto* L = static_cast<lua_State*>(Engine::LuaState());
+        if (!L || !g_origRequestTargetInfo) {
+            WriteRawLog("[NoClick] RequestTargetInfo unavailable");
+            ResetNoClickState("request_target_missing");
+            return;
+        }
+        g_targetCorr.Arm("UOW_RequestTargetInfo");
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[Target] open requested via RequestTargetInfo");
+        WriteRawLog(buf);
+        int top = lua_gettop(L);
+        int rc = InvokeClientLuaFn(g_origRequestTargetInfo, "RequestTargetInfo", L);
+        lua_settop(L, top);
+        if (rc < 0) {
+            ResetNoClickState("request_target_failed");
+            return;
+        }
+        LogTargetOpen(TargetCommitKind::Object);
+        bool cursor = IsTargetCursorActive();
+        char status[192];
+        sprintf_s(status,
+                  sizeof(status),
+                  "[Target] open %s cursor=%s",
+                  cursor ? "OK" : "PENDING",
+                  cursor ? "true" : "false");
+        WriteRawLog(status);
+        if (!cursor)
+            MaybeLogPowerWordsTimeout("target_open_pending");
+    });
+}
+
+static void BindConsoleIfNeeded(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+    if (g_consoleBound)
+        return;
+
+    auto task = [reason]() {
+        auto* Linner = static_cast<lua_State*>(Engine::LuaState());
+        if (!Linner)
+            return;
+        if (g_consoleBound)
+            return;
+
+        struct ConsoleBinding {
+            lua_CFunction fn;
+            const char* name;
+        };
+
+        static const ConsoleBinding kBindings[] = {
+            {Lua_uow_cmd_bootstrap, "uow.bootstrap"},
+            {Lua_uow_cmd_cast, "uow.cmd.cast"},
+            {Lua_uow_cmd_cast_on_id, "uow.cmd.cast_on_id"},
+            {Lua_uow_cmd_commit_obj, "uow.cmd.commit_obj"},
+            {Lua_uow_cmd_commit_ground, "uow.cmd.commit_ground"},
+            {Lua_uow_cmd_cancel_target, "uow.cmd.cancel_target"},
+        };
+
+        bool viaClient = true;
+        for (const auto& binding : kBindings) {
+            if (!RegisterViaClient(Linner, binding.fn, binding.name)) {
+                viaClient = false;
+                break;
+            }
+        }
+
+        if (!viaClient) {
+            int top = lua_gettop(Linner);
+            lua_getglobal(Linner, "uow");
+            if (lua_type(Linner, -1) != LUA_TTABLE) {
+                lua_pop(Linner, 1);
+                lua_createtable(Linner, 0, 0);
+                lua_setglobal(Linner, "uow");
+                lua_getglobal(Linner, "uow");
+            }
+            lua_getfield(Linner, -1, "cmd");
+            if (lua_type(Linner, -1) != LUA_TTABLE) {
+                lua_pop(Linner, 1);
+                lua_createtable(Linner, 0, 5);
+                lua_setfield(Linner, -2, "cmd");
+                lua_getfield(Linner, -1, "cmd");
+            }
+
+            lua_pushcfunction(Linner, Lua_uow_cmd_cast);
+            lua_setfield(Linner, -2, "cast");
+            lua_pushcfunction(Linner, Lua_uow_cmd_cast_on_id);
+            lua_setfield(Linner, -2, "cast_on_id");
+            lua_pushcfunction(Linner, Lua_uow_cmd_commit_obj);
+            lua_setfield(Linner, -2, "commit_obj");
+            lua_pushcfunction(Linner, Lua_uow_cmd_commit_ground);
+            lua_setfield(Linner, -2, "commit_ground");
+            lua_pushcfunction(Linner, Lua_uow_cmd_cancel_target);
+            lua_setfield(Linner, -2, "cancel_target");
+            lua_settop(Linner, top);
+
+            lua_getglobal(Linner, "uow");
+            lua_pushcfunction(Linner, Lua_uow_cmd_bootstrap);
+            lua_setfield(Linner, -2, "bootstrap");
+            lua_settop(Linner, top);
+        }
+
+        g_consoleBound = true;
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaConsole] uow.* console bindings installed (%s)",
+                  viaClient ? (reason ? reason : "client") : "fallback");
+        WriteRawLog(buf);
+    };
+
+    if (!Util::OwnerPump::Invoke("install_console_bindings", task))
+        Util::OwnerPump::Post("install_console_bindings", std::move(task));
+}
+
+static void NoteNoClickSendPacket(uint8_t id, int len, unsigned counter)
+{
+    if (!g_noClickState.active)
+        return;
+    if (g_noClickState.sendLogged)
+        return;
+    if (id == 0)
+        return;
+    g_noClickState.firstSendId = id;
+    g_noClickState.sendLogged = true;
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[NoClick] cast send observed id=%02X len=%d counter=%u",
+              id,
+              len,
+              counter);
+    WriteRawLog(buf);
+}
+
+static void ResetNoClickState(const char* reason)
+{
+    if (g_noClickState.active && reason && *reason && g_noClickDiagnostics) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[NoClick] reset spell=%d reason=%s",
+                  g_noClickState.spellId,
+                  reason);
+        WriteRawLog(buf);
+    }
+    g_noClickState = {};
+}
+
+static bool EnsureNoClickActive(const char* action)
+{
+    if (g_noClickState.active)
+        return true;
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[NoClick] %s rejected: no active spell",
+              action ? action : "commit");
+    WriteRawLog(buf);
+    return false;
+}
+
+static bool EnsureWithinTargetWindow(const char* action)
+{
+    const uint32_t window = TargetCorrelatorGetWindow();
+    const DWORD now = GetTickCount();
+    const DWORD elapsed = now - g_noClickState.startTick;
+    if (window > 0 && elapsed > window) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[NoClick] %s exceeded target window spell=%d elapsed=%lu window=%u",
+                  action ? action : "commit",
+                  g_noClickState.spellId,
+                  static_cast<unsigned long>(elapsed),
+                  window);
+        WriteRawLog(buf);
+        ResetNoClickState("window_expired");
+        return false;
+    }
+    MaybeLogPowerWordsTimeout(action ? action : "window_check");
+    return true;
+}
+
+static void LogTargetOpen(TargetCommitKind kind)
+{
+    if (g_noClickState.openLogged)
+        return;
+    DWORD now = GetTickCount();
+    DWORD dt = now - g_noClickState.startTick;
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Target] open t0=%lu mode=%s",
+              static_cast<unsigned long>(dt),
+              TargetKindName(kind));
+    WriteRawLog(buf);
+    g_noClickState.openLogged = true;
+    g_noClickState.openKind = kind;
+}
+
+static void LogTargetCommit(TargetCommitKind kind, uint32_t objectId, int x, int y, int facet, const char* via = nullptr)
+{
+    char buf[256];
+    switch (kind) {
+    case TargetCommitKind::Ground:
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[Target] commit kind=%s obj=%u xy=<%d,%d> facet=%d via=%s",
+                  TargetKindName(kind),
+                  objectId,
+                  x,
+                  y,
+                  facet,
+                  via ? via : "<unknown>");
+        break;
+    case TargetCommitKind::Cancel:
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[Target] commit kind=%s via=%s",
+                  TargetKindName(kind),
+                  via ? via : "<unknown>");
+        break;
+    default:
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[Target] commit kind=%s obj=%u via=%s",
+                  TargetKindName(kind),
+                  objectId,
+                  via ? via : "<unknown>");
+        break;
+    }
+    WriteRawLog(buf);
+}
+
+static void CompleteNoClickSpell()
+{
+    MaybeLogPowerWordsTimeout("complete");
+    DWORD elapsed = GetTickCount() - g_noClickState.startTick;
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Spell] done spell=%d elapsed=%lu ms",
+              g_noClickState.spellId,
+              static_cast<unsigned long>(elapsed));
+    WriteRawLog(buf);
+    ResetNoClickState(nullptr);
+}
+
+static bool DispatchNoClickCommand(const char* name, std::function<bool()> fn)
+{
+    if (!fn)
+        return false;
+    auto result = std::make_shared<bool>(false);
+    auto task = [fn = std::move(fn), result]() mutable {
+        *result = fn();
+    };
+    if (Util::OwnerPump::Invoke(name, std::move(task)))
+        return *result;
+    return true;
+}
+
+static bool NoClickCastSpell_Internal(int spellId)
+{
+    if (spellId <= 0) {
+        WriteRawLog("[NoClick] cast rejected: spell id must be positive");
+        return false;
+    }
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L) {
+        WriteRawLog("[NoClick] cast rejected: no Lua state available");
+        return false;
+    }
+    if (!g_origUserActionCastSpell) {
+        WriteRawLog("[NoClick] cast rejected: UserActionCastSpell original missing");
+        return false;
+    }
+
+    if (g_noClickState.active)
+        ResetNoClickState("preempt");
+
+    g_noClickState.active = true;
+    g_noClickState.spellId = spellId;
+    g_noClickState.startTick = GetTickCount();
+    g_noClickState.openLogged = false;
+    g_noClickState.openKind = TargetCommitKind::Object;
+    g_noClickState.firstSendId = 0;
+    g_noClickState.sendLogged = false;
+    g_noClickState.powerWordsDeadline = g_noClickState.startTick + kPowerWordsWindowMs;
+    g_noClickState.powerWordsLogged = false;
+    g_noClickState.powerWordsObserved = false;
+    g_noClickState.powerWordsTid = 0;
+
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Cast] spell=%d dispatched owner=%u",
+              spellId,
+              GetCurrentThreadId());
+    WriteRawLog(buf);
+
+    if (g_noClickDiagnostics) {
+        uint32_t tok = CurrentCastToken();
+        char diag[256];
+        sprintf_s(diag,
+                  sizeof(diag),
+                  "[NoClick] cast start: path=%s tok=%u spell=%d send_id_seen=none",
+                  g_gateSelectedName ? g_gateSelectedName : "unknown",
+                  tok,
+                  spellId);
+        WriteRawLog(diag);
+    }
+
+    int top = lua_gettop(L);
+    lua_pushinteger(L, spellId);
+    int rc = InvokeClientLuaFn(g_origUserActionCastSpell, "UserActionCastSpell", L);
+    lua_settop(L, top);
+    if (rc < 0) {
+        ResetNoClickState("cast_failed");
+        return false;
+    }
+
+    ScheduleTargetOpenRequest();
+
+    return true;
+}
+
+static bool CommitTargetObject_Internal(uint32_t objectId, TargetCommitKind kind)
+{
+    if (!EnsureNoClickActive("commit_obj"))
+        return false;
+    if (!EnsureWithinTargetWindow("commit_obj"))
+        return false;
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L) {
+        WriteRawLog("[NoClick] commit rejected: no Lua state");
+        return false;
+    }
+    if (!g_origHandleSingleLeftClkTarget) {
+        WriteRawLog("[NoClick] commit rejected: HandleSingleLeftClkTarget original missing");
+        return false;
+    }
+
+    g_targetCorr.Arm("UOW_HandleSingleLeftClkTarget");
+    LogTargetOpen(kind);
+
+    int top = lua_gettop(L);
+    lua_pushinteger(L, static_cast<lua_Integer>(objectId));
+    int rc = InvokeClientLuaFn(g_origHandleSingleLeftClkTarget, "HandleSingleLeftClkTarget", L);
+    lua_settop(L, top);
+    if (rc < 0) {
+        ResetNoClickState("commit_failed");
+        return false;
+    }
+
+    LogTargetCommit(kind, objectId, 0, 0, 0, "HandleSingleLeftClkTarget");
+    CompleteNoClickSpell();
+    return true;
+}
+
+static bool CommitTargetGround_Internal(int x, int y, int facet)
+{
+    if (!EnsureNoClickActive("commit_ground"))
+        return false;
+    if (!EnsureWithinTargetWindow("commit_ground"))
+        return false;
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L) {
+        WriteRawLog("[NoClick] ground commit rejected: no Lua state");
+        return false;
+    }
+    if (!g_origHandleSingleLeftClkTarget) {
+        WriteRawLog("[NoClick] ground commit rejected: HandleSingleLeftClkTarget original missing");
+        return false;
+    }
+
+    uint32_t encoded = EncodeGroundTarget(x, y);
+    g_targetCorr.Arm("UOW_HandleSingleLeftClkTarget");
+    LogTargetOpen(TargetCommitKind::Ground);
+
+    int top = lua_gettop(L);
+    lua_pushinteger(L, static_cast<lua_Integer>(encoded));
+    int rc = InvokeClientLuaFn(g_origHandleSingleLeftClkTarget, "HandleSingleLeftClkTarget", L);
+    lua_settop(L, top);
+    if (rc < 0) {
+        ResetNoClickState("commit_ground_failed");
+        return false;
+    }
+
+    LogTargetCommit(TargetCommitKind::Ground, encoded, x, y, facet, "HandleSingleLeftClkTarget");
+    CompleteNoClickSpell();
+    return true;
+}
+
+static bool CancelTarget_Internal()
+{
+    if (!EnsureNoClickActive("cancel_target"))
+        return false;
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L) {
+        WriteRawLog("[NoClick] cancel rejected: no Lua state");
+        return false;
+    }
+
+    bool usedClear = false;
+    int top = lua_gettop(L);
+    if (g_origClearCurrentTarget) {
+        g_targetCorr.Arm("UOW_ClearCurrentTarget");
+        LogTargetOpen(TargetCommitKind::Cancel);
+        int rc = InvokeClientLuaFn(g_origClearCurrentTarget, "ClearCurrentTarget", L);
+        lua_settop(L, top);
+        if (rc < 0) {
+            ResetNoClickState("cancel_failed");
+            return false;
+        }
+        usedClear = true;
+    } else if (g_origHandleSingleLeftClkTarget) {
+        g_targetCorr.Arm("UOW_HandleSingleLeftClkTarget");
+        LogTargetOpen(TargetCommitKind::Cancel);
+        lua_pushinteger(L, 0);
+        int rc = InvokeClientLuaFn(g_origHandleSingleLeftClkTarget, "HandleSingleLeftClkTarget", L);
+        lua_settop(L, top);
+        if (rc < 0) {
+            ResetNoClickState("cancel_failed");
+            return false;
+        }
+        usedClear = true;
+    }
+
+    if (!usedClear) {
+        WriteRawLog("[NoClick] cancel rejected: no clear/handle function available");
+        return false;
+    }
+
+    const char* via = g_origClearCurrentTarget ? "ClearCurrentTarget" : "HandleSingleLeftClkTarget";
+    LogTargetCommit(TargetCommitKind::Cancel, 0, 0, 0, 0, via);
+    CompleteNoClickSpell();
+    return true;
+}
+
+static bool NoClickCastSpellOnId_Internal(int spellId, uint32_t objectId)
+{
+    if (!NoClickCastSpell_Internal(spellId))
+        return false;
+    return CommitTargetObject_Internal(objectId, TargetCommitKind::Object);
+}
+
+static int __cdecl Lua_uow_cmd_cast(lua_State* L)
+{
+    int spellId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        spellId = static_cast<int>(lua_tointeger(L, 1));
+    if (spellId <= 0) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    bool ok = DispatchNoClickCommand("uow.cmd.cast", [spellId]() { return NoClickCastSpell_Internal(spellId); });
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+static int __cdecl Lua_uow_cmd_cast_on_id(lua_State* L)
+{
+    int spellId = 0;
+    uint32_t objectId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        spellId = static_cast<int>(lua_tointeger(L, 1));
+    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
+        objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
+    if (spellId <= 0 || objectId == 0) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    bool ok = DispatchNoClickCommand("uow.cmd.cast_on_id", [spellId, objectId]() {
+        return NoClickCastSpellOnId_Internal(spellId, objectId);
+    });
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+static int __cdecl Lua_uow_cmd_commit_obj(lua_State* L)
+{
+    uint32_t objectId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        objectId = static_cast<uint32_t>(lua_tointeger(L, 1));
+    if (objectId == 0) {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    bool ok = DispatchNoClickCommand("uow.cmd.commit_obj", [objectId]() {
+        return CommitTargetObject_Internal(objectId, TargetCommitKind::Object);
+    });
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+static int __cdecl Lua_uow_cmd_commit_ground(lua_State* L)
+{
+    int x = 0;
+    int y = 0;
+    int facet = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        x = static_cast<int>(lua_tointeger(L, 1));
+    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
+        y = static_cast<int>(lua_tointeger(L, 2));
+    if (L && lua_gettop(L) >= 3 && lua_type(L, 3) == LUA_TNUMBER)
+        facet = static_cast<int>(lua_tointeger(L, 3));
+    bool ok = DispatchNoClickCommand("uow.cmd.commit_ground", [x, y, facet]() {
+        return CommitTargetGround_Internal(x, y, facet);
+    });
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+static int __cdecl Lua_uow_cmd_cancel_target(lua_State* L)
+{
+    bool ok = DispatchNoClickCommand("uow.cmd.cancel_target", []() { return CancelTarget_Internal(); });
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
+static int __cdecl Lua_uow_cmd_bootstrap(lua_State* L)
+{
+    BindConsoleIfNeeded(L, "manual");
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static void EnsureUowCommandBindings(lua_State* L)
+{
+    BindConsoleIfNeeded(L, "ensure");
 }
 
 // Helpers to dump a small callstack for correlation between first and second cast
@@ -4754,6 +5425,16 @@ void ScheduleCastWrapRetry(const char* reason)
 void NotifySendPacket(unsigned counter, const void* bytes, int len)
 {
     HandleCastPacketSend(counter, bytes, len);
+    uint8_t packetId = 0;
+    if (bytes && len > 0) {
+        __try {
+            packetId = *static_cast<const uint8_t*>(bytes);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            packetId = 0;
+        }
+    }
+    if (packetId != 0)
+        NoteNoClickSendPacket(packetId, len, counter);
 }
 
 bool UseHotbarSlot(int hotbarId, int slot)
@@ -4897,6 +5578,12 @@ bool InitLuaBridge()
         g_enableTapTargetWrap = *opt;
     else
         g_enableTapTargetWrap = false;
+    if (auto opt = ReadBoolOption("uow.debug.noclick", "UOW_DEBUG_NOCLICK"))
+        g_noClickDiagnostics = *opt;
+    else
+        g_noClickDiagnostics = false;
+    if (g_noClickDiagnostics)
+        WriteRawLog("[NoClick] diagnostics enabled");
     g_clickTapWrapInstalled.store(false, std::memory_order_release);
     g_clickTapNextMissingLog = 0;
     if (!g_enableTapTargetWrap)
@@ -5070,6 +5757,7 @@ bool InitLuaBridge()
 // Lightweight polling entry-point to retry late installs from a game-thread context
 void PollLateInstalls()
 {
+    Util::OwnerPump::DrainOnOwnerThread();
     static DWORD s_lastTryTick = 0;
     DWORD now = GetTickCount();
     if (now - s_lastTryTick < 500)
@@ -5077,6 +5765,8 @@ void PollLateInstalls()
     s_lastTryTick = now;
     if (auto L = static_cast<lua_State*>(Engine::LuaState()))
         ProcessLateCastWrapLoop(L);
+    if (auto L = static_cast<lua_State*>(Engine::LuaState()))
+        BindConsoleIfNeeded(L, "poller");
     // Optionally enable the RegisterLuaFunction hook late (via cfg/env)
     if (!g_registerResolved) {
         bool late = false;

@@ -17,6 +17,7 @@
 #include "SpellProbe.h"
 #include "CastCorrelator.h"
 #include "TargetCorrelator.h"
+#include "../include/Util/OwnerPump.hpp"
 
 namespace {
 
@@ -77,6 +78,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
     case DLL_PROCESS_ATTACH:
     {
         DisableThreadLibraryCalls(hModule);
+        Util::OwnerPump::Reset();
         Log::Init(hModule);
         char buildBuf[256];
         sprintf_s(buildBuf,
@@ -201,6 +203,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Engine::ShutdownGlobalStateWatch();
         Core::MinHookHelpers::Shutdown();
         Log::Shutdown();
+        Util::OwnerPump::Reset();
         break;
     }
     return TRUE;
