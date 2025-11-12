@@ -381,9 +381,9 @@ static void ResetNoClickState(const char* reason);
 static bool EnsureNoClickActive(const char* action);
 static bool EnsureWithinTargetWindow(const char* action);
 static void LogTargetOpen(TargetCommitKind kind);
-static void BindConsoleIfNeeded(lua_State* L, const char* reason);
+static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* reason = nullptr);
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason);
-static void LogNoClickStatus(const char* tag);
+static void LogUOFlowStatus(const char* tag);
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static int __cdecl Lua_Walk(lua_State* L);
@@ -413,14 +413,13 @@ static int __cdecl Lua_PrintWStringToChatWindow_W(lua_State* L);
 static int __cdecl Lua_PrintTidToChatWindow_W(lua_State* L);
 static int __cdecl Lua_TextLogAddSingleByteEntry_W(lua_State* L);
 static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L);
-static int __cdecl Lua_uow_cmd_cast(lua_State* L);
-static int __cdecl Lua_uow_cmd_cast_on_id(lua_State* L);
-static int __cdecl Lua_uow_cmd_commit_obj(lua_State* L);
-static int __cdecl Lua_uow_cmd_commit_ground(lua_State* L);
-    static int __cdecl Lua_uow_cmd_cancel_target(lua_State* L);
-    static int __cdecl Lua_uow_cmd_bootstrap(lua_State* L);
-static int __cdecl Lua_uow_cmd_status(lua_State* L);
-static void EnsureUowCommandBindings(lua_State* L);
+static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L);
+static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L);
+static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L);
+static int __cdecl Lua_UOFlow_Target_commit_ground(lua_State* L);
+static int __cdecl Lua_UOFlow_Target_cancel(lua_State* L);
+static int __cdecl Lua_UOFlow_bootstrap(lua_State* L);
+static int __cdecl Lua_UOFlow_status(lua_State* L);
 
 struct LateWrapTarget {
     const char* name;
@@ -701,21 +700,53 @@ static bool RefreshLateCastTargetsLocked(uint32_t mask, bool resetLogs)
     return pending;
 }
 
+static const char* EvaluateCastWrapGuard(const LateWrapTarget& target)
+{
+    if (!g_consoleBound)
+        return "console_unbound";
+    if (_stricmp(target.name, "UserActionCastSpell") == 0) {
+        if (!g_origUserActionCastSpell)
+            return "unresolved";
+    } else if (_stricmp(target.name, "UserActionCastSpellOnId") == 0) {
+        if (!g_origUserActionCastSpellOnId)
+            return "unresolved";
+    }
+    return nullptr;
+}
+
 static bool WrapLuaGlobal(lua_State* L, LateWrapTarget& target, DWORD now)
 {
+    const char* guardReason = EvaluateCastWrapGuard(target);
+    if (guardReason) {
+        if (now >= target.nextDeferredLog) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "Wrap %s: guard tripped (%s)",
+                      target.name,
+                      guardReason);
+            WriteRawLog(buf);
+            target.nextDeferredLog = now + 1000;
+        }
+        return false;
+    }
+
     bool wrapped = false;
     __try {
         wrapped = SaveAndReplace(L, target.name, target.wrapper);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DWORD code = GetExceptionCode();
-        char buf[256];
-        sprintf_s(buf,
-                  sizeof(buf),
-                  "Wrap %s: exception 0x%08lX during late wrap",
-                  target.name,
-                  static_cast<unsigned long>(code));
-        WriteRawLog(buf);
+        if (now >= target.nextDeferredLog) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "Wrap %s: guard tripped (exception 0x%08lX)",
+                      target.name,
+                      static_cast<unsigned long>(code));
+            WriteRawLog(buf);
+            target.nextDeferredLog = now + 1000;
+        }
         return false;
     }
 
@@ -844,8 +875,8 @@ static void MaybeUpdateOwnerContext(void* ctx)
         char buf[160];
         sprintf_s(buf, sizeof(buf), "OwnerPump owner thread set: %u (ctx=%p)", currentTid, ctx);
         WriteRawLog(buf);
+        InstallUOFlowConsoleBindingsIfNeeded(ctx, "owner_context");
         if (auto* L = static_cast<lua_State*>(Engine::LuaState())) {
-            BindConsoleIfNeeded(L, "owner_context");
             ForceLateCastWrapInstall(L, "owner_context");
         }
     }
@@ -2916,6 +2947,8 @@ static void ForceWalkBinding(lua_State* L, const char* reason)
         WriteRawLog("ForceWalkBinding: client helper failed for UOFlow.Walk.move");
     }
 
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), nullptr);
+
     sprintf_s(stateBuf, sizeof(stateBuf), "%s post-bind", tag);
     LogWalkBindingState(L, stateBuf);
 }
@@ -2960,7 +2993,7 @@ static void EnsureReplayHelper(lua_State* L)
         g_replayHelperInstalled.store(true, std::memory_order_release);
         WriteRawLog("EnsureReplayHelper: registered uow_cast_spell_and_target");
     }
-    EnsureUowCommandBindings(L);
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "replay_helper");
 }
 
 static bool ResolveRegisterFunction()
@@ -3591,93 +3624,86 @@ static void ScheduleTargetOpenRequest()
     });
 }
 
-static void BindConsoleIfNeeded(lua_State* L, const char* reason)
+static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* reason)
 {
-    if (!L)
-        return;
+    static DWORD s_nextOwnerCtxLog = 0;
     if (g_consoleBound)
-        return;
+        return true;
 
-    auto task = [reason]() {
-        auto* Linner = static_cast<lua_State*>(Engine::LuaState());
-        if (!Linner)
-            return;
-        if (g_consoleBound)
-            return;
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L)
+        return false;
 
-        struct ConsoleBinding {
-            lua_CFunction fn;
-            const char* name;
-        };
-
-        static const ConsoleBinding kBindings[] = {
-            {Lua_uow_cmd_bootstrap, "uow.bootstrap"},
-            {Lua_uow_cmd_cast, "uow.cmd.cast"},
-            {Lua_uow_cmd_cast_on_id, "uow.cmd.cast_on_id"},
-            {Lua_uow_cmd_commit_obj, "uow.cmd.commit_obj"},
-            {Lua_uow_cmd_commit_ground, "uow.cmd.commit_ground"},
-            {Lua_uow_cmd_cancel_target, "uow.cmd.cancel_target"},
-            {Lua_uow_cmd_status, "uow.cmd.status"},
-        };
-
-        bool viaClient = true;
-        for (const auto& binding : kBindings) {
-            if (!RegisterViaClient(Linner, binding.fn, binding.name)) {
-                viaClient = false;
-                break;
-            }
+    if (!ownerCtx)
+        ownerCtx = CanonicalOwnerContext();
+    if (!ownerCtx) {
+        DWORD now = GetTickCount();
+        if (now >= s_nextOwnerCtxLog) {
+            WriteRawLog("InstallUOFlowConsoleBindingsIfNeeded: owner context unavailable");
+            s_nextOwnerCtxLog = now + 1000;
         }
+        return false;
+    }
 
-        if (!viaClient) {
-            int top = lua_gettop(Linner);
-            lua_getglobal(Linner, "uow");
-            if (lua_type(Linner, -1) != LUA_TTABLE) {
-                lua_pop(Linner, 1);
-                lua_createtable(Linner, 0, 0);
-                lua_setglobal(Linner, "uow");
-                lua_getglobal(Linner, "uow");
-            }
-            lua_getfield(Linner, -1, "cmd");
-            if (lua_type(Linner, -1) != LUA_TTABLE) {
-                lua_pop(Linner, 1);
-                lua_createtable(Linner, 0, 5);
-                lua_setfield(Linner, -2, "cmd");
-                lua_getfield(Linner, -1, "cmd");
-            }
-
-            lua_pushcfunction(Linner, Lua_uow_cmd_cast);
-            lua_setfield(Linner, -2, "cast");
-            lua_pushcfunction(Linner, Lua_uow_cmd_cast_on_id);
-            lua_setfield(Linner, -2, "cast_on_id");
-            lua_pushcfunction(Linner, Lua_uow_cmd_commit_obj);
-            lua_setfield(Linner, -2, "commit_obj");
-            lua_pushcfunction(Linner, Lua_uow_cmd_commit_ground);
-            lua_setfield(Linner, -2, "commit_ground");
-            lua_pushcfunction(Linner, Lua_uow_cmd_cancel_target);
-            lua_setfield(Linner, -2, "cancel_target");
-            lua_pushcfunction(Linner, Lua_uow_cmd_status);
-            lua_setfield(Linner, -2, "status");
-            lua_settop(Linner, top);
-
-            lua_getglobal(Linner, "uow");
-            lua_pushcfunction(Linner, Lua_uow_cmd_bootstrap);
-            lua_setfield(Linner, -2, "bootstrap");
-            lua_pushcfunction(Linner, Lua_uow_cmd_status);
-            lua_setfield(Linner, -2, "status");
-            lua_settop(Linner, top);
-        }
-
-        g_consoleBound = true;
-        char buf[192];
-        sprintf_s(buf,
-                  sizeof(buf),
-                  "[LuaConsole] uow.* console bindings installed (%s)",
-                  viaClient ? (reason ? reason : "client") : "fallback");
-        WriteRawLog(buf);
+    struct ConsoleBinding {
+        lua_CFunction fn;
+        const char* name;
     };
 
-    if (!Util::OwnerPump::Invoke("install_console_bindings", task))
-        Util::OwnerPump::Post("install_console_bindings", std::move(task));
+    static const ConsoleBinding kRequired[] = {
+        {Lua_UOFlow_status, "UOFlow.status"},
+        {Lua_UOFlow_Spell_cast, "UOFlow.Spell.cast"},
+        {Lua_UOFlow_Spell_cast_on_id, "UOFlow.Spell.cast_on_id"},
+        {Lua_UOFlow_Target_commit_obj, "UOFlow.Target.commit_obj"},
+        {Lua_UOFlow_Target_commit_ground, "UOFlow.Target.commit_ground"},
+        {Lua_UOFlow_Target_cancel, "UOFlow.Target.cancel"},
+    };
+
+    for (const auto& binding : kRequired) {
+        if (!RegisterViaClient(L, binding.fn, binding.name)) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "InstallUOFlowConsoleBindingsIfNeeded: register failed for '%s'",
+                      binding.name);
+            WriteRawLog(buf);
+            return false;
+        }
+    }
+
+    static const ConsoleBinding kCompat[] = {
+        {Lua_UOFlow_bootstrap, "uow.bootstrap"},
+        {Lua_UOFlow_Spell_cast, "uow.cmd.cast"},
+        {Lua_UOFlow_Spell_cast_on_id, "uow.cmd.cast_on_id"},
+        {Lua_UOFlow_Target_commit_obj, "uow.cmd.commit_obj"},
+        {Lua_UOFlow_Target_commit_ground, "uow.cmd.commit_ground"},
+        {Lua_UOFlow_Target_cancel, "uow.cmd.cancel_target"},
+        {Lua_UOFlow_status, "uow.cmd.status"},
+    };
+
+    for (const auto& binding : kCompat) {
+        if (!RegisterViaClient(L, binding.fn, binding.name)) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "InstallUOFlowConsoleBindingsIfNeeded: compat register failed for '%s'",
+                      binding.name);
+            WriteRawLog(buf);
+        }
+    }
+
+    g_consoleBound = true;
+    Util::OwnerPump::SetDrainAllowed(true);
+
+    const char* label = reason ? reason : "owner_context";
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaConsole] UOFlow.* console bindings installed (%s ctx=%p)",
+              label,
+              ownerCtx);
+    WriteRawLog(buf);
+    return true;
 }
 
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason)
@@ -3741,21 +3767,28 @@ static void ResetNoClickState(const char* reason)
     g_noClickState = {};
 }
 
-static void LogNoClickStatus(const char* tag)
+static void LogUOFlowStatus(const char* tag)
 {
     bool haveOrig = (g_origUserActionCastSpell != nullptr);
     bool haveGate = HasAnyGateReplayContext();
     uint32_t ownerTid = g_ownerThreadId.load(std::memory_order_acquire);
+    char ownerBuf[32] = {};
+    const char* ownerLabel = "none";
+    if (ownerTid != 0) {
+        sprintf_s(ownerBuf, sizeof(ownerBuf), "%u", ownerTid);
+        ownerLabel = ownerBuf;
+    }
+    const char* consoleLabel = g_consoleBound ? "bound" : "unbound";
     char buf[256];
     sprintf_s(buf,
               sizeof(buf),
-              "[NoClick] status tag=%s orig=%s gate_ctx=%s gate_addr=%s owner=%u console=%s",
-              tag ? tag : "status",
+              "tag=%s orig=%s gate_ctx=%s gate_addr=%s owner=%s console=%s",
+              tag ? tag : "UOFlow.status",
               haveOrig ? "yes" : "no",
               haveGate ? "yes" : "no",
               g_gateSelectedName ? g_gateSelectedName : "unknown",
-              ownerTid,
-              g_consoleBound ? "bound" : "pending");
+              ownerLabel,
+              consoleLabel);
     WriteRawLog(buf);
 }
 
@@ -3907,17 +3940,15 @@ static bool NoClickCastSpell_Internal(int spellId)
               GetCurrentThreadId());
     WriteRawLog(buf);
 
-    if (g_noClickDiagnostics) {
-        uint32_t tok = CurrentCastToken();
-        char diag[256];
-        sprintf_s(diag,
-                  sizeof(diag),
-                  "[NoClick] cast start: path=%s tok=%u spell=%d send_id_seen=none",
-                  g_gateSelectedName ? g_gateSelectedName : "unknown",
-                  tok,
-                  spellId);
-        WriteRawLog(diag);
-    }
+    uint32_t tok = CurrentCastToken();
+    char diag[256];
+    sprintf_s(diag,
+              sizeof(diag),
+              "[NoClick] cast start: path=%s tok=%u spell=%d send_id_seen=none",
+              g_gateSelectedName ? g_gateSelectedName : "unknown",
+              tok,
+              spellId);
+    WriteRawLog(diag);
 
     if (g_origUserActionCastSpell) {
         int top = lua_gettop(L);
@@ -3945,7 +3976,7 @@ static bool NoClickCastSpell_Internal(int spellId)
                       g_origUserActionCastSpell ? "yes" : "no",
                       gateCtx ? "yes" : "no");
             WriteRawLog(bufPrereq);
-            LogNoClickStatus("cast_prereq");
+            LogUOFlowStatus("UOFlow.Spell.cast_prereq");
             ResetNoClickState("missing_orig");
             return false;
         }
@@ -4076,7 +4107,7 @@ static bool NoClickCastSpellOnId_Internal(int spellId, uint32_t objectId)
     return CommitTargetObject_Internal(objectId, TargetCommitKind::Object);
 }
 
-static int __cdecl Lua_uow_cmd_cast(lua_State* L)
+static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
 {
     int spellId = 0;
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
@@ -4085,12 +4116,12 @@ static int __cdecl Lua_uow_cmd_cast(lua_State* L)
         lua_pushboolean(L, 0);
         return 1;
     }
-    bool ok = DispatchNoClickCommand("uow.cmd.cast", [spellId]() { return NoClickCastSpell_Internal(spellId); });
+    bool ok = DispatchNoClickCommand("UOFlow.Spell.cast", [spellId]() { return NoClickCastSpell_Internal(spellId); });
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
 
-static int __cdecl Lua_uow_cmd_cast_on_id(lua_State* L)
+static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
 {
     int spellId = 0;
     uint32_t objectId = 0;
@@ -4102,14 +4133,14 @@ static int __cdecl Lua_uow_cmd_cast_on_id(lua_State* L)
         lua_pushboolean(L, 0);
         return 1;
     }
-    bool ok = DispatchNoClickCommand("uow.cmd.cast_on_id", [spellId, objectId]() {
+    bool ok = DispatchNoClickCommand("UOFlow.Spell.cast_on_id", [spellId, objectId]() {
         return NoClickCastSpellOnId_Internal(spellId, objectId);
     });
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
 
-static int __cdecl Lua_uow_cmd_commit_obj(lua_State* L)
+static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L)
 {
     uint32_t objectId = 0;
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
@@ -4118,14 +4149,14 @@ static int __cdecl Lua_uow_cmd_commit_obj(lua_State* L)
         lua_pushboolean(L, 0);
         return 1;
     }
-    bool ok = DispatchNoClickCommand("uow.cmd.commit_obj", [objectId]() {
+    bool ok = DispatchNoClickCommand("UOFlow.Target.commit_obj", [objectId]() {
         return CommitTargetObject_Internal(objectId, TargetCommitKind::Object);
     });
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
 
-static int __cdecl Lua_uow_cmd_commit_ground(lua_State* L)
+static int __cdecl Lua_UOFlow_Target_commit_ground(lua_State* L)
 {
     int x = 0;
     int y = 0;
@@ -4136,40 +4167,35 @@ static int __cdecl Lua_uow_cmd_commit_ground(lua_State* L)
         y = static_cast<int>(lua_tointeger(L, 2));
     if (L && lua_gettop(L) >= 3 && lua_type(L, 3) == LUA_TNUMBER)
         facet = static_cast<int>(lua_tointeger(L, 3));
-    bool ok = DispatchNoClickCommand("uow.cmd.commit_ground", [x, y, facet]() {
+    bool ok = DispatchNoClickCommand("UOFlow.Target.commit_ground", [x, y, facet]() {
         return CommitTargetGround_Internal(x, y, facet);
     });
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
 
-static int __cdecl Lua_uow_cmd_cancel_target(lua_State* L)
+static int __cdecl Lua_UOFlow_Target_cancel(lua_State* L)
 {
-    bool ok = DispatchNoClickCommand("uow.cmd.cancel_target", []() { return CancelTarget_Internal(); });
+    bool ok = DispatchNoClickCommand("UOFlow.Target.cancel", []() { return CancelTarget_Internal(); });
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
 
-static int __cdecl Lua_uow_cmd_bootstrap(lua_State* L)
+static int __cdecl Lua_UOFlow_bootstrap(lua_State* L)
 {
-    g_consoleBound = false;
-    BindConsoleIfNeeded(L, "manual");
-    ForceLateCastWrapInstall(L, "manual");
-    LogNoClickStatus("uow.bootstrap");
-    lua_pushboolean(L, 1);
-    return 1;
-}
-
-static int __cdecl Lua_uow_cmd_status(lua_State* L)
-{
-    LogNoClickStatus("uow.cmd.status");
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "manual");
+    if (auto* state = static_cast<lua_State*>(Engine::LuaState()))
+        ForceLateCastWrapInstall(state, "manual");
+    LogUOFlowStatus("UOFlow.bootstrap");
     lua_pushboolean(L, g_consoleBound ? 1 : 0);
     return 1;
 }
 
-static void EnsureUowCommandBindings(lua_State* L)
+static int __cdecl Lua_UOFlow_status(lua_State* L)
 {
-    BindConsoleIfNeeded(L, "ensure");
+    LogUOFlowStatus("UOFlow.status");
+    lua_pushboolean(L, g_consoleBound ? 1 : 0);
+    return 1;
 }
 
 // Helpers to dump a small callstack for correlation between first and second cast
@@ -5860,8 +5886,8 @@ void PollLateInstalls()
     s_lastTryTick = now;
     if (auto L = static_cast<lua_State*>(Engine::LuaState()))
         ProcessLateCastWrapLoop(L);
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "poller");
     if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-        BindConsoleIfNeeded(L, "poller");
         ForceLateCastWrapInstall(L, "poller");
     }
     // Optionally enable the RegisterLuaFunction hook late (via cfg/env)

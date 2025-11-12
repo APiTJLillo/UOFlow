@@ -549,10 +549,8 @@ void SpellSenderDetour_EnsureArmed(uintptr_t frameAddr) {
     std::lock_guard<std::mutex> lock(g_detourMutex);
     if (!g_state.opts.enable)
         return;
-    if (g_state.armed && g_state.entry == normalized)
-        return;
     if (g_state.armed)
-        DisarmLocked();
+        return;
 
     long long delta = static_cast<long long>(static_cast<intptr_t>(frameAddr) -
                                              static_cast<intptr_t>(normalized));

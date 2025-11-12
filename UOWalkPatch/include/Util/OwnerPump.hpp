@@ -23,9 +23,13 @@ void SetOwnerThreadId(std::uint32_t tid) noexcept;
 std::uint32_t GetOwnerThreadId() noexcept;
 
 // Drain pending tasks. Only processes work when invoked by the canonical owner
-// thread; other callers simply leave the queue untouched.
+// thread once draining is enabled; other callers simply leave the queue untouched.
 // Returns the number of tasks actually executed.
 std::size_t DrainOnOwnerThread() noexcept;
+
+// Allow or block draining of queued work. Drain is disabled until explicitly
+// enabled to keep ordering guarantees around console binding.
+void SetDrainAllowed(bool enabled) noexcept;
 
 // Clear queued work. Intended for shutdown paths.
 void Reset() noexcept;

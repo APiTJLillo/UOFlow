@@ -20,6 +20,7 @@ struct PendingTask {
 std::mutex g_queueMutex;
 std::vector<PendingTask> g_queue;
 std::atomic<std::uint32_t> g_ownerTid{0};
+std::atomic<bool> g_allowDrain{false};
 constexpr std::size_t kMaxDrainPerPass = 8;
 constexpr std::size_t kMaxDrainIterations = 4;
 
@@ -50,6 +51,17 @@ void LogQueued(const char* name, std::uint32_t fromTid, std::uint32_t ownerTid)
               static_cast<unsigned>(ownerTid));
     WriteRawLog(buf);
 }
+
+void LogRunning(const char* name, std::uint32_t tid)
+{
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[OwnerPump] running op=%s on=%u",
+              OpLabel(name),
+              static_cast<unsigned>(tid));
+    WriteRawLog(buf);
+}
 } // namespace
 
 void RunOnOwner(std::function<void()> task)
@@ -62,6 +74,14 @@ void Post(const char* opName, std::function<void()> task)
     if (!task)
         return;
 
+    const std::uint32_t owner = g_ownerTid.load(std::memory_order_acquire);
+    const std::uint32_t current = GetCurrentThreadId();
+    if (owner != 0 && current == owner) {
+        LogRunning(opName, current);
+        task();
+        return;
+    }
+
     PendingTask entry{};
     if (opName)
         entry.name = opName;
@@ -69,6 +89,8 @@ void Post(const char* opName, std::function<void()> task)
 
     std::lock_guard<std::mutex> lock(g_queueMutex);
     g_queue.emplace_back(std::move(entry));
+
+    LogQueued(opName, current, owner);
 }
 
 bool Invoke(const char* opName, std::function<void()> task)
@@ -78,21 +100,11 @@ bool Invoke(const char* opName, std::function<void()> task)
     const std::uint32_t owner = g_ownerTid.load(std::memory_order_acquire);
     const std::uint32_t current = GetCurrentThreadId();
     if (owner != 0 && current == owner) {
-        if (opName && *opName) {
-            char buf[192];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[OwnerPump] running op=%s on=%u",
-                      OpLabel(opName),
-                      static_cast<unsigned>(current));
-            WriteRawLog(buf);
-        }
+        LogRunning(opName, current);
         task();
         return true;
     }
     Post(opName, std::move(task));
-    if (current != owner)
-        LogQueued(opName, current, owner);
     return false;
 }
 
@@ -108,6 +120,9 @@ std::uint32_t GetOwnerThreadId() noexcept
 
 std::size_t DrainOnOwnerThread() noexcept
 {
+    if (!g_allowDrain.load(std::memory_order_acquire))
+        return 0;
+
     const std::uint32_t ownerTid = g_ownerTid.load(std::memory_order_acquire);
     if (ownerTid == 0)
         return 0;
@@ -133,15 +148,7 @@ std::size_t DrainOnOwnerThread() noexcept
                 continue;
 
             try {
-                if (!local[index].name.empty()) {
-                    char buf[192];
-                    sprintf_s(buf,
-                              sizeof(buf),
-                              "[OwnerPump] running op=%s on=%u",
-                              local[index].name.c_str(),
-                              static_cast<unsigned>(currentTid));
-                    WriteRawLog(buf);
-                }
+                LogRunning(local[index].name.c_str(), currentTid);
                 local[index].fn();
             } catch (...) {
                 // Swallow exceptions to avoid destabilising the owner thread.
@@ -173,6 +180,12 @@ void Reset() noexcept
         g_queue.clear();
     }
     g_ownerTid.store(0, std::memory_order_release);
+    g_allowDrain.store(false, std::memory_order_release);
+}
+
+void SetDrainAllowed(bool enabled) noexcept
+{
+    g_allowDrain.store(enabled, std::memory_order_release);
 }
 
 } // namespace Util::OwnerPump
