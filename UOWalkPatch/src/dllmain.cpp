@@ -18,6 +18,54 @@
 #include "CastCorrelator.h"
 #include "TargetCorrelator.h"
 
+namespace {
+
+bool TryReadEnvInt(const wchar_t* key, int& outValue, const char* tag)
+{
+    if (!key)
+        return false;
+    wchar_t bufW[64]{};
+    DWORD copied = GetEnvironmentVariableW(key, bufW, _countof(bufW));
+    if (copied == 0 || copied >= _countof(bufW))
+        return false;
+    int value = _wtoi(bufW);
+    if (value == 0)
+        return false;
+    outValue = value;
+    char logBuf[160];
+    sprintf_s(logBuf,
+              sizeof(logBuf),
+              "[Init] env %s=%S",
+              tag ? tag : "env",
+              bufW);
+    WriteRawLog(logBuf);
+    return true;
+}
+
+bool TryReadEnvIntA(const char* key, int& outValue, const char* tag)
+{
+    if (!key)
+        return false;
+    char bufA[64]{};
+    DWORD copied = GetEnvironmentVariableA(key, bufA, static_cast<DWORD>(sizeof(bufA)));
+    if (copied == 0 || copied >= sizeof(bufA))
+        return false;
+    int value = std::atoi(bufA);
+    if (value == 0)
+        return false;
+    outValue = value;
+    char logBuf[160];
+    sprintf_s(logBuf,
+              sizeof(logBuf),
+              "[Init] env %s=%s",
+              tag ? tag : "env",
+              bufA);
+    WriteRawLog(logBuf);
+    return true;
+}
+
+} // namespace
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 {
     switch (reason)
@@ -85,16 +133,34 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
             Trace::SetWindowMs(*ms2);
 
         uint32_t targetWindowOverride = 0;
-        if (auto cfg = Core::Config::TryGetMilliseconds("uow.debug.target_window_ms"))
+        const char* targetWindowSource = nullptr;
+        if (auto cfg = Core::Config::TryGetMilliseconds("uow.debug.target_window_ms")) {
             targetWindowOverride = *cfg;
-        else if (auto env = Core::Config::TryGetEnv("UOW_DEBUG_TARGET_WINDOW_MS"))
-            targetWindowOverride = static_cast<uint32_t>(std::strtoul(env->c_str(), nullptr, 10));
-        else if (auto legacy = Core::Config::TryGetMilliseconds("TARGET_CORR_WINDOW_MS"))
-            targetWindowOverride = *legacy;
-        else if (auto legacyEnv = Core::Config::TryGetEnv("TARGET_CORR_WINDOW_MS"))
-            targetWindowOverride = static_cast<uint32_t>(std::strtoul(legacyEnv->c_str(), nullptr, 10));
-        if (targetWindowOverride)
+            targetWindowSource = "cfg:uow.debug.target_window_ms";
+        } else {
+            int envValue = 0;
+            if (TryReadEnvInt(L"UOW_DEBUG_TARGET_WINDOW_MS", envValue, "UOW_DEBUG_TARGET_WINDOW_MS") ||
+                TryReadEnvIntA("UOW_DEBUG_TARGET_WINDOW_MS", envValue, "UOW_DEBUG_TARGET_WINDOW_MS")) {
+                targetWindowOverride = static_cast<uint32_t>(envValue);
+                targetWindowSource = "env:UOW_DEBUG_TARGET_WINDOW_MS";
+            } else if (auto legacy = Core::Config::TryGetMilliseconds("TARGET_CORR_WINDOW_MS")) {
+                targetWindowOverride = *legacy;
+                targetWindowSource = "cfg:TARGET_CORR_WINDOW_MS";
+            } else if (auto legacyEnv = Core::Config::TryGetEnv("TARGET_CORR_WINDOW_MS")) {
+                targetWindowOverride = static_cast<uint32_t>(std::strtoul(legacyEnv->c_str(), nullptr, 10));
+                targetWindowSource = "env:TARGET_CORR_WINDOW_MS";
+            }
+        }
+        if (targetWindowOverride > 0) {
             TargetCorrelatorSetWindow(targetWindowOverride);
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[Init] target_window_ms=%u source=%s",
+                      TargetCorrelatorGetWindow(),
+                      targetWindowSource ? targetWindowSource : "override");
+            WriteRawLog(buf);
+        }
 
         if (!Engine::InitGlobalStateWatch())
             return FALSE;

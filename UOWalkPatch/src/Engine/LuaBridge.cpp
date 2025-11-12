@@ -45,7 +45,18 @@ extern "C" {
     LUA_API void lua_getfenv(lua_State* L, int idx);
     LUA_API void lua_replace(lua_State* L, int idx);
     LUA_API void lua_pushinteger(lua_State* L, lua_Integer n);
+    LUA_API int lua_iscfunction(lua_State* L, int idx);
+    LUA_API void lua_pushlightuserdata(lua_State* L, void* p);
+    LUA_API void* lua_touserdata(lua_State* L, int idx);
+    LUA_API int luaL_ref(lua_State* L, int t);
+    LUA_API void luaL_unref(lua_State* L, int t, int ref);
 }
+#ifndef LUA_NOREF
+#define LUA_NOREF (-2)
+#endif
+#ifndef LUA_REFNIL
+#define LUA_REFNIL (-1)
+#endif
 #ifndef LUA_MULTRET
 #define LUA_MULTRET (-1)
 #endif
@@ -132,6 +143,9 @@ enum ContextLogBits : unsigned {
     static bool g_warnNativeHsCursor = false;
     static bool g_enableTapTargetWrap = false;
     static bool g_clickTapStateLogged = false;
+    static int g_castSpellRegistryRef = LUA_NOREF;
+    static int g_castSpellOnIdRegistryRef = LUA_NOREF;
+    static const void* const kCastWrapperSentinel = reinterpret_cast<void*>(static_cast<intptr_t>(0xC457C0DE));
 
     static volatile LONG g_targetCompatBannerLogged = 0;
     static volatile LONG g_actionTypeCompatBannerLogged = 0;
@@ -514,6 +528,93 @@ static bool RegisterFunctionSafe(lua_State* L, lua_CFunction fn, const char* nam
         WriteRawLog(buf);
         return false;
     }
+}
+
+static bool IsRegistryWrapper(lua_State* L, const char* name)
+{
+    if (!L || !name)
+        return false;
+    int top = lua_gettop(L);
+    lua_getglobal(L, name);
+    bool wrapped = false;
+    if (lua_iscfunction(L, -1)) {
+        if (lua_getupvalue(L, -1, 2) != nullptr) {
+            const void* marker = lua_touserdata(L, -1);
+            wrapped = (marker == kCastWrapperSentinel);
+            lua_pop(L, 1);
+        }
+    }
+    lua_settop(L, top);
+    return wrapped;
+}
+
+static bool InstallRegistryWrapper(lua_State* L,
+                                   const char* name,
+                                   lua_CFunction wrapper,
+                                   int& registryRef)
+{
+    if (!L || !name || !wrapper)
+        return false;
+    if (IsRegistryWrapper(L, name))
+        return true;
+    int top = lua_gettop(L);
+    lua_getglobal(L, name);
+    if (lua_type(L, -1) != LUA_TFUNCTION) {
+        lua_settop(L, top);
+        return false;
+    }
+    std::string saved = std::string(name) + "__orig";
+    lua_pushvalue(L, -1);
+    lua_setfield(L, LUA_GLOBALSINDEX, saved.c_str());
+    if (registryRef != LUA_NOREF) {
+        luaL_unref(L, LUA_REGISTRYINDEX, registryRef);
+        registryRef = LUA_NOREF;
+    }
+    registryRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_pushlightuserdata(L, reinterpret_cast<void*>(static_cast<intptr_t>(registryRef)));
+    lua_pushlightuserdata(L, const_cast<void*>(kCastWrapperSentinel));
+    lua_pushcclosure(L, wrapper, 2);
+    lua_setglobal(L, name);
+    lua_settop(L, top);
+    char buf[192];
+    sprintf_s(buf, sizeof(buf), "Wrap %s: saved original via registry ref=%d", name, registryRef);
+    WriteRawLog(buf);
+    return true;
+}
+
+static int CallRegistryOriginal(lua_State* L, const char* name, int registryRef)
+{
+    if (!L || registryRef == LUA_NOREF)
+        return -1;
+    int nargs = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, registryRef);
+    if (lua_type(L, -1) != LUA_TFUNCTION) {
+        lua_pop(L, 1);
+        return -1;
+    }
+    lua_insert(L, 1);
+    int status = lua_pcall(L, nargs, LUA_MULTRET, 0);
+    if (status != 0) {
+        const char* err = lua_tolstring(L, -1, nullptr);
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[Wrap] %s registry call error: %s",
+                  name ? name : "<fn>",
+                  err ? err : "<nil>");
+        WriteRawLog(buf);
+        lua_settop(L, 0);
+        return -1;
+    }
+    int nret = lua_gettop(L);
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Wrap] %s forwarded returns=%d",
+              name ? name : "<fn>",
+              nret);
+    WriteRawLog(buf);
+    return nret;
 }
 
 static bool RefreshLateCastTargetsLocked(uint32_t mask, bool resetLogs)
@@ -2482,18 +2583,26 @@ static void TryInstallActionWrappers()
             if ((entry.bit == kWrapperHandleLeftClick && !g_enableTapTargetWrap) ||
                 (!g_debugWords && (entry.bit == kWrapperPrintWString || entry.bit == kWrapperPrintTid || entry.bit == kWrapperTextLogAddSingleByte || entry.bit == kWrapperSpeechSetText || entry.bit == kWrapperTextLogAddEntry)))
                 return;
-            lua_getglobal(L, entry.name);
-            bool present = (lua_type(L, -1) == LUA_TFUNCTION);
-            lua_pop(L, 1);
-            if (!present) {
-                if (now >= s_nextMissingLogMs) {
-                    char msg[192];
-                    sprintf_s(msg, sizeof(msg), "TryInstallActionWrappers: '%s' not found; will retry", entry.name);
-                    WriteRawLog(msg);
+            bool wrapped = false;
+            if (entry.bit == kWrapperCastSpell) {
+                wrapped = InstallRegistryWrapper(L, entry.name, entry.wrapper, g_castSpellRegistryRef);
+            } else if (entry.bit == kWrapperCastSpellOnId) {
+                wrapped = InstallRegistryWrapper(L, entry.name, entry.wrapper, g_castSpellOnIdRegistryRef);
+            } else {
+                lua_getglobal(L, entry.name);
+                bool present = (lua_type(L, -1) == LUA_TFUNCTION);
+                lua_pop(L, 1);
+                if (!present) {
+                    if (now >= s_nextMissingLogMs) {
+                        char msg[192];
+                        sprintf_s(msg, sizeof(msg), "TryInstallActionWrappers: '%s' not found; will retry", entry.name);
+                        WriteRawLog(msg);
+                    }
+                    return;
                 }
-                return;
+                wrapped = SaveAndReplace(L, entry.name, entry.wrapper);
             }
-            if (SaveAndReplace(L, entry.name, entry.wrapper)) {
+            if (wrapped) {
                 mask |= entry.bit;
                 installedAny = true;
             }
@@ -3476,34 +3585,42 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
     int savedCount = -1;
     bool usedDirect = false;
     int directValue = 0;
+    bool usedRegistry = false;
 
-    int rc = CallSavedOriginal(L, "UserActionCastSpell__orig");
+    int rc = CallRegistryOriginal(L, "UserActionCastSpell", g_castSpellRegistryRef);
     if (rc >= 0) {
-        usedSaved = true;
+        usedRegistry = true;
         savedCount = rc;
         retInfo = CaptureLuaReturn(L, savedCount);
-        if (g_traceLuaVerbose && savedCount > 0) {
+        if (g_traceLuaVerbose && savedCount > 0)
             LogLuaReturns(L, "UserActionCastSpell", savedCount);
-        }
-    } else if (g_origUserActionCastSpell) {
-        directValue = InvokeClientLuaFn(g_origUserActionCastSpell, "UserActionCastSpell", L);
-        usedDirect = true;
-        retInfo = CaptureLuaReturn(L, directValue);
-        if (g_traceLuaVerbose && directValue > 0) {
-            LogLuaReturns(L, "UserActionCastSpell", directValue);
-        }
     } else {
-        WriteRawLog("[Lua] UserActionCastSpell original missing (saved and ptr)");
-        UowTraceCollectRAs();
-        unsigned missPathId = LogCastSpellPath(token, g_castSpellLastRAs, ownerMatch);
-        if (g_logCastSpellCallLists)
-            DumpCastSpellCallees(g_castSpellLastRAs, missPathId, token, false);
-        if (gateArmed)
-            GateDisarmForCast("UserActionCastSpell:missing_orig");
-        ReleaseCastPacket(token);
-        GuardLuaStack(L, "UserActionCastSpell", topBefore, 0);
-        g_tlsCurrentCastToken = previousTok;
-        return 0;
+        rc = CallSavedOriginal(L, "UserActionCastSpell__orig");
+        if (rc >= 0) {
+            usedSaved = true;
+            savedCount = rc;
+            retInfo = CaptureLuaReturn(L, savedCount);
+            if (g_traceLuaVerbose && savedCount > 0)
+                LogLuaReturns(L, "UserActionCastSpell", savedCount);
+        } else if (g_origUserActionCastSpell) {
+            directValue = InvokeClientLuaFn(g_origUserActionCastSpell, "UserActionCastSpell", L);
+            usedDirect = true;
+            retInfo = CaptureLuaReturn(L, directValue);
+            if (g_traceLuaVerbose && directValue > 0)
+                LogLuaReturns(L, "UserActionCastSpell", directValue);
+        } else {
+            WriteRawLog("[Lua] UserActionCastSpell original missing (saved and ptr)");
+            UowTraceCollectRAs();
+            unsigned missPathId = LogCastSpellPath(token, g_castSpellLastRAs, ownerMatch);
+            if (g_logCastSpellCallLists)
+                DumpCastSpellCallees(g_castSpellLastRAs, missPathId, token, false);
+            if (gateArmed)
+                GateDisarmForCast("UserActionCastSpell:missing_orig");
+            ReleaseCastPacket(token);
+            GuardLuaStack(L, "UserActionCastSpell", topBefore, 0);
+            g_tlsCurrentCastToken = previousTok;
+            return 0;
+        }
     }
 
     unsigned sentAfter = Net::GetSendCounter();
@@ -3526,8 +3643,8 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
     }
 
     char detail[320];
-    const char* callKind = usedSaved ? "saved" : "direct";
-    const int returnValue = usedSaved ? savedCount : directValue;
+    const char* callKind = usedRegistry ? "registry" : (usedSaved ? "saved" : "direct");
+    const int returnValue = (usedRegistry || usedSaved) ? savedCount : directValue;
     sprintf_s(detail, sizeof(detail),
         "[Lua] UserActionCastSpell rc=%d packets(before=%u after=%u delta=%u) tok=%u call=%s spell=%d attemptDelta=%u sinceSuccess=%u",
         returnValue, sentBefore, sentAfter, delta, token, callKind, spellId,
@@ -3614,92 +3731,98 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
     static volatile LONG s_noPacketLogs = 0;
     static volatile LONG s_upvalueLogs = 0;
     LuaReturnInfo retInfo{};
-    if (g_traceLuaVerbose) {
+    if (g_traceLuaVerbose)
         LogLuaArgs(L, "UserActionCastSpellOnId");
-    }
+
     unsigned sentBefore = Net::GetSendCounter();
-    int rc = CallSavedOriginal(L, "UserActionCastSpellOnId__orig");
+    bool usedRegistry = false;
+    bool usedSaved = false;
+    bool usedDirect = false;
+    int savedCount = -1;
+    int directValue = 0;
+
+    int rc = CallRegistryOriginal(L, "UserActionCastSpellOnId", g_castSpellOnIdRegistryRef);
     if (rc >= 0) {
+        usedRegistry = true;
+        savedCount = rc;
+        retInfo = CaptureLuaReturn(L, savedCount);
+        if (g_traceLuaVerbose && savedCount > 0)
+            LogLuaReturns(L, "UserActionCastSpellOnId", savedCount);
+    } else {
+        rc = CallSavedOriginal(L, "UserActionCastSpellOnId__orig");
+        if (rc >= 0) {
+            usedSaved = true;
+            savedCount = rc;
+            retInfo = CaptureLuaReturn(L, rc);
+            if (g_traceLuaVerbose && rc > 0)
+                LogLuaReturns(L, "UserActionCastSpellOnId", rc);
+        } else if (g_origUserActionCastSpellOnId) {
+            directValue = InvokeClientLuaFn(g_origUserActionCastSpellOnId, "UserActionCastSpellOnId", L);
+            usedDirect = true;
+            retInfo = CaptureLuaReturn(L, directValue);
+            if (g_traceLuaVerbose && directValue > 0)
+                LogLuaReturns(L, "UserActionCastSpellOnId", directValue);
+        } else {
+            WriteRawLog("[Lua] UserActionCastSpellOnId original missing (saved and ptr)");
+            if (g_traceTargetPath) {
+                char buf[128];
+                sprintf_s(buf, sizeof(buf), "[TargetPath] Leave UserActionCastSpellOnId rc=0 tok=%u (missing)", tok);
+                WriteRawLog(buf);
+            }
+            GuardLuaStack(L, "UserActionCastSpellOnId", topBefore, 0);
+            return 0;
+        }
+    }
+
+    if (usedRegistry)
+        rc = savedCount;
+    else if (usedSaved)
+        rc = savedCount;
+    else if (usedDirect)
+        rc = directValue;
+
+    if (usedRegistry) {
+        char exitBuf[160];
+        sprintf_s(exitBuf, sizeof(exitBuf), "[Lua] UserActionCastSpellOnId() wrapper exit (registry) tok=%u", tok);
+        WriteRawLog(exitBuf);
+    } else if (usedSaved) {
         char exitBuf[160];
         sprintf_s(exitBuf, sizeof(exitBuf), "[Lua] UserActionCastSpellOnId() wrapper exit (saved) tok=%u", tok);
         WriteRawLog(exitBuf);
-        retInfo = CaptureLuaReturn(L, rc);
-        if (g_traceLuaVerbose && rc > 0)
-            LogLuaReturns(L, "UserActionCastSpellOnId", rc);
-        unsigned sentAfter = Net::GetSendCounter();
-        unsigned delta = sentAfter - sentBefore;
-        char detail[192];
-        sprintf_s(detail, sizeof(detail),
-            "[Lua] UserActionCastSpellOnId rc=%d packets(before=%u after=%u delta=%u) tok=%u",
-            rc, sentBefore, sentAfter, delta, tok);
-        WriteRawLog(detail);
-        LogReturnBanner(L, "UserActionCastSpellOnId", retInfo, g_castSpellOnIdReturnBannerLogged);
-        if (delta > 0) WriteRawLog("[Lua] CastSpellOnId -> packet observed");
-        else {
-            WriteRawLog("[Lua] CastSpellOnId -> no packet sent");
-            LONG order = InterlockedIncrement(&s_noPacketLogs);
-            if (order <= 8) {
-                LogLuaErrorTop(L, "UserActionCastSpellOnId/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
-            }
-        }
-        if (g_traceTargetPath) {
-            char buf[160];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[TargetPath] Leave UserActionCastSpellOnId rc=%d tok=%u",
-                      rc,
-                      tok);
-            WriteRawLog(buf);
-        }
-        GuardLuaStack(L, "UserActionCastSpellOnId", topBefore, rc);
-        return rc;
-    }
-    if (g_origUserActionCastSpellOnId) {
-        int out = InvokeClientLuaFn(g_origUserActionCastSpellOnId, "UserActionCastSpellOnId", L);
+    } else if (usedDirect) {
         char exitBuf[160];
         sprintf_s(exitBuf, sizeof(exitBuf), "[Lua] UserActionCastSpellOnId() wrapper exit (orig ptr) tok=%u", tok);
         WriteRawLog(exitBuf);
-        retInfo = CaptureLuaReturn(L, out);
-        if (g_traceLuaVerbose && out > 0)
-            LogLuaReturns(L, "UserActionCastSpellOnId", out);
-        unsigned sentAfter = Net::GetSendCounter();
-        unsigned delta = sentAfter - sentBefore;
-        char detail[192];
-        sprintf_s(detail, sizeof(detail),
-            "[Lua] UserActionCastSpellOnId rc=%d packets(before=%u after=%u delta=%u) tok=%u",
-            out, sentBefore, sentAfter, delta, tok);
-        WriteRawLog(detail);
-        LogReturnBanner(L, "UserActionCastSpellOnId", retInfo, g_castSpellOnIdReturnBannerLogged);
-        if (delta > 0) WriteRawLog("[Lua] CastSpellOnId -> packet observed");
-        else {
-            WriteRawLog("[Lua] CastSpellOnId -> no packet sent");
-            LONG order = InterlockedIncrement(&s_noPacketLogs);
-            if (order <= 8) {
-                LogLuaErrorTop(L, "UserActionCastSpellOnId/noPacket");
-                LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
-            }
-        }
-        if (g_traceTargetPath) {
-            char buf[160];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[TargetPath] Leave UserActionCastSpellOnId rc=%d tok=%u",
-                      out,
-                      tok);
-            WriteRawLog(buf);
-        }
-        GuardLuaStack(L, "UserActionCastSpellOnId", topBefore, out);
-        return out;
     }
-    WriteRawLog("[Lua] UserActionCastSpellOnId original missing (saved and ptr)");
+
+    unsigned sentAfter = Net::GetSendCounter();
+    unsigned delta = sentAfter - sentBefore;
+    char detail[192];
+    sprintf_s(detail, sizeof(detail),
+        "[Lua] UserActionCastSpellOnId rc=%d packets(before=%u after=%u delta=%u) tok=%u",
+        rc, sentBefore, sentAfter, delta, tok);
+    WriteRawLog(detail);
+    LogReturnBanner(L, "UserActionCastSpellOnId", retInfo, g_castSpellOnIdReturnBannerLogged);
+    if (delta > 0) WriteRawLog("[Lua] CastSpellOnId -> packet observed");
+    else {
+        WriteRawLog("[Lua] CastSpellOnId -> no packet sent");
+        LONG order = InterlockedIncrement(&s_noPacketLogs);
+        if (order <= 8) {
+            LogLuaErrorTop(L, "UserActionCastSpellOnId/noPacket");
+            LogSavedOriginalUpvalues(L, "UserActionCastSpellOnId__orig", "UserActionCastSpellOnId", "UserActionCastSpellOnId/upvalues", &s_upvalueLogs);
+        }
+    }
     if (g_traceTargetPath) {
-        char buf[128];
-        sprintf_s(buf, sizeof(buf), "[TargetPath] Leave UserActionCastSpellOnId rc=0 tok=%u (missing)", tok);
+        char buf[160];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[TargetPath] Leave UserActionCastSpellOnId rc=%d tok=%u",
+                  rc,
+                  tok);
         WriteRawLog(buf);
     }
-    GuardLuaStack(L, "UserActionCastSpellOnId", topBefore, 0);
-    return 0;
+    GuardLuaStack(L, "UserActionCastSpellOnId", topBefore, rc);
+    return rc;
 }
 
 static int __cdecl Lua_UserActionUseSkill_W(lua_State* L)
