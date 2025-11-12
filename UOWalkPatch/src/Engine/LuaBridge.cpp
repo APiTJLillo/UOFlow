@@ -4895,13 +4895,14 @@ bool InitLuaBridge()
     TryInstallDirectActionHooks();
     Engine::RequestWalkRegistration();
     RequestActionWrapperInstall();
+    uint32_t targetWindowMs = TargetCorrelatorGetWindow();
     char flagBuf[160];
     sprintf_s(flagBuf,
               sizeof(flagBuf),
               "[Init] flags: taptarget=%s words=%s target_window_ms=%u",
               g_enableTapTargetWrap ? "on" : "off",
               g_debugWords ? "on" : "off",
-              g_targetCorr.windowMs);
+              targetWindowMs);
     WriteRawLog(flagBuf);
     return true;
 }

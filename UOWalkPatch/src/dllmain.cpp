@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cwchar>
 #include <string>
+#include <cstdlib>
 
 #include "../include/Core/Logging.hpp"
 #include "../include/Core/MinHookHelpers.hpp"
@@ -82,6 +83,18 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
             Trace::SetWindowMs(*ms);
         else if (auto ms2 = Core::Config::TryGetMilliseconds("trace.windowMs"))
             Trace::SetWindowMs(*ms2);
+
+        uint32_t targetWindowOverride = 0;
+        if (auto cfg = Core::Config::TryGetMilliseconds("uow.debug.target_window_ms"))
+            targetWindowOverride = *cfg;
+        else if (auto env = Core::Config::TryGetEnv("UOW_DEBUG_TARGET_WINDOW_MS"))
+            targetWindowOverride = static_cast<uint32_t>(std::strtoul(env->c_str(), nullptr, 10));
+        else if (auto legacy = Core::Config::TryGetMilliseconds("TARGET_CORR_WINDOW_MS"))
+            targetWindowOverride = *legacy;
+        else if (auto legacyEnv = Core::Config::TryGetEnv("TARGET_CORR_WINDOW_MS"))
+            targetWindowOverride = static_cast<uint32_t>(std::strtoul(legacyEnv->c_str(), nullptr, 10));
+        if (targetWindowOverride)
+            TargetCorrelatorSetWindow(targetWindowOverride);
 
         if (!Engine::InitGlobalStateWatch())
             return FALSE;

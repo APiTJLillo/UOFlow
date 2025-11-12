@@ -18,6 +18,13 @@ namespace {
 CRITICAL_SECTION g_targetCorrLock;
 bool g_targetCorrLockInit = false;
 
+constexpr uint32_t kDefaultTargetWindowMs = 1200;
+
+uint32_t ClampWindowMs(uint32_t window)
+{
+    return std::clamp(window, 200u, 4000u);
+}
+
 void EnsureLock()
 {
     if (!g_targetCorrLockInit) {
@@ -65,7 +72,7 @@ bool ReadBool(const char* key, const char* envKey, bool defaultValue = false)
 
 uint32_t ReadWindowMs()
 {
-    uint32_t window = 1200;
+    uint32_t window = kDefaultTargetWindowMs;
     if (auto cfg = Core::Config::TryGetMilliseconds("uow.debug.target_window_ms"))
         window = *cfg;
     else if (auto env = Core::Config::TryGetEnv("UOW_DEBUG_TARGET_WINDOW_MS"))
@@ -74,7 +81,7 @@ uint32_t ReadWindowMs()
         window = *legacy;
     else if (auto legacyEnv = Core::Config::TryGetEnv("TARGET_CORR_WINDOW_MS"))
         window = static_cast<uint32_t>(std::strtoul(legacyEnv->c_str(), nullptr, 10));
-    return std::clamp(window, 200u, 4000u);
+    return ClampWindowMs(window);
 }
 
 uintptr_t ReadFrameHint()
@@ -220,6 +227,26 @@ std::optional<uint64_t> TargetCorrelator::TagIfWithin(std::uint8_t packetId,
     return elapsed;
 }
 
+void TargetCorrelatorSetWindow(std::uint32_t windowMs)
+{
+    if (windowMs == 0)
+        windowMs = kDefaultTargetWindowMs;
+    windowMs = ClampWindowMs(windowMs);
+    EnsureLock();
+    EnterCriticalSection(&g_targetCorrLock);
+    g_targetCorr.windowMs = windowMs;
+    LeaveCriticalSection(&g_targetCorrLock);
+}
+
+std::uint32_t TargetCorrelatorGetWindow()
+{
+    EnsureLock();
+    EnterCriticalSection(&g_targetCorrLock);
+    uint32_t window = g_targetCorr.windowMs;
+    LeaveCriticalSection(&g_targetCorrLock);
+    return window;
+}
+
 void TargetCorrelatorInit()
 {
     EnsureLock();
@@ -227,7 +254,8 @@ void TargetCorrelatorInit()
     g_targetCorr.t0 = 0;
     g_targetCorr.seq = 0;
     g_targetCorr.reason[0] = '\0';
-    g_targetCorr.windowMs = ReadWindowMs();
+    if (g_targetCorr.windowMs == 0)
+        g_targetCorr.windowMs = ReadWindowMs();
     g_targetCorr.frameHint = 0;
     g_targetCorr.hintAnnounced = false;
 

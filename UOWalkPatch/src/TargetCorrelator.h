@@ -26,3 +26,5 @@ extern TargetCorrelator g_targetCorr;
 void TargetCorrelatorInit();
 void TargetCorrelatorShutdown();
 bool TargetCorrelatorEnabled();
+void TargetCorrelatorSetWindow(std::uint32_t windowMs);
+std::uint32_t TargetCorrelatorGetWindow();
