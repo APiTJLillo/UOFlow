@@ -3174,6 +3174,13 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
                 }
                 NoteCapturedActionTarget(name, func);
                 outFunc = reinterpret_cast<void*>(&Lua_HandleSingleLeftClkTarget_W);
+                if (!g_clickTapWrapInstalled.exchange(true, std::memory_order_acq_rel)) {
+                    char clickBuf[160];
+                    sprintf_s(clickBuf,
+                              sizeof(clickBuf),
+                              "[ClickTap] HandleSingleLeftClkTarget wrapper installed (ref=direct)");
+                    WriteRawLog(clickBuf);
+                }
             }
         }
         else if (_stricmp(name, "UserActionSpeechSetText") == 0)
