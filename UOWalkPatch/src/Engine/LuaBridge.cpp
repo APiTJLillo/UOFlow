@@ -312,9 +312,20 @@ enum ContextLogBits : unsigned {
         uintptr_t lastRet = 0;
     };
 
-    static std::mutex g_spellReplayMutex;
-    static std::unordered_map<int, SpellGateReplayContext> g_spellReplayCache;
-    static std::atomic<bool> g_spellBindingReady{false};
+static std::mutex g_spellReplayMutex;
+static std::unordered_map<int, SpellGateReplayContext> g_spellReplayCache;
+static std::atomic<bool> g_spellBindingReady{false};
+static bool HasAnyGateReplayContext()
+{
+    std::lock_guard<std::mutex> lock(g_spellReplayMutex);
+    return !g_spellReplayCache.empty();
+}
+
+static bool HasGateReplayContext(int spellId)
+{
+    std::lock_guard<std::mutex> lock(g_spellReplayMutex);
+    return g_spellReplayCache.find(spellId) != g_spellReplayCache.end();
+}
 
     static constexpr uintptr_t kGateTargets[] = {
         0x00AA3350, // candidate #1
@@ -371,6 +382,8 @@ static bool EnsureNoClickActive(const char* action);
 static bool EnsureWithinTargetWindow(const char* action);
 static void LogTargetOpen(TargetCommitKind kind);
 static void BindConsoleIfNeeded(lua_State* L, const char* reason);
+static void ForceLateCastWrapInstall(lua_State* L, const char* reason);
+static void LogNoClickStatus(const char* tag);
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static int __cdecl Lua_Walk(lua_State* L);
@@ -406,6 +419,7 @@ static int __cdecl Lua_uow_cmd_commit_obj(lua_State* L);
 static int __cdecl Lua_uow_cmd_commit_ground(lua_State* L);
     static int __cdecl Lua_uow_cmd_cancel_target(lua_State* L);
     static int __cdecl Lua_uow_cmd_bootstrap(lua_State* L);
+static int __cdecl Lua_uow_cmd_status(lua_State* L);
 static void EnsureUowCommandBindings(lua_State* L);
 
 struct LateWrapTarget {
@@ -830,8 +844,10 @@ static void MaybeUpdateOwnerContext(void* ctx)
         char buf[160];
         sprintf_s(buf, sizeof(buf), "OwnerPump owner thread set: %u (ctx=%p)", currentTid, ctx);
         WriteRawLog(buf);
-        if (auto* L = static_cast<lua_State*>(Engine::LuaState()))
+        if (auto* L = static_cast<lua_State*>(Engine::LuaState())) {
             BindConsoleIfNeeded(L, "owner_context");
+            ForceLateCastWrapInstall(L, "owner_context");
+        }
     }
 
     Engine::Lua::ScheduleCastWrapRetry("owner context");
@@ -3601,6 +3617,7 @@ static void BindConsoleIfNeeded(lua_State* L, const char* reason)
             {Lua_uow_cmd_commit_obj, "uow.cmd.commit_obj"},
             {Lua_uow_cmd_commit_ground, "uow.cmd.commit_ground"},
             {Lua_uow_cmd_cancel_target, "uow.cmd.cancel_target"},
+            {Lua_uow_cmd_status, "uow.cmd.status"},
         };
 
         bool viaClient = true;
@@ -3638,11 +3655,15 @@ static void BindConsoleIfNeeded(lua_State* L, const char* reason)
             lua_setfield(Linner, -2, "commit_ground");
             lua_pushcfunction(Linner, Lua_uow_cmd_cancel_target);
             lua_setfield(Linner, -2, "cancel_target");
+            lua_pushcfunction(Linner, Lua_uow_cmd_status);
+            lua_setfield(Linner, -2, "status");
             lua_settop(Linner, top);
 
             lua_getglobal(Linner, "uow");
             lua_pushcfunction(Linner, Lua_uow_cmd_bootstrap);
             lua_setfield(Linner, -2, "bootstrap");
+            lua_pushcfunction(Linner, Lua_uow_cmd_status);
+            lua_setfield(Linner, -2, "status");
             lua_settop(Linner, top);
         }
 
@@ -3657,6 +3678,33 @@ static void BindConsoleIfNeeded(lua_State* L, const char* reason)
 
     if (!Util::OwnerPump::Invoke("install_console_bindings", task))
         Util::OwnerPump::Post("install_console_bindings", std::move(task));
+}
+
+static void ForceLateCastWrapInstall(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+    DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lock(g_lateWrapMutex);
+    for (auto& target : g_lateCastTargets) {
+        if (target.installed)
+            continue;
+        if (!WrapLuaGlobal(L, target, now))
+            continue;
+        target.installed = true;
+        target.nextDeferredLog = 0;
+        uint32_t previous = g_actionWrapperMask.fetch_or(target.bit, std::memory_order_acq_rel);
+        uint32_t updated = previous | target.bit;
+        if (updated == kAllActionWrappers)
+            InterlockedExchange(&g_actionWrappersInstalled, 1);
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LateWrap] wrapped %s (%s)",
+                  target.name,
+                  reason ? reason : "manual");
+        WriteRawLog(buf);
+    }
 }
 
 static void NoteNoClickSendPacket(uint8_t id, int len, unsigned counter)
@@ -3691,6 +3739,24 @@ static void ResetNoClickState(const char* reason)
         WriteRawLog(buf);
     }
     g_noClickState = {};
+}
+
+static void LogNoClickStatus(const char* tag)
+{
+    bool haveOrig = (g_origUserActionCastSpell != nullptr);
+    bool haveGate = HasAnyGateReplayContext();
+    uint32_t ownerTid = g_ownerThreadId.load(std::memory_order_acquire);
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[NoClick] status tag=%s orig=%s gate_ctx=%s gate_addr=%s owner=%u console=%s",
+              tag ? tag : "status",
+              haveOrig ? "yes" : "no",
+              haveGate ? "yes" : "no",
+              g_gateSelectedName ? g_gateSelectedName : "unknown",
+              ownerTid,
+              g_consoleBound ? "bound" : "pending");
+    WriteRawLog(buf);
 }
 
 static bool EnsureNoClickActive(const char* action)
@@ -3817,10 +3883,6 @@ static bool NoClickCastSpell_Internal(int spellId)
         WriteRawLog("[NoClick] cast rejected: no Lua state available");
         return false;
     }
-    if (!g_origUserActionCastSpell) {
-        WriteRawLog("[NoClick] cast rejected: UserActionCastSpell original missing");
-        return false;
-    }
 
     if (g_noClickState.active)
         ResetNoClickState("preempt");
@@ -3857,13 +3919,36 @@ static bool NoClickCastSpell_Internal(int spellId)
         WriteRawLog(diag);
     }
 
-    int top = lua_gettop(L);
-    lua_pushinteger(L, spellId);
-    int rc = InvokeClientLuaFn(g_origUserActionCastSpell, "UserActionCastSpell", L);
-    lua_settop(L, top);
-    if (rc < 0) {
-        ResetNoClickState("cast_failed");
-        return false;
+    if (g_origUserActionCastSpell) {
+        int top = lua_gettop(L);
+        lua_pushinteger(L, spellId);
+        int rc = InvokeClientLuaFn(g_origUserActionCastSpell, "UserActionCastSpell", L);
+        lua_settop(L, top);
+        if (rc < 0) {
+            ResetNoClickState("cast_failed");
+            return false;
+        }
+    } else {
+        bool gateCtx = HasGateReplayContext(spellId) || HasAnyGateReplayContext();
+        if (gateCtx && Engine::Lua::CastSpellNative(spellId)) {
+            char bufFallback[192];
+            sprintf_s(bufFallback,
+                      sizeof(bufFallback),
+                      "[NoClick] cast used cached gate context for spell=%d",
+                      spellId);
+            WriteRawLog(bufFallback);
+        } else {
+            char bufPrereq[256];
+            sprintf_s(bufPrereq,
+                      sizeof(bufPrereq),
+                      "[NoClick] prerequisites missing: orig=%s gate_ctx=%s",
+                      g_origUserActionCastSpell ? "yes" : "no",
+                      gateCtx ? "yes" : "no");
+            WriteRawLog(bufPrereq);
+            LogNoClickStatus("cast_prereq");
+            ResetNoClickState("missing_orig");
+            return false;
+        }
     }
 
     ScheduleTargetOpenRequest();
@@ -4067,8 +4152,18 @@ static int __cdecl Lua_uow_cmd_cancel_target(lua_State* L)
 
 static int __cdecl Lua_uow_cmd_bootstrap(lua_State* L)
 {
+    g_consoleBound = false;
     BindConsoleIfNeeded(L, "manual");
+    ForceLateCastWrapInstall(L, "manual");
+    LogNoClickStatus("uow.bootstrap");
     lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int __cdecl Lua_uow_cmd_status(lua_State* L)
+{
+    LogNoClickStatus("uow.cmd.status");
+    lua_pushboolean(L, g_consoleBound ? 1 : 0);
     return 1;
 }
 
@@ -5765,8 +5860,10 @@ void PollLateInstalls()
     s_lastTryTick = now;
     if (auto L = static_cast<lua_State*>(Engine::LuaState()))
         ProcessLateCastWrapLoop(L);
-    if (auto L = static_cast<lua_State*>(Engine::LuaState()))
+    if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
         BindConsoleIfNeeded(L, "poller");
+        ForceLateCastWrapInstall(L, "poller");
+    }
     // Optionally enable the RegisterLuaFunction hook late (via cfg/env)
     if (!g_registerResolved) {
         bool late = false;
