@@ -372,11 +372,22 @@ static bool HasGateReplayContext(int spellId)
         bool powerWordsLogged = false;
         bool powerWordsObserved = false;
         int powerWordsTid = 0;
+        bool targetRequestObserved = false;
+        DWORD targetRequestTick = 0;
     };
 
     static NoClickCastState g_noClickState{};
     static bool g_noClickDiagnostics = false;
     static bool g_consoleBound = false;
+    static constexpr DWORD kTargetFallbackWindowMs = 1200;
+    static constexpr DWORD kTargetFallbackSendWaitMs = 100;
+    struct TargetRequestTuple {
+        int action = 1;
+        int sub = 1;
+        int extra = 0;
+        bool learned = false;
+    };
+    static TargetRequestTuple g_targetRequestTuple{1, 1, 0, false};
 }
 
 static void NoteNoClickSendPacket(uint8_t id, int len, unsigned counter);
@@ -391,6 +402,13 @@ static void LogTargetOpen(TargetCommitKind kind);
 static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* reason = nullptr);
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason);
 static void LogUOFlowStatus(const char* tag);
+static bool OpenTargetForSpell_Fallback(const char* reason);
+static void MaybeCaptureSpellTargetTuple(lua_State* L);
+static bool TargetFallbackReady();
+static void LogTargetFallbackError(const char* reason);
+static bool WaitForSendLogged(DWORD timeoutMs);
+static bool TargetRequestSeenRecently();
+static void MarkTargetRequestObserved();
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
 static int __cdecl Lua_Walk(lua_State* L);
@@ -3656,6 +3674,8 @@ static void ScheduleTargetOpenRequest()
     Util::OwnerPump::Post("no_click.request_target", []() {
         if (!EnsureNoClickActive("request_target"))
             return;
+        if (TargetRequestSeenRecently())
+            return;
         auto* L = static_cast<lua_State*>(Engine::LuaState());
         if (!L || !g_origRequestTargetInfo) {
             WriteRawLog("[NoClick] RequestTargetInfo unavailable");
@@ -3676,6 +3696,7 @@ static void ScheduleTargetOpenRequest()
             return;
         }
         LogTargetOpen(TargetCommitKind::Object);
+        MarkTargetRequestObserved();
         bool cursor = IsTargetCursorActive();
         char status[192];
         sprintf_s(status,
@@ -3687,6 +3708,122 @@ static void ScheduleTargetOpenRequest()
         if (!cursor)
             MaybeLogPowerWordsTimeout("target_open_pending");
     });
+}
+
+static void MarkTargetRequestObserved()
+{
+    if (!g_noClickState.active)
+        return;
+    g_noClickState.targetRequestObserved = true;
+    g_noClickState.targetRequestTick = GetTickCount();
+}
+
+static bool TargetRequestSeenRecently()
+{
+    if (!g_noClickState.targetRequestObserved)
+        return false;
+    DWORD tick = g_noClickState.targetRequestTick;
+    if (tick == 0)
+        return false;
+    DWORD now = GetTickCount();
+    return (now - tick) <= kTargetFallbackWindowMs;
+}
+
+static bool TargetFallbackReady()
+{
+    if (!g_origRequestTargetInfo)
+        return false;
+    if (!CanonicalOwnerContext())
+        return false;
+    return Util::OwnerPump::GetOwnerThreadId() != 0;
+}
+
+static void LogTargetFallbackError(const char* reason)
+{
+    void* ctx = CanonicalOwnerContext();
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "tag=UOFlow.Spell.target_fallback_error reason=%s ctx=%p clear=%p request=%p",
+              reason ? reason : "unknown",
+              ctx,
+              reinterpret_cast<void*>(g_origClearCurrentTarget),
+              reinterpret_cast<void*>(g_origRequestTargetInfo));
+    WriteRawLog(buf);
+}
+
+static bool WaitForSendLogged(DWORD timeoutMs)
+{
+    if (g_noClickState.sendLogged)
+        return true;
+    DWORD start = GetTickCount();
+    while (!g_noClickState.sendLogged) {
+        if (GetTickCount() - start >= timeoutMs)
+            return false;
+        Sleep(0);
+    }
+    return true;
+}
+
+static bool OpenTargetForSpell_Fallback(const char* reason)
+{
+    if (!TargetFallbackReady()) {
+        LogTargetFallbackError("prereq_missing");
+        return false;
+    }
+    TargetRequestTuple tuple = g_targetRequestTuple;
+    if (!tuple.learned) {
+        tuple.action = 1;
+        tuple.sub = 1;
+        tuple.extra = 0;
+    }
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[TargetFallback] RequestTargetInfo(action=%d, sub=%d, extra=%d source=%s reason=%s)",
+              tuple.action,
+              tuple.sub,
+              tuple.extra,
+              tuple.learned ? "cached" : "default",
+              reason ? reason : "unspecified");
+    WriteRawLog(buf);
+    auto success = std::make_shared<std::atomic<bool>>(false);
+    auto task = [tuple, success]() {
+        auto* L = static_cast<lua_State*>(Engine::LuaState());
+        if (!L) {
+            LogTargetFallbackError("lua_state_missing");
+            return;
+        }
+        if (g_origClearCurrentTarget) {
+            int topClear = lua_gettop(L);
+            int rcClear = InvokeClientLuaFn(g_origClearCurrentTarget, "ClearCurrentTarget", L);
+            lua_settop(L, topClear);
+            if (rcClear < 0) {
+                LogTargetFallbackError("clear_call_failed");
+            }
+        } else {
+            WriteRawLog("[TargetFallback] ClearCurrentTarget unavailable");
+        }
+        g_targetCorr.Arm("UOW_RequestTargetInfo");
+        WriteRawLog("[Target] open requested via RequestTargetInfo (fallback)");
+        int top = lua_gettop(L);
+        lua_pushinteger(L, tuple.action);
+        lua_pushinteger(L, tuple.sub);
+        lua_pushinteger(L, tuple.extra);
+        int rc = InvokeClientLuaFn(g_origRequestTargetInfo, "RequestTargetInfo", L);
+        lua_settop(L, top);
+        if (rc < 0) {
+            LogTargetFallbackError("request_call_failed");
+            return;
+        }
+        MarkTargetRequestObserved();
+        LogTargetOpen(TargetCommitKind::Object);
+        success->store(true, std::memory_order_release);
+    };
+    bool ranInline = Util::OwnerPump::Invoke("target_fallback", std::move(task));
+    if (!ranInline)
+        return true;
+    return success->load(std::memory_order_acquire);
 }
 
 static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* reason)
@@ -3843,6 +3980,7 @@ static void LogUOFlowStatus(const char* tag)
         ownerLabel = ownerBuf;
     }
     const char* consoleLabel = g_consoleBound ? "bound" : "unbound";
+    const char* fallbackLabel = TargetFallbackReady() ? "open" : "blocked";
     auto formatPtr = [](uintptr_t value, char* out, size_t len) {
         if (!out || len == 0)
             return;
@@ -3858,10 +3996,18 @@ static void LogUOFlowStatus(const char* tag)
     formatPtr(g_gateSelectedTarget, gateBuf, sizeof(gateBuf));
     formatPtr(reinterpret_cast<uintptr_t>(g_origCastSpell), origBuf, sizeof(origBuf));
     formatPtr(reinterpret_cast<uintptr_t>(g_origCastSpellOnId), origOnIdBuf, sizeof(origOnIdBuf));
-    char buf[320];
+    TargetRequestTuple tuple = g_targetRequestTuple;
+    if (!tuple.learned) {
+        tuple.action = 1;
+        tuple.sub = 1;
+        tuple.extra = 0;
+    }
+    char tupleBuf[32];
+    sprintf_s(tupleBuf, sizeof(tupleBuf), "(%d,%d,%d)", tuple.action, tuple.sub, tuple.extra);
+    char buf[352];
     sprintf_s(buf,
               sizeof(buf),
-              "tag=%s orig=%s gate_ctx=%s gate_addr=%s orig_addr=%s orig_on_id=%s owner=%s console=%s",
+              "tag=%s orig=%s gate_ctx=%s gate_addr=%s orig_cast=%s orig_cast_on_id=%s owner=%s console=%s fallback_target=%s rt_req=%s",
               tag ? tag : "UOFlow.status",
               haveOrig ? "yes" : "no",
               haveGate ? "yes" : "no",
@@ -3869,7 +4015,9 @@ static void LogUOFlowStatus(const char* tag)
               origBuf,
               origOnIdBuf,
               ownerLabel,
-              consoleLabel);
+              consoleLabel,
+              fallbackLabel,
+              tupleBuf);
     WriteRawLog(buf);
 }
 
@@ -4101,6 +4249,8 @@ static bool NoClickCastSpell_Internal(int spellId)
     g_noClickState.powerWordsLogged = false;
     g_noClickState.powerWordsObserved = false;
     g_noClickState.powerWordsTid = 0;
+    g_noClickState.targetRequestObserved = false;
+    g_noClickState.targetRequestTick = 0;
 
     char buf[256];
     sprintf_s(buf,
@@ -4121,10 +4271,17 @@ static bool NoClickCastSpell_Internal(int spellId)
     WriteRawLog(diag);
 
     bool castOk = false;
-    if (CastWrapperReady())
-        castOk = InvokeCastWrapper(L, spellId);
-    if (!castOk)
-        castOk = InvokeCastOriginal(L, spellId);
+    bool wrapperAvailable = CastWrapperReady();
+    bool usedWrapperPath = false;
+    bool usedOrigPath = false;
+    if (wrapperAvailable) {
+        usedWrapperPath = InvokeCastWrapper(L, spellId);
+        castOk = usedWrapperPath;
+    }
+    if (!castOk) {
+        usedOrigPath = InvokeCastOriginal(L, spellId);
+        castOk = usedOrigPath;
+    }
     bool gateCtx = HasGateReplayContext(spellId) || HasAnyGateReplayContext();
     if (!castOk && gateCtx) {
         if (Engine::Lua::CastSpellNative(spellId)) {
@@ -4151,6 +4308,24 @@ static bool NoClickCastSpell_Internal(int spellId)
     }
 
     ScheduleTargetOpenRequest();
+
+    bool needTargetFallback = usedOrigPath && !wrapperAvailable && !gateCtx;
+    if (needTargetFallback && !TargetRequestSeenRecently()) {
+        if (!TargetFallbackReady()) {
+            LogTargetFallbackError("prereq_missing");
+            ResetNoClickState("target_fallback_unavailable");
+            return false;
+        }
+        if (!WaitForSendLogged(kTargetFallbackSendWaitMs)) {
+            LogTargetFallbackError("send_not_observed");
+            ResetNoClickState("target_send_missing");
+            return false;
+        }
+        if (!OpenTargetForSpell_Fallback("direct_orig")) {
+            ResetNoClickState("target_fallback_failed");
+            return false;
+        }
+    }
 
     return true;
 }
@@ -4293,6 +4468,7 @@ static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     if (spellId <= 0) {
+        WriteRawLog("[Lua] UOFlow.Spell.cast rejected: invalid spell id");
         lua_pushboolean(L, 0);
         return 1;
     }
@@ -4310,6 +4486,7 @@ static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
     if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
         objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
     if (spellId <= 0 || objectId == 0) {
+        WriteRawLog("[Lua] UOFlow.Spell.cast_on_id rejected: invalid spell or object id");
         lua_pushboolean(L, 0);
         return 1;
     }
@@ -4326,6 +4503,7 @@ static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L)
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
         objectId = static_cast<uint32_t>(lua_tointeger(L, 1));
     if (objectId == 0) {
+        WriteRawLog("[Lua] UOFlow.Target.commit_obj rejected: invalid object id");
         lua_pushboolean(L, 0);
         return 1;
     }
@@ -5571,6 +5749,37 @@ static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L)
     return rc;
 }
 
+static void MaybeCaptureSpellTargetTuple(lua_State* L)
+{
+    if (!L)
+        return;
+    int argc = lua_gettop(L);
+    if (argc < 3)
+        return;
+    if (lua_type(L, 1) != LUA_TNUMBER || lua_type(L, 2) != LUA_TNUMBER || lua_type(L, 3) != LUA_TNUMBER)
+        return;
+    TargetRequestTuple tuple{};
+    tuple.action = static_cast<int>(lua_tointeger(L, 1));
+    tuple.sub = static_cast<int>(lua_tointeger(L, 2));
+    tuple.extra = static_cast<int>(lua_tointeger(L, 3));
+    tuple.learned = true;
+    bool changed = !g_targetRequestTuple.learned ||
+                   g_targetRequestTuple.action != tuple.action ||
+                   g_targetRequestTuple.sub != tuple.sub ||
+                   g_targetRequestTuple.extra != tuple.extra;
+    g_targetRequestTuple = tuple;
+    if (changed) {
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[TargetFallback] learned RequestTargetInfo tuple action=%d sub=%d extra=%d",
+                  tuple.action,
+                  tuple.sub,
+                  tuple.extra);
+        WriteRawLog(buf);
+    }
+}
+
 static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
 {
     int topBefore = lua_gettop(L);
@@ -5590,6 +5799,7 @@ static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
     g_targetCorr.Arm("RequestTargetInfo");
     LuaReturnInfo retInfo{};
     LogLuaArgs(L, "RequestTargetInfo");
+    MaybeCaptureSpellTargetTuple(L);
     static volatile LONG s_dumpCountRTI = 0;
     if (InterlockedIncrement(&s_dumpCountRTI) <= 4)
         DumpStackTag("RequestTargetInfo");
@@ -5599,6 +5809,8 @@ static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
         __except (EXCEPTION_EXECUTE_HANDLER) { WriteRawLog("[Lua] RequestTargetInfo original threw"); }
         retInfo = CaptureLuaReturn(L, rc);
     }
+    if (rc >= 0)
+        MarkTargetRequestObserved();
     LogLuaReturns(L, "RequestTargetInfo", rc);
     char detail[128];
     sprintf_s(detail, sizeof(detail), "[Lua] RequestTargetInfo rc=%d tok=%u", rc, tok);
