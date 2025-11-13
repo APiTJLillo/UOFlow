@@ -51,6 +51,7 @@ extern "C" {
     LUA_API void* lua_touserdata(lua_State* L, int idx);
     LUA_API int luaL_ref(lua_State* L, int t);
     LUA_API void luaL_unref(lua_State* L, int t, int ref);
+    LUA_API int luaL_error(lua_State* L, const char* fmt, ...);
 }
 #ifndef LUA_NOREF
 #define LUA_NOREF (-2)
@@ -441,6 +442,7 @@ static void LogTargetClearCall();
 static void LogTargetCursorShow();
 static void LogTargetCursorHide();
 static void LogTargetOriginalPointer(const char* name, const void* addr);
+static LuaFn ResolveTargetApi(LuaFn orig, LuaFn wrapper);
 static void MaybeCaptureSpellTargetTuple(lua_State* L);
 static bool TargetFallbackReady();
 static void LogTargetFallbackError(const char* reason);
@@ -3839,6 +3841,13 @@ static void LogTargetOriginalPointer(const char* name, const void* addr)
     WriteRawLog(buf);
 }
 
+static LuaFn ResolveTargetApi(LuaFn orig, LuaFn wrapper)
+{
+    if (orig)
+        return orig;
+    return wrapper;
+}
+
 static bool TargetFallbackReady()
 {
     if (!g_origRequestTargetInfo)
@@ -3894,13 +3903,29 @@ static bool ForceOpenTargetCursor(uint32_t action,
         return false;
     }
 
-    if (!g_origRequestTargetInfo) {
+    LuaFn clearFn = ResolveTargetApi(g_origClearCurrentTarget, reinterpret_cast<LuaFn>(&Lua_ClearCurrentTarget_W));
+    LuaFn requestFn = ResolveTargetApi(g_origRequestTargetInfo, reinterpret_cast<LuaFn>(&Lua_RequestTargetInfo_W));
+    LuaFn showFn = ResolveTargetApi(g_origHS_ShowTargetingCursor, reinterpret_cast<LuaFn>(&Lua_HS_ShowTargetingCursor_W));
+    LuaFn hideFn = ResolveTargetApi(g_origHS_HideTargetingCursor, reinterpret_cast<LuaFn>(&Lua_HS_HideTargetingCursor_W));
+
+    char ptrBuf[256];
+    sprintf_s(ptrBuf,
+              sizeof(ptrBuf),
+              "[TargetFallback] ptrs clear=%p request=%p show=%p hide=%p reason=%s",
+              reinterpret_cast<void*>(clearFn),
+              reinterpret_cast<void*>(requestFn),
+              reinterpret_cast<void*>(showFn),
+              reinterpret_cast<void*>(hideFn),
+              reasonLabel);
+    WriteRawLog(ptrBuf);
+
+    if (!requestFn) {
         LogTargetFallbackError("request_ptr_missing");
         clearPendingFlag();
         return false;
     }
 
-    if (!g_origHS_ShowTargetingCursor) {
+    if (!showFn) {
         char warn[192];
         sprintf_s(warn,
                   sizeof(warn),
@@ -3909,7 +3934,7 @@ static bool ForceOpenTargetCursor(uint32_t action,
         WriteRawLog(warn);
     }
 
-    if (!g_origClearCurrentTarget) {
+    if (!clearFn) {
         char warn[192];
         sprintf_s(warn,
                   sizeof(warn),
@@ -3918,10 +3943,10 @@ static bool ForceOpenTargetCursor(uint32_t action,
         WriteRawLog(warn);
     }
 
-    if (g_origClearCurrentTarget) {
+    if (clearFn) {
         int topClear = lua_gettop(L);
         LogTargetClearCall();
-        int rcClear = InvokeClientLuaFn(g_origClearCurrentTarget, "ClearCurrentTarget", L);
+        int rcClear = InvokeClientLuaFn(clearFn, "ClearCurrentTarget", L);
         lua_settop(L, topClear);
         if (rcClear < 0) {
             LogTargetFallbackError("clear_call_failed");
@@ -3936,7 +3961,7 @@ static bool ForceOpenTargetCursor(uint32_t action,
     lua_pushinteger(L, static_cast<lua_Integer>(sub));
     lua_pushinteger(L, static_cast<lua_Integer>(extra));
     LogTargetRequestInfoCall(action, sub, extra);
-    int rc = InvokeClientLuaFn(g_origRequestTargetInfo, "RequestTargetInfo", L);
+    int rc = InvokeClientLuaFn(requestFn, "RequestTargetInfo", L);
     lua_settop(L, top);
     bool requestOk = rc >= 0;
     if (!requestOk) {
@@ -3952,10 +3977,10 @@ static bool ForceOpenTargetCursor(uint32_t action,
         }
     }
 
-    if (g_origHS_ShowTargetingCursor) {
+    if (showFn) {
         int topShow = lua_gettop(L);
         LogTargetCursorShow();
-        int rcShow = InvokeClientLuaFn(g_origHS_ShowTargetingCursor, "HS_ShowTargetingCursor", L);
+        int rcShow = InvokeClientLuaFn(showFn, "HS_ShowTargetingCursor", L);
         lua_settop(L, topShow);
         if (rcShow < 0)
             WriteRawLog("[TargetFallback] HS_ShowTargetingCursor invoke failed");
@@ -4429,32 +4454,6 @@ static bool DispatchNoClickCommand(const char* name, std::function<bool()> fn)
     return true;
 }
 
-static int PushLuaCommandResult(lua_State* L, const char* tag, bool ok, const char* message = nullptr)
-{
-    if (!ok && tag)
-        LogUOFlowStatus(tag);
-    char failureBuf[160];
-    const char* msg = message;
-    if (!msg) {
-        if (ok) {
-            msg = "ok";
-        } else if (tag) {
-            sprintf_s(failureBuf, sizeof(failureBuf), "UOFlow: %s failed", tag);
-            msg = failureBuf;
-        } else {
-            msg = "UOFlow: command failed";
-        }
-    }
-    if (ok) {
-        lua_pushboolean(L, 1);
-        lua_pushstring(L, msg);
-    } else {
-        lua_pushnil(L);
-        lua_pushstring(L, msg);
-    }
-    return 2;
-}
-
 static bool CastWrapperReady()
 {
     return (g_castSpellRegistryRef != LUA_NOREF) || (g_origUserActionCastSpell != nullptr);
@@ -4899,10 +4898,15 @@ static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     if (spellId <= 0) {
         WriteRawLog("[Lua] UOFlow.Spell.cast rejected: invalid spell id");
-        return PushLuaCommandResult(L, "UOFlow.Spell.cast", false);
+        return luaL_error(L, "UOFlow.Spell.cast: invalid spell id");
     }
     bool ok = DispatchNoClickCommand("UOFlow.Spell.cast", [spellId]() { return NoClickCastSpell_Internal(spellId); });
-    return PushLuaCommandResult(L, "UOFlow.Spell.cast", ok);
+    if (!ok) {
+        LogUOFlowStatus("UOFlow.Spell.cast");
+        return luaL_error(L, "UOFlow.Spell.cast: dispatch failed (see log)");
+    }
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
@@ -4915,12 +4919,17 @@ static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
         objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
     if (spellId <= 0 || objectId == 0) {
         WriteRawLog("[Lua] UOFlow.Spell.cast_on_id rejected: invalid spell or object id");
-        return PushLuaCommandResult(L, "UOFlow.Spell.cast_on_id", false);
+        return luaL_error(L, "UOFlow.Spell.cast_on_id: invalid spell/object id");
     }
     bool ok = DispatchNoClickCommand("UOFlow.Spell.cast_on_id", [spellId, objectId]() {
         return NoClickCastSpellOnId_Internal(spellId, objectId);
     });
-    return PushLuaCommandResult(L, "UOFlow.Spell.cast_on_id", ok);
+    if (!ok) {
+        LogUOFlowStatus("UOFlow.Spell.cast_on_id");
+        return luaL_error(L, "UOFlow.Spell.cast_on_id: dispatch failed (see log)");
+    }
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L)
@@ -4930,12 +4939,17 @@ static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L)
         objectId = static_cast<uint32_t>(lua_tointeger(L, 1));
     if (objectId == 0) {
         WriteRawLog("[Lua] UOFlow.Target.commit_obj rejected: invalid object id");
-        return PushLuaCommandResult(L, "UOFlow.Target.commit_obj", false);
+        return luaL_error(L, "UOFlow.Target.commit_obj: invalid object id");
     }
     bool ok = DispatchNoClickCommand("UOFlow.Target.commit_obj", [objectId]() {
         return CommitTargetObject_Internal(objectId, TargetCommitKind::Object);
     });
-    return PushLuaCommandResult(L, "UOFlow.Target.commit_obj", ok);
+    if (!ok) {
+        LogUOFlowStatus("UOFlow.Target.commit_obj");
+        return luaL_error(L, "UOFlow.Target.commit_obj: dispatch failed (see log)");
+    }
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 static int __cdecl Lua_UOFlow_Target_commit_ground(lua_State* L)
@@ -4952,13 +4966,23 @@ static int __cdecl Lua_UOFlow_Target_commit_ground(lua_State* L)
     bool ok = DispatchNoClickCommand("UOFlow.Target.commit_ground", [x, y, facet]() {
         return CommitTargetGround_Internal(x, y, facet);
     });
-    return PushLuaCommandResult(L, "UOFlow.Target.commit_ground", ok);
+    if (!ok) {
+        LogUOFlowStatus("UOFlow.Target.commit_ground");
+        return luaL_error(L, "UOFlow.Target.commit_ground: dispatch failed (see log)");
+    }
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 static int __cdecl Lua_UOFlow_Target_cancel(lua_State* L)
 {
     bool ok = DispatchNoClickCommand("UOFlow.Target.cancel", []() { return CancelTarget_Internal(); });
-    return PushLuaCommandResult(L, "UOFlow.Target.cancel", ok);
+    if (!ok) {
+        LogUOFlowStatus("UOFlow.Target.cancel");
+        return luaL_error(L, "UOFlow.Target.cancel: dispatch failed (see log)");
+    }
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 static int __cdecl Lua_UOFlow_Target_force_open(lua_State* L)
@@ -4991,7 +5015,12 @@ static int __cdecl Lua_UOFlow_Target_force_open(lua_State* L)
     bool ok = DispatchNoClickCommand("UOFlow.Target.force_open", [action, sub, extra, trackCastState]() {
         return OpenTargetForSpell_Fallback("force_open", action, sub, extra, trackCastState, false);
     });
-    return PushLuaCommandResult(L, "UOFlow.Target.force_open", ok);
+    if (!ok) {
+        LogUOFlowStatus("UOFlow.Target.force_open");
+        return luaL_error(L, "UOFlow.Target.force_open: dispatch failed (see log)");
+    }
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 static int __cdecl Lua_UOFlow_bootstrap(lua_State* L)
