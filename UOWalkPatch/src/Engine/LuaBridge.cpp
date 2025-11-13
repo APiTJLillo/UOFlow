@@ -128,6 +128,10 @@ enum ContextLogBits : unsigned {
     static LuaFn g_origPrintWStringToChatWindow = nullptr;
     static LuaFn g_origPrintTidToChatWindow = nullptr;
     static LuaFn g_origTextLogAddSingleByteEntry = nullptr;
+    static bool g_loggedTargetOrigRequest = false;
+    static bool g_loggedTargetOrigClear = false;
+    static bool g_loggedTargetOrigShow = false;
+    static bool g_loggedTargetOrigHide = false;
 
     static volatile LONG g_directActionHooksInstalled = 0;
     static bool g_traceTargetPath = false;
@@ -427,11 +431,16 @@ static bool QueueForceOpenTargetCursor(uint32_t action,
                                        const char* reason,
                                        bool trackCastState,
                                        bool dedupe);
-static bool ForceOpenTargetCursor(uint32_t action, uint32_t sub, uint32_t extra);
+static bool ForceOpenTargetCursor(uint32_t action,
+                                  uint32_t sub,
+                                  uint32_t extra,
+                                  const char* reason,
+                                  bool trackCastState);
 static void LogTargetRequestInfoCall(uint32_t action, uint32_t sub, uint32_t extra);
 static void LogTargetClearCall();
 static void LogTargetCursorShow();
 static void LogTargetCursorHide();
+static void LogTargetOriginalPointer(const char* name, const void* addr);
 static void MaybeCaptureSpellTargetTuple(lua_State* L);
 static bool TargetFallbackReady();
 static void LogTargetFallbackError(const char* reason);
@@ -2999,6 +3008,13 @@ static void TryInstallDirectActionHooks()
                 sprintf_s(msg, sizeof(msg), "DirectHook: %s disabled via config/env", name);
                 WriteRawLog(msg);
             }
+            if (!orig) {
+                BYTE* target = targetHint ? targetHint : FindActionFuncByName(name);
+                if (target) {
+                    orig = reinterpret_cast<LuaFn>(target);
+                    LogTargetOriginalPointer(name, reinterpret_cast<void*>(orig));
+                }
+            }
             return;
         }
         if (orig) return; // already captured via register hook
@@ -3012,6 +3028,7 @@ static void TryInstallDirectActionHooks()
             sprintf_s(buf, sizeof(buf), "DirectHook: hooked %s at %p (orig=%p)", name, target, reinterpret_cast<void*>(orig));
             WriteRawLog(buf);
             NoteCapturedActionTarget(name, reinterpret_cast<void*>(orig));
+            LogTargetOriginalPointer(name, reinterpret_cast<void*>(orig));
             any = true;
         }
     };
@@ -3358,6 +3375,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             {
                 g_origRequestTargetInfo = reinterpret_cast<LuaFn>(func);
                 WriteRawLog("Hook_Register: wrapped RequestTargetInfo");
+                LogTargetOriginalPointer(name, func);
             }
             NoteCapturedActionTarget(name, func);
             outFunc = reinterpret_cast<void*>(&Lua_RequestTargetInfo_W);
@@ -3370,6 +3388,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             {
                 g_origClearCurrentTarget = reinterpret_cast<LuaFn>(func);
                 WriteRawLog("Hook_Register: wrapped ClearCurrentTarget");
+                LogTargetOriginalPointer(name, func);
             }
             NoteCapturedActionTarget(name, func);
             outFunc = reinterpret_cast<void*>(&Lua_ClearCurrentTarget_W);
@@ -3392,6 +3411,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             {
                 g_origHS_ShowTargetingCursor = reinterpret_cast<LuaFn>(func);
                 WriteRawLog("Hook_Register: wrapped HS_ShowTargetingCursor");
+                LogTargetOriginalPointer(name, func);
             }
             NoteCapturedActionTarget(name, func);
             outFunc = reinterpret_cast<void*>(&Lua_HS_ShowTargetingCursor_W);
@@ -3402,6 +3422,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
             {
                 g_origHS_HideTargetingCursor = reinterpret_cast<LuaFn>(func);
                 WriteRawLog("Hook_Register: wrapped HS_HideTargetingCursor");
+                LogTargetOriginalPointer(name, func);
             }
             NoteCapturedActionTarget(name, func);
             outFunc = reinterpret_cast<void*>(&Lua_HS_HideTargetingCursor_W);
@@ -3792,6 +3813,32 @@ static void LogTargetCursorHide()
     WriteRawLog("[Target] HS_HideTargetingCursor()");
 }
 
+static void LogTargetOriginalPointer(const char* name, const void* addr)
+{
+    if (!name || !addr)
+        return;
+    bool* logged = nullptr;
+    if (_stricmp(name, "RequestTargetInfo") == 0)
+        logged = &g_loggedTargetOrigRequest;
+    else if (_stricmp(name, "ClearCurrentTarget") == 0)
+        logged = &g_loggedTargetOrigClear;
+    else if (_stricmp(name, "HS_ShowTargetingCursor") == 0)
+        logged = &g_loggedTargetOrigShow;
+    else if (_stricmp(name, "HS_HideTargetingCursor") == 0)
+        logged = &g_loggedTargetOrigHide;
+    if (logged && *logged)
+        return;
+    if (logged)
+        *logged = true;
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[TargetOrig] %s=%p",
+              name,
+              addr);
+    WriteRawLog(buf);
+}
+
 static bool TargetFallbackReady()
 {
     if (!g_origRequestTargetInfo)
@@ -3829,12 +3876,46 @@ static bool WaitForSendLogged(DWORD timeoutMs)
     return true;
 }
 
-static bool ForceOpenTargetCursor(uint32_t action, uint32_t sub, uint32_t extra)
+static bool ForceOpenTargetCursor(uint32_t action,
+                                  uint32_t sub,
+                                  uint32_t extra,
+                                  const char* reason,
+                                  bool trackCastState)
 {
     auto* L = static_cast<lua_State*>(Engine::LuaState());
+    const char* reasonLabel = reason ? reason : "force_open";
+    auto clearPendingFlag = [&]() {
+        if (trackCastState && g_noClickState.active)
+            g_noClickState.forceOpenQueued = false;
+    };
     if (!L) {
         LogTargetFallbackError("lua_state_missing");
+        clearPendingFlag();
         return false;
+    }
+
+    if (!g_origRequestTargetInfo) {
+        LogTargetFallbackError("request_ptr_missing");
+        clearPendingFlag();
+        return false;
+    }
+
+    if (!g_origHS_ShowTargetingCursor) {
+        char warn[192];
+        sprintf_s(warn,
+                  sizeof(warn),
+                  "[TargetFallback] HS_ShowTargetingCursor ptr missing reason=%s",
+                  reasonLabel);
+        WriteRawLog(warn);
+    }
+
+    if (!g_origClearCurrentTarget) {
+        char warn[192];
+        sprintf_s(warn,
+                  sizeof(warn),
+                  "[TargetFallback] ClearCurrentTarget ptr missing reason=%s",
+                  reasonLabel);
+        WriteRawLog(warn);
     }
 
     if (g_origClearCurrentTarget) {
@@ -3844,10 +3925,9 @@ static bool ForceOpenTargetCursor(uint32_t action, uint32_t sub, uint32_t extra)
         lua_settop(L, topClear);
         if (rcClear < 0) {
             LogTargetFallbackError("clear_call_failed");
+            clearPendingFlag();
             return false;
         }
-    } else {
-        WriteRawLog("[TargetFallback] ClearCurrentTarget unavailable");
     }
 
     g_targetCorr.Arm("UOW_RequestTargetInfo");
@@ -3861,10 +3941,15 @@ static bool ForceOpenTargetCursor(uint32_t action, uint32_t sub, uint32_t extra)
     bool requestOk = rc >= 0;
     if (!requestOk) {
         LogTargetFallbackError("request_call_failed");
+        clearPendingFlag();
     } else {
         MarkTargetRequestObserved();
         if (g_noClickState.active)
             LogTargetOpen(TargetCommitKind::Object);
+        if (trackCastState && g_noClickState.active) {
+            g_noClickState.busyUntilTick = GetTickCount() + kTargetFallbackBusyGuardMs;
+            g_noClickState.busyLogged = false;
+        }
     }
 
     if (g_origHS_ShowTargetingCursor) {
@@ -3874,8 +3959,6 @@ static bool ForceOpenTargetCursor(uint32_t action, uint32_t sub, uint32_t extra)
         lua_settop(L, topShow);
         if (rcShow < 0)
             WriteRawLog("[TargetFallback] HS_ShowTargetingCursor invoke failed");
-    } else {
-        WriteRawLog("[TargetFallback] HS_ShowTargetingCursor unavailable");
     }
 
     return requestOk;
@@ -3903,11 +3986,8 @@ static bool QueueForceOpenTargetCursor(uint32_t action,
     tuple.learned = true;
     g_targetRequestTuple = tuple;
 
-    if (trackCastState && g_noClickState.active) {
+    if (trackCastState && g_noClickState.active)
         g_noClickState.forceOpenQueued = true;
-        g_noClickState.busyUntilTick = GetTickCount() + kTargetFallbackBusyGuardMs;
-        g_noClickState.busyLogged = false;
-    }
 
     char buf[256];
     sprintf_s(buf,
@@ -3920,8 +4000,9 @@ static bool QueueForceOpenTargetCursor(uint32_t action,
     WriteRawLog(buf);
 
     auto success = std::make_shared<std::atomic<bool>>(false);
-    auto task = [action, sub, extra, success]() {
-        bool ok = ForceOpenTargetCursor(action, sub, extra);
+    std::string reasonLabel = reason ? reason : "force_open";
+    auto task = [action, sub, extra, trackCastState, success, reasonLabel]() {
+        bool ok = ForceOpenTargetCursor(action, sub, extra, reasonLabel.c_str(), trackCastState);
         success->store(ok, std::memory_order_release);
     };
     bool ranInline = Util::OwnerPump::Invoke("target_fallback", std::move(task));
@@ -4348,12 +4429,30 @@ static bool DispatchNoClickCommand(const char* name, std::function<bool()> fn)
     return true;
 }
 
-static int PushLuaCommandResult(lua_State* L, const char* tag, bool ok)
+static int PushLuaCommandResult(lua_State* L, const char* tag, bool ok, const char* message = nullptr)
 {
     if (!ok && tag)
         LogUOFlowStatus(tag);
-    lua_pushboolean(L, ok ? 1 : 0);
-    return 1;
+    char failureBuf[160];
+    const char* msg = message;
+    if (!msg) {
+        if (ok) {
+            msg = "ok";
+        } else if (tag) {
+            sprintf_s(failureBuf, sizeof(failureBuf), "UOFlow: %s failed", tag);
+            msg = failureBuf;
+        } else {
+            msg = "UOFlow: command failed";
+        }
+    }
+    if (ok) {
+        lua_pushboolean(L, 1);
+        lua_pushstring(L, msg);
+    } else {
+        lua_pushnil(L);
+        lua_pushstring(L, msg);
+    }
+    return 2;
 }
 
 static bool CastWrapperReady()
