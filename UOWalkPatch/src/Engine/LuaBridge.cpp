@@ -402,6 +402,8 @@ static void LogTargetOpen(TargetCommitKind kind);
 static uint32_t ResolveTargetWindowMs();
 static bool MapSpellIdForClient(int spellId, int& mappedId);
 static void LogCastPath(const char* path, uint32_t tok, const char* status, const char* reason = nullptr);
+static bool ActivateManualCastToken(uint32_t& previousTok, const char* reason);
+static void RestoreManualCastToken(uint32_t previousTok, bool manualAssigned);
 static void LogSpellCastFailure(const char* branch, const char* reason, int spellId, uint32_t tok);
 static void LogImmediateSpellFailure(int spellId, const char* branch, const char* reason);
 static void ReportActiveSpellFailure(const char* branch, const char* reason);
@@ -450,6 +452,7 @@ static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_commit_ground(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_cancel(lua_State* L);
+static int __cdecl Lua_UOFlow_Target_force_open(lua_State* L);
 static int __cdecl Lua_UOFlow_bootstrap(lua_State* L);
 static int __cdecl Lua_UOFlow_status(lua_State* L);
 
@@ -473,6 +476,8 @@ static std::mutex g_lateWrapMutex;
 static bool g_lateWrapActive = false;
 static DWORD g_lateWrapStartTick = 0;
 static DWORD g_lateWrapNextTick = 0;
+static std::atomic<bool> g_lateWrapGuardDisabled{false};
+static constexpr const char* kLateWrapGuardDisabledReason = "disabled_exception";
 
 
 // Forward declarations for logging helpers
@@ -758,6 +763,19 @@ static const char* EvaluateCastWrapGuard(const LateWrapTarget& target)
 
 static bool WrapLuaGlobal(lua_State* L, LateWrapTarget& target, DWORD now)
 {
+    if (g_lateWrapGuardDisabled.load(std::memory_order_acquire)) {
+        if (!target.guardLogged || target.lastGuardReason != kLateWrapGuardDisabledReason) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "Wrap %s: guard disabled (exception_once)",
+                      target.name);
+            WriteRawLog(buf);
+            target.guardLogged = true;
+            target.lastGuardReason = kLateWrapGuardDisabledReason;
+        }
+        return false;
+    }
     const char* guardReason = EvaluateCastWrapGuard(target);
     if (guardReason) {
         if (!target.guardLogged || target.lastGuardReason != guardReason) {
@@ -782,16 +800,20 @@ static bool WrapLuaGlobal(lua_State* L, LateWrapTarget& target, DWORD now)
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DWORD code = GetExceptionCode();
-        if (now >= target.nextDeferredLog) {
+        (void)code;
+        bool alreadyDisabled = g_lateWrapGuardDisabled.exchange(true, std::memory_order_acq_rel);
+        if (!alreadyDisabled || target.lastGuardReason != kLateWrapGuardDisabledReason) {
             char buf[256];
             sprintf_s(buf,
                       sizeof(buf),
-                      "Wrap %s: guard tripped (exception 0x%08lX)",
-                      target.name,
-                      static_cast<unsigned long>(code));
+                      "Wrap %s: guard disabled (exception_once)",
+                      target.name);
             WriteRawLog(buf);
-            target.nextDeferredLog = now + 1000;
         }
+        target.nextDeferredLog = now + 1000;
+        target.guardLogged = true;
+        target.lastGuardReason = kLateWrapGuardDisabledReason;
+        g_lateWrapActive = false;
         return false;
     }
 
@@ -1351,6 +1373,32 @@ static uint32_t CurrentCastToken()
     if (tok == 0)
         tok = g_lastCastToken.load(std::memory_order_acquire);
     return tok;
+}
+
+static bool ActivateManualCastToken(uint32_t& previousTok, const char* reason)
+{
+    previousTok = g_tlsCurrentCastToken;
+    if (previousTok != 0)
+        return false;
+    const uint32_t token = NextCastToken();
+    g_tlsCurrentCastToken = token;
+    g_lastCastToken.store(token, std::memory_order_release);
+    ArmWordsLogWindow(token);
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[NoClick] manual cast token tok=%u reason=%s",
+              token,
+              reason ? reason : "fallback");
+    WriteRawLog(buf);
+    return true;
+}
+
+static void RestoreManualCastToken(uint32_t previousTok, bool manualAssigned)
+{
+    if (!manualAssigned)
+        return;
+    g_tlsCurrentCastToken = previousTok;
 }
 
 static void UowTracePushSpell(int spell)
@@ -3740,24 +3788,26 @@ static bool OpenTargetForSpell_Fallback(const char* reason)
         LogTargetFallbackError("prereq_missing");
         return false;
     }
-    TargetRequestTuple tuple = g_targetRequestTuple;
-    if (!tuple.learned) {
-        tuple.action = 1;
-        tuple.sub = 1;
-        tuple.extra = 0;
-    }
+    static constexpr int kFallbackAction = 1;
+    static constexpr int kFallbackSub = 1;
+    static constexpr int kFallbackExtra = 0;
+    TargetRequestTuple tuple{};
+    tuple.action = kFallbackAction;
+    tuple.sub = kFallbackSub;
+    tuple.extra = kFallbackExtra;
+    tuple.learned = true;
+    g_targetRequestTuple = tuple;
     char buf[256];
     sprintf_s(buf,
               sizeof(buf),
-              "[TargetFallback] RequestTargetInfo(action=%d, sub=%d, extra=%d source=%s reason=%s)",
-              tuple.action,
-              tuple.sub,
-              tuple.extra,
-              tuple.learned ? "cached" : "default",
-              reason ? reason : "unspecified");
+              "[TargetFallback] RequestTargetInfo(action=%d, sub=%d, extra=%d reason=%s)",
+              kFallbackAction,
+              kFallbackSub,
+              kFallbackExtra,
+              reason ? reason : "fallback");
     WriteRawLog(buf);
     auto success = std::make_shared<std::atomic<bool>>(false);
-    auto task = [tuple, success]() {
+    auto task = [success]() {
         auto* L = static_cast<lua_State*>(Engine::LuaState());
         if (!L) {
             LogTargetFallbackError("lua_state_missing");
@@ -3769,6 +3819,7 @@ static bool OpenTargetForSpell_Fallback(const char* reason)
             lua_settop(L, topClear);
             if (rcClear < 0) {
                 LogTargetFallbackError("clear_call_failed");
+                return;
             }
         } else {
             WriteRawLog("[TargetFallback] ClearCurrentTarget unavailable");
@@ -3776,9 +3827,9 @@ static bool OpenTargetForSpell_Fallback(const char* reason)
         g_targetCorr.Arm("UOW_RequestTargetInfo");
         WriteRawLog("[Target] open requested via RequestTargetInfo (fallback)");
         int top = lua_gettop(L);
-        lua_pushinteger(L, tuple.action);
-        lua_pushinteger(L, tuple.sub);
-        lua_pushinteger(L, tuple.extra);
+        lua_pushinteger(L, kFallbackAction);
+        lua_pushinteger(L, kFallbackSub);
+        lua_pushinteger(L, kFallbackExtra);
         int rc = InvokeClientLuaFn(g_origRequestTargetInfo, "RequestTargetInfo", L);
         lua_settop(L, top);
         if (rc < 0) {
@@ -3786,7 +3837,8 @@ static bool OpenTargetForSpell_Fallback(const char* reason)
             return;
         }
         MarkTargetRequestObserved();
-        LogTargetOpen(TargetCommitKind::Object);
+        if (g_noClickState.active)
+            LogTargetOpen(TargetCommitKind::Object);
         success->store(true, std::memory_order_release);
     };
     bool ranInline = Util::OwnerPump::Invoke("target_fallback", std::move(task));
@@ -3803,11 +3855,20 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* rea
         return true;
 
     auto* L = static_cast<lua_State*>(Engine::LuaState());
-    if (!L)
+    if (!L) {
+        static DWORD s_nextLuaLog = 0;
+        DWORD now = GetTickCount();
+        if (now >= s_nextLuaLog) {
+            WriteRawLog("InstallUOFlowConsoleBindingsIfNeeded: lua state unavailable");
+            s_nextLuaLog = now + 1000;
+        }
         return false;
+    }
 
     if (!ownerCtx)
         ownerCtx = CanonicalOwnerContext();
+    if (!ownerCtx)
+        ownerCtx = g_clientContext;
     if (!ownerCtx) {
         DWORD now = GetTickCount();
         if (now >= s_nextOwnerCtxLog) {
@@ -3829,6 +3890,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* rea
         {Lua_UOFlow_Target_commit_obj, "UOFlow.Target.commit_obj"},
         {Lua_UOFlow_Target_commit_ground, "UOFlow.Target.commit_ground"},
         {Lua_UOFlow_Target_cancel, "UOFlow.Target.cancel"},
+        {Lua_UOFlow_Target_force_open, "UOFlow.Target.force_open"},
     };
 
     for (const auto& binding : kRequired) {
@@ -3850,6 +3912,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* rea
         {Lua_UOFlow_Target_commit_obj, "uow.cmd.commit_obj"},
         {Lua_UOFlow_Target_commit_ground, "uow.cmd.commit_ground"},
         {Lua_UOFlow_Target_cancel, "uow.cmd.cancel_target"},
+        {Lua_UOFlow_Target_force_open, "uow.cmd.force_open"},
         {Lua_UOFlow_status, "uow.cmd.status"},
     };
 
@@ -3951,6 +4014,7 @@ static void LogUOFlowStatus(const char* tag)
     }
     const char* consoleLabel = g_consoleBound ? "bound" : "unbound";
     const char* fallbackLabel = TargetFallbackReady() ? "open" : "blocked";
+    const char* wrapperLabel = wrapperReady ? "yes" : "no";
     auto formatPtr = [](uintptr_t value, char* out, size_t len) {
         if (!out || len == 0)
             return;
@@ -3967,17 +4031,16 @@ static void LogUOFlowStatus(const char* tag)
     formatPtr(reinterpret_cast<uintptr_t>(g_origCastSpell), origBuf, sizeof(origBuf));
     formatPtr(reinterpret_cast<uintptr_t>(g_origCastSpellOnId), origOnIdBuf, sizeof(origOnIdBuf));
     TargetRequestTuple tuple = g_targetRequestTuple;
-    if (!tuple.learned) {
-        tuple.action = 1;
-        tuple.sub = 1;
-        tuple.extra = 0;
-    }
     char tupleBuf[32];
-    sprintf_s(tupleBuf, sizeof(tupleBuf), "(%d,%d,%d)", tuple.action, tuple.sub, tuple.extra);
+    const char* tupleLabel = "none";
+    if (tuple.learned) {
+        sprintf_s(tupleBuf, sizeof(tupleBuf), "(%d,%d,%d)", tuple.action, tuple.sub, tuple.extra);
+        tupleLabel = tupleBuf;
+    }
     char buf[352];
     sprintf_s(buf,
               sizeof(buf),
-              "tag=%s orig=(%s/%s) gate_ctx=(%s/%s) owner=%s console=%s direct_toggle=%d wrapper=%s fallback_target=%s rt_req=%s orig_on_id=%s",
+              "tag=%s orig=(%s/%s) gate_ctx=(%s/%s) owner=%s console=%s wrapper_ready=%s direct_toggle=%d fallback_target=%s rt_req_last=%s orig_on_id=%s",
               tag ? tag : "UOFlow.status",
               origBuf,
               haveOrig ? "ok" : "missing",
@@ -3985,10 +4048,10 @@ static void LogUOFlowStatus(const char* tag)
               haveGate ? "ok" : "missing",
               ownerLabel,
               consoleLabel,
+              wrapperLabel,
               g_allowDirectCastFallback ? 1 : 0,
-              wrapperReady ? "ready" : "unready",
               fallbackLabel,
-              tupleBuf,
+              tupleLabel,
               origOnIdBuf);
     WriteRawLog(buf);
 }
@@ -4327,6 +4390,12 @@ static bool NoClickCastSpell_Internal(int spellId)
               GetCurrentThreadId());
     WriteRawLog(buf);
 
+    const bool wrapperReady = CastWrapperReady();
+    const bool directEligible = g_allowDirectCastFallback && g_origCastSpell;
+    bool manualTokenAssigned = false;
+    uint32_t manualTokenPrevious = 0;
+    if (!wrapperReady && !directEligible)
+        manualTokenAssigned = ActivateManualCastToken(manualTokenPrevious, "wrapper_not_ready");
     uint32_t tok = CurrentCastToken();
     char diag[256];
     sprintf_s(diag,
@@ -4336,8 +4405,6 @@ static bool NoClickCastSpell_Internal(int spellId)
               tok,
               spellId);
     WriteRawLog(diag);
-
-    const bool wrapperReady = CastWrapperReady();
     bool wrapperOk = false;
     if (wrapperReady) {
         wrapperOk = InvokeCastWrapper(L, spellId);
@@ -4347,7 +4414,6 @@ static bool NoClickCastSpell_Internal(int spellId)
     }
 
     bool directOk = false;
-    const bool directEligible = g_allowDirectCastFallback && g_origCastSpell;
     if (!wrapperOk) {
         if (directEligible) {
             int mappedId = 0;
@@ -4364,6 +4430,17 @@ static bool NoClickCastSpell_Internal(int spellId)
         LogCastPath("direct", tok, "skipped", "wrapper_ok");
     }
 
+    if (!wrapperReady && !directEligible) {
+        bool fallbackOk = OpenTargetForSpell_Fallback("wrapper_not_ready");
+        LogCastPath("fallback", tok, fallbackOk ? "ok" : "fail", fallbackOk ? "wrapper_not_ready" : "request_failed");
+        LogUOFlowStatus("UOFlow.Spell.cast_prereq");
+        RestoreManualCastToken(manualTokenPrevious, manualTokenAssigned);
+        if (!fallbackOk) {
+            ReportActiveSpellFailure("fallback", "request_failed");
+            return false;
+        }
+        return true;
+    }
     bool gateCtxOk = false;
     bool gateCtxAvailable = HasGateReplayContext(spellId) || HasAnyGateReplayContext();
     if (!wrapperOk && !directOk) {
@@ -4394,9 +4471,14 @@ static bool NoClickCastSpell_Internal(int spellId)
                   g_origCastSpell ? "yes" : "no",
                   gateCtxAvailable ? "yes" : "no");
         WriteRawLog(bufPrereq);
+        bool fallbackOk = OpenTargetForSpell_Fallback("pipeline_exhausted");
+        LogCastPath("fallback", tok, fallbackOk ? "ok" : "fail", fallbackOk ? "pipeline_exhausted" : "request_failed");
         LogUOFlowStatus("UOFlow.Spell.cast_prereq");
-        ReportActiveSpellFailure("pipeline", "prereq_missing");
-        return false;
+        if (!fallbackOk) {
+            ReportActiveSpellFailure("pipeline", "fallback_failed");
+            return false;
+        }
+        return true;
     }
 
     bool sendObserved = WaitForSendLogged(kTargetFallbackSendWaitMs);
@@ -4412,13 +4494,13 @@ static bool NoClickCastSpell_Internal(int spellId)
         gateReason = "direct_orig";
     if (needTargetFallback) {
         bool fallbackOk = OpenTargetForSpell_Fallback(gateReason);
-        LogCastPath("gate", tok, fallbackOk ? "ok" : "fail", fallbackOk ? gateReason : "open_failed");
+        LogCastPath("fallback", tok, fallbackOk ? "ok" : "fail", fallbackOk ? gateReason : "open_failed");
         if (!fallbackOk) {
             ReportActiveSpellFailure("gate", "fallback_failed");
             return false;
         }
     } else {
-        LogCastPath("gate", tok, "skipped", gateReason);
+        LogCastPath("fallback", tok, "skipped", gateReason);
     }
 
     return true;
@@ -4644,6 +4726,13 @@ static int __cdecl Lua_UOFlow_Target_cancel(lua_State* L)
     return 1;
 }
 
+static int __cdecl Lua_UOFlow_Target_force_open(lua_State* L)
+{
+    bool ok = DispatchNoClickCommand("UOFlow.Target.force_open", []() { return OpenTargetForSpell_Fallback("force_open"); });
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
 static int __cdecl Lua_UOFlow_bootstrap(lua_State* L)
 {
     InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "manual");
@@ -4819,6 +4908,7 @@ static void HandleCastPacketSend(unsigned counter, const void* pkt, int len)
 
 static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
 {
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "UserActionCastSpell_W");
     int topBefore = lua_gettop(L);
     const uint32_t previousTok = g_tlsCurrentCastToken;
     const uint32_t token = NextCastToken();
@@ -4983,6 +5073,7 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
 
 static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
 {
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "UserActionCastSpellOnId_W");
     int topBefore = lua_gettop(L);
     int spellId = 0;
     int targetId = 0;
@@ -5887,6 +5978,7 @@ static void MaybeCaptureSpellTargetTuple(lua_State* L)
 
 static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
 {
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "RequestTargetInfo_W");
     int topBefore = lua_gettop(L);
     uint32_t tok = CurrentCastToken();
     char intro[128];
@@ -5935,6 +6027,7 @@ static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
 
 static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L)
 {
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "ClearCurrentTarget_W");
     int topBefore = lua_gettop(L);
     uint32_t tok = CurrentCastToken();
     char intro[128];
