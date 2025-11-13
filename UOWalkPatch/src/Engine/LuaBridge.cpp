@@ -49,6 +49,7 @@ extern "C" {
     LUA_API int lua_iscfunction(lua_State* L, int idx);
     LUA_API void lua_pushlightuserdata(lua_State* L, void* p);
     LUA_API void* lua_touserdata(lua_State* L, int idx);
+    LUA_API void lua_pushlstring(lua_State* L, const char* s, size_t len);
     LUA_API int luaL_ref(lua_State* L, int t);
     LUA_API void luaL_unref(lua_State* L, int t, int ref);
     LUA_API int luaL_error(lua_State* L, const char* fmt, ...);
@@ -397,6 +398,11 @@ static bool HasGateReplayContext(int spellId)
         bool learned = false;
     };
     static TargetRequestTuple g_targetRequestTuple{1, 1, 0, false};
+    static std::atomic<DWORD> g_targetForceBusyUntil{0};
+    static std::atomic<DWORD> g_targetForceLastRequestTick{0};
+    static std::atomic<bool> g_targetBusyGuardLogged{false};
+    static bool g_loggedTargetPtrSummary = false;
+    static thread_local bool g_targetForceMarshaled = false;
 }
 
 static void NoteNoClickSendPacket(uint8_t id, int len, unsigned counter);
@@ -419,28 +425,38 @@ static bool CastWrapperReady();
 static bool CastOnIdWrapperReady();
 static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* reason = nullptr);
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason);
+static int PushLuaCommandResult(lua_State* L, bool ok, const std::string& msg);
 static void LogUOFlowStatus(const char* tag);
+static void LogUOFlowStatus(const char* tag, bool ok, const std::string& msg);
 static bool OpenTargetForSpell_Fallback(const char* reason,
                                         uint32_t action = 1,
                                         uint32_t sub = 1,
                                         uint32_t extra = 0,
                                         bool trackCastState = true,
-                                        bool dedupe = true);
+                                        bool dedupe = true,
+                                        std::string* out_reason = nullptr);
 static bool QueueForceOpenTargetCursor(uint32_t action,
                                        uint32_t sub,
                                        uint32_t extra,
                                        const char* reason,
                                        bool trackCastState,
-                                       bool dedupe);
+                                       bool dedupe,
+                                       std::string* out_reason = nullptr);
 static bool ForceOpenTargetCursor(uint32_t action,
                                   uint32_t sub,
                                   uint32_t extra,
-                                  const char* reason,
-                                  bool trackCastState);
+                                  std::string& out_reason);
+static bool RunClearTarget(std::string& out_reason);
+static bool RunRequestTarget(uint32_t action, uint32_t sub, uint32_t extra, const char* tag, std::string& out_reason);
+static bool RunShowCursor(std::string& out_reason);
 static void LogTargetRequestInfoCall(uint32_t action, uint32_t sub, uint32_t extra);
 static void LogTargetClearCall();
 static void LogTargetCursorShow();
 static void LogTargetCursorHide();
+static void LogTargetPointerSummaryOnce();
+static void LogTargetClearPhase(const char* phase);
+static void LogTargetRequestPhase(uint32_t action, uint32_t sub, uint32_t extra, const char* phase);
+static void LogTargetShowPhase(const char* phase);
 static void LogTargetOriginalPointer(const char* name, const void* addr);
 static LuaFn ResolveTargetApi(LuaFn orig, LuaFn wrapper);
 static void MaybeCaptureSpellTargetTuple(lua_State* L);
@@ -483,8 +499,38 @@ static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_commit_ground(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_cancel(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_force_open(lua_State* L);
+static int __cdecl Lua_uow_cmd_clear_target(lua_State* L);
+static int __cdecl Lua_uow_cmd_request_target(lua_State* L);
+static int __cdecl Lua_uow_cmd_show_cursor(lua_State* L);
 static int __cdecl Lua_UOFlow_bootstrap(lua_State* L);
 static int __cdecl Lua_UOFlow_status(lua_State* L);
+
+static uint32_t ReadOptionalUInt(lua_State* L, int idx, uint32_t def = 0)
+{
+    if (!L)
+        return def;
+    int top = lua_gettop(L);
+    if (idx > top)
+        return def;
+    if (lua_type(L, idx) != LUA_TNUMBER)
+        return def;
+    lua_Integer v = lua_tointeger(L, idx);
+    if (v < 0)
+        v = 0;
+    return static_cast<uint32_t>(v);
+}
+
+static int PushLuaCommandResult(lua_State* L, bool ok, const std::string& msg)
+{
+    if (!L)
+        return 0;
+    lua_pushboolean(L, ok ? 1 : 0);
+    if (msg.empty())
+        lua_pushlstring(L, "", 0);
+    else
+        lua_pushlstring(L, msg.c_str(), msg.size());
+    return 2;
+}
 
 struct LateWrapTarget {
     const char* name;
@@ -3051,6 +3097,7 @@ static void TryInstallDirectActionHooks()
     if (any) {
         InterlockedExchange(&g_directActionHooksInstalled, 1);
     }
+    LogTargetPointerSummaryOnce();
 }
 
 static bool RegisterViaClient(lua_State* L, lua_CFunction fn, const char* name)
@@ -3815,6 +3862,117 @@ static void LogTargetCursorHide()
     WriteRawLog("[Target] HS_HideTargetingCursor()");
 }
 
+static void LogTargetPointerSummaryOnce()
+{
+    if (g_loggedTargetPtrSummary)
+        return;
+    g_loggedTargetPtrSummary = true;
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[TargetPtrs] clear=0x%08X request=0x%08X show=0x%08X hide=0x%08X",
+              static_cast<unsigned>(reinterpret_cast<uintptr_t>(g_origClearCurrentTarget)),
+              static_cast<unsigned>(reinterpret_cast<uintptr_t>(g_origRequestTargetInfo)),
+              static_cast<unsigned>(reinterpret_cast<uintptr_t>(g_origHS_ShowTargetingCursor)),
+              static_cast<unsigned>(reinterpret_cast<uintptr_t>(g_origHS_HideTargetingCursor)));
+    WriteRawLog(buf);
+}
+
+static void ResetTargetBusyGuard(const char* reason)
+{
+    (void)reason;
+    g_targetForceBusyUntil.store(0, std::memory_order_release);
+    g_targetBusyGuardLogged.store(false, std::memory_order_release);
+}
+
+static bool IsTargetBusyGuardActive(DWORD now, DWORD& remainingMs)
+{
+    DWORD until = g_targetForceBusyUntil.load(std::memory_order_acquire);
+    if (until == 0)
+        return false;
+    if (now >= until) {
+        ResetTargetBusyGuard("expired");
+        return false;
+    }
+    remainingMs = until - now;
+    return true;
+}
+
+static DWORD TargetTimeSinceLastRequest(DWORD now)
+{
+    DWORD last = g_targetForceLastRequestTick.load(std::memory_order_acquire);
+    if (!last || now < last)
+        return 0;
+    return now - last;
+}
+
+static void ArmTargetBusyGuard(DWORD now)
+{
+    uint32_t window = ResolveTargetWindowMs();
+    if (window == 0)
+        window = kTargetFallbackWindowMs;
+    g_targetForceBusyUntil.store(now + window, std::memory_order_release);
+    g_targetBusyGuardLogged.store(false, std::memory_order_release);
+}
+
+static bool CheckTargetBusyGuard(const char* tag, std::string& out_reason)
+{
+    DWORD now = GetTickCount();
+    DWORD remaining = 0;
+    if (!IsTargetBusyGuardActive(now, remaining))
+        return true;
+    bool expected = false;
+    if (g_targetBusyGuardLogged.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[TargetFallback] op=%s busy_guard active rem=%lu ms",
+                  tag ? tag : "force_open",
+                  static_cast<unsigned long>(remaining));
+        WriteRawLog(buf);
+    }
+    out_reason = "busy_guard";
+    return false;
+}
+
+static unsigned long FormatPtrValue(const void* ptr)
+{
+    return static_cast<unsigned long>(reinterpret_cast<uintptr_t>(ptr));
+}
+
+static void LogTargetClearPhase(const char* phase)
+{
+    char buf[160];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Target] ClearCurrentTarget() %s",
+              phase ? phase : "");
+    WriteRawLog(buf);
+}
+
+static void LogTargetRequestPhase(uint32_t action, uint32_t sub, uint32_t extra, const char* phase)
+{
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Target] RequestTargetInfo(action=%u, sub=%u, extra=%u) %s",
+              static_cast<unsigned>(action),
+              static_cast<unsigned>(sub),
+              static_cast<unsigned>(extra),
+              phase ? phase : "");
+    WriteRawLog(buf);
+}
+
+static void LogTargetShowPhase(const char* phase)
+{
+    char buf[160];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Target] HS_ShowTargetingCursor() %s",
+              phase ? phase : "");
+    WriteRawLog(buf);
+}
+
 static void LogTargetOriginalPointer(const char* name, const void* addr)
 {
     if (!name || !addr)
@@ -3850,7 +4008,7 @@ static LuaFn ResolveTargetApi(LuaFn orig, LuaFn wrapper)
 
 static bool TargetFallbackReady()
 {
-    if (!g_origRequestTargetInfo)
+    if (!g_origRequestTargetInfo || !g_origHS_ShowTargetingCursor)
         return false;
     if (!CanonicalOwnerContext())
         return false;
@@ -3885,108 +4043,215 @@ static bool WaitForSendLogged(DWORD timeoutMs)
     return true;
 }
 
-static bool ForceOpenTargetCursor(uint32_t action,
-                                  uint32_t sub,
-                                  uint32_t extra,
-                                  const char* reason,
-                                  bool trackCastState)
+static bool RunClearTarget(std::string& out_reason)
 {
     auto* L = static_cast<lua_State*>(Engine::LuaState());
-    const char* reasonLabel = reason ? reason : "force_open";
-    auto clearPendingFlag = [&]() {
-        if (trackCastState && g_noClickState.active)
-            g_noClickState.forceOpenQueued = false;
-    };
     if (!L) {
-        LogTargetFallbackError("lua_state_missing");
-        clearPendingFlag();
+        out_reason = "lua_state_missing";
+        LogTargetFallbackError(out_reason.c_str());
         return false;
     }
-
-    LuaFn clearFn = ResolveTargetApi(g_origClearCurrentTarget, reinterpret_cast<LuaFn>(&Lua_ClearCurrentTarget_W));
-    LuaFn requestFn = ResolveTargetApi(g_origRequestTargetInfo, reinterpret_cast<LuaFn>(&Lua_RequestTargetInfo_W));
-    LuaFn showFn = ResolveTargetApi(g_origHS_ShowTargetingCursor, reinterpret_cast<LuaFn>(&Lua_HS_ShowTargetingCursor_W));
-    LuaFn hideFn = ResolveTargetApi(g_origHS_HideTargetingCursor, reinterpret_cast<LuaFn>(&Lua_HS_HideTargetingCursor_W));
-
-    char ptrBuf[256];
-    sprintf_s(ptrBuf,
-              sizeof(ptrBuf),
-              "[TargetFallback] ptrs clear=%p request=%p show=%p hide=%p reason=%s",
-              reinterpret_cast<void*>(clearFn),
-              reinterpret_cast<void*>(requestFn),
-              reinterpret_cast<void*>(showFn),
-              reinterpret_cast<void*>(hideFn),
-              reasonLabel);
-    WriteRawLog(ptrBuf);
-
-    if (!requestFn) {
-        LogTargetFallbackError("request_ptr_missing");
-        clearPendingFlag();
+    if (!g_origClearCurrentTarget) {
+        out_reason = "missing_ptr:ClearCurrentTarget";
+        LogTargetFallbackError(out_reason.c_str());
         return false;
     }
-
-    if (!showFn) {
-        char warn[192];
-        sprintf_s(warn,
-                  sizeof(warn),
-                  "[TargetFallback] HS_ShowTargetingCursor ptr missing reason=%s",
-                  reasonLabel);
-        WriteRawLog(warn);
+    DWORD now = GetTickCount();
+    DWORD dt = TargetTimeSinceLastRequest(now);
+    DWORD rem = 0;
+    bool busy = IsTargetBusyGuardActive(now, rem);
+    uint32_t tok = CurrentCastToken();
+    char before[256];
+    sprintf_s(before,
+              sizeof(before),
+              "[Target] ClearCurrentTarget() BEFORE ptr=%08lX tok=%u busy=%d dt=%lu",
+              FormatPtrValue(g_origClearCurrentTarget),
+              tok,
+              busy ? 1 : 0,
+              static_cast<unsigned long>(dt));
+    WriteRawLog(before);
+    int top = lua_gettop(L);
+    int rc = InvokeClientLuaFn(g_origClearCurrentTarget, "ClearCurrentTarget", L);
+    lua_settop(L, top);
+    char after[192];
+    sprintf_s(after,
+              sizeof(after),
+              "[Target] ClearCurrentTarget() AFTER ok=%d rc=%d",
+              rc >= 0 ? 1 : 0,
+              rc);
+    WriteRawLog(after);
+    if (rc < 0) {
+        out_reason = "call_failed:ClearCurrentTarget";
+        LogTargetFallbackError(out_reason.c_str());
+        ResetTargetBusyGuard("clear_failed");
+        return false;
     }
+    return true;
+}
 
-    if (!clearFn) {
-        char warn[192];
-        sprintf_s(warn,
-                  sizeof(warn),
-                  "[TargetFallback] ClearCurrentTarget ptr missing reason=%s",
-                  reasonLabel);
-        WriteRawLog(warn);
+static bool RunRequestTarget(uint32_t action,
+                             uint32_t sub,
+                             uint32_t extra,
+                             const char* tag,
+                             std::string& out_reason)
+{
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L) {
+        out_reason = "lua_state_missing";
+        LogTargetFallbackError(out_reason.c_str());
+        return false;
     }
-
-    if (clearFn) {
-        int topClear = lua_gettop(L);
-        LogTargetClearCall();
-        int rcClear = InvokeClientLuaFn(clearFn, "ClearCurrentTarget", L);
-        lua_settop(L, topClear);
-        if (rcClear < 0) {
-            LogTargetFallbackError("clear_call_failed");
-            clearPendingFlag();
-            return false;
-        }
+    if (!g_origRequestTargetInfo) {
+        out_reason = "missing_ptr:RequestTargetInfo";
+        LogTargetFallbackError(out_reason.c_str());
+        return false;
     }
-
+    LogTargetRequestInfoCall(action, sub, extra);
+    const char* op = tag ? tag : "request_target";
+    if (!CheckTargetBusyGuard(op, out_reason))
+        return false;
+    DWORD now = GetTickCount();
+    DWORD dt = TargetTimeSinceLastRequest(now);
+    DWORD rem = 0;
+    bool busy = IsTargetBusyGuardActive(now, rem);
+    uint32_t tok = CurrentCastToken();
+    char before[256];
+    sprintf_s(before,
+              sizeof(before),
+              "[Target] RequestTargetInfo(a=%u,s=%u,x=%u) BEFORE ptr=%08lX tok=%u busy=%d dt=%lu",
+              static_cast<unsigned>(action),
+              static_cast<unsigned>(sub),
+              static_cast<unsigned>(extra),
+              FormatPtrValue(g_origRequestTargetInfo),
+              tok,
+              busy ? 1 : 0,
+              static_cast<unsigned long>(dt));
+    WriteRawLog(before);
     g_targetCorr.Arm("UOW_RequestTargetInfo");
+    g_targetRequestTuple.action = static_cast<int>(action);
+    g_targetRequestTuple.sub = static_cast<int>(sub);
+    g_targetRequestTuple.extra = static_cast<int>(extra);
+    g_targetRequestTuple.learned = true;
     int top = lua_gettop(L);
     lua_pushinteger(L, static_cast<lua_Integer>(action));
     lua_pushinteger(L, static_cast<lua_Integer>(sub));
     lua_pushinteger(L, static_cast<lua_Integer>(extra));
-    LogTargetRequestInfoCall(action, sub, extra);
-    int rc = InvokeClientLuaFn(requestFn, "RequestTargetInfo", L);
+    int rc = InvokeClientLuaFn(g_origRequestTargetInfo, "RequestTargetInfo", L);
     lua_settop(L, top);
-    bool requestOk = rc >= 0;
-    if (!requestOk) {
-        LogTargetFallbackError("request_call_failed");
-        clearPendingFlag();
-    } else {
-        MarkTargetRequestObserved();
-        if (g_noClickState.active)
-            LogTargetOpen(TargetCommitKind::Object);
-        if (trackCastState && g_noClickState.active) {
-            g_noClickState.busyUntilTick = GetTickCount() + kTargetFallbackBusyGuardMs;
-            g_noClickState.busyLogged = false;
-        }
+    g_targetForceLastRequestTick.store(now, std::memory_order_release);
+    char after[256];
+    sprintf_s(after,
+              sizeof(after),
+              "[Target] RequestTargetInfo(a=%u,s=%u,x=%u) AFTER ok=%d rc=%d",
+              static_cast<unsigned>(action),
+              static_cast<unsigned>(sub),
+              static_cast<unsigned>(extra),
+              rc >= 0 ? 1 : 0,
+              rc);
+    WriteRawLog(after);
+    if (rc < 0) {
+        out_reason = "call_failed:RequestTargetInfo";
+        LogTargetFallbackError(out_reason.c_str());
+        ResetTargetBusyGuard("request_failed");
+        return false;
     }
-
-    if (showFn) {
-        int topShow = lua_gettop(L);
-        LogTargetCursorShow();
-        int rcShow = InvokeClientLuaFn(showFn, "HS_ShowTargetingCursor", L);
-        lua_settop(L, topShow);
-        if (rcShow < 0)
-            WriteRawLog("[TargetFallback] HS_ShowTargetingCursor invoke failed");
+    MarkTargetRequestObserved();
+    if (g_noClickState.active)
+        LogTargetOpen(TargetCommitKind::Object);
+    ArmTargetBusyGuard(now);
+    if (g_noClickState.active) {
+        g_noClickState.busyUntilTick = now + ResolveTargetWindowMs();
+        g_noClickState.busyLogged = false;
     }
+    return true;
+}
 
-    return requestOk;
+static bool RunShowCursor(std::string& out_reason)
+{
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L) {
+        out_reason = "lua_state_missing";
+        LogTargetFallbackError(out_reason.c_str());
+        return false;
+    }
+    if (!g_origHS_ShowTargetingCursor) {
+        out_reason = "missing_ptr:HS_ShowTargetingCursor";
+        LogTargetFallbackError(out_reason.c_str());
+        return false;
+    }
+    DWORD now = GetTickCount();
+    DWORD dt = TargetTimeSinceLastRequest(now);
+    DWORD rem = 0;
+    bool busy = IsTargetBusyGuardActive(now, rem);
+    uint32_t tok = CurrentCastToken();
+    char before[256];
+    sprintf_s(before,
+              sizeof(before),
+              "[Target] HS_ShowTargetingCursor() BEFORE ptr=%08lX tok=%u busy=%d dt=%lu",
+              FormatPtrValue(g_origHS_ShowTargetingCursor),
+              tok,
+              busy ? 1 : 0,
+              static_cast<unsigned long>(dt));
+    WriteRawLog(before);
+    int top = lua_gettop(L);
+    int rc = InvokeClientLuaFn(g_origHS_ShowTargetingCursor, "HS_ShowTargetingCursor", L);
+    lua_settop(L, top);
+    char after[192];
+    sprintf_s(after,
+              sizeof(after),
+              "[Target] HS_ShowTargetingCursor() AFTER ok=%d rc=%d",
+              rc >= 0 ? 1 : 0,
+              rc);
+    WriteRawLog(after);
+    if (rc < 0) {
+        out_reason = "call_failed:HS_ShowTargetingCursor";
+        LogTargetFallbackError(out_reason.c_str());
+        ResetTargetBusyGuard("show_failed");
+        return false;
+    }
+    return true;
+}
+
+static bool ForceOpenTargetCursor(uint32_t action,
+                                  uint32_t sub,
+                                  uint32_t extra,
+                                  std::string& out_reason)
+{
+    out_reason.clear();
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    LogTargetPointerSummaryOnce();
+    if (!L) {
+        out_reason = "lua_state_missing";
+        LogTargetFallbackError(out_reason.c_str());
+        return false;
+    }
+    const uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+    const uint32_t currentTid = GetCurrentThreadId();
+    if (ownerTid == 0 || currentTid != ownerTid) {
+        out_reason = "not_owner_thread";
+        LogTargetFallbackError(out_reason.c_str());
+        return false;
+    }
+    bool marshaled = g_targetForceMarshaled;
+    g_targetForceMarshaled = false;
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[TargetFallback] op=force_open owner_tid=%u marshaled=%d a=%u s=%u x=%u",
+              static_cast<unsigned>(ownerTid),
+              marshaled ? 1 : 0,
+              static_cast<unsigned>(action),
+              static_cast<unsigned>(sub),
+              static_cast<unsigned>(extra));
+    WriteRawLog(buf);
+    if (!RunClearTarget(out_reason))
+        return false;
+    if (!RunRequestTarget(action, sub, extra, "force_open", out_reason))
+        return false;
+    if (!RunShowCursor(out_reason))
+        return false;
+    out_reason = "forced open";
+    return true;
 }
 
 static bool QueueForceOpenTargetCursor(uint32_t action,
@@ -3994,15 +4259,20 @@ static bool QueueForceOpenTargetCursor(uint32_t action,
                                        uint32_t extra,
                                        const char* reason,
                                        bool trackCastState,
-                                       bool dedupe)
+                                       bool dedupe,
+                                       std::string* out_reason)
 {
     if (!TargetFallbackReady()) {
         LogTargetFallbackError("prereq_missing");
         return false;
     }
 
-    if (dedupe && trackCastState && g_noClickState.active && g_noClickState.forceOpenQueued)
-        return true;
+    std::string guardReason;
+    if (dedupe && !CheckTargetBusyGuard(reason ? reason : "force_open", guardReason)) {
+        if (out_reason)
+            *out_reason = guardReason;
+        return false;
+    }
 
     TargetRequestTuple tuple{};
     tuple.action = static_cast<int>(action);
@@ -4025,15 +4295,30 @@ static bool QueueForceOpenTargetCursor(uint32_t action,
     WriteRawLog(buf);
 
     auto success = std::make_shared<std::atomic<bool>>(false);
+    auto pendingReason = std::make_shared<std::string>();
+    auto marshaledFlag = std::make_shared<bool>(false);
     std::string reasonLabel = reason ? reason : "force_open";
-    auto task = [action, sub, extra, trackCastState, success, reasonLabel]() {
-        bool ok = ForceOpenTargetCursor(action, sub, extra, reasonLabel.c_str(), trackCastState);
+    auto task = [action, sub, extra, trackCastState, success, pendingReason, marshaledFlag, reasonLabel]() {
+        bool previous = g_targetForceMarshaled;
+        g_targetForceMarshaled = *marshaledFlag;
+        std::string localReason;
+        bool ok = ForceOpenTargetCursor(action, sub, extra, localReason);
+        g_targetForceMarshaled = previous;
         success->store(ok, std::memory_order_release);
+        if (!ok)
+            *pendingReason = localReason;
+        if (trackCastState && g_noClickState.active)
+            g_noClickState.forceOpenQueued = false;
     };
     bool ranInline = Util::OwnerPump::Invoke("target_fallback", std::move(task));
-    if (!ranInline)
+    if (!ranInline) {
+        *marshaledFlag = true;
         return true;
-    return success->load(std::memory_order_acquire);
+    }
+    bool ok = success->load(std::memory_order_acquire);
+    if (out_reason)
+        *out_reason = *pendingReason;
+    return ok;
 }
 
 static bool OpenTargetForSpell_Fallback(const char* reason,
@@ -4041,14 +4326,19 @@ static bool OpenTargetForSpell_Fallback(const char* reason,
                                         uint32_t sub,
                                         uint32_t extra,
                                         bool trackCastState,
-                                        bool dedupe)
+                                        bool dedupe,
+                                        std::string* out_reason)
 {
-    return QueueForceOpenTargetCursor(action,
-                                      sub,
-                                      extra,
-                                      reason ? reason : "fallback",
-                                      trackCastState,
-                                      dedupe);
+    bool ok = QueueForceOpenTargetCursor(action,
+                                         sub,
+                                         extra,
+                                         reason ? reason : "fallback",
+                                         trackCastState,
+                                         dedupe,
+                                         out_reason);
+    if (!ok && out_reason && out_reason->empty())
+        *out_reason = reason ? reason : "fallback_failed";
+    return ok;
 }
 
 static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* reason)
@@ -4118,6 +4408,9 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* rea
         {Lua_UOFlow_Target_cancel, "uow.cmd.cancel_target"},
         {Lua_UOFlow_Target_force_open, "uow.cmd.force_open"},
         {Lua_UOFlow_status, "uow.cmd.status"},
+        {Lua_uow_cmd_clear_target, "uow.cmd.clear_target"},
+        {Lua_uow_cmd_request_target, "uow.cmd.req_target"},
+        {Lua_uow_cmd_show_cursor, "uow.cmd.show_cursor"},
     };
 
     for (const auto& binding : kCompat) {
@@ -4242,10 +4535,13 @@ static void LogUOFlowStatus(const char* tag)
         tupleLabel = tupleBuf;
     }
     uint32_t targetWindow = ResolveTargetWindowMs();
+    DWORD now = GetTickCount();
+    DWORD remaining = 0;
+    bool busy = IsTargetBusyGuardActive(now, remaining);
     char buf[512];
     sprintf_s(buf,
               sizeof(buf),
-              "tag=%s orig=(%s/%s) gate_ctx=(%s/%s) orig_on_id=(%s/%s) owner=%s console=%s wrapper=%s direct_toggle=%u target_window_ms=%u fallback_target=%s rt_req_last=%s",
+              "tag=%s orig=(%s/%s) gate_ctx=(%s/%s) orig_on_id=(%s/%s) owner=%s console=%s wrapper=%s direct_toggle=%u target_window_ms=%u busy_guard=%s(%lu) fallback_target=%s rt_req_last=%s",
               tag ? tag : "UOFlow.status",
               origBuf,
               haveOrig ? "ok" : "missing",
@@ -4258,8 +4554,23 @@ static void LogUOFlowStatus(const char* tag)
               wrapperLabel,
               g_allowDirectCastFallback ? 1 : 0,
               targetWindow,
+              busy ? "active" : "idle",
+              static_cast<unsigned long>(busy ? remaining : 0),
               fallbackLabel,
               tupleLabel);
+    WriteRawLog(buf);
+}
+
+static void LogUOFlowStatus(const char* tag, bool ok, const std::string& msg)
+{
+    LogUOFlowStatus(tag);
+    char buf[384];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[UOFlow] outcome tag=%s ok=%d msg=%s",
+              tag ? tag : "UOFlow",
+              ok ? 1 : 0,
+              msg.empty() ? "<none>" : msg.c_str());
     WriteRawLog(buf);
 }
 
@@ -4441,16 +4752,22 @@ static void CompleteNoClickSpell()
     ResetNoClickState(nullptr);
 }
 
-static bool DispatchNoClickCommand(const char* name, std::function<bool()> fn)
+static bool DispatchNoClickCommand(const char* name,
+                                   std::function<bool(std::string&)> fn,
+                                   std::string& out_msg)
 {
     if (!fn)
         return false;
     auto result = std::make_shared<bool>(false);
-    auto task = [fn = std::move(fn), result]() mutable {
-        *result = fn();
+    auto message = std::make_shared<std::string>();
+    auto task = [fn = std::move(fn), result, message]() mutable {
+        *result = fn(*message);
     };
-    if (Util::OwnerPump::Invoke(name, std::move(task)))
+    if (Util::OwnerPump::Invoke(name, std::move(task))) {
+        out_msg = *message;
         return *result;
+    }
+    out_msg = "owner_dispatch_pending";
     return true;
 }
 
@@ -4898,15 +5215,34 @@ static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     if (spellId <= 0) {
         WriteRawLog("[Lua] UOFlow.Spell.cast rejected: invalid spell id");
-        return luaL_error(L, "UOFlow.Spell.cast: invalid spell id");
+        std::string msg = "invalid_spell";
+        LogUOFlowStatus("UOFlow.Spell.cast", false, msg);
+        return PushLuaCommandResult(L, false, msg);
     }
-    bool ok = DispatchNoClickCommand("UOFlow.Spell.cast", [spellId]() { return NoClickCastSpell_Internal(spellId); });
-    if (!ok) {
-        LogUOFlowStatus("UOFlow.Spell.cast");
-        return luaL_error(L, "UOFlow.Spell.cast: dispatch failed (see log)");
+    DWORD now = GetTickCount();
+    DWORD remaining = 0;
+    if (IsTargetBusyGuardActive(now, remaining)) {
+        LogUOFlowStatus("UOFlow.Spell.cast", false, "busy_guard");
+        return PushLuaCommandResult(L, false, "busy_guard");
     }
-    lua_pushboolean(L, 1);
-    return 1;
+    std::string msg;
+    bool ok = DispatchNoClickCommand(
+        "UOFlow.Spell.cast",
+        [spellId](std::string& innerMsg) {
+            bool result = NoClickCastSpell_Internal(spellId);
+            if (result) {
+                char okMsg[96];
+                sprintf_s(okMsg, sizeof(okMsg), "Spell.cast ok (spell=%d)", spellId);
+                innerMsg = okMsg;
+            } else if (innerMsg.empty()) {
+                innerMsg = "Spell.cast failed";
+            }
+            return result;
+        },
+        msg);
+    if (!ok)
+        LogUOFlowStatus("UOFlow.Spell.cast", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
 }
 
 static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
@@ -4919,17 +5255,28 @@ static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
         objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
     if (spellId <= 0 || objectId == 0) {
         WriteRawLog("[Lua] UOFlow.Spell.cast_on_id rejected: invalid spell or object id");
-        return luaL_error(L, "UOFlow.Spell.cast_on_id: invalid spell/object id");
+        std::string err = "invalid_args";
+        LogUOFlowStatus("UOFlow.Spell.cast_on_id", false, err);
+        return PushLuaCommandResult(L, false, err);
     }
-    bool ok = DispatchNoClickCommand("UOFlow.Spell.cast_on_id", [spellId, objectId]() {
-        return NoClickCastSpellOnId_Internal(spellId, objectId);
-    });
-    if (!ok) {
-        LogUOFlowStatus("UOFlow.Spell.cast_on_id");
-        return luaL_error(L, "UOFlow.Spell.cast_on_id: dispatch failed (see log)");
-    }
-    lua_pushboolean(L, 1);
-    return 1;
+    std::string msg;
+    bool ok = DispatchNoClickCommand(
+        "UOFlow.Spell.cast_on_id",
+        [spellId, objectId](std::string& innerMsg) {
+            bool result = NoClickCastSpellOnId_Internal(spellId, objectId);
+            if (result) {
+                char okMsg[128];
+                sprintf_s(okMsg, sizeof(okMsg), "Spell.cast_on_id ok (spell=%d obj=%u)", spellId, objectId);
+                innerMsg = okMsg;
+            } else if (innerMsg.empty()) {
+                innerMsg = "Spell.cast_on_id failed";
+            }
+            return result;
+        },
+        msg);
+    if (!ok)
+        LogUOFlowStatus("UOFlow.Spell.cast_on_id", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
 }
 
 static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L)
@@ -4939,17 +5286,28 @@ static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L)
         objectId = static_cast<uint32_t>(lua_tointeger(L, 1));
     if (objectId == 0) {
         WriteRawLog("[Lua] UOFlow.Target.commit_obj rejected: invalid object id");
-        return luaL_error(L, "UOFlow.Target.commit_obj: invalid object id");
+        std::string err = "invalid_object";
+        LogUOFlowStatus("UOFlow.Target.commit_obj", false, err);
+        return PushLuaCommandResult(L, false, err);
     }
-    bool ok = DispatchNoClickCommand("UOFlow.Target.commit_obj", [objectId]() {
-        return CommitTargetObject_Internal(objectId, TargetCommitKind::Object);
-    });
-    if (!ok) {
-        LogUOFlowStatus("UOFlow.Target.commit_obj");
-        return luaL_error(L, "UOFlow.Target.commit_obj: dispatch failed (see log)");
-    }
-    lua_pushboolean(L, 1);
-    return 1;
+    std::string msg;
+    bool ok = DispatchNoClickCommand(
+        "UOFlow.Target.commit_obj",
+        [objectId](std::string& innerMsg) {
+            bool result = CommitTargetObject_Internal(objectId, TargetCommitKind::Object);
+            if (result) {
+                char okMsg[96];
+                sprintf_s(okMsg, sizeof(okMsg), "commit_obj ok (id=%u)", objectId);
+                innerMsg = okMsg;
+            } else if (innerMsg.empty()) {
+                innerMsg = "commit_obj failed";
+            }
+            return result;
+        },
+        msg);
+    if (!ok)
+        LogUOFlowStatus("UOFlow.Target.commit_obj", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
 }
 
 static int __cdecl Lua_UOFlow_Target_commit_ground(lua_State* L)
@@ -4963,26 +5321,40 @@ static int __cdecl Lua_UOFlow_Target_commit_ground(lua_State* L)
         y = static_cast<int>(lua_tointeger(L, 2));
     if (L && lua_gettop(L) >= 3 && lua_type(L, 3) == LUA_TNUMBER)
         facet = static_cast<int>(lua_tointeger(L, 3));
-    bool ok = DispatchNoClickCommand("UOFlow.Target.commit_ground", [x, y, facet]() {
-        return CommitTargetGround_Internal(x, y, facet);
-    });
-    if (!ok) {
-        LogUOFlowStatus("UOFlow.Target.commit_ground");
-        return luaL_error(L, "UOFlow.Target.commit_ground: dispatch failed (see log)");
-    }
-    lua_pushboolean(L, 1);
-    return 1;
+    std::string msg;
+    bool ok = DispatchNoClickCommand(
+        "UOFlow.Target.commit_ground",
+        [x, y, facet](std::string& innerMsg) {
+            bool result = CommitTargetGround_Internal(x, y, facet);
+            if (result) {
+                char okMsg[128];
+                sprintf_s(okMsg, sizeof(okMsg), "commit_ground ok (x=%d y=%d facet=%d)", x, y, facet);
+                innerMsg = okMsg;
+            } else if (innerMsg.empty()) {
+                innerMsg = "commit_ground failed";
+            }
+            return result;
+        },
+        msg);
+    if (!ok)
+        LogUOFlowStatus("UOFlow.Target.commit_ground", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
 }
 
 static int __cdecl Lua_UOFlow_Target_cancel(lua_State* L)
 {
-    bool ok = DispatchNoClickCommand("UOFlow.Target.cancel", []() { return CancelTarget_Internal(); });
-    if (!ok) {
-        LogUOFlowStatus("UOFlow.Target.cancel");
-        return luaL_error(L, "UOFlow.Target.cancel: dispatch failed (see log)");
-    }
-    lua_pushboolean(L, 1);
-    return 1;
+    std::string msg;
+    bool ok = DispatchNoClickCommand(
+        "UOFlow.Target.cancel",
+        [](std::string& innerMsg) {
+            bool result = CancelTarget_Internal();
+            innerMsg = result ? "cancel ok" : "cancel failed";
+            return result;
+        },
+        msg);
+    if (!ok)
+        LogUOFlowStatus("UOFlow.Target.cancel", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
 }
 
 static int __cdecl Lua_UOFlow_Target_force_open(lua_State* L)
@@ -5012,15 +5384,80 @@ static int __cdecl Lua_UOFlow_Target_force_open(lua_State* L)
         }
     }
     bool trackCastState = g_noClickState.active;
-    bool ok = DispatchNoClickCommand("UOFlow.Target.force_open", [action, sub, extra, trackCastState]() {
-        return OpenTargetForSpell_Fallback("force_open", action, sub, extra, trackCastState, false);
-    });
-    if (!ok) {
-        LogUOFlowStatus("UOFlow.Target.force_open");
-        return luaL_error(L, "UOFlow.Target.force_open: dispatch failed (see log)");
+    std::string msg;
+    bool ok = DispatchNoClickCommand(
+        "UOFlow.Target.force_open",
+        [action, sub, extra, trackCastState](std::string& innerMsg) {
+            bool result = OpenTargetForSpell_Fallback(
+                "force_open", action, sub, extra, trackCastState, false, &innerMsg);
+            if (result) {
+                if (innerMsg.empty())
+                    innerMsg = "forced open";
+            } else if (innerMsg.empty()) {
+                innerMsg = "force_open failed";
+            }
+            return result;
+        },
+        msg);
+    if (!ok && msg.empty())
+        msg = "dispatch_failed";
+    if (!ok)
+        LogUOFlowStatus("UOFlow.Target.force_open", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
+}
+
+static int __cdecl Lua_uow_cmd_clear_target(lua_State* L)
+{
+    (void)L;
+    std::string msg;
+    bool ok = RunClearTarget(msg);
+    if (ok)
+        msg = "ClearCurrentTarget ok";
+    else if (msg.empty())
+        msg = "ClearCurrentTarget failed";
+    if (!ok)
+        LogUOFlowStatus("uow.cmd.clear_target", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
+}
+
+static int __cdecl Lua_uow_cmd_request_target(lua_State* L)
+{
+    uint32_t action = ReadOptionalUInt(L, 1, 1);
+    uint32_t sub = ReadOptionalUInt(L, 2, 1);
+    uint32_t extra = ReadOptionalUInt(L, 3, 0);
+    std::string msg;
+    bool ok = RunClearTarget(msg);
+    if (ok)
+        ok = RunRequestTarget(action, sub, extra, "uow.cmd.req_target", msg);
+    if (ok) {
+        char buf[128];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "RequestTargetInfo ok (a=%u,s=%u,x=%u)",
+                  static_cast<unsigned>(action),
+                  static_cast<unsigned>(sub),
+                  static_cast<unsigned>(extra));
+        msg = buf;
+    } else if (msg.empty()) {
+        msg = "RequestTargetInfo failed";
     }
-    lua_pushboolean(L, 1);
-    return 1;
+    if (!ok)
+        LogUOFlowStatus("uow.cmd.req_target", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
+}
+
+static int __cdecl Lua_uow_cmd_show_cursor(lua_State* L)
+{
+    (void)L;
+    std::string msg;
+    bool ok = RunShowCursor(msg);
+    if (ok)
+        msg = "HS_ShowTargetingCursor ok";
+    else if (msg.empty())
+        msg = "HS_ShowTargetingCursor failed";
+    if (!ok)
+        LogUOFlowStatus("uow.cmd.show_cursor", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
 }
 
 static int __cdecl Lua_UOFlow_bootstrap(lua_State* L)
@@ -5029,15 +5466,34 @@ static int __cdecl Lua_UOFlow_bootstrap(lua_State* L)
     if (auto* state = static_cast<lua_State*>(Engine::LuaState()))
         ForceLateCastWrapInstall(state, "manual");
     LogUOFlowStatus("UOFlow.bootstrap");
-    lua_pushboolean(L, g_consoleBound ? 1 : 0);
-    return 1;
+    std::string msg = g_consoleBound ? "bootstrap ok" : "bootstrap pending";
+    return PushLuaCommandResult(L, g_consoleBound, msg);
 }
 
 static int __cdecl Lua_UOFlow_status(lua_State* L)
 {
     LogUOFlowStatus("UOFlow.status");
-    lua_pushboolean(L, g_consoleBound ? 1 : 0);
-    return 1;
+    uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+    bool gateReady = HasAnyGateReplayContext();
+    bool clearReady = (g_origClearCurrentTarget != nullptr);
+    bool requestReady = (g_origRequestTargetInfo != nullptr);
+    bool showReady = (g_origHS_ShowTargetingCursor != nullptr);
+    DWORD now = GetTickCount();
+    DWORD remaining = 0;
+    bool busy = IsTargetBusyGuardActive(now, remaining);
+    uint32_t windowMs = ResolveTargetWindowMs();
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "owner_tid=%u gate_ctx=%s ptrs=(clear:%d request:%d show:%d) busy_guard=%s window_ms=%u",
+              ownerTid,
+              gateReady ? "ready" : "missing",
+              clearReady ? 1 : 0,
+              requestReady ? 1 : 0,
+              showReady ? 1 : 0,
+              busy ? "active" : "idle",
+              windowMs);
+    return PushLuaCommandResult(L, true, buf);
 }
 
 // Helpers to dump a small callstack for correlation between first and second cast
