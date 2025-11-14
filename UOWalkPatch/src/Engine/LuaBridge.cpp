@@ -54,6 +54,8 @@ extern "C" {
     LUA_API int luaL_ref(lua_State* L, int t);
     LUA_API void luaL_unref(lua_State* L, int t, int ref);
     LUA_API int luaL_error(lua_State* L, const char* fmt, ...);
+    LUA_API void lua_remove(lua_State* L, int idx);
+    LUA_API lua_CFunction lua_tocfunction(lua_State* L, int idx);
 }
 #ifndef LUA_NOREF
 #define LUA_NOREF (-2)
@@ -599,9 +601,12 @@ static int PushLuaCommandResult(lua_State* L, bool ok, const std::string& msg)
 }
 
 struct LateWrapTarget {
-    const char* name;
+    const char* canonicalName;
+    const char* const* aliases;
+    size_t aliasCount;
     lua_CFunction wrapper;
     uint32_t bit;
+    int* registryRef;
     bool installed;
     DWORD nextDeferredLog;
     const char* lastGuardReason;
@@ -611,14 +616,26 @@ struct LateWrapTarget {
 static constexpr DWORD kLateWrapIntervalMs = 500;
 static constexpr DWORD kLateWrapWindowMs = 10000;
 static constexpr DWORD kLateWrapGuardCooldownMs = 300;
+static const char* kCastSpellAliases[] = {
+    "UserActionCastSpell",
+    "CastSpell",
+    "SpellbookCast",
+    "UOExecuteAction",
+    "ExecuteCastAction",
+    "UOFlow.Spell.cast",
+    "uow.cmd.cast"
+};
+static const char* kCastSpellOnIdAliases[] = {
+    "UserActionCastSpellOnId",
+    "CastSpellOnId",
+    "UOFlow.Spell.cast_on_id",
+    "uow.cmd.cast_on_id"
+};
 static LateWrapTarget g_lateCastTargets[] = {
-    {"UserActionCastSpell", &Lua_UserActionCastSpell_W, kWrapperCastSpell, false, 0, nullptr, false},
-    {"UserActionCastSpellOnId", &Lua_UserActionCastSpellOnId_W, kWrapperCastSpellOnId, false, 0, nullptr, false}
+    {"UserActionCastSpell", kCastSpellAliases, ARRAYSIZE(kCastSpellAliases), &Lua_UserActionCastSpell_W, kWrapperCastSpell, &g_castSpellRegistryRef, false, 0, nullptr, false},
+    {"UserActionCastSpellOnId", kCastSpellOnIdAliases, ARRAYSIZE(kCastSpellOnIdAliases), &Lua_UserActionCastSpellOnId_W, kWrapperCastSpellOnId, &g_castSpellOnIdRegistryRef, false, 0, nullptr, false}
 };
 static std::mutex g_lateWrapMutex;
-static bool g_lateWrapActive = false;
-static DWORD g_lateWrapStartTick = 0;
-static DWORD g_lateWrapNextTick = 0;
 static std::atomic<bool> g_lateWrapGuardDisabled{false};
 static std::atomic<DWORD> g_lateWrapGuardCooldownUntil{0};
 static std::atomic<bool> g_castWrappersInstalled{false};
@@ -628,7 +645,11 @@ static std::mutex g_lateWrapTimerMutex;
 static HANDLE g_lateWrapTimerQueue = nullptr;
 static HANDLE g_lateWrapTimer = nullptr;
 static constexpr const char* kLateWrapGuardDisabledReason = "disabled_exception";
-static bool LateWrapGuardActive(DWORD now);
+static constexpr DWORD kLateWrapBaseCooldownMs = 500;
+static constexpr DWORD kLateWrapMaxCooldownMs = 5000;
+static std::atomic<DWORD> g_lateWrapRetryNextTick{0};
+static std::atomic<DWORD> g_lateWrapCooldownMs{kLateWrapBaseCooldownMs};
+static std::atomic<bool> g_lateWrapRetryQueued{false};
 static void EnsureLateWrapTimerArmed();
 static void HandleCastWrappersSatisfied();
 
@@ -660,11 +681,31 @@ static GateInvokeTls* GatePushInvokeFrame(GateCallProbe* probe);
 static bool GatePopInvokeFrame(GateCallProbe* probe, GateInvokeTls& outSnap);
 static void GateRecordEvent(GateCallProbe* probe, uintptr_t retValue, const GateInvokeTls* snap);
 static void GateFlushEvents(const char* reason);
-static void RequestLateCastWrapLoop(const char* reason);
-static void ProcessLateCastWrapLoop(lua_State* L);
 static bool GateArmForCast();
 static void GateDisarmForCast(const char* reason);
-static void GateMaybeLogInvokeEntry(GateCallProbe* probe);
+static void RequestLateCastWrapLoop(const char* reason);
+static void ProcessLateCastWrapLoop(lua_State* L);
+static void QueueLateWrapRetry(const char* reason, bool immediate);
+static void LateWrapSignalPositive(const char* reason);
+static void LateWrapUpdateCooldown(bool success, bool globalsSeen, DWORD now);
+static void LogLateWrapAttempt(void* ctx, bool globalsSeen);
+static bool TryInstallLateWrapForAlias(lua_State* L,
+                                       LateWrapTarget& target,
+                                       const char* alias,
+                                       const char* reason,
+                                       void* ownerCtx,
+                                       DWORD now,
+                                       bool& globalsSeen,
+                                       bool* aliasPresent = nullptr);
+static void MaybeWrapLateCastFromRegister(void* ctx, const char* name);
+static bool SplitLuaPath(const char* path, std::vector<std::string>& outTokens);
+static std::string JoinLuaPath(const std::vector<std::string>& tokens);
+static bool PushLuaFunctionByTokens(lua_State* L,
+                                    const std::vector<std::string>& tokens,
+                                    bool keepParent,
+                                    int& outParentIndex);
+static bool IsWrapperFunction(lua_State* L, int idx);
+static bool ProbeLuaFunction(lua_State* L, const char* path, void** outPtr);
 
 struct ValueProbe {
     bool pathValid = false;
@@ -785,63 +826,173 @@ static bool IsRegistryWrapper(lua_State* L, const char* name)
 {
     if (!L || !name)
         return false;
+    std::vector<std::string> tokens;
+    if (!SplitLuaPath(name, tokens))
+        return false;
     int top = lua_gettop(L);
-    lua_getglobal(L, name);
+    int parentIndex = LUA_GLOBALSINDEX;
     bool wrapped = false;
-    if (lua_iscfunction(L, -1)) {
-        if (lua_getupvalue(L, -1, 2) != nullptr) {
-            const void* marker = lua_touserdata(L, -1);
-            wrapped = (marker == kCastWrapperSentinel);
-            lua_pop(L, 1);
-        }
-    }
+    if (PushLuaFunctionByTokens(L, tokens, false, parentIndex) && lua_type(L, -1) == LUA_TFUNCTION)
+        wrapped = IsWrapperFunction(L, -1);
     lua_settop(L, top);
     return wrapped;
 }
 
-    static bool InstallRegistryWrapper(lua_State* L,
-                                       const char* name,
-                                       lua_CFunction wrapper,
-                                       int& registryRef)
+static bool InstallRegistryWrapper(lua_State* L,
+                                   const char* name,
+                                   lua_CFunction wrapper,
+                                   int& registryRef)
 {
     if (!L || !name || !wrapper)
         return false;
     if (IsRegistryWrapper(L, name))
         return true;
-    int top = lua_gettop(L);
-    lua_getglobal(L, name);
-    if (lua_type(L, -1) != LUA_TFUNCTION) {
-        lua_settop(L, top);
+    std::vector<std::string> tokens;
+    if (!SplitLuaPath(name, tokens))
         return false;
-    }
-    std::string saved = std::string(name) + "__orig";
-    lua_pushvalue(L, -1);
-    lua_setfield(L, LUA_GLOBALSINDEX, saved.c_str());
-    if (registryRef != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, registryRef);
-        registryRef = LUA_NOREF;
-    }
-    registryRef = luaL_ref(L, LUA_REGISTRYINDEX);
-    lua_pushlightuserdata(L, reinterpret_cast<void*>(static_cast<intptr_t>(registryRef)));
-    lua_pushlightuserdata(L, const_cast<void*>(kCastWrapperSentinel));
-    lua_pushcclosure(L, wrapper, 2);
-    lua_setglobal(L, name);
-    lua_settop(L, top);
-    char buf[192];
-    sprintf_s(buf, sizeof(buf), "Wrap %s: saved original via registry ref=%d", name, registryRef);
-    WriteRawLog(buf);
-    if (_stricmp(name, "HandleSingleLeftClkTarget") == 0) {
-        bool first = !g_clickTapWrapInstalled.exchange(true, std::memory_order_release);
-        if (first) {
-            char clickBuf[160];
-            sprintf_s(clickBuf,
-                      sizeof(clickBuf),
-                      "[ClickTap] HandleSingleLeftClkTarget wrapper installed (ref=%d)",
-                      registryRef);
-            WriteRawLog(clickBuf);
+    int top = lua_gettop(L);
+    bool ok = false;
+    if (tokens.size() == 1) {
+        lua_getglobal(L, tokens[0].c_str());
+        if (lua_type(L, -1) == LUA_TFUNCTION) {
+            std::string saved = tokens[0] + std::string("__orig");
+            lua_pushvalue(L, -1);
+            lua_setfield(L, LUA_GLOBALSINDEX, saved.c_str());
+            if (registryRef != LUA_NOREF) {
+                luaL_unref(L, LUA_REGISTRYINDEX, registryRef);
+                registryRef = LUA_NOREF;
+            }
+            lua_pushvalue(L, -1);
+            registryRef = luaL_ref(L, LUA_REGISTRYINDEX);
+            lua_pushlightuserdata(L, reinterpret_cast<void*>(static_cast<intptr_t>(registryRef)));
+            lua_pushlightuserdata(L, const_cast<void*>(kCastWrapperSentinel));
+            lua_pushcclosure(L, wrapper, 2);
+            lua_setglobal(L, tokens[0].c_str());
+            ok = true;
+        }
+    } else {
+        int parentIndex = LUA_GLOBALSINDEX;
+        if (PushLuaFunctionByTokens(L, tokens, true, parentIndex) && lua_type(L, -1) == LUA_TFUNCTION) {
+            if (registryRef != LUA_NOREF) {
+                luaL_unref(L, LUA_REGISTRYINDEX, registryRef);
+                registryRef = LUA_NOREF;
+            }
+            registryRef = luaL_ref(L, LUA_REGISTRYINDEX);
+            lua_pushlightuserdata(L, reinterpret_cast<void*>(static_cast<intptr_t>(registryRef)));
+            lua_pushlightuserdata(L, const_cast<void*>(kCastWrapperSentinel));
+            lua_pushcclosure(L, wrapper, 2);
+            const std::string& leaf = tokens.back();
+            if (parentIndex == LUA_GLOBALSINDEX)
+                lua_setfield(L, LUA_GLOBALSINDEX, leaf.c_str());
+            else
+                lua_setfield(L, parentIndex, leaf.c_str());
+            ok = true;
         }
     }
+    if (ok) {
+        std::string joined = JoinLuaPath(tokens);
+        char buf[192];
+        sprintf_s(buf, sizeof(buf), "Wrap %s: saved original via registry ref=%d", joined.c_str(), registryRef);
+        WriteRawLog(buf);
+        if (_stricmp(joined.c_str(), "HandleSingleLeftClkTarget") == 0) {
+            bool first = !g_clickTapWrapInstalled.exchange(true, std::memory_order_release);
+            if (first) {
+                char clickBuf[160];
+                sprintf_s(clickBuf,
+                          sizeof(clickBuf),
+                          "[ClickTap] HandleSingleLeftClkTarget wrapper installed (ref=%d)",
+                          registryRef);
+                WriteRawLog(clickBuf);
+            }
+        }
+    }
+    lua_settop(L, top);
+    return ok;
+}
+
+static bool TryInstallLateWrapForAlias(lua_State* L,
+                                       LateWrapTarget& target,
+                                       const char* alias,
+                                       const char* reason,
+                                       void* ownerCtx,
+                                       DWORD now,
+                                       bool& globalsSeen,
+                                       bool* aliasPresent)
+{
+    void* funcPtr = nullptr;
+    bool present = ProbeLuaFunction(L, alias, &funcPtr);
+    if (!present) {
+        if (aliasPresent)
+            *aliasPresent = false;
+        return false;
+    }
+    if (aliasPresent)
+        *aliasPresent = true;
+    globalsSeen = true;
+    __try {
+        if (!InstallRegistryWrapper(L, alias, target.wrapper, *target.registryRef))
+            return false;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_lateWrapGuardDisabled.store(true, std::memory_order_release);
+        g_lateWrapGuardCooldownUntil.store(now + kLateWrapGuardCooldownMs, std::memory_order_release);
+        if (!target.guardLogged || target.lastGuardReason != kLateWrapGuardDisabledReason) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "Wrap %s: guard disabled (exception_once)",
+                      alias);
+            WriteRawLog(buf);
+            target.guardLogged = true;
+            target.lastGuardReason = kLateWrapGuardDisabledReason;
+        }
+        return false;
+    }
+    target.guardLogged = false;
+    target.lastGuardReason = nullptr;
+    target.installed = true;
+    target.nextDeferredLog = 0;
+    uint32_t previous = g_actionWrapperMask.fetch_or(target.bit, std::memory_order_acq_rel);
+    uint32_t updated = previous | target.bit;
+    if (updated == kAllActionWrappers)
+        InterlockedExchange(&g_actionWrappersInstalled, 1);
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LateWrap] wrapped %s (%s) ctx=%p func=%p",
+              alias,
+              reason && *reason ? reason : "late",
+              ownerCtx,
+              funcPtr);
+    WriteRawLog(buf);
     return true;
+}
+
+static void MaybeWrapLateCastFromRegister(void* ctx, const char* name)
+{
+    if (!ctx || !name)
+        return;
+    void* ownerCtx = CanonicalOwnerContext();
+    if (!ownerCtx || ownerCtx != ctx)
+        return;
+    auto L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L)
+        return;
+    for (auto& target : g_lateCastTargets) {
+        if (target.installed)
+            continue;
+        for (size_t i = 0; i < target.aliasCount; ++i) {
+            const char* alias = target.aliases[i];
+            if (!alias)
+                continue;
+            if (_stricmp(alias, name) != 0)
+                continue;
+            LateWrapSignalPositive("register");
+            bool globalsSeen = false;
+            TryInstallLateWrapForAlias(L, target, alias, "register", ownerCtx, GetTickCount(), globalsSeen);
+            return;
+        }
+    }
 }
 
 static int CallRegistryOriginal(lua_State* L, const char* name, int registryRef)
@@ -898,190 +1049,18 @@ static bool RefreshLateCastTargetsLocked(uint32_t mask, bool resetLogs)
     return pending;
 }
 
-static const char* EvaluateCastWrapGuard(const LateWrapTarget& target)
-{
-    if (!g_consoleBound)
-        return "console_unbound";
-    if (!CanonicalOwnerContext())
-        return "owner_unset";
-    if (_stricmp(target.name, "UserActionCastSpell") == 0) {
-        if (!g_origCastSpell)
-            return "unresolved";
-    } else if (_stricmp(target.name, "UserActionCastSpellOnId") == 0) {
-        if (!g_origCastSpellOnId)
-            return "unresolved";
-    }
-    return nullptr;
-}
-
-static bool WrapLuaGlobal(lua_State* L, LateWrapTarget& target, DWORD now, const char* reason)
-{
-    if (LateWrapGuardActive(now)) {
-        if (!target.guardLogged || target.lastGuardReason != kLateWrapGuardDisabledReason) {
-            char buf[192];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "Wrap %s: guard disabled (exception_once)",
-                      target.name);
-            WriteRawLog(buf);
-            target.guardLogged = true;
-            target.lastGuardReason = kLateWrapGuardDisabledReason;
-        }
-        return false;
-    }
-    const char* guardReason = EvaluateCastWrapGuard(target);
-    if (guardReason) {
-        if (!target.guardLogged || target.lastGuardReason != guardReason) {
-            char buf[192];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "Wrap %s: guard tripped (%s)",
-                      target.name,
-                      guardReason);
-            WriteRawLog(buf);
-            target.guardLogged = true;
-            target.lastGuardReason = guardReason;
-        }
-        return false;
-    }
-    target.guardLogged = false;
-    target.lastGuardReason = nullptr;
-
-    bool wrapped = false;
-    __try {
-        wrapped = SaveAndReplace(L, target.name, target.wrapper);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        DWORD code = GetExceptionCode();
-        (void)code;
-        g_lateWrapGuardDisabled.store(true, std::memory_order_release);
-        g_lateWrapGuardCooldownUntil.store(now + kLateWrapGuardCooldownMs, std::memory_order_release);
-        if (!target.guardLogged || target.lastGuardReason != kLateWrapGuardDisabledReason) {
-            char buf[256];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "Wrap %s: guard disabled (exception_once)",
-                      target.name);
-            WriteRawLog(buf);
-        }
-        target.nextDeferredLog = now + 1000;
-        target.guardLogged = true;
-        target.lastGuardReason = kLateWrapGuardDisabledReason;
-        g_lateWrapActive = false;
-        return false;
-    }
-
-    if (wrapped) {
-        char msg[192];
-        sprintf_s(msg,
-                  sizeof(msg),
-                  "[LateWrap] wrapped %s (%s)",
-                  target.name,
-                  reason && *reason ? reason : "late");
-        WriteRawLog(msg);
-        char hookMsg[192];
-        sprintf_s(hookMsg, sizeof(hookMsg), "Hook_Register: wrapped %s (late)", target.name);
-        WriteRawLog(hookMsg);
-        target.installed = true;
-        target.nextDeferredLog = 0;
-        target.guardLogged = false;
-        target.lastGuardReason = nullptr;
-        return true;
-    }
-
-    if (now >= target.nextDeferredLog) {
-        char buf[192];
-        sprintf_s(buf, sizeof(buf), "Wrap %s: deferred (global missing)", target.name);
-        WriteRawLog(buf);
-        target.nextDeferredLog = now + 1000;
-    }
-    return false;
-}
 
 static void RequestLateCastWrapLoop(const char* reason)
 {
-    DWORD now = GetTickCount();
-    std::lock_guard<std::mutex> lock(g_lateWrapMutex);
-    uint32_t mask = g_actionWrapperMask.load(std::memory_order_acquire);
-    bool restart = !g_lateWrapActive || (now - g_lateWrapStartTick) >= kLateWrapWindowMs;
-    bool pending = RefreshLateCastTargetsLocked(mask, restart);
-    if (!pending) {
-        g_lateWrapActive = false;
-        return;
-    }
-
-    g_lateWrapActive = true;
-    if (restart)
-        g_lateWrapStartTick = now;
-    g_lateWrapNextTick = 0;
-    EnsureLateWrapTimerArmed();
-    if (restart) {
-        char buf[192];
-        sprintf_s(buf,
-                  sizeof(buf),
-                  "LateWrap: scheduled cast wrapper scan (%s)",
-                  reason && *reason ? reason : "unspecified");
-        WriteRawLog(buf);
-    }
+    g_lateWrapRetryNextTick.store(GetTickCount(), std::memory_order_release);
+    QueueLateWrapRetry(reason ? reason : "late_loop", true);
 }
 
 static void ProcessLateCastWrapLoop(lua_State* L)
 {
     if (!L)
         return;
-    std::lock_guard<std::mutex> lock(g_lateWrapMutex);
-    if (!g_lateWrapActive)
-        return;
-
-    DWORD now = GetTickCount();
-    if (g_lateWrapNextTick && now < g_lateWrapNextTick)
-        return;
-
-    uint32_t mask = g_actionWrapperMask.load(std::memory_order_acquire);
-    RefreshLateCastTargetsLocked(mask, false);
-
-    for (auto& target : g_lateCastTargets) {
-        if (target.installed)
-            continue;
-        if (!WrapLuaGlobal(L, target, now, "late_loop"))
-            continue;
-        uint32_t expected = mask;
-        while (true) {
-            uint32_t desired = expected | target.bit;
-            if (g_actionWrapperMask.compare_exchange_weak(expected,
-                                                          desired,
-                                                          std::memory_order_acq_rel,
-                                                          std::memory_order_acquire)) {
-                mask = desired;
-                if (desired == kAllActionWrappers)
-                    InterlockedExchange(&g_actionWrappersInstalled, 1);
-                break;
-            }
-        }
-    }
-
-    bool pendingLeft = false;
-    for (const auto& target : g_lateCastTargets) {
-        if (!target.installed) {
-            pendingLeft = true;
-            break;
-        }
-    }
-
-    if (!pendingLeft) {
-        g_lateWrapActive = false;
-        WriteRawLog("LateWrap: cast wrapper loop complete");
-        HandleCastWrappersSatisfied();
-        return;
-    }
-
-    if (now - g_lateWrapStartTick >= kLateWrapWindowMs) {
-        g_lateWrapActive = false;
-        WriteRawLog("LateWrap: cast wrapper window expired");
-        return;
-    }
-
-    g_lateWrapNextTick = now + kLateWrapIntervalMs;
+    ForceLateCastWrapInstall(L, "loop");
 }
 
 static void MaybeUpdateOwnerContext(void* ctx)
@@ -1175,22 +1154,24 @@ static std::optional<CastTraceConfig> ReadCastTraceFlag()
     return std::nullopt;
 }
 
-static bool ResetLateWrapGuard(const char* reason, lua_State* L = nullptr)
+static bool LateWrapResetGuard(const char* reason, void* ctx = nullptr, lua_State* L = nullptr)
 {
     bool wasDisabled = g_lateWrapGuardDisabled.exchange(false, std::memory_order_acq_rel);
-    if (!wasDisabled)
-        return false;
     g_lateWrapGuardCooldownUntil.store(0, std::memory_order_release);
-    char buf[256];
+    g_lateWrapAttemptCounter.store(0, std::memory_order_release);
+    g_lateWrapCooldownMs.store(kLateWrapBaseCooldownMs, std::memory_order_release);
+    g_lateWrapRetryNextTick.store(GetTickCount(), std::memory_order_release);
     const char* why = (reason && *reason) ? reason : "unspecified";
-    if (L) {
-        sprintf_s(buf, sizeof(buf), "[LateWrap] guard reset (%s, L=%p)", why, L);
-    } else {
-        sprintf_s(buf, sizeof(buf), "[LateWrap] guard reset (%s)", why);
-    }
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LateWrap] guard reset (%s ctx=%p L=%p)",
+              why,
+              ctx,
+              L);
     WriteRawLog(buf);
-    g_lateWrapActive = false;
-    return true;
+    QueueLateWrapRetry(why, true);
+    return wasDisabled;
 }
 
 static bool LateWrapGuardTripped()
@@ -1198,16 +1179,63 @@ static bool LateWrapGuardTripped()
     return g_lateWrapGuardDisabled.load(std::memory_order_acquire);
 }
 
-static bool LateWrapGuardActive(DWORD now)
+
+static void QueueLateWrapRetry(const char* reason, bool immediate)
 {
-    if (!LateWrapGuardTripped())
-        return false;
-    DWORD cooldownEnd = g_lateWrapGuardCooldownUntil.load(std::memory_order_acquire);
-    if (cooldownEnd != 0 && now >= cooldownEnd) {
-        ResetLateWrapGuard("cooldown");
-        return false;
+    if (immediate)
+        g_lateWrapRetryNextTick.store(GetTickCount(), std::memory_order_release);
+    EnsureLateWrapTimerArmed();
+    if (g_lateWrapRetryQueued.exchange(true, std::memory_order_acq_rel))
+        return;
+    std::string label = reason ? reason : "timer";
+    Util::OwnerPump::Post("late_wrap_retry", [label]() {
+        g_lateWrapRetryQueued.store(false, std::memory_order_release);
+        auto L = static_cast<lua_State*>(Engine::LuaState());
+        if (!L)
+            return;
+        ForceLateCastWrapInstall(L, label.c_str());
+    });
+}
+
+static void LateWrapSignalPositive(const char* reason)
+{
+    g_lateWrapCooldownMs.store(kLateWrapBaseCooldownMs, std::memory_order_release);
+    g_lateWrapRetryNextTick.store(GetTickCount(), std::memory_order_release);
+    QueueLateWrapRetry(reason, true);
+}
+
+static void LateWrapUpdateCooldown(bool success, bool globalsSeen, DWORD now)
+{
+    if (success || globalsSeen) {
+        g_lateWrapCooldownMs.store(kLateWrapBaseCooldownMs, std::memory_order_release);
+        g_lateWrapRetryNextTick.store(now + kLateWrapBaseCooldownMs, std::memory_order_release);
+        return;
     }
-    return true;
+    DWORD current = g_lateWrapCooldownMs.load(std::memory_order_acquire);
+    if (current == 0)
+        current = kLateWrapBaseCooldownMs;
+    DWORD next = current >= kLateWrapMaxCooldownMs ? kLateWrapMaxCooldownMs : current * 2;
+    if (next > kLateWrapMaxCooldownMs)
+        next = kLateWrapMaxCooldownMs;
+    g_lateWrapCooldownMs.store(next, std::memory_order_release);
+    g_lateWrapRetryNextTick.store(now + next, std::memory_order_release);
+}
+
+static void LogLateWrapAttempt(void* ctx, bool globalsSeen)
+{
+    if (!g_lateWrapVerbose)
+        return;
+    uint32_t attempt = g_lateWrapAttemptCounter.fetch_add(1, std::memory_order_acq_rel) + 1;
+    DWORD cooldown = g_lateWrapCooldownMs.load(std::memory_order_acquire);
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LateWrap] attempt #%u ctx=%p globals_seen=%s cooling=%lums",
+              attempt,
+              ctx,
+              globalsSeen ? "yes" : "no",
+              static_cast<unsigned long>(cooldown));
+    WriteRawLog(buf);
 }
 
 static constexpr uint32_t kRequiredCastWrapperBits = kWrapperCastSpell | kWrapperCastSpellOnId;
@@ -1231,45 +1259,13 @@ static void ShutdownLateWrapTimer();
 
 static void HandleCastWrappersSatisfied()
 {
+    bool wasReady = g_castWrappersInstalled.load(std::memory_order_acquire);
     MaybeMarkCastWrappersInstalled();
-    if (g_castWrappersInstalled.load(std::memory_order_acquire))
+    bool ready = g_castWrappersInstalled.load(std::memory_order_acquire);
+    if (ready && !wasReady)
+        WriteRawLog("[LateWrap] guard reset and disarmed (all cast wrappers present)");
+    if (ready)
         ShutdownLateWrapTimer();
-}
-
-static void MaybeLogLateWrapAttempt(lua_State* L)
-{
-    if (!g_lateWrapVerbose || !L)
-        return;
-    uint32_t attempt = g_lateWrapAttemptCounter.fetch_add(1, std::memory_order_acq_rel) + 1;
-    int top = lua_gettop(L);
-    auto describe = [&](const char* name) {
-        lua_getglobal(L, name);
-        int type = lua_type(L, -1);
-        const char* desc = nullptr;
-        if (type == LUA_TNONE)
-            desc = "missing";
-        else if (type == LUA_TFUNCTION)
-            desc = "function";
-        else if (type == LUA_TNIL)
-            desc = "nil";
-        else
-            desc = lua_typename(L, type);
-        lua_pop(L, 1);
-        return desc;
-    };
-    const char* castSpellDesc = describe("UserActionCastSpell");
-    const char* castOnIdDesc = describe("UserActionCastSpellOnId");
-    lua_settop(L, top);
-    char buf[256];
-    sprintf_s(buf,
-              sizeof(buf),
-              "[LateWrap] attempt=%u L=%p present: CastSpell=%s CastSpellOnId=%s (cooldown=%ums)",
-              attempt,
-              L,
-              castSpellDesc,
-              castOnIdDesc,
-              static_cast<unsigned>(kLateWrapGuardCooldownMs));
-    WriteRawLog(buf);
 }
 
 static VOID CALLBACK LateWrapRetryTimerProc(PVOID, BOOLEAN);
@@ -1299,6 +1295,107 @@ static void EnsureLateWrapTimerArmed()
     }
 }
 
+static bool SplitLuaPath(const char* path, std::vector<std::string>& outTokens)
+{
+    outTokens.clear();
+    if (!path || !*path)
+        return false;
+    const char* start = path;
+    const char* cursor = path;
+    while (*cursor) {
+        if (*cursor == '.') {
+            if (cursor > start)
+                outTokens.emplace_back(start, cursor - start);
+            start = cursor + 1;
+        }
+        ++cursor;
+    }
+    if (cursor > start)
+        outTokens.emplace_back(start, cursor - start);
+    return !outTokens.empty();
+}
+
+static std::string JoinLuaPath(const std::vector<std::string>& tokens)
+{
+    std::string result;
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (i)
+            result.push_back('.');
+        result.append(tokens[i]);
+    }
+    return result;
+}
+
+static bool PushLuaFunctionByTokens(lua_State* L,
+                                    const std::vector<std::string>& tokens,
+                                    bool keepParent,
+                                    int& outParentIndex)
+{
+    outParentIndex = LUA_GLOBALSINDEX;
+    if (!L || tokens.empty())
+        return false;
+    int top = lua_gettop(L);
+    lua_getglobal(L, tokens[0].c_str());
+    if (tokens.size() == 1) {
+        if (keepParent)
+            outParentIndex = LUA_GLOBALSINDEX;
+        return true;
+    }
+    for (size_t i = 1; i < tokens.size() - 1; ++i) {
+        if (lua_type(L, -1) != LUA_TTABLE) {
+            lua_settop(L, top);
+            return false;
+        }
+        lua_getfield(L, -1, tokens[i].c_str());
+        lua_remove(L, -2);
+    }
+    if (lua_type(L, -1) != LUA_TTABLE) {
+        lua_settop(L, top);
+        return false;
+    }
+    if (keepParent) {
+        outParentIndex = lua_gettop(L);
+        lua_getfield(L, outParentIndex, tokens.back().c_str());
+    } else {
+        lua_getfield(L, -1, tokens.back().c_str());
+        lua_remove(L, -2);
+    }
+    return true;
+}
+
+static bool IsWrapperFunction(lua_State* L, int idx)
+{
+    if (!lua_iscfunction(L, idx))
+        return false;
+    if (lua_getupvalue(L, idx, 2) != nullptr) {
+        const void* marker = lua_touserdata(L, -1);
+        lua_pop(L, 1);
+        return marker == kCastWrapperSentinel;
+    }
+    return false;
+}
+
+static bool ProbeLuaFunction(lua_State* L, const char* path, void** outPtr)
+{
+    if (!L || !path)
+        return false;
+    std::vector<std::string> tokens;
+    if (!SplitLuaPath(path, tokens))
+        return false;
+    int top = lua_gettop(L);
+    int parentIndex = LUA_GLOBALSINDEX;
+    bool present = false;
+    if (PushLuaFunctionByTokens(L, tokens, false, parentIndex) && lua_type(L, -1) == LUA_TFUNCTION) {
+        present = true;
+        if (outPtr && lua_iscfunction(L, -1))
+            *outPtr = reinterpret_cast<void*>(lua_tocfunction(L, -1));
+        else if (outPtr)
+            *outPtr = nullptr;
+    }
+    lua_settop(L, top);
+    return present;
+}
+
 static void ShutdownLateWrapTimer()
 {
     std::lock_guard<std::mutex> lock(g_lateWrapTimerMutex);
@@ -1318,12 +1415,11 @@ static VOID CALLBACK LateWrapRetryTimerProc(PVOID, BOOLEAN)
         return;
     if (!Engine::LuaState())
         return;
-    Util::OwnerPump::Post("late_wrap_retry", []() {
-        auto L = static_cast<lua_State*>(Engine::LuaState());
-        if (!L)
-            return;
-        ForceLateCastWrapInstall(L, "timer");
-    });
+    DWORD now = GetTickCount();
+    DWORD due = g_lateWrapRetryNextTick.load(std::memory_order_acquire);
+    if (due != 0 && now < due)
+        return;
+    QueueLateWrapRetry("timer", false);
 }
 
 static void LoadDirectHookPreferences()
@@ -3886,6 +3982,9 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         RequestActionWrapperInstall();
     }
 
+    if (name)
+        MaybeWrapLateCastFromRegister(ctx, name);
+
     uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
     uintptr_t bindInt = reinterpret_cast<uintptr_t>(&Lua_BindWalk);
     void* walkPtr = reinterpret_cast<void*>(walkInt);
@@ -4670,9 +4769,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         }
         return false;
     }
-    bool guardWasSet = LateWrapGuardTripped();
-    if (guardWasSet)
-        ResetLateWrapGuard(reason ? reason : "console_bind", L);
+    LateWrapResetGuard(reason ? reason : "console_bind", ownerCtx, L);
 
     if (!ownerCtx)
         ownerCtx = CanonicalOwnerContext();
@@ -4753,41 +4850,83 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
               ownerCtx);
     WriteRawLog(buf);
     ForceLateCastWrapInstall(L, reason ? reason : "console_bind");
-    if (guardWasSet)
-        RequestLateCastWrapLoop(reason ? reason : "console_bind_reset");
+    RequestLateCastWrapLoop(reason ? reason : "console_bind_reset");
     return true;
 }
 
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason)
 {
-    if (!L)
-        return;
     if (g_castWrappersInstalled.load(std::memory_order_acquire))
         return;
-    MaybeLogLateWrapAttempt(L);
     DWORD now = GetTickCount();
-    std::lock_guard<std::mutex> lock(g_lateWrapMutex);
-    uint32_t maskSnapshot = g_actionWrapperMask.load(std::memory_order_acquire);
-    RefreshLateCastTargetsLocked(maskSnapshot, false);
+    void* ownerCtx = CanonicalOwnerContext();
+    auto noteAttempt = [&](bool success, bool globalsSeen) {
+        LogLateWrapAttempt(ownerCtx, globalsSeen);
+        LateWrapUpdateCooldown(success, globalsSeen, now);
+    };
+    if (!L) {
+        noteAttempt(false, false);
+        return;
+    }
+    if (!g_consoleBound || !ownerCtx) {
+        noteAttempt(false, false);
+        return;
+    }
+    if (LateWrapGuardTripped()) {
+        DWORD cooldownEnd = g_lateWrapGuardCooldownUntil.load(std::memory_order_acquire);
+        if (cooldownEnd != 0 && now < cooldownEnd) {
+            noteAttempt(false, false);
+            return;
+        }
+        g_lateWrapGuardDisabled.store(false, std::memory_order_release);
+        g_lateWrapGuardCooldownUntil.store(0, std::memory_order_release);
+    }
+    bool globalsSeen = false;
+    bool installedAny = false;
+    {
+        std::lock_guard<std::mutex> lock(g_lateWrapMutex);
+        uint32_t maskSnapshot = g_actionWrapperMask.load(std::memory_order_acquire);
+        RefreshLateCastTargetsLocked(maskSnapshot, false);
+    }
     for (auto& target : g_lateCastTargets) {
         if (target.installed)
             continue;
-        if (!WrapLuaGlobal(L, target, now, reason ? reason : "manual"))
-            continue;
-        target.installed = true;
-        target.nextDeferredLog = 0;
-        uint32_t previous = g_actionWrapperMask.fetch_or(target.bit, std::memory_order_acq_rel);
-        uint32_t updated = previous | target.bit;
-        if (updated == kAllActionWrappers)
-            InterlockedExchange(&g_actionWrappersInstalled, 1);
-        char buf[192];
-        sprintf_s(buf,
-                  sizeof(buf),
-                  "[LateWrap] wrapped %s (%s)",
-                  target.name,
-                  reason ? reason : "manual");
-        WriteRawLog(buf);
+        for (size_t i = 0; i < target.aliasCount; ++i) {
+            const char* alias = target.aliases[i];
+            if (!alias || !*alias)
+                continue;
+            bool aliasPresent = false;
+            if (!TryInstallLateWrapForAlias(L,
+                                            target,
+                                            alias,
+                                            reason ? reason : "late",
+                                            ownerCtx,
+                                            now,
+                                            globalsSeen,
+                                            &aliasPresent)) {
+                if (g_lateWrapVerbose && !aliasPresent) {
+                    DWORD nextLog = target.nextDeferredLog;
+                    if (nextLog == 0 || now >= nextLog) {
+                        char buf[256];
+                        sprintf_s(buf,
+                                  sizeof(buf),
+                                  "[LateWrap] alias '%s' unavailable (ctx=%p reason=%s)",
+                                  alias,
+                                  ownerCtx,
+                                  reason && *reason ? reason : "late");
+                        WriteRawLog(buf);
+                        target.nextDeferredLog = now + kLateWrapWindowMs;
+                    }
+                }
+                continue;
+            }
+            installedAny = true;
+            break;
+        }
     }
+    noteAttempt(installedAny, globalsSeen);
+    if (installedAny)
+        HandleCastWrappersSatisfied();
 }
 
 static void NoteNoClickSendPacket(uint8_t id, int len, unsigned counter)

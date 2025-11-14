@@ -46,9 +46,16 @@ TRACE_PACKET_ID_FILTER=0x2E # set while hunting the target helper
 
 ## Late wrap recovery & native fallback
 
-- Set `debug.casttrace=1` (or `UOW_DEBUG_CASTTRACE=1`) during bring-up to light up `[CastTrace] debug.casttrace enabled (cfg) – fingerprint capture active` and `[SendPacket] debug.casttrace enabled`. The same flag arms the `debug.native_cast_fallback` toggle by default.
-- When the Lua console binds land you should see `[LateWrap] guard reset (console_bind, L=0x…)` followed by `[LateWrap] wrapped UserActionCastSpell (console_bind)` / `…OnId`. If the wrappers race registration, the retry timer will keep calling `ForceLateCastWrapInstall` every 500 ms until both globals are wrapped.
-- Flip `debug.latewrap_verbose=1` in `uowalkpatch.cfg` to watch `[LateWrap] attempt=N … (cooldown=300ms)` instrumentation on each retry.
-- The native fallback probes the `BuildAction` serializer (RVA `0x0053E630`) and CastSpell vtable (`RVA_Vtbl_CastSpell` in `src/Engine/Addresses.h`). On startup you’ll see `[Gate] module base=…` and `[Gate] BuildAction at … prologue_ok=1`. Every CastSpell object flowing through that serializer emits `[CastUI/native] self=… vtbl=… spellId=… targetType=… targetId=XXXXXXXX iconId=N`, so the correlator can still bridge into `[CastExec]` even if the Lua wrap never sticks.
-- Rollback: set `debug.native_cast_fallback=0` (or drop `debug.casttrace=0`) and the detour won’t arm. To disable verbose retries, set `debug.latewrap_verbose=0`.
-- Client updates: adjust `RVA_BuildAction`/`RVA_Vtbl_CastSpell` in `src/Engine/Addresses.h` when the disassembly shifts. The prologue guards will log `[Gate] signature mismatch at 0x0053E630, native fallback disabled.` if the constant drifts.
+- Leave `debug.casttrace=1` (or `UOW_DEBUG_CASTTRACE=1`) enabled during bring-up. That prints `[CastTrace] debug.casttrace enabled (cfg) – fingerprint capture active` plus `[SendPacket] debug.casttrace enabled`, and it automatically enables the native fallback unless you override `debug.native_cast_fallback=0`.
+- Toggle `debug.latewrap_verbose=1` whenever you want granular telemetry. Each retry prints `[LateWrap] attempt #<n> ctx=<ctx> globals_seen=<yes/no> cooling=<ms>` so you can see whether `_G` exposes any of the cast aliases (`UserActionCastSpell`, `CastSpell`, `SpellbookCast`, `UOExecuteAction`, `UOFlow.Spell.cast`, etc.).
+- A healthy Lua path looks like:
+  - `[LateWrap] guard reset (console_bind, ctx=..., L=...)`
+  - `[LateWrap] attempt #1 … globals_seen=yes cooling=500ms`
+  - `[LateWrap] wrapped UserActionCastSpell (console_bind) ctx=...
+  - `[LateWrap] wrapped UserActionCastSpellOnId (console_bind)`
+  - `[LateWrap] guard reset and disarmed (all cast wrappers present)`
+  - After that, spellbook clicks emit the existing `[CastUI] …`, `[CastExec] …`, and `UOW.Debug.DumpSpellPaths()` summaries.
+- When verbose mode is on but `_G` still doesn’t expose any alias, the timer logs `[LateWrap] alias '<name>' unavailable (ctx=… reason=…)` once every few seconds per target so you immediately know the retries are still walking the global table instead of silently spinning.
+- If the Lua globals never surface, the native fallback reports `[Gate] BuildAction @ <addr> found_by=RVA|AOB score=<n>/N prologue_variant=<name> gate_ok=1` and hooks the `BuildAction` serializer (auto-discovered via RVA or a vtable xref). Every UI cast then logs `[CastUI/native] self=%p vtbl=%p spellId=%u targetType=%u targetId=%08X iconId=%u`, giving the correlator a deterministic source so `[CastExec] …` still fires.
+- Rollback: set `debug.latewrap_verbose=0` to silence attempt spam, or set `debug.native_cast_fallback=0` if you want to keep using the old behavior even when casttrace is on. Turning `debug.casttrace=0` disables both tracks entirely.
+- Updating to a new client build: adjust `RVA_BuildAction`/`RVA_Vtbl_CastSpell` inside `src/Engine/Addresses.h` (they’re offsets relative to `UOSA.exe`, e.g. `RVA_BuildAction=0x0013E630` corresponds to `UOSA.exe+0x53E630`) when the binary shifts. The startup log will call out `[Gate] signature mismatch at 0x0053E630, native fallback disabled.` if the pattern no longer matches.

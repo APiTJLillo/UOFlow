@@ -4,7 +4,7 @@
 
 namespace Engine::Addresses {
 
-constexpr std::uint32_t RVA_BuildAction = 0x0053E630;
+constexpr std::uint32_t RVA_BuildAction = 0x0013E630;
 constexpr std::uint32_t RVA_Vtbl_CastSpell = 0x001C9C5C;
 constexpr std::uint32_t CAST_OFS_TargetType = 0x4;
 constexpr std::uint32_t CAST_OFS_SpellId = 0x8;
