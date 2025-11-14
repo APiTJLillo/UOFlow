@@ -1,14 +1,18 @@
 #include <windows.h>
+#include <psapi.h>
 #include <dbghelp.h>
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <minhook.h>
 #include "Core/Logging.hpp"
 #include "Core/Config.hpp"
 #include "Core/PatternScan.hpp"
 #include "Core/Utils.hpp"
 #include "Net/SendBuilder.hpp"
+#include "Net/SendTrace.hpp"
 #include "Net/PacketTrace.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Core/ActionTrace.hpp"
@@ -35,6 +39,34 @@ static bool g_captureSendStacks = false;
 static volatile LONG g_sendStackBudget = 0;
 static bool g_logSendPackets = false;
 static thread_local bool g_inSendPacketHook = false;
+static bool g_castTraceEnabled = false;
+
+constexpr size_t kSendFingerprintRingSize = 128;
+constexpr size_t kSendFingerprintStatCount = 64;
+static_assert(kSendFingerprintRingSize > 0, "kSendFingerprintRingSize must be > 0");
+static_assert(kSendFingerprintStatCount > 0, "kSendFingerprintStatCount must be > 0");
+
+struct FingerprintStats {
+    SendCallsiteFingerprint fingerprint{};
+    uint32_t count = 0;
+    DWORD lastTick = 0;
+};
+
+struct FingerprintRingEntry {
+    unsigned counter = 0;
+    SendCallsiteFingerprint fingerprint{};
+    uint32_t statCount = 0;
+    DWORD tick = 0;
+    bool valid = false;
+};
+
+static FingerprintStats g_sendFingerprintStats[kSendFingerprintStatCount]{};
+static FingerprintRingEntry g_sendFingerprintRing[kSendFingerprintRingSize]{};
+static std::mutex g_fingerprintStatsMutex;
+static std::mutex g_fingerprintRingMutex;
+static std::once_flag g_exeRangeOnce;
+static uintptr_t g_exeBase = 0;
+static size_t g_exeSize = 0;
 
 struct BuilderProbeInfo {
     SendBuilder_t original;
@@ -42,6 +74,111 @@ struct BuilderProbeInfo {
 };
 
 static BuilderProbeInfo g_builderProbes[32] = {};
+
+static void EnsureExeRange()
+{
+    std::call_once(g_exeRangeOnce, []() {
+        HMODULE exe = GetModuleHandleA(nullptr);
+        if (!exe)
+            return;
+        MODULEINFO mi{};
+        if (!GetModuleInformation(GetCurrentProcess(), exe, &mi, sizeof(mi)))
+            return;
+        g_exeBase = reinterpret_cast<uintptr_t>(exe);
+        g_exeSize = static_cast<size_t>(mi.SizeOfImage);
+    });
+}
+
+static bool IsAddressInExe(uintptr_t addr)
+{
+    EnsureExeRange();
+    if (!g_exeBase || !g_exeSize)
+        return false;
+    return addr >= g_exeBase && addr < (g_exeBase + g_exeSize);
+}
+
+static uint32_t ReadPacketHead(const void* pkt, int len)
+{
+    if (!pkt || len <= 0)
+        return 0;
+    uint32_t head = 0;
+    __try {
+        const auto* bytes = static_cast<const uint8_t*>(pkt);
+        int copy = std::min(len, 4);
+        for (int i = 0; i < copy; ++i)
+            head |= static_cast<uint32_t>(bytes[i]) << (i * 8);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        head = 0;
+    }
+    return head;
+}
+
+static bool CaptureSendFingerprint(const void* pkt, int len, SendCallsiteFingerprint& out)
+{
+    out = {};
+    if (len < 0)
+        len = 0;
+    out.len = static_cast<uint16_t>(std::min(len, 0xFFFF));
+    out.head4 = ReadPacketHead(pkt, len);
+    void* frames[16]{};
+    USHORT captured = RtlCaptureStackBackTrace(0, ARRAYSIZE(frames), frames, nullptr);
+    if (captured == 0)
+        return false;
+    uint32_t hash = 0;
+    for (USHORT i = 0; i < captured; ++i) {
+        uintptr_t addr = reinterpret_cast<uintptr_t>(frames[i]);
+        hash = hash * 131u ^ static_cast<uint32_t>(addr & 0xFFFFFFFFu);
+        if (!out.firstExeFrame && addr && IsAddressInExe(addr))
+            out.firstExeFrame = frames[i];
+    }
+    out.stackHash = hash;
+    return true;
+}
+
+static uint32_t TouchFingerprintStats(const SendCallsiteFingerprint& fp, DWORD now)
+{
+    std::lock_guard<std::mutex> lock(g_fingerprintStatsMutex);
+    FingerprintStats* match = nullptr;
+    FingerprintStats* freeSlot = nullptr;
+    FingerprintStats* lruSlot = &g_sendFingerprintStats[0];
+    DWORD lruTick = lruSlot->lastTick;
+    for (auto& stat : g_sendFingerprintStats) {
+        if (stat.count != 0 && stat.fingerprint.firstExeFrame == fp.firstExeFrame &&
+            stat.fingerprint.head4 == fp.head4 && stat.fingerprint.len == fp.len) {
+            match = &stat;
+            break;
+        }
+        if (!freeSlot && stat.count == 0)
+            freeSlot = &stat;
+        if ((!freeSlot || stat.count != 0) && stat.lastTick < lruTick) {
+            lruSlot = &stat;
+            lruTick = stat.lastTick;
+        }
+    }
+    FingerprintStats* slot = match ? match : (freeSlot ? freeSlot : lruSlot);
+    if (!match) {
+        slot->fingerprint = fp;
+        slot->count = 0;
+    }
+    slot->lastTick = now;
+    ++slot->count;
+    return slot->count;
+}
+
+static void StoreSendFingerprint(unsigned counter,
+                                 const SendCallsiteFingerprint& fp,
+                                 uint32_t statCount,
+                                 DWORD now)
+{
+    std::lock_guard<std::mutex> lock(g_fingerprintRingMutex);
+    auto& slot = g_sendFingerprintRing[counter % kSendFingerprintRingSize];
+    slot.counter = counter;
+    slot.fingerprint = fp;
+    slot.statCount = statCount;
+    slot.tick = now;
+    slot.valid = true;
+}
 
 template<int Index>
 static void* __fastcall Probe_SendBuilder(void* thisPtr, void* builder)
@@ -153,10 +290,17 @@ static void __fastcall H_SendPacket(void* thisPtr, void*, const void* pkt, int l
             packetId = 0;
         }
     }
+    DWORD now = GetTickCount();
+    if (g_castTraceEnabled) {
+        SendCallsiteFingerprint fingerprint{};
+        if (CaptureSendFingerprint(pkt, len, fingerprint)) {
+            uint32_t statCount = TouchFingerprintStats(fingerprint, now);
+            StoreSendFingerprint(counterSnapshot, fingerprint, statCount, now);
+        }
+    }
     // Annotate proximity to last high-level action (e.g., CastSpell) for correlation
     Trace::LastAction last{};
     if (Trace::GetLastAction(last)) {
-        DWORD now = GetTickCount();
         DWORD dt = now - last.tick;
         if (dt <= Trace::GetWindowMs()) {
             char info[160];
@@ -267,6 +411,20 @@ bool InitSendBuilder(GlobalStateInfo* state)
         g_logSendPackets = (envLogPackets[0] == '1' || envLogPackets[0] == 'y' || envLogPackets[0] == 'Y' || envLogPackets[0] == 't' || envLogPackets[0] == 'T');
     if (g_logSendPackets)
         WriteRawLog("LOG_SEND_PACKET_EVENTS enabled");
+    auto readCastTrace = []() -> std::optional<bool> {
+        if (auto cfgPrimary = Core::Config::TryGetBool("debug.casttrace"))
+            return cfgPrimary;
+        if (auto cfgLegacy = Core::Config::TryGetBool("UOW_DEBUG_CASTTRACE"))
+            return cfgLegacy;
+        if (auto envPrimary = Core::Config::TryGetEnvBool("debug.casttrace"))
+            return envPrimary;
+        if (auto envLegacy = Core::Config::TryGetEnvBool("UOW_DEBUG_CASTTRACE"))
+            return envLegacy;
+        return std::nullopt;
+    };
+    g_castTraceEnabled = readCastTrace().value_or(false);
+    if (g_castTraceEnabled)
+        WriteRawLog("[SendPacket] debug.casttrace enabled (fingerprint capture active)");
     return true;
 }
 
@@ -311,6 +469,19 @@ bool IsSendReady()
 bool IsInSendPacketHook()
 {
     return g_inSendPacketHook;
+}
+
+bool QuerySendFingerprint(unsigned counter, SendCallsiteFingerprint& out, uint32_t* outCount)
+{
+    std::lock_guard<std::mutex> lock(g_fingerprintRingMutex);
+    auto& slot = g_sendFingerprintRing[counter % kSendFingerprintRingSize];
+    if (!slot.valid || slot.counter != counter)
+        return false;
+    out = slot.fingerprint;
+    if (outCount)
+        *outCount = slot.statCount;
+    slot.valid = false;
+    return true;
 }
 
 } // namespace Net

@@ -25,6 +25,7 @@
 #include "Net/PacketTrace.hpp"
 #include "Core/ActionTrace.hpp"
 #include "Net/SendBuilder.hpp"
+#include "Net/SendTrace.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/Movement.hpp"
 #include "Engine/LuaBridge.hpp"
@@ -323,11 +324,65 @@ enum ContextLogBits : unsigned {
         DWORD captureTick = 0;
         uint32_t token = 0;
         uintptr_t lastRet = 0;
+        uint32_t spellId = 0;
+        void* entryProbe = nullptr;
+        void* targetFunc = nullptr;
+        void* callerRet = nullptr;
+        uint32_t flags = 0;
+        Net::SendCallsiteFingerprint sendFingerprint{};
+        uint32_t sendObservationCount = 0;
+        unsigned sendCounter = 0;
     };
 
 static std::mutex g_spellReplayMutex;
 static std::unordered_map<int, SpellGateReplayContext> g_spellReplayCache;
 static std::atomic<bool> g_spellBindingReady{false};
+static constexpr DWORD kCastTraceGateTimeoutMs = 2000;
+static std::mutex g_castTraceMutex;
+static std::unordered_map<uint32_t, SpellGateReplayContext> g_castTracePending;
+struct SpellPathKey {
+    uint32_t spellId = 0;
+    void* gateEntry = nullptr;
+    void* targetFunc = nullptr;
+    void* callerRet = nullptr;
+    void* sendTop = nullptr;
+    uint32_t stackHash = 0;
+
+    bool operator==(const SpellPathKey& other) const noexcept {
+        return spellId == other.spellId &&
+               gateEntry == other.gateEntry &&
+               targetFunc == other.targetFunc &&
+               callerRet == other.callerRet &&
+               sendTop == other.sendTop &&
+               stackHash == other.stackHash;
+    }
+};
+
+struct SpellPathKeyHash {
+    size_t operator()(const SpellPathKey& key) const noexcept {
+        size_t h = static_cast<size_t>(key.stackHash);
+        auto mix = [&](uintptr_t value) {
+            h ^= value + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        };
+        mix(reinterpret_cast<uintptr_t>(key.gateEntry));
+        mix(reinterpret_cast<uintptr_t>(key.targetFunc));
+        mix(reinterpret_cast<uintptr_t>(key.callerRet));
+        mix(reinterpret_cast<uintptr_t>(key.sendTop));
+        mix(static_cast<uintptr_t>(key.spellId));
+        return h;
+    }
+};
+
+struct SpellPathStats {
+    SpellPathKey key{};
+    uint32_t id = 0;
+    uint32_t count = 0;
+    DWORD lastTick = 0;
+};
+
+static std::mutex g_spellPathMutex;
+static std::unordered_map<SpellPathKey, SpellPathStats, SpellPathKeyHash> g_spellPathSummary;
+static uint32_t g_spellPathNextId = 1;
 static bool HasAnyGateReplayContext()
 {
     std::lock_guard<std::mutex> lock(g_spellReplayMutex);
@@ -387,6 +442,7 @@ static bool HasGateReplayContext(int spellId)
 
     static NoClickCastState g_noClickState{};
     static bool g_noClickDiagnostics = false;
+    static bool g_castTraceEnabled = false;
     static bool g_consoleBound = false;
     static constexpr DWORD kTargetFallbackWindowMs = 1200;
     static constexpr DWORD kTargetFallbackSendWaitMs = 100;
@@ -423,10 +479,20 @@ static void LogImmediateSpellFailure(int spellId, const char* branch, const char
 static void ReportActiveSpellFailure(const char* branch, const char* reason);
 static bool CastWrapperReady();
 static bool CastOnIdWrapperReady();
-static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* reason = nullptr);
+static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
+                                                 const char* reason = nullptr,
+                                                 lua_State* explicitL = nullptr);
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason);
 static int PushLuaCommandResult(lua_State* L, bool ok, const std::string& msg);
 static void LogUOFlowStatus(const char* tag);
+static void TraceRecordGateEntry(GateCallProbe* probe, const GateInvokeTls& snap, const uintptr_t* argBase);
+static void TraceLinkCastExec(uint32_t token, int spellId, unsigned counter, uint8_t packetId, int len);
+static void RecordSpellPathObservation(const SpellGateReplayContext& ctx);
+static void DumpSpellPathSummary();
+static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L);
+static uintptr_t SafeReadUintptr(const uintptr_t* ptr);
+static uint8_t SafeReadByte(const uint8_t* ptr, uint8_t fallback);
+static uint8_t* TryResolveCallsiteFromReturn(uintptr_t ret);
 static void LogUOFlowStatus(const char* tag, bool ok, const std::string& msg);
 static bool OpenTargetForSpell_Fallback(const char* reason,
                                         uint32_t action = 1,
@@ -1071,6 +1137,34 @@ static bool ReadHookToggleWithFallback(const char* primaryCfg,
     if (auto legacy = ReadBoolOption(legacyCfg, legacyEnv))
         return *legacy;
     return defaultValue;
+}
+
+static std::optional<bool> ReadCastTraceFlag()
+{
+    if (auto cfgPrimary = Core::Config::TryGetBool("debug.casttrace"))
+        return cfgPrimary;
+    if (auto cfgLegacy = Core::Config::TryGetBool("UOW_DEBUG_CASTTRACE"))
+        return cfgLegacy;
+    if (auto envPrimary = Core::Config::TryGetEnvBool("debug.casttrace"))
+        return envPrimary;
+    if (auto envLegacy = Core::Config::TryGetEnvBool("UOW_DEBUG_CASTTRACE"))
+        return envLegacy;
+    return std::nullopt;
+}
+
+static bool ResetLateWrapGuard(const char* reason)
+{
+    bool wasDisabled = g_lateWrapGuardDisabled.exchange(false, std::memory_order_acq_rel);
+    if (!wasDisabled)
+        return false;
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LateWrap] guard reset (%s)",
+              reason && *reason ? reason : "unspecified");
+    WriteRawLog(buf);
+    g_lateWrapActive = false;
+    return true;
 }
 
 static void LoadDirectHookPreferences()
@@ -2148,6 +2242,56 @@ static void __stdcall GateStorePreInvoke(GateCallProbe* probe, uintptr_t ecx, ui
             MaybeLearnSpellGateContext(probe, *slot, /*retValue*/0);
         }
     }
+
+    TraceRecordGateEntry(probe, *slot, argBase);
+}
+
+static void SweepExpiredCastTraceLocked(DWORD now)
+{
+    for (auto it = g_castTracePending.begin(); it != g_castTracePending.end(); ) {
+        DWORD captured = it->second.captureTick;
+        if (captured == 0 || (now - captured) > kCastTraceGateTimeoutMs)
+            it = g_castTracePending.erase(it);
+        else
+            ++it;
+    }
+}
+
+static void TraceRecordGateEntry(GateCallProbe* probe, const GateInvokeTls& snap, const uintptr_t* argBase)
+{
+    if (!g_castTraceEnabled || !probe)
+        return;
+    uint32_t token = CurrentCastToken();
+    if (token == 0)
+        return;
+    SpellGateReplayContext ctx{};
+    ctx.probe = probe;
+    ctx.ecx = snap.ecx;
+    ctx.edx = snap.edx;
+    for (size_t i = 0; i < _countof(ctx.args); ++i)
+        ctx.args[i] = snap.args[i];
+    ctx.captureTick = GetTickCount();
+    ctx.token = token;
+    int spell = g_castSpellCurSpell.load(std::memory_order_relaxed);
+    if (spell > 0)
+        ctx.spellId = static_cast<uint32_t>(spell);
+    ctx.targetFunc = probe->target;
+    if (probe->callSite)
+        ctx.entryProbe = probe->callSite;
+    else if (!probe->callSites.empty())
+        ctx.entryProbe = probe->callSites.front();
+    uintptr_t callerRet = SafeReadUintptr(argBase);
+    ctx.callerRet = reinterpret_cast<void*>(callerRet);
+    if (auto* callSite = TryResolveCallsiteFromReturn(callerRet))
+        ctx.entryProbe = callSite;
+    ctx.flags = 0;
+    if (ctx.entryProbe)
+        ctx.flags |= 0x1;
+    if (ctx.callerRet)
+        ctx.flags |= 0x2;
+    std::lock_guard<std::mutex> lock(g_castTraceMutex);
+    SweepExpiredCastTraceLocked(ctx.captureTick);
+    g_castTracePending[ctx.token] = ctx;
 }
 
 static bool GateConsumeBudget(volatile LONG& budget, bool unlimited)
@@ -4341,14 +4485,22 @@ static bool OpenTargetForSpell_Fallback(const char* reason,
     return ok;
 }
 
-static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* reason)
+static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
+                                                 const char* reason,
+                                                 lua_State* explicitL)
 {
     (void)reason;
     static DWORD s_nextOwnerCtxLog = 0;
     if (g_consoleBound)
         return true;
 
-    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    lua_State* L = explicitL;
+    if (!L)
+        L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L) {
+        if (Engine::RefreshLuaStateFromSlot())
+            L = static_cast<lua_State*>(Engine::LuaState());
+    }
     if (!L) {
         static DWORD s_nextLuaLog = 0;
         DWORD now = GetTickCount();
@@ -4358,6 +4510,9 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* rea
         }
         return false;
     }
+    bool guardWasSet = g_lateWrapGuardDisabled.load(std::memory_order_acquire);
+    if (guardWasSet)
+        ResetLateWrapGuard(reason);
 
     if (!ownerCtx)
         ownerCtx = CanonicalOwnerContext();
@@ -4371,6 +4526,9 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* rea
         }
         return false;
     }
+
+    if (!Engine::LuaState() && L)
+        Engine::ReportLuaState(L);
 
     struct ConsoleBinding {
         lua_CFunction fn;
@@ -4411,6 +4569,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* rea
         {Lua_uow_cmd_clear_target, "uow.cmd.clear_target"},
         {Lua_uow_cmd_request_target, "uow.cmd.req_target"},
         {Lua_uow_cmd_show_cursor, "uow.cmd.show_cursor"},
+        {Lua_UOW_Debug_dump_spell_paths, "UOW.Debug.DumpSpellPaths"},
     };
 
     for (const auto& binding : kCompat) {
@@ -4433,6 +4592,9 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx, const char* rea
               "[LuaConsole] UOFlow.* console bindings installed (owner_context ctx=%p)",
               ownerCtx);
     WriteRawLog(buf);
+    ForceLateCastWrapInstall(L, reason ? reason : "console_bind");
+    if (guardWasSet)
+        RequestLateCastWrapLoop(reason ? reason : "console_bind_reset");
     return true;
 }
 
@@ -4440,6 +4602,7 @@ static void ForceLateCastWrapInstall(lua_State* L, const char* reason)
 {
     if (!L)
         return;
+    ResetLateWrapGuard(reason);
     DWORD now = GetTickCount();
     std::lock_guard<std::mutex> lock(g_lateWrapMutex);
     for (auto& target : g_lateCastTargets) {
@@ -5462,7 +5625,7 @@ static int __cdecl Lua_uow_cmd_show_cursor(lua_State* L)
 
 static int __cdecl Lua_UOFlow_bootstrap(lua_State* L)
 {
-    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "manual");
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "manual", L);
     if (auto* state = static_cast<lua_State*>(Engine::LuaState()))
         ForceLateCastWrapInstall(state, "manual");
     LogUOFlowStatus("UOFlow.bootstrap");
@@ -5496,6 +5659,13 @@ static int __cdecl Lua_UOFlow_status(lua_State* L)
     return PushLuaCommandResult(L, true, buf);
 }
 
+static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L)
+{
+    (void)L;
+    DumpSpellPathSummary();
+    return PushLuaCommandResult(L, true, "spell_paths_dumped");
+}
+
 // Helpers to dump a small callstack for correlation between first and second cast
 static void DumpStackTag(const char* tag)
 {
@@ -5523,6 +5693,203 @@ static void DumpStackTag(const char* tag)
         else
             sprintf_s(buf, sizeof(buf), "[%s] #%u: %p", tag ? tag : "LuaWrap", i, frames[i]);
         WriteRawLog(buf);
+    }
+}
+
+static uintptr_t ModuleExeBase()
+{
+    static uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    return base;
+}
+
+static void FormatExePtr(const void* addr, char* buf, size_t len)
+{
+    if (!buf || len == 0)
+        return;
+    uintptr_t base = ModuleExeBase();
+    if (addr && base) {
+        uintptr_t offset = reinterpret_cast<uintptr_t>(addr) - base;
+        sprintf_s(buf, len, "UOSA.exe+0x%08lX", static_cast<unsigned long>(offset));
+    } else {
+        sprintf_s(buf, len, "%p", addr);
+    }
+}
+
+static uintptr_t SafeReadUintptr(const uintptr_t* ptr)
+{
+    if (!ptr)
+        return 0;
+    __try {
+        return *ptr;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+static uint8_t SafeReadByte(const uint8_t* ptr, uint8_t fallback = 0)
+{
+    if (!ptr)
+        return fallback;
+    __try {
+        return *ptr;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return fallback;
+    }
+}
+
+static uint8_t* TryResolveCallsiteFromReturn(uintptr_t ret)
+{
+    if (ret < 5)
+        return nullptr;
+    auto* callSite = reinterpret_cast<uint8_t*>(ret) - 5;
+    if (SafeReadByte(callSite) == 0xE8)
+        return callSite;
+    return nullptr;
+}
+
+static void TraceLinkCastExec(uint32_t token, int spellId, unsigned counter, uint8_t packetId, int len)
+{
+    if (!g_castTraceEnabled || token == 0)
+        return;
+    Net::SendCallsiteFingerprint fingerprint{};
+    uint32_t statCount = 0;
+    if (!Net::QuerySendFingerprint(counter, fingerprint, &statCount))
+        return;
+    char sendBuf[64];
+    FormatExePtr(fingerprint.firstExeFrame, sendBuf, sizeof(sendBuf));
+    char execBuf[256];
+    sprintf_s(execBuf,
+              sizeof(execBuf),
+              "[CastExec] tok=%u spell=%d sendCaller=%s id=%02X head=0x%08X len=%u stackHash=0x%08X count=%u",
+              token,
+              spellId,
+              sendBuf,
+              packetId,
+              fingerprint.head4,
+              static_cast<unsigned>(fingerprint.len),
+              fingerprint.stackHash,
+              statCount);
+    WriteRawLog(execBuf);
+    SpellGateReplayContext ctx{};
+    bool haveCtx = false;
+    {
+        std::lock_guard<std::mutex> lock(g_castTraceMutex);
+        DWORD now = GetTickCount();
+        SweepExpiredCastTraceLocked(now);
+        auto it = g_castTracePending.find(token);
+        if (it != g_castTracePending.end()) {
+            ctx = it->second;
+            g_castTracePending.erase(it);
+            haveCtx = true;
+        }
+    }
+    if (!haveCtx)
+        return;
+    if (ctx.spellId == 0 && spellId > 0)
+        ctx.spellId = static_cast<uint32_t>(spellId);
+    if (spellId <= 0 && ctx.spellId > 0)
+        spellId = static_cast<int>(ctx.spellId);
+    ctx.sendFingerprint = fingerprint;
+    ctx.sendObservationCount = statCount;
+    ctx.sendCounter = counter;
+    char entryBuf[64];
+    char targetBuf[64];
+    char callerBuf[64];
+    char sendTopBuf[64];
+    FormatExePtr(ctx.entryProbe, entryBuf, sizeof(entryBuf));
+    FormatExePtr(ctx.targetFunc, targetBuf, sizeof(targetBuf));
+    FormatExePtr(ctx.callerRet, callerBuf, sizeof(callerBuf));
+    FormatExePtr(fingerprint.firstExeFrame, sendTopBuf, sizeof(sendTopBuf));
+    char linkBuf[512];
+    sprintf_s(linkBuf,
+              sizeof(linkBuf),
+              "[CastExecLink] tok=%u spell=%d gateEntry=%s target=%s callerRet=%s ecx=%p arg0=%p sendFirst=%s stackHash=0x%08X",
+              token,
+              spellId,
+              entryBuf,
+              targetBuf,
+              callerBuf,
+              reinterpret_cast<void*>(ctx.ecx),
+              reinterpret_cast<void*>(ctx.args[0]),
+              sendTopBuf,
+              fingerprint.stackHash);
+    WriteRawLog(linkBuf);
+    RecordSpellPathObservation(ctx);
+}
+
+static void RecordSpellPathObservation(const SpellGateReplayContext& ctx)
+{
+    if (!g_castTraceEnabled)
+        return;
+    SpellPathKey key{};
+    key.spellId = ctx.spellId;
+    key.gateEntry = ctx.entryProbe;
+    key.targetFunc = ctx.targetFunc;
+    key.callerRet = ctx.callerRet;
+    key.sendTop = ctx.sendFingerprint.firstExeFrame;
+    key.stackHash = ctx.sendFingerprint.stackHash;
+    std::lock_guard<std::mutex> lock(g_spellPathMutex);
+    auto it = g_spellPathSummary.find(key);
+    DWORD now = GetTickCount();
+    if (it == g_spellPathSummary.end()) {
+        SpellPathStats stats{};
+        stats.key = key;
+        stats.id = g_spellPathNextId++;
+        stats.count = 1;
+        stats.lastTick = now;
+        g_spellPathSummary.emplace(key, stats);
+    } else {
+        it->second.count += 1;
+        it->second.lastTick = now;
+    }
+}
+
+static void DumpSpellPathSummary()
+{
+    if (!g_castTraceEnabled) {
+        WriteRawLog("[SpellPathSummary] cast trace disabled");
+        return;
+    }
+    std::vector<SpellPathStats> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(g_spellPathMutex);
+        snapshot.reserve(g_spellPathSummary.size());
+        for (const auto& entry : g_spellPathSummary)
+            snapshot.push_back(entry.second);
+    }
+    if (snapshot.empty()) {
+        WriteRawLog("[SpellPathSummary] no observations yet");
+        return;
+    }
+    std::sort(snapshot.begin(), snapshot.end(), [](const SpellPathStats& a, const SpellPathStats& b) {
+        return a.id < b.id;
+    });
+    WriteRawLog("[SpellPathSummary]");
+    for (const auto& stats : snapshot) {
+        char header[128];
+        sprintf_s(header,
+                  sizeof(header),
+                  "  pathId=%u spell=%u count=%u",
+                  stats.id,
+                  stats.key.spellId,
+                  stats.count);
+        WriteRawLog(header);
+        auto logField = [&](const char* label, void* addr) {
+            char buf[64];
+            FormatExePtr(addr, buf, sizeof(buf));
+            char line[160];
+            sprintf_s(line, sizeof(line), "    %s: %s", label, buf);
+            WriteRawLog(line);
+        };
+        logField("gateEntry", stats.key.gateEntry);
+        logField("target", stats.key.targetFunc);
+        logField("callerRet", stats.key.callerRet);
+        logField("sendTop", stats.key.sendTop);
+        char hashLine[160];
+        sprintf_s(hashLine, sizeof(hashLine), "    stackHash: 0x%08X", stats.key.stackHash);
+        WriteRawLog(hashLine);
     }
 }
 
@@ -5627,34 +5994,44 @@ static void HandleCastPacketSend(unsigned counter, const void* pkt, int len)
 {
     if (!g_castPacketTrackingEnabled || counter == 0)
         return;
-    std::lock_guard<std::mutex> lock(g_castPacketMutex);
-    DWORD now = GetTickCount();
-    SweepCastPacketTimeoutsLocked(now);
-    CastPacketWatch* match = nullptr;
-    for (auto& watch : g_castPacketWatches) {
-        if (watch.token != 0 && watch.awaiting && counter > watch.baselineCounter) {
-            if (!match || watch.startTick < match->startTick)
-                match = &watch;
-        }
-    }
-    if (!match)
-        return;
+    uint32_t tok = 0;
+    int spellId = 0;
+    unsigned baseCounter = 0;
     unsigned char id = 0;
-    if (pkt && len > 0)
-        id = *reinterpret_cast<const unsigned char*>(pkt);
-    DWORD dt = now - match->startTick;
+    DWORD dt = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_castPacketMutex);
+        DWORD now = GetTickCount();
+        SweepCastPacketTimeoutsLocked(now);
+        CastPacketWatch* match = nullptr;
+        for (auto& watch : g_castPacketWatches) {
+            if (watch.token != 0 && watch.awaiting && counter > watch.baselineCounter) {
+                if (!match || watch.startTick < match->startTick)
+                    match = &watch;
+            }
+        }
+        if (!match)
+            return;
+        if (pkt && len > 0)
+            id = *reinterpret_cast<const unsigned char*>(pkt);
+        dt = now - match->startTick;
+        tok = match->token;
+        spellId = match->spellId;
+        baseCounter = match->baselineCounter;
+        ResetCastPacketWatch(*match);
+    }
     char buf[256];
     sprintf_s(buf, sizeof(buf),
         "[CastSpell] tok=%u spell=%d observed SendPacket id=%02X len=%d after %lu ms (counter %u->%u)",
-        match->token, match->spellId, id, len,
-        static_cast<unsigned long>(dt), match->baselineCounter, counter);
+        tok, spellId, id, len,
+        static_cast<unsigned long>(dt), baseCounter, counter);
     WriteRawLog(buf);
-    ResetCastPacketWatch(*match);
+    TraceLinkCastExec(tok, spellId, counter, id, len);
 }
 
 static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
 {
-    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "UserActionCastSpell_W");
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "UserActionCastSpell_W", L);
     int topBefore = lua_gettop(L);
     const uint32_t previousTok = g_tlsCurrentCastToken;
     const uint32_t token = NextCastToken();
@@ -5819,7 +6196,7 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
 
 static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
 {
-    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "UserActionCastSpellOnId_W");
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "UserActionCastSpellOnId_W", L);
     int topBefore = lua_gettop(L);
     int spellId = 0;
     int targetId = 0;
@@ -6726,7 +7103,7 @@ static void MaybeCaptureSpellTargetTuple(lua_State* L)
 
 static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
 {
-    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "RequestTargetInfo_W");
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "RequestTargetInfo_W", L);
     int topBefore = lua_gettop(L);
     uint32_t tok = CurrentCastToken();
     char intro[128];
@@ -6800,7 +7177,7 @@ static int __cdecl Lua_RequestTargetInfo_W(lua_State* L)
 
 static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L)
 {
-    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "ClearCurrentTarget_W");
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "ClearCurrentTarget_W", L);
     int topBefore = lua_gettop(L);
     uint32_t tok = CurrentCastToken();
     char intro[128];
@@ -7069,6 +7446,10 @@ bool InitLuaBridge()
         g_noClickDiagnostics = false;
     if (g_noClickDiagnostics)
         WriteRawLog("[NoClick] diagnostics enabled");
+    std::optional<bool> castTraceOpt = ReadCastTraceFlag();
+    g_castTraceEnabled = castTraceOpt.value_or(false);
+    if (g_castTraceEnabled)
+        WriteRawLog("[CastTrace] debug.casttrace enabled");
     if (auto opt = ReadBoolOption("uoflow.cast.use_direct_orig", "UOFLOW_CAST_USE_DIRECT_ORIG"))
         g_allowDirectCastFallback = *opt;
     else
