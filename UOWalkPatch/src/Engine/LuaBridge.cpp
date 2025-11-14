@@ -610,6 +610,7 @@ struct LateWrapTarget {
 
 static constexpr DWORD kLateWrapIntervalMs = 500;
 static constexpr DWORD kLateWrapWindowMs = 10000;
+static constexpr DWORD kLateWrapGuardCooldownMs = 300;
 static LateWrapTarget g_lateCastTargets[] = {
     {"UserActionCastSpell", &Lua_UserActionCastSpell_W, kWrapperCastSpell, false, 0, nullptr, false},
     {"UserActionCastSpellOnId", &Lua_UserActionCastSpellOnId_W, kWrapperCastSpellOnId, false, 0, nullptr, false}
@@ -619,7 +620,17 @@ static bool g_lateWrapActive = false;
 static DWORD g_lateWrapStartTick = 0;
 static DWORD g_lateWrapNextTick = 0;
 static std::atomic<bool> g_lateWrapGuardDisabled{false};
+static std::atomic<DWORD> g_lateWrapGuardCooldownUntil{0};
+static std::atomic<bool> g_castWrappersInstalled{false};
+static std::atomic<uint32_t> g_lateWrapAttemptCounter{0};
+static bool g_lateWrapVerbose = false;
+static std::mutex g_lateWrapTimerMutex;
+static HANDLE g_lateWrapTimerQueue = nullptr;
+static HANDLE g_lateWrapTimer = nullptr;
 static constexpr const char* kLateWrapGuardDisabledReason = "disabled_exception";
+static bool LateWrapGuardActive(DWORD now);
+static void EnsureLateWrapTimerArmed();
+static void HandleCastWrappersSatisfied();
 
 
 // Forward declarations for logging helpers
@@ -903,9 +914,9 @@ static const char* EvaluateCastWrapGuard(const LateWrapTarget& target)
     return nullptr;
 }
 
-static bool WrapLuaGlobal(lua_State* L, LateWrapTarget& target, DWORD now)
+static bool WrapLuaGlobal(lua_State* L, LateWrapTarget& target, DWORD now, const char* reason)
 {
-    if (g_lateWrapGuardDisabled.load(std::memory_order_acquire)) {
+    if (LateWrapGuardActive(now)) {
         if (!target.guardLogged || target.lastGuardReason != kLateWrapGuardDisabledReason) {
             char buf[192];
             sprintf_s(buf,
@@ -943,8 +954,9 @@ static bool WrapLuaGlobal(lua_State* L, LateWrapTarget& target, DWORD now)
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DWORD code = GetExceptionCode();
         (void)code;
-        bool alreadyDisabled = g_lateWrapGuardDisabled.exchange(true, std::memory_order_acq_rel);
-        if (!alreadyDisabled || target.lastGuardReason != kLateWrapGuardDisabledReason) {
+        g_lateWrapGuardDisabled.store(true, std::memory_order_release);
+        g_lateWrapGuardCooldownUntil.store(now + kLateWrapGuardCooldownMs, std::memory_order_release);
+        if (!target.guardLogged || target.lastGuardReason != kLateWrapGuardDisabledReason) {
             char buf[256];
             sprintf_s(buf,
                       sizeof(buf),
@@ -961,7 +973,11 @@ static bool WrapLuaGlobal(lua_State* L, LateWrapTarget& target, DWORD now)
 
     if (wrapped) {
         char msg[192];
-        sprintf_s(msg, sizeof(msg), "Wrap %s: installed via late wrap", target.name);
+        sprintf_s(msg,
+                  sizeof(msg),
+                  "[LateWrap] wrapped %s (%s)",
+                  target.name,
+                  reason && *reason ? reason : "late");
         WriteRawLog(msg);
         char hookMsg[192];
         sprintf_s(hookMsg, sizeof(hookMsg), "Hook_Register: wrapped %s (late)", target.name);
@@ -998,6 +1014,7 @@ static void RequestLateCastWrapLoop(const char* reason)
     if (restart)
         g_lateWrapStartTick = now;
     g_lateWrapNextTick = 0;
+    EnsureLateWrapTimerArmed();
     if (restart) {
         char buf[192];
         sprintf_s(buf,
@@ -1026,7 +1043,7 @@ static void ProcessLateCastWrapLoop(lua_State* L)
     for (auto& target : g_lateCastTargets) {
         if (target.installed)
             continue;
-        if (!WrapLuaGlobal(L, target, now))
+        if (!WrapLuaGlobal(L, target, now, "late_loop"))
             continue;
         uint32_t expected = mask;
         while (true) {
@@ -1054,6 +1071,7 @@ static void ProcessLateCastWrapLoop(lua_State* L)
     if (!pendingLeft) {
         g_lateWrapActive = false;
         WriteRawLog("LateWrap: cast wrapper loop complete");
+        HandleCastWrappersSatisfied();
         return;
     }
 
@@ -1139,32 +1157,173 @@ static bool ReadHookToggleWithFallback(const char* primaryCfg,
     return defaultValue;
 }
 
-static std::optional<bool> ReadCastTraceFlag()
+struct CastTraceConfig {
+    bool value = false;
+    const char* source = nullptr;
+};
+
+static std::optional<CastTraceConfig> ReadCastTraceFlag()
 {
     if (auto cfgPrimary = Core::Config::TryGetBool("debug.casttrace"))
-        return cfgPrimary;
+        return CastTraceConfig{*cfgPrimary, "cfg"};
     if (auto cfgLegacy = Core::Config::TryGetBool("UOW_DEBUG_CASTTRACE"))
-        return cfgLegacy;
+        return CastTraceConfig{*cfgLegacy, "legacy-cfg"};
     if (auto envPrimary = Core::Config::TryGetEnvBool("debug.casttrace"))
-        return envPrimary;
+        return CastTraceConfig{*envPrimary, "env"};
     if (auto envLegacy = Core::Config::TryGetEnvBool("UOW_DEBUG_CASTTRACE"))
-        return envLegacy;
+        return CastTraceConfig{*envLegacy, "legacy-env"};
     return std::nullopt;
 }
 
-static bool ResetLateWrapGuard(const char* reason)
+static bool ResetLateWrapGuard(const char* reason, lua_State* L = nullptr)
 {
     bool wasDisabled = g_lateWrapGuardDisabled.exchange(false, std::memory_order_acq_rel);
     if (!wasDisabled)
         return false;
-    char buf[192];
-    sprintf_s(buf,
-              sizeof(buf),
-              "[LateWrap] guard reset (%s)",
-              reason && *reason ? reason : "unspecified");
+    g_lateWrapGuardCooldownUntil.store(0, std::memory_order_release);
+    char buf[256];
+    const char* why = (reason && *reason) ? reason : "unspecified";
+    if (L) {
+        sprintf_s(buf, sizeof(buf), "[LateWrap] guard reset (%s, L=%p)", why, L);
+    } else {
+        sprintf_s(buf, sizeof(buf), "[LateWrap] guard reset (%s)", why);
+    }
     WriteRawLog(buf);
     g_lateWrapActive = false;
     return true;
+}
+
+static bool LateWrapGuardTripped()
+{
+    return g_lateWrapGuardDisabled.load(std::memory_order_acquire);
+}
+
+static bool LateWrapGuardActive(DWORD now)
+{
+    if (!LateWrapGuardTripped())
+        return false;
+    DWORD cooldownEnd = g_lateWrapGuardCooldownUntil.load(std::memory_order_acquire);
+    if (cooldownEnd != 0 && now >= cooldownEnd) {
+        ResetLateWrapGuard("cooldown");
+        return false;
+    }
+    return true;
+}
+
+static constexpr uint32_t kRequiredCastWrapperBits = kWrapperCastSpell | kWrapperCastSpellOnId;
+
+static bool HavePrimaryCastWrappers()
+{
+    uint32_t mask = g_actionWrapperMask.load(std::memory_order_acquire);
+    return (mask & kRequiredCastWrapperBits) == kRequiredCastWrapperBits;
+}
+
+static void MaybeMarkCastWrappersInstalled()
+{
+    if (!HavePrimaryCastWrappers())
+        return;
+    bool wasSet = g_castWrappersInstalled.exchange(true, std::memory_order_acq_rel);
+    if (!wasSet)
+        g_lateWrapAttemptCounter.store(0, std::memory_order_release);
+}
+
+static void ShutdownLateWrapTimer();
+
+static void HandleCastWrappersSatisfied()
+{
+    MaybeMarkCastWrappersInstalled();
+    if (g_castWrappersInstalled.load(std::memory_order_acquire))
+        ShutdownLateWrapTimer();
+}
+
+static void MaybeLogLateWrapAttempt(lua_State* L)
+{
+    if (!g_lateWrapVerbose || !L)
+        return;
+    uint32_t attempt = g_lateWrapAttemptCounter.fetch_add(1, std::memory_order_acq_rel) + 1;
+    int top = lua_gettop(L);
+    auto describe = [&](const char* name) {
+        lua_getglobal(L, name);
+        int type = lua_type(L, -1);
+        const char* desc = nullptr;
+        if (type == LUA_TNONE)
+            desc = "missing";
+        else if (type == LUA_TFUNCTION)
+            desc = "function";
+        else if (type == LUA_TNIL)
+            desc = "nil";
+        else
+            desc = lua_typename(L, type);
+        lua_pop(L, 1);
+        return desc;
+    };
+    const char* castSpellDesc = describe("UserActionCastSpell");
+    const char* castOnIdDesc = describe("UserActionCastSpellOnId");
+    lua_settop(L, top);
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LateWrap] attempt=%u L=%p present: CastSpell=%s CastSpellOnId=%s (cooldown=%ums)",
+              attempt,
+              L,
+              castSpellDesc,
+              castOnIdDesc,
+              static_cast<unsigned>(kLateWrapGuardCooldownMs));
+    WriteRawLog(buf);
+}
+
+static VOID CALLBACK LateWrapRetryTimerProc(PVOID, BOOLEAN);
+
+static void EnsureLateWrapTimerArmed()
+{
+    if (g_castWrappersInstalled.load(std::memory_order_acquire))
+        return;
+    std::lock_guard<std::mutex> lock(g_lateWrapTimerMutex);
+    if (!g_lateWrapTimerQueue) {
+        g_lateWrapTimerQueue = CreateTimerQueue();
+        if (!g_lateWrapTimerQueue)
+            return;
+    }
+    if (!g_lateWrapTimer) {
+        HANDLE timer = nullptr;
+        if (!CreateTimerQueueTimer(&timer,
+                                   g_lateWrapTimerQueue,
+                                   LateWrapRetryTimerProc,
+                                   nullptr,
+                                   kLateWrapIntervalMs,
+                                   kLateWrapIntervalMs,
+                                   WT_EXECUTEDEFAULT)) {
+            return;
+        }
+        g_lateWrapTimer = timer;
+    }
+}
+
+static void ShutdownLateWrapTimer()
+{
+    std::lock_guard<std::mutex> lock(g_lateWrapTimerMutex);
+    if (g_lateWrapTimerQueue && g_lateWrapTimer) {
+        DeleteTimerQueueTimer(g_lateWrapTimerQueue, g_lateWrapTimer, INVALID_HANDLE_VALUE);
+        g_lateWrapTimer = nullptr;
+    }
+    if (g_lateWrapTimerQueue) {
+        DeleteTimerQueueEx(g_lateWrapTimerQueue, INVALID_HANDLE_VALUE);
+        g_lateWrapTimerQueue = nullptr;
+    }
+}
+
+static VOID CALLBACK LateWrapRetryTimerProc(PVOID, BOOLEAN)
+{
+    if (g_castWrappersInstalled.load(std::memory_order_acquire))
+        return;
+    if (!Engine::LuaState())
+        return;
+    Util::OwnerPump::Post("late_wrap_retry", []() {
+        auto L = static_cast<lua_State*>(Engine::LuaState());
+        if (!L)
+            return;
+        ForceLateCastWrapInstall(L, "timer");
+    });
 }
 
 static void LoadDirectHookPreferences()
@@ -3059,6 +3218,7 @@ static void TryInstallActionWrappers()
                 WriteRawLog(clickBuf);
             }
         }
+        HandleCastWrappersSatisfied();
         if (now >= s_nextMissingLogMs) {
             s_nextMissingLogMs = now + 1000;
         }
@@ -4510,9 +4670,9 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         }
         return false;
     }
-    bool guardWasSet = g_lateWrapGuardDisabled.load(std::memory_order_acquire);
+    bool guardWasSet = LateWrapGuardTripped();
     if (guardWasSet)
-        ResetLateWrapGuard(reason);
+        ResetLateWrapGuard(reason ? reason : "console_bind", L);
 
     if (!ownerCtx)
         ownerCtx = CanonicalOwnerContext();
@@ -4602,13 +4762,17 @@ static void ForceLateCastWrapInstall(lua_State* L, const char* reason)
 {
     if (!L)
         return;
-    ResetLateWrapGuard(reason);
+    if (g_castWrappersInstalled.load(std::memory_order_acquire))
+        return;
+    MaybeLogLateWrapAttempt(L);
     DWORD now = GetTickCount();
     std::lock_guard<std::mutex> lock(g_lateWrapMutex);
+    uint32_t maskSnapshot = g_actionWrapperMask.load(std::memory_order_acquire);
+    RefreshLateCastTargetsLocked(maskSnapshot, false);
     for (auto& target : g_lateCastTargets) {
         if (target.installed)
             continue;
-        if (!WrapLuaGlobal(L, target, now))
+        if (!WrapLuaGlobal(L, target, now, reason ? reason : "manual"))
             continue;
         target.installed = true;
         target.nextDeferredLog = 0;
@@ -5694,6 +5858,7 @@ static void DumpStackTag(const char* tag)
             sprintf_s(buf, sizeof(buf), "[%s] #%u: %p", tag ? tag : "LuaWrap", i, frames[i]);
         WriteRawLog(buf);
     }
+    HandleCastWrappersSatisfied();
 }
 
 static uintptr_t ModuleExeBase()
@@ -7446,10 +7611,25 @@ bool InitLuaBridge()
         g_noClickDiagnostics = false;
     if (g_noClickDiagnostics)
         WriteRawLog("[NoClick] diagnostics enabled");
-    std::optional<bool> castTraceOpt = ReadCastTraceFlag();
-    g_castTraceEnabled = castTraceOpt.value_or(false);
-    if (g_castTraceEnabled)
-        WriteRawLog("[CastTrace] debug.casttrace enabled");
+    if (auto opt = ReadBoolOption("debug.latewrap_verbose", "debug.latewrap_verbose"))
+        g_lateWrapVerbose = *opt;
+    else
+        g_lateWrapVerbose = false;
+    if (g_lateWrapVerbose)
+        WriteRawLog("[LateWrap] verbose diagnostics enabled");
+    g_castWrappersInstalled.store(false, std::memory_order_release);
+    g_lateWrapAttemptCounter.store(0, std::memory_order_release);
+    auto castTraceOpt = ReadCastTraceFlag();
+    g_castTraceEnabled = castTraceOpt ? castTraceOpt->value : false;
+    if (g_castTraceEnabled) {
+        const char* source = (castTraceOpt && castTraceOpt->source) ? castTraceOpt->source : "cfg";
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[CastTrace] debug.casttrace enabled (%s) \xE2\x80\x93 fingerprint capture active",
+                  source);
+        WriteRawLog(buf);
+    }
     if (auto opt = ReadBoolOption("uoflow.cast.use_direct_orig", "UOFLOW_CAST_USE_DIRECT_ORIG"))
         g_allowDirectCastFallback = *opt;
     else
@@ -7682,6 +7862,7 @@ void PollLateInstalls()
 
 void ShutdownLuaBridge()
 {
+    ShutdownLateWrapTimer();
     if (g_registerTarget) {
         MH_DisableHook(g_registerTarget);
         MH_RemoveHook(g_registerTarget);

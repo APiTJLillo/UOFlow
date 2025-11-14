@@ -424,7 +424,7 @@ bool InitSendBuilder(GlobalStateInfo* state)
     };
     g_castTraceEnabled = readCastTrace().value_or(false);
     if (g_castTraceEnabled)
-        WriteRawLog("[SendPacket] debug.casttrace enabled (fingerprint capture active)");
+        WriteRawLog("[SendPacket] debug.casttrace enabled");
     return true;
 }
 

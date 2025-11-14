@@ -17,6 +17,7 @@
 #include "SpellProbe.h"
 #include "CastCorrelator.h"
 #include "TargetCorrelator.h"
+#include "../include/Engine/CastFallback.hpp"
 #include "../include/Util/OwnerPump.hpp"
 
 namespace {
@@ -188,11 +189,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Net::InitPacketTrace();
         Net::InitSendBuilder(const_cast<GlobalStateInfo*>(Engine::Info()));
         Engine::Lua::InitLuaBridge();
+        Engine::CastFallback::Init();
         CastCorrelator::Init();
         TargetCorrelatorInit();
         break;
     }
     case DLL_PROCESS_DETACH:
+        Engine::CastFallback::Shutdown();
         TargetCorrelatorShutdown();
         CastCorrelator::Shutdown();
         SpellProbe_DisarmAll();

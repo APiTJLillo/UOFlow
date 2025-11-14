@@ -43,3 +43,12 @@ TRACE_PACKET_ID_FILTER=0x2E # set while hunting the target helper
 
 4. **Switching focus.**  
    Keep `TRACE_PACKET_ID_FILTER=0x2E` whenever you need to re-sample the target/cursor helper. The correlator will remember that frame and continue treating any other `UOSA.exe+offset` discovered inside the cast window as the cast sender, even if the packet id churns.
+
+## Late wrap recovery & native fallback
+
+- Set `debug.casttrace=1` (or `UOW_DEBUG_CASTTRACE=1`) during bring-up to light up `[CastTrace] debug.casttrace enabled (cfg) – fingerprint capture active` and `[SendPacket] debug.casttrace enabled`. The same flag arms the `debug.native_cast_fallback` toggle by default.
+- When the Lua console binds land you should see `[LateWrap] guard reset (console_bind, L=0x…)` followed by `[LateWrap] wrapped UserActionCastSpell (console_bind)` / `…OnId`. If the wrappers race registration, the retry timer will keep calling `ForceLateCastWrapInstall` every 500 ms until both globals are wrapped.
+- Flip `debug.latewrap_verbose=1` in `uowalkpatch.cfg` to watch `[LateWrap] attempt=N … (cooldown=300ms)` instrumentation on each retry.
+- The native fallback probes the `BuildAction` serializer (RVA `0x0053E630`) and CastSpell vtable (`RVA_Vtbl_CastSpell` in `src/Engine/Addresses.h`). On startup you’ll see `[Gate] module base=…` and `[Gate] BuildAction at … prologue_ok=1`. Every CastSpell object flowing through that serializer emits `[CastUI/native] self=… vtbl=… spellId=… targetType=… targetId=XXXXXXXX iconId=N`, so the correlator can still bridge into `[CastExec]` even if the Lua wrap never sticks.
+- Rollback: set `debug.native_cast_fallback=0` (or drop `debug.casttrace=0`) and the detour won’t arm. To disable verbose retries, set `debug.latewrap_verbose=0`.
+- Client updates: adjust `RVA_BuildAction`/`RVA_Vtbl_CastSpell` in `src/Engine/Addresses.h` when the disassembly shifts. The prologue guards will log `[Gate] signature mismatch at 0x0053E630, native fallback disabled.` if the constant drifts.

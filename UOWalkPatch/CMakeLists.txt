@@ -89,6 +89,7 @@ add_library(UOWalkPatchDLL SHARED
     src/Engine/GlobalState.cpp
     src/Engine/Movement.cpp
     src/Engine/LuaBridge.cpp
+    src/Engine/CastFallback.cpp
     src/Util/OwnerPump.cpp
 )
 
