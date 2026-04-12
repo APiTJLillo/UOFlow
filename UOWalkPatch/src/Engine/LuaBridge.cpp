@@ -123,6 +123,14 @@ namespace {
     static std::atomic<void*> g_bootstrapReadyContext{nullptr};
     static std::atomic<uintptr_t> g_bootstrapReadyLuaState{0};
     static std::atomic<uint32_t> g_bootstrapCastBypassLoggedEpoch{0};
+    enum BootstrapState : uint32_t {
+        kBootstrapIdle = 0,
+        kBootstrapObserved = 1,
+        kBootstrapWaitStable = 2,
+        kBootstrapRunning = 3,
+        kBootstrapDone = 4,
+    };
+    static std::atomic<uint32_t> g_bootstrapState{kBootstrapIdle};
 
     // Late-install control for action wrappers
     static volatile LONG g_actionWrappersInstalled = 0;
@@ -2183,6 +2191,7 @@ static void NoteBootstrapContextObserved(void* ctx, lua_State* L, const char* re
     g_bootstrapNextAttemptTick.store(0, std::memory_order_release);
     g_bootstrapReadyContext.store(nullptr, std::memory_order_release);
     g_bootstrapReadyLuaState.store(0, std::memory_order_release);
+    g_bootstrapState.store(kBootstrapObserved, std::memory_order_release);
     g_consoleBound = false;
     g_spellBindingReady.store(false, std::memory_order_release);
     g_replayHelperInstalled.store(false, std::memory_order_release);
@@ -2250,6 +2259,7 @@ static void LogBootstrapDoneOnce(void* ctx,
                 stateKey = reinterpret_cast<uintptr_t>(engineL);
         }
         g_bootstrapReadyLuaState.store(stateKey, std::memory_order_release);
+        g_bootstrapState.store(kBootstrapDone, std::memory_order_release);
     }
 }
 
@@ -2261,6 +2271,8 @@ static void MaybeRunEarlyBootstrap(void* ctx, lua_State* callbackL, const char* 
     if (g_inScriptRegistration) {
         static DWORD s_nextRegisterLogTick = 0;
         DWORD now = GetTickCount();
+        g_bootstrapState.store(kBootstrapObserved, std::memory_order_release);
+        g_bootstrapNextAttemptTick.store(now + 10, std::memory_order_release);
         if (now >= s_nextRegisterLogTick) {
             char buf[224];
             sprintf_s(buf,
@@ -2312,11 +2324,36 @@ static void MaybeRunEarlyBootstrap(void* ctx, lua_State* callbackL, const char* 
     }
 
     DWORD now = GetTickCount();
-    if (slot->coreReadyTick == 0 || now < slot->coreReadyTick || (now - slot->coreReadyTick) < kGameplayLuaStableMs) {
+    const uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+    const uint32_t callerTid = GetCurrentThreadId();
+    const DWORD elapsed = (slot->coreReadyTick == 0 || now < slot->coreReadyTick) ? 0 : (now - slot->coreReadyTick);
+    const DWORD remaining = (elapsed >= kGameplayLuaStableMs) ? 0 : (kGameplayLuaStableMs - elapsed);
+    const bool sameObservedState =
+        reinterpret_cast<uintptr_t>(callbackL ? callbackL : reinterpret_cast<lua_State*>(g_bootstrapObservedLuaState.load(std::memory_order_acquire))) ==
+        g_bootstrapObservedLuaState.load(std::memory_order_acquire);
+    const bool allowEarlyAttempt =
+        remaining <= 5 &&
+        ownerTid != 0 &&
+        ownerTid == callerTid &&
+        sameObservedState;
+    if (slot->coreReadyTick == 0 || now < slot->coreReadyTick || elapsed < kGameplayLuaStableMs) {
+        g_bootstrapState.store(kBootstrapWaitStable, std::memory_order_release);
+        g_bootstrapNextAttemptTick.store(now + (remaining ? (remaining + 5) : 5), std::memory_order_release);
+        if (allowEarlyAttempt) {
+            char buf[288];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[Bootstrap] early attempt ctx=%p via=%s callbackL=%p observedL=%p stable_for=%lu remaining=%lu",
+                      ctx,
+                      reason ? reason : "<none>",
+                      callbackL,
+                      reinterpret_cast<void*>(g_bootstrapObservedLuaState.load(std::memory_order_acquire)),
+                      static_cast<unsigned long>(elapsed),
+                      static_cast<unsigned long>(remaining));
+            WriteRawLog(buf);
+        } else {
         static DWORD s_nextCoreStableLogTick = 0;
         if (now >= s_nextCoreStableLogTick) {
-            const DWORD elapsed = (slot->coreReadyTick == 0 || now < slot->coreReadyTick) ? 0 : (now - slot->coreReadyTick);
-            const DWORD remaining = (elapsed >= kGameplayLuaStableMs) ? 0 : (kGameplayLuaStableMs - elapsed);
             char buf[256];
             sprintf_s(buf,
                       sizeof(buf),
@@ -2328,13 +2365,14 @@ static void MaybeRunEarlyBootstrap(void* ctx, lua_State* callbackL, const char* 
             WriteRawLog(buf);
             s_nextCoreStableLogTick = now + 1000;
         }
-        return;
+            return;
+        }
     }
 
-    const uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
-    const uint32_t callerTid = GetCurrentThreadId();
     if (ownerTid == 0 || ownerTid != callerTid) {
         static DWORD s_nextOwnerWaitLogTick = 0;
+        g_bootstrapState.store(kBootstrapWaitStable, std::memory_order_release);
+        g_bootstrapNextAttemptTick.store(now + 25, std::memory_order_release);
         if (now >= s_nextOwnerWaitLogTick) {
             char buf[256];
             sprintf_s(buf,
@@ -2370,6 +2408,7 @@ static void MaybeRunEarlyBootstrap(void* ctx, lua_State* callbackL, const char* 
     if (!IsGameplayContext(ctx, L, reason, true))
         return;
     const uint32_t epoch = g_bootstrapEpoch.load(std::memory_order_acquire);
+    g_bootstrapState.store(kBootstrapRunning, std::memory_order_release);
 
     Util::OwnerPump::Invoke("early_bootstrap", [ctx, callbackL, epoch]() {
         if (!ctx)
@@ -2399,6 +2438,8 @@ static void MaybeRunEarlyBootstrap(void* ctx, lua_State* callbackL, const char* 
         const bool replayOk = g_replayHelperInstalled.load(std::memory_order_acquire);
         if (consoleOk && spellOk && replayOk && bridgeOk)
             LogBootstrapDoneOnce(ctx, L, "early_bootstrap", bridgeOk, consoleOk, spellOk, replayOk);
+        else
+            g_bootstrapState.store(kBootstrapWaitStable, std::memory_order_release);
     });
 }
 
@@ -10313,14 +10354,19 @@ void PollLateInstalls()
     Util::OwnerPump::DrainOnOwnerThread();
     static DWORD s_lastTryTick = 0;
     DWORD now = GetTickCount();
-    if (now - s_lastTryTick < 500)
+    const uint32_t bootstrapState = g_bootstrapState.load(std::memory_order_acquire);
+    const DWORD minInterval =
+        (bootstrapState == kBootstrapObserved ||
+         bootstrapState == kBootstrapWaitStable ||
+         bootstrapState == kBootstrapRunning) ? 25 : 500;
+    if (now - s_lastTryTick < minInterval)
         return;
     s_lastTryTick = now;
     if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
         if (IsGameplayLuaReady(L, "poller")) {
             if (const auto* info = Engine::Info()) {
                 if (info->scriptContext)
-                    MaybeUpdateOwnerContext(info->scriptContext);
+                    MaybeUpdateOwnerContext(info->scriptContext, L);
             }
             static DWORD s_lastPendingProbeTick = 0;
             if (now - s_lastPendingProbeTick >= 1000) {
@@ -10350,8 +10396,12 @@ void PollLateInstalls()
     }
     if (auto L = static_cast<lua_State*>(Engine::LuaState()))
         ProcessLateCastWrapLoop(L);
-    if (void* ownerCtx = CanonicalOwnerContext())
-        MaybeRunEarlyBootstrap(ownerCtx, nullptr, "poller");
+    if (void* ownerCtx = CanonicalOwnerContext()) {
+        auto* observedL = reinterpret_cast<lua_State*>(g_bootstrapObservedLuaState.load(std::memory_order_acquire));
+        if (!observedL)
+            observedL = static_cast<lua_State*>(Engine::LuaState());
+        MaybeRunEarlyBootstrap(ownerCtx, observedL, "poller");
+    }
     if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
         ForceLateCastWrapInstall(L, "poller");
     }
