@@ -20,6 +20,7 @@ namespace Engine::CastFallback {
 namespace {
 
 using BuildActionFn = void* (__thiscall*)(void*, void*, void*);
+using EnqueueActionFn = void(__thiscall*)(void*, void*);
 
 constexpr int kMaxNativeFaults = 3;
 
@@ -145,11 +146,54 @@ static GateCandidate ScanForBuildActionCandidate(uintptr_t moduleBase, size_t mo
 }
 
 BuildActionFn g_origBuildAction = nullptr;
+EnqueueActionFn g_origEnqueueAction = nullptr;
 void* g_buildActionTarget = nullptr;
+void* g_enqueueActionTarget = nullptr;
 std::atomic<bool> g_nativeActive{false};
 std::atomic<int> g_faultStreak{0};
 uintptr_t g_moduleBase = 0;
 uintptr_t g_expectedVtable = 0;
+
+struct ActionSnapshot {
+    uintptr_t vtbl = 0;
+    uint32_t targetType = 0;
+    uint32_t spellId = 0;
+    uint32_t iconId = 0;
+    uint32_t targetId = 0;
+    uint8_t targetReady = 0;
+    bool ok = false;
+};
+
+static ActionSnapshot ReadActionSnapshot(void* action)
+{
+    ActionSnapshot snap{};
+    if (!action)
+        return snap;
+    __try {
+        auto base = static_cast<std::uint8_t*>(action);
+        snap.vtbl = *reinterpret_cast<uintptr_t*>(base);
+        snap.targetType = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_TargetType);
+        snap.spellId = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_SpellId);
+        snap.iconId = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_IconId);
+        snap.targetId = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_TargetId);
+        snap.targetReady = *reinterpret_cast<uint8_t*>(base + Engine::Addresses::CAST_OFS_TargetReadyFlag);
+        snap.ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        snap.ok = false;
+    }
+    return snap;
+}
+
+static bool LooksLikeSpellAction(const ActionSnapshot& snap)
+{
+    if (!snap.ok)
+        return false;
+    if (snap.spellId == 0 || snap.spellId > 1000)
+        return false;
+    if (snap.targetType > 8)
+        return false;
+    return true;
+}
 
 bool ShouldEnableFallback()
 {
@@ -200,25 +244,22 @@ void* __fastcall Hook_BuildAction(void* self, void*, void* a1, void* a2)
 
     __try {
         if (self) {
-            auto vtbl = *reinterpret_cast<uintptr_t*>(self);
-            if (vtbl == g_expectedVtable) {
-                auto base = static_cast<std::uint8_t*>(self);
-                uint32_t targetType = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_TargetType);
-                uint32_t spellId = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_SpellId);
-                uint32_t iconId = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_IconId);
-                uint32_t targetId = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_TargetId);
-                char buf[256];
+            ActionSnapshot snap = ReadActionSnapshot(self);
+            if (snap.ok && (snap.vtbl == g_expectedVtable || LooksLikeSpellAction(snap))) {
+                char buf[320];
                 sprintf_s(buf,
                           sizeof(buf),
-                          "[CastUI/native] self=%p vtbl=%p spellId=%u targetType=%u targetId=%08X iconId=%u",
+                          "[CastUI/native] self=%p vtbl=%p match=%s spellId=%u targetType=%u targetId=%08X iconId=%u flag18=%u",
                           self,
-                          reinterpret_cast<void*>(vtbl),
-                          spellId,
-                          targetType,
-                          targetId,
-                          iconId);
+                          reinterpret_cast<void*>(snap.vtbl),
+                          (snap.vtbl == g_expectedVtable) ? "vtbl" : "heuristic",
+                          snap.spellId,
+                          snap.targetType,
+                          snap.targetId,
+                          snap.iconId,
+                          static_cast<unsigned>(snap.targetReady));
                 WriteRawLog(buf);
-                CastCorrelator::OnCastAttempt(spellId);
+                CastCorrelator::OnCastAttempt(snap.spellId);
             }
         }
     }
@@ -236,6 +277,61 @@ void* __fastcall Hook_BuildAction(void* self, void*, void* a1, void* a2)
     }
 
     return g_origBuildAction(self, a1, a2);
+}
+
+void __fastcall Hook_EnqueueAction(void* self, void*, void* action)
+{
+    if (g_nativeActive.load(std::memory_order_acquire)) {
+        __try {
+            auto slot0 = *reinterpret_cast<void**>(self);
+            auto slot1 = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(self) + 0x8);
+            ActionSnapshot snap = ReadActionSnapshot(action);
+            uintptr_t ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
+            char retBuf[32];
+            if (ret >= g_moduleBase)
+                sprintf_s(retBuf, sizeof(retBuf), "UOSA.exe+0x%X", static_cast<unsigned>(ret - g_moduleBase));
+            else
+                sprintf_s(retBuf, sizeof(retBuf), "0x%p", reinterpret_cast<void*>(ret));
+            const char* callerLabel = "other";
+            if (ret >= g_moduleBase + 0x00140330 && ret <= g_moduleBase + 0x001404FF)
+                callerLabel = "UserActionCastSpell";
+            else if (ret >= g_moduleBase + 0x00140560 && ret <= g_moduleBase + 0x001406C8)
+                callerLabel = "UserActionCastSpellOnId";
+            if (snap.ok) {
+                char buf[320];
+                sprintf_s(buf,
+                          sizeof(buf),
+                          "[CastQueue] enqueue ret=%s caller=%s queue=%p slot0=%p slot1=%p action=%p spellId=%u targetType=%u targetId=%08X flag18=%u",
+                          retBuf,
+                          callerLabel,
+                          self,
+                          slot0,
+                          slot1,
+                          action,
+                          snap.spellId,
+                          snap.targetType,
+                          snap.targetId,
+                          static_cast<unsigned>(snap.targetReady));
+                WriteRawLog(buf);
+            } else {
+                char buf[200];
+                sprintf_s(buf,
+                          sizeof(buf),
+                          "[CastQueue] enqueue ret=%s caller=%s queue=%p slot0=%p slot1=%p action=%p (snapshot failed)",
+                          retBuf,
+                          callerLabel,
+                          self,
+                          slot0,
+                          slot1,
+                          action);
+                WriteRawLog(buf);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            WriteRawLog("[CastQueue] enqueue snapshot threw");
+        }
+    }
+    if (g_origEnqueueAction)
+        g_origEnqueueAction(self, action);
 }
 
 } // namespace
@@ -273,21 +369,38 @@ void Init()
               candidateValid ? 1 : 0);
     WriteRawLog(targetBuf);
     if (!candidateValid) {
-        WriteRawLog("[Gate] signature mismatch at 0x0053E630, native fallback disabled.");
-        return;
+        WriteRawLog("[Gate] signature mismatch at 0x0053E630, BuildAction hook skipped.");
+    } else {
+        if (!candidate.match.ok) {
+            WriteRawLog("[Gate] BuildAction signature heuristic failed; forcing fallback candidate");
+        }
+        g_expectedVtable = g_moduleBase + Engine::Addresses::RVA_Vtbl_CastSpell;
+        g_buildActionTarget = reinterpret_cast<void*>(candidate.address);
+        if (MH_CreateHook(g_buildActionTarget,
+                          reinterpret_cast<LPVOID>(Hook_BuildAction),
+                          reinterpret_cast<LPVOID*>(&g_origBuildAction)) == MH_OK) {
+            if (MH_EnableHook(g_buildActionTarget) != MH_OK) {
+                g_origBuildAction = nullptr;
+                g_buildActionTarget = nullptr;
+            }
+        } else {
+            g_buildActionTarget = nullptr;
+        }
     }
-    if (!candidate.match.ok) {
-        WriteRawLog("[Gate] BuildAction signature heuristic failed; forcing fallback candidate");
-    }
-    g_expectedVtable = g_moduleBase + Engine::Addresses::RVA_Vtbl_CastSpell;
-    g_buildActionTarget = reinterpret_cast<void*>(candidate.address);
-    if (MH_CreateHook(g_buildActionTarget,
-                      reinterpret_cast<LPVOID>(Hook_BuildAction),
-                      reinterpret_cast<LPVOID*>(&g_origBuildAction)) != MH_OK)
-        return;
-    if (MH_EnableHook(g_buildActionTarget) != MH_OK) {
-        g_origBuildAction = nullptr;
-        return;
+    auto enqueueAddr = g_moduleBase + Engine::Addresses::RVA_EnqueueAction;
+    if (enqueueAddr >= g_moduleBase && enqueueAddr < g_moduleBase + moduleSize) {
+        g_enqueueActionTarget = reinterpret_cast<void*>(enqueueAddr);
+        if (MH_CreateHook(g_enqueueActionTarget,
+                          reinterpret_cast<LPVOID>(Hook_EnqueueAction),
+                          reinterpret_cast<LPVOID*>(&g_origEnqueueAction)) == MH_OK) {
+            if (MH_EnableHook(g_enqueueActionTarget) != MH_OK) {
+                g_origEnqueueAction = nullptr;
+            } else {
+                char buf[160];
+                sprintf_s(buf, sizeof(buf), "[CastQueue] hook armed at %p", g_enqueueActionTarget);
+                WriteRawLog(buf);
+            }
+        }
     }
     g_nativeActive.store(true, std::memory_order_release);
     g_faultStreak.store(0, std::memory_order_release);
@@ -301,7 +414,13 @@ void Shutdown()
         MH_RemoveHook(g_buildActionTarget);
         g_buildActionTarget = nullptr;
     }
+    if (g_enqueueActionTarget) {
+        MH_DisableHook(g_enqueueActionTarget);
+        MH_RemoveHook(g_enqueueActionTarget);
+        g_enqueueActionTarget = nullptr;
+    }
     g_origBuildAction = nullptr;
+    g_origEnqueueAction = nullptr;
 }
 
 } // namespace Engine::CastFallback

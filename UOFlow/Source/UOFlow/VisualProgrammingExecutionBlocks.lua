@@ -85,9 +85,19 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     if UOWNativeLog then
         UOWNativeLog("[VPExec] action returned", tostring(block.id), tostring(block.type), "ok=" .. tostring(success), "result=" .. tostring(result), "timerWaiting=" .. tostring(VisualProgrammingInterface.ActionTimer.isWaiting))
     end
-    
+
+    local timerStarted = VisualProgrammingInterface.ActionTimer and VisualProgrammingInterface.ActionTimer.isWaiting
+
+    if not success and timerStarted then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] action promoted to async success", tostring(block.id), tostring(block.type), "result=" .. tostring(result))
+        end
+        Debug.Print("Action entered async wait; treating as started")
+        success = true
+    end
+
     -- If no timer was started or ActionTimer doesn't exist, clear the waiting flag
-    if not VisualProgrammingInterface.ActionTimer.isWaiting then
+    if not timerStarted then
         Debug.Print("No timer started for " .. block.type .. " [" .. block.id .. "]")
         self.waitingForTimer = false
     else

@@ -226,6 +226,59 @@ local function VPResolveSpellHelpers()
     return candidates, table.concat(details, " | ")
 end
 
+local function VPResolveCastSpellOnIdHelpers()
+    local env = nil
+    if type(getfenv) == "function" then
+        local value = getfenv(1)
+        if type(value) == "table" then
+            env = value
+        end
+    end
+
+    local globalTable = _G
+    if not globalTable and env and type(env._G) == "table" then
+        globalTable = env._G
+    end
+
+    local normalCastOnId = type(UserActionCastSpellOnId) == "function" and UserActionCastSpellOnId or nil
+    local normalUOFlowCastOnId = type(UOFlow) == "table" and type(UOFlow.Spell) == "table"
+        and type(UOFlow.Spell.cast_on_id) == "function" and UOFlow.Spell.cast_on_id or nil
+    local normalUOWCastOnId = type(UOW) == "table" and type(UOW.Spell) == "table"
+        and type(UOW.Spell.cast_on_id) == "function" and UOW.Spell.cast_on_id or nil
+    local rawEnvCastOnId = VPLookupRawFunction(env, "UserActionCastSpellOnId")
+    local rawGlobalCastOnId = VPLookupRawFunction(globalTable, "UserActionCastSpellOnId")
+    local rawEnvUOFlowCastOnId = VPLookupRawPath(env, "UOFlow", "Spell", "cast_on_id")
+    local rawGlobalUOFlowCastOnId = VPLookupRawPath(globalTable, "UOFlow", "Spell", "cast_on_id")
+    local rawEnvUOWCastOnId = VPLookupRawPath(env, "UOW", "Spell", "cast_on_id")
+    local rawGlobalUOWCastOnId = VPLookupRawPath(globalTable, "UOW", "Spell", "cast_on_id")
+
+    local candidates = {
+        { label = "UOFlow.Spell.cast_on_id(raw env)", fn = rawEnvUOFlowCastOnId },
+        { label = "UOFlow.Spell.cast_on_id(raw _G)", fn = rawGlobalUOFlowCastOnId },
+        { label = "UOW.Spell.cast_on_id(raw env)", fn = rawEnvUOWCastOnId },
+        { label = "UOW.Spell.cast_on_id(raw _G)", fn = rawGlobalUOWCastOnId },
+        { label = "UserActionCastSpellOnId(raw env)", fn = rawEnvCastOnId },
+        { label = "UserActionCastSpellOnId(raw _G)", fn = rawGlobalCastOnId },
+        { label = "UOFlow.Spell.cast_on_id", fn = normalUOFlowCastOnId },
+        { label = "UOW.Spell.cast_on_id", fn = normalUOWCastOnId },
+        { label = "UserActionCastSpellOnId", fn = normalCastOnId },
+    }
+
+    local details = {
+        VPDescribeCandidate("UOFlow.Spell.cast_on_id", normalUOFlowCastOnId),
+        VPDescribeCandidate("UOW.Spell.cast_on_id", normalUOWCastOnId),
+        VPDescribeCandidate("UserActionCastSpellOnId", normalCastOnId),
+        VPDescribeCandidate("UserActionCastSpellOnId(raw env)", rawEnvCastOnId),
+        VPDescribeCandidate("UserActionCastSpellOnId(raw _G)", rawGlobalCastOnId),
+        VPDescribeCandidate("UOFlow.Spell.cast_on_id(raw env)", rawEnvUOFlowCastOnId),
+        VPDescribeCandidate("UOFlow.Spell.cast_on_id(raw _G)", rawGlobalUOFlowCastOnId),
+        VPDescribeCandidate("UOW.Spell.cast_on_id(raw env)", rawEnvUOWCastOnId),
+        VPDescribeCandidate("UOW.Spell.cast_on_id(raw _G)", rawGlobalUOWCastOnId),
+    }
+
+    return candidates, table.concat(details, " | ")
+end
+
 local function VPIsProbablyCFunction(fn)
     if type(fn) ~= "function" then
         return false
@@ -293,7 +346,7 @@ local function VPQueuePendingNativeSpellcast(spellId, tag)
     return true, "queued_pending_native_cast"
 end
 
-local function VPCastSpell(spellId, tag)
+local function VPCastSpell(spellId, tag, targetId)
     local castFn = UserActionCastSpell
     local castLabel = "UserActionCastSpell"
     local helperSummary = nil
@@ -310,6 +363,57 @@ local function VPCastSpell(spellId, tag)
         Debug.Print("[VPSpell] helper candidates " .. helperSummary)
     end
     VPLogSpellState(tag .. ":before", spellId)
+
+    if targetId and tonumber(targetId) then
+        local onIdCandidates, onIdSummary = VPResolveCastSpellOnIdHelpers()
+        if UOWNativeLog then
+            UOWNativeLog("[VPSpell] cast onId begin", tostring(tag), "spell=" .. tostring(spellId), "target=" .. tostring(targetId))
+            if onIdSummary then
+                UOWNativeLog("[VPSpell] onId candidates", tostring(tag), onIdSummary)
+            end
+        end
+        if onIdSummary then
+            Debug.Print("[VPSpell] onId candidates " .. onIdSummary)
+        end
+        if onIdCandidates then
+            table.sort(onIdCandidates, function(a, b)
+                local aIsC = VPIsProbablyCFunction(a.fn)
+                local bIsC = VPIsProbablyCFunction(b.fn)
+                if aIsC ~= bIsC then
+                    return aIsC
+                end
+                return false
+            end)
+            for _, candidate in ipairs(onIdCandidates) do
+                if type(candidate.fn) == "function" then
+                    local beforeState = VPSnapshotSpellState()
+                    local ok, result1, result2 = VPInvokeFunction(candidate.fn, spellId, targetId)
+                    local stateChanged = VPDidSpellStateChange(beforeState)
+                    if UOWNativeLog then
+                        UOWNativeLog("[VPSpell] onId result",
+                            tostring(tag),
+                            "helper=" .. tostring(candidate.label),
+                            "ok=" .. tostring(ok),
+                            "result1=" .. tostring(result1),
+                            "result2=" .. tostring(result2),
+                            "stateChanged=" .. tostring(stateChanged))
+                    end
+                    Debug.Print(string.format(
+                        "[VPSpell] %s onId helper=%s ok=%s result1=%s result2=%s stateChanged=%s",
+                        VPValueToString(tag),
+                        VPValueToString(candidate.label),
+                        VPValueToString(ok),
+                        VPValueToString(result1),
+                        VPValueToString(result2),
+                        VPValueToString(stateChanged)))
+                    if ok and (result1 ~= nil or result2 ~= nil or stateChanged) then
+                        VPLogSpellState(tag .. ":after", spellId)
+                        return ok, result1, result2, true
+                    end
+                end
+            end
+        end
+    end
 
     if resolvedCandidates then
         table.sort(resolvedCandidates, function(a, b)
@@ -346,7 +450,7 @@ local function VPCastSpell(spellId, tag)
                     VPValueToString(stateChanged)))
                 if ok and (result1 ~= nil or result2 ~= nil or stateChanged) then
                     VPLogSpellState(tag .. ":after", spellId)
-                    return ok, result1, result2
+                    return ok, result1, result2, false
                 end
             end
         end
@@ -361,7 +465,7 @@ local function VPCastSpell(spellId, tag)
     local queuedOk, queuedResult = VPQueuePendingNativeSpellcast(spellId, tag)
     if queuedOk then
         VPLogSpellState(tag .. ":after", spellId)
-        return queuedOk, queuedResult
+        return queuedOk, queuedResult, nil, false
     end
 
     GameData.UseRequests.UseSpellcast = spellId
@@ -380,7 +484,7 @@ local function VPCastSpell(spellId, tag)
         VPValueToString(result),
         VPValueToString(fallbackFn)))
     VPLogSpellState(tag .. ":after", spellId)
-    return ok, result
+    return ok, result, nil, false
 end
 
 -- Initialize block types
@@ -475,7 +579,11 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 
                 -- Start casting the spell
                 Debug.Print("Starting spell cast")
-                VPCastSpell(spellId, "VisualProgramming.CastSpell")
+                local targetId = nil
+                if params.target == "self" and WindowData and WindowData.PlayerStatus then
+                    targetId = WindowData.PlayerStatus.PlayerId
+                end
+                local _, _, _, usedOnId = VPCastSpell(spellId, "VisualProgramming.CastSpell", targetId)
                 
                 -- Queue cast timer
                 Debug.Print("Starting cast sequence: " .. castTime .. "ms")
@@ -483,7 +591,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                     Debug.Print("Cast time complete")
                     
                     -- Handle targeting
-                    if params.target == "self" then
+                    if params.target == "self" and not usedOnId then
                         Debug.Print("Targeting self with PlayerId: " .. tostring(WindowData.PlayerStatus.PlayerId))
                         GameData.UseRequests.UseTarget = WindowData.PlayerStatus.PlayerId
                         -- Add a small delay between setting target and handling targeting
@@ -535,7 +643,11 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             local spellId = 29 -- Heal spell ID
             
             -- Start casting the spell
-            VPCastSpell(spellId, "VisualProgramming.HealSelf")
+            local targetId = nil
+            if WindowData and WindowData.PlayerStatus then
+                targetId = WindowData.PlayerStatus.PlayerId
+            end
+            local _, _, _, usedOnId = VPCastSpell(spellId, "VisualProgramming.HealSelf", targetId)
             
             -- Add casting delay based on spell speed
             local castTime = SpellsInfo.GetSpellSpeed(spellId) * 1000
@@ -551,22 +663,32 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 Debug.Print("Cast time complete")
                 
                 -- Set target and handle targeting in sequence
-                GameData.UseRequests.UseTarget = WindowData.PlayerStatus.PlayerId
-                -- Add a small delay between setting target and handling targeting
-                WaitTimer(50, function()
-                    HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
-                    Debug.Print("Self-targeting complete")
-                    
-                    -- Queue recovery timer after targeting completes
+                if not usedOnId then
+                    GameData.UseRequests.UseTarget = WindowData.PlayerStatus.PlayerId
+                    -- Add a small delay between setting target and handling targeting
+                    WaitTimer(50, function()
+                        HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
+                        Debug.Print("Self-targeting complete")
+                        
+                        -- Queue recovery timer after targeting completes
+                        Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
+                        WaitTimer(recoveryTime, function()
+                            Debug.Print("Recovery time complete")
+                            VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                            return true -- Complete recovery timer
+                        end, recoveryQueueId)
+                        
+                        return true
+                    end, castQueueId .. "_target")
+                else
+                    Debug.Print("Skipping manual target (CastSpellOnId path)")
                     Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
                     WaitTimer(recoveryTime, function()
                         Debug.Print("Recovery time complete")
                         VisualProgrammingInterface.ActionTimer:notifyCompletion()
                         return true -- Complete recovery timer
                     end, recoveryQueueId)
-                    
-                    return true
-                end, castQueueId .. "_target")
+                end
                 
                 return true
             end, castQueueId)

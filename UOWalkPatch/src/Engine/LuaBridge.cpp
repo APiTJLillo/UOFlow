@@ -1412,6 +1412,17 @@ static void LogLateWrapAttempt(void* ctx, bool globalsSeen)
 
 static constexpr uint32_t kRequiredCastWrapperBits = kWrapperCastSpell | kWrapperCastSpellOnId;
 
+__declspec(noinline) static uint8_t ReadActionGateByte()
+{
+    uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    uintptr_t gateAddr = base + 0x00A3D540 + 0x5C2;
+    __try {
+        return *reinterpret_cast<uint8_t*>(gateAddr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0xFF;
+    }
+}
+
 static bool HavePrimaryCastWrappers()
 {
     uint32_t mask = g_actionWrapperMask.load(std::memory_order_acquire);
@@ -7238,11 +7249,12 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
     DWORD tid = GetCurrentThreadId();
     const bool ownerMatch = (scriptCtx != nullptr && ownerCtx != nullptr && scriptCtx == ownerCtx);
 
+    uint8_t gateValue = ReadActionGateByte();
     char intro[256];
     sprintf_s(intro, sizeof(intro),
-        "[Lua] UserActionCastSpell() wrapper invoked tok=%u spell=%d ctx=%p owner=%p tid=%u ownerTid=%u sincePrev=%u sinceLastSuccess=%u ownerMatch=%s",
+        "[Lua] UserActionCastSpell() wrapper invoked tok=%u spell=%d ctx=%p owner=%p tid=%u ownerTid=%u sincePrev=%u sinceLastSuccess=%u ownerMatch=%s gate=%u",
         token, spellId, scriptCtx, ownerCtx, tid, ownerTid,
-        sincePrevAttempt, sinceLastSuccess, ownerMatch ? "yes" : "no");
+        sincePrevAttempt, sinceLastSuccess, ownerMatch ? "yes" : "no", static_cast<unsigned>(gateValue));
     WriteRawLog(intro);
 
     Trace::MarkAction("CastSpell");
@@ -7401,8 +7413,9 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
                   tok);
         WriteRawLog(buf);
     }
+    uint8_t gateValue = ReadActionGateByte();
     char intro[192];
-    sprintf_s(intro, sizeof(intro), "[Lua] UserActionCastSpellOnId() wrapper invoked tok=%u spell=%d target=%d", tok, spellId, targetId);
+    sprintf_s(intro, sizeof(intro), "[Lua] UserActionCastSpellOnId() wrapper invoked tok=%u spell=%d target=%d gate=%u", tok, spellId, targetId, static_cast<unsigned>(gateValue));
     WriteRawLog(intro);
     Trace::MarkAction("CastSpellOnId");
     DumpStackTag("CastSpellOnId");
@@ -8369,10 +8382,7 @@ static void MaybeLogLiveSpellBindings(lua_State* L, const char* tag, DWORD minIn
     LogLuaFunctionBinding(L, tag ? tag : "live", "uow_debug_log");
 
     if (InterlockedCompareExchange(&s_probeOnce, 1, 0) == 0) {
-        InvokeLuaPathProbe(L, "uow_debug_log", "liveProbe/uow_debug_log", false, 0, "__live_probe__");
-        InvokeLuaPathProbe(L, "uow_spell_cast", "liveProbe/uow_spell_cast", true, 0, nullptr);
-        InvokeLuaPathProbe(L, "UOFlow.Spell.cast", "liveProbe/UOFlow.Spell.cast", true, 0, nullptr);
-        InvokeLuaPathProbe(L, "UserActionCastSpell", "liveProbe/UserActionCastSpell", true, 0, nullptr);
+        WriteRawLog("[LuaBind] live probe: side-effecting function calls disabled");
     }
 }
 
@@ -9038,6 +9048,30 @@ void PollLateInstalls()
             if (const auto* info = Engine::Info()) {
                 if (info->scriptContext)
                     MaybeUpdateOwnerContext(info->scriptContext);
+            }
+            static DWORD s_lastPendingProbeTick = 0;
+            if (now - s_lastPendingProbeTick >= 1000) {
+                int top = lua_gettop(L);
+                int pendingSpell = 0;
+                lua_getglobal(L, "uow_pending_spellcast");
+                if (lua_type(L, -1) == LUA_TNUMBER) {
+                    lua_Integer v = lua_tointeger(L, -1);
+                    if (v > 0)
+                        pendingSpell = static_cast<int>(v);
+                }
+                lua_pop(L, 1);
+                char probe[192];
+                sprintf_s(probe,
+                          sizeof(probe),
+                          "[PollLateInstalls] pending probe spell=%d owner=%u",
+                          pendingSpell,
+                          Util::OwnerPump::GetOwnerThreadId());
+                WriteRawLog(probe);
+                lua_settop(L, top);
+                s_lastPendingProbeTick = now;
+            }
+            if (TryConsumePendingSpellRequest(L, "poller")) {
+                WriteRawLog("[PollLateInstalls] consumed pending spell request");
             }
         }
     }
