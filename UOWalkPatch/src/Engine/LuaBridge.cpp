@@ -2227,6 +2227,27 @@ static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
     if (!ctx)
         return;
 
+    ObservedContext* slot = FindObservedContext(ctx);
+    if (!slot)
+        return;
+    if ((slot->flags & kGameplayContextMask) != kGameplayContextMask) {
+        static DWORD s_nextCoreWaitLogTick = 0;
+        DWORD now = GetTickCount();
+        if (now >= s_nextCoreWaitLogTick) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[Bootstrap] deferred ctx=%p via=%s flags=0x%X missing_core=0x%X",
+                      ctx,
+                      reason ? reason : "<none>",
+                      slot->flags,
+                      (kGameplayContextMask & ~slot->flags));
+            WriteRawLog(buf);
+            s_nextCoreWaitLogTick = now + 1000;
+        }
+        return;
+    }
+
     DWORD now = GetTickCount();
     DWORD nextTick = g_bootstrapNextAttemptTick.load(std::memory_order_acquire);
     if (now < nextTick)
@@ -2240,8 +2261,7 @@ static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
         return;
 
     MaybeUpdateOwnerContext(ctx);
-    if (ObservedContext* slot = EnsureObservedContext(ctx))
-        UpdateObservedContextLuaState(slot, L, reason);
+    UpdateObservedContextLuaState(slot, L, reason);
     NoteBootstrapContextObserved(ctx, L, reason);
     if (!IsGameplayContext(ctx, L, reason, true))
         return;
@@ -2260,7 +2280,7 @@ static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
             return;
 
         MaybeUpdateOwnerContext(ctx);
-        if (ObservedContext* slot = EnsureObservedContext(ctx))
+        if (ObservedContext* slot = FindObservedContext(ctx))
             UpdateObservedContextLuaState(slot, L, "early_bootstrap");
         if (!IsGameplayContext(ctx, L, "early_bootstrap", true))
             return;
@@ -5459,7 +5479,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
 
     int rc = g_clientRegister ? g_clientRegister(ctx, outFunc, name) : 0;
 
-    if (ctx) {
+    if (ctx && slot && ((slot->flags & kGameplayContextMask) == kGameplayContextMask)) {
         MaybeRunEarlyBootstrap(ctx, name ? name : "Hook_Register");
     }
 
