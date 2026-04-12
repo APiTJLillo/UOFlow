@@ -624,6 +624,21 @@ local function VPResolveNativeGlobalFunction(name)
         return nil, nil, "native_global_missing name=" .. VPValueToString(name)
     end
 
+    local direct = nil
+    if type(_G) == "table" then
+        direct = rawget(_G, name)
+    end
+    if type(direct) ~= "function" then
+        if name == VP_NATIVE_CALL_CAST_NAME and type(__uow_call_cast_v1) == "function" then
+            direct = __uow_call_cast_v1
+        elseif name == VP_NATIVE_IS_CFUNC_NAME and type(__uow_is_cfunc_v1) == "function" then
+            direct = __uow_is_cfunc_v1
+        end
+    end
+    if type(direct) == "function" then
+        return direct, "direct", nil
+    end
+
     local env = nil
     if type(getfenv) == "function" then
         env = getfenv(1)
