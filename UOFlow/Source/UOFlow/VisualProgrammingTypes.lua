@@ -1152,6 +1152,9 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             return false
         end,
         execute = function(params)
+            VPNativeLog("[VP_CAST_NODE] ENTER",
+                "requested=" .. tostring(params and params.spellId),
+                "target=" .. tostring(params and params.target))
             Debug.Print("Executing Cast Spell action")
             local callContext = VPBuildCallContext(params, "VisualProgramming.CastSpell")
             VPNativeLog("[VPSpell] execute", "block=" .. tostring(callContext.blockId), "requested=" .. tostring(params.spellId), "target=" .. tostring(params.target), "ctx=" .. tostring(callContext.executionTag))

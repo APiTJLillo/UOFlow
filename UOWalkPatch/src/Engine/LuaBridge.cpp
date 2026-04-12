@@ -5571,16 +5571,13 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
               tag);
     WriteRawLog(intro);
 
-    // Evaluator-domain probes are intentionally flat globals only.
-    // This callback domain does not reliably expose a gameplay lua_State*.
+    // Evaluator-domain registration must stay minimal.
+    // 783e345 proved a single DummyPrint callback is safe here.
+    // Additional raw callbacks appear to destabilize the client's
+    // internal registration structures during world load.
     bool dummyOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_DummyPrint_Std), "DummyPrint");
-    bool debugFlatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Debug_log_Std), "uow_debug_log");
-    bool debugCompatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Debug_log_Std), "__uow_debug_log_v1");
-    bool logTestFlatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Log_test_Std), "uow_log_test");
-    bool logTestCompatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Log_test_Std), "__uow_log_test_v1");
-    bool castCompatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_uow_call_cast_Std), "__uow_call_cast_v1");
 
-    if (dummyOk && (debugFlatOk || debugCompatOk) && (logTestFlatOk || logTestCompatOk)) {
+    if (dummyOk) {
         slot->flags |= kCtxEvaluatorProbesBound;
         char okBuf[256];
         sprintf_s(okBuf,
@@ -5588,9 +5585,9 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
                   "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s cast=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
-                  (debugFlatOk || debugCompatOk) ? "yes" : "no",
-                  (logTestFlatOk || logTestCompatOk) ? "yes" : "no",
-                  castCompatOk ? "yes" : "no");
+                  "disabled",
+                  "disabled",
+                  "disabled");
         WriteRawLog(okBuf);
     } else {
         char failBuf[256];
@@ -5599,9 +5596,9 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
                   "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s cast=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
-                  (debugFlatOk || debugCompatOk) ? "yes" : "no",
-                  (logTestFlatOk || logTestCompatOk) ? "yes" : "no",
-                  castCompatOk ? "yes" : "no");
+                  "disabled",
+                  "disabled",
+                  "disabled");
         WriteRawLog(failBuf);
     }
 }

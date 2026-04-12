@@ -53,26 +53,80 @@ function VisualProgrammingInterface.Actions:execute(type, params)
     return success
 end
 
+local function VPUIResolveNativeLog()
+    if type(__uow_debug_log_v1) == "function" then
+        return __uow_debug_log_v1
+    end
+    if type(UOWNativeLog) == "function" then
+        return UOWNativeLog
+    end
+    if type(uow_debug_log) == "function" then
+        return uow_debug_log
+    end
+    if type(_G) == "table" then
+        local rawNative = rawget(_G, "__uow_debug_log_v1")
+        if type(rawNative) == "function" then
+            return rawNative
+        end
+        local rawCompat = rawget(_G, "uow_debug_log")
+        if type(rawCompat) == "function" then
+            return rawCompat
+        end
+    end
+    if type(UOW) == "table" and type(UOW.Debug) == "table" and type(UOW.Debug.Log) == "function" then
+        return UOW.Debug.Log
+    end
+    return nil
+end
+
+local function VPUIEmitNativeLog(...)
+    local logFn = VPUIResolveNativeLog()
+    if type(logFn) ~= "function" then
+        return
+    end
+
+    local parts = {}
+    for index = 1, select("#", ...) do
+        parts[index] = tostring(select(index, ...))
+    end
+    logFn(table.concat(parts, " "))
+end
+
+local function VPUITrace(err)
+    local message = tostring(err)
+    if type(debug) == "table" and type(debug.traceback) == "function" then
+        message = debug.traceback(message, 2)
+    end
+    VPUIEmitNativeLog("[VPUI][ERROR] " .. tostring(message))
+    return message
+end
+
 -- Handle test flow button click
 function OnTestFlowClick()
     -- Forward to the interface handler
     if Debug and type(Debug.Print) == "function" then
         Debug.Print("[VPUI] Test clicked")
     end
-    if UOWNativeLog then
-        UOWNativeLog("[VPUI] OnTestFlowClick")
-    end
+    VPUIEmitNativeLog("[VPUI] OnTestFlowClick")
     if VisualProgrammingInterface and VisualProgrammingInterface.Execution then
-        local success, results = VisualProgrammingInterface.Execution:testFlow()
-        if UOWNativeLog then
-            UOWNativeLog("[VPUI] testFlow direct", "success=" .. tostring(success), "resultsType=" .. type(results))
+        local ok, success, results = xpcall(function()
+            local flowSuccess, flowResults = VisualProgrammingInterface.Execution:testFlow()
+            return flowSuccess, flowResults
+        end, VPUITrace)
+        VPUIEmitNativeLog(
+            "[VPUI] testFlow xpcall",
+            "ok=" .. tostring(ok),
+            "success=" .. tostring(success),
+            "resultsType=" .. type(results))
+
+        if not ok then
+            Debug.Print("Flow test exception: " .. tostring(success))
+            return
         end
 
         if success then
             if results.success then
-                if UOWNativeLog then
-                    UOWNativeLog("[VPUI] results.success", "executionOrder=" .. table.concat(results.executionOrder or {}, ","))
-                end
+                VPUIEmitNativeLog("[VPUI] results.success", "executionOrder=" .. table.concat(results.executionOrder or {}, ","))
                 Debug.Print("Flow test completed successfully")
                 Debug.Print("Execution order: " .. table.concat(results.executionOrder, ", "))
                 
@@ -85,21 +139,15 @@ function OnTestFlowClick()
                     ))
                 end
             else
-                if UOWNativeLog then
-                    UOWNativeLog("[VPUI] flow test failed", tostring(results.error))
-                end
+                VPUIEmitNativeLog("[VPUI] flow test failed", tostring(results.error))
                 Debug.Print("Flow test failed: " .. (results.error or "Unknown error"))
             end
         else
-            if UOWNativeLog then
-                UOWNativeLog("[VPUI] could not start flow test", tostring(results))
-            end
+            VPUIEmitNativeLog("[VPUI] could not start flow test", tostring(results))
             Debug.Print("Could not start flow test: " .. (results or "Unknown error"))
         end
     else
-        if UOWNativeLog then
-            UOWNativeLog("[VPUI] execution system missing")
-        end
+        VPUIEmitNativeLog("[VPUI] execution system missing")
         Debug.Print("Error: Execution system not initialized")
     end
 end
