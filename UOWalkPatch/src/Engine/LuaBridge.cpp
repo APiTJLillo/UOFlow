@@ -109,6 +109,8 @@ namespace {
     };
     static constexpr unsigned kGameplayContextMask =
         kCtxHasCastSpell | kCtxHasRequestTargetInfo | kCtxHasClearCurrentTarget;
+    static constexpr unsigned kGameplayBootstrapRequiredMask =
+        kCtxHasRequestTargetInfo | kCtxHasClearCurrentTarget;
     static constexpr DWORD kGameplayLuaStableMs = 400;
 
     static volatile LONG g_pendingRegistration = 0;
@@ -120,6 +122,7 @@ namespace {
     static std::atomic<DWORD> g_bootstrapNextAttemptTick{0};
     static std::atomic<void*> g_bootstrapReadyContext{nullptr};
     static std::atomic<uintptr_t> g_bootstrapReadyLuaState{0};
+    static std::atomic<uint32_t> g_bootstrapCastBypassLoggedEpoch{0};
 
     // Late-install control for action wrappers
     static volatile LONG g_actionWrappersInstalled = 0;
@@ -609,6 +612,7 @@ static void UpdateObservedContextGameplayFlags(ObservedContext* slot, const char
 static void UpdateObservedContextLuaState(ObservedContext* slot, lua_State* L, const char* reason);
 static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool verbose = false);
 static bool IsBootstrapReadyFor(void* ctx, lua_State* L);
+static bool HasResolvedCastCapability();
 static bool IsGameplayLuaReady(lua_State* L, const char* reason);
 static bool ResolveGameplayScriptContext(lua_State* L,
                                          void* preferredCtx,
@@ -1976,14 +1980,16 @@ static void UpdateObservedContextGameplayFlags(ObservedContext* slot, const char
         return;
 
     slot->flags |= add;
-    if (slot->coreReadyTick == 0 && (slot->flags & kGameplayContextMask) == kGameplayContextMask) {
+    if (slot->coreReadyTick == 0 && (slot->flags & kGameplayBootstrapRequiredMask) == kGameplayBootstrapRequiredMask) {
         slot->coreReadyTick = GetTickCount();
-        char buf[224];
+        char buf[256];
         sprintf_s(buf,
                   sizeof(buf),
-                  "[GameplayCtx] core funcs ready ctx=%p flags=0x%X",
+                  "[GameplayCtx] core funcs ready ctx=%p flags=0x%X cast_observed=%d cast_origin_resolved=%d",
                   slot->ctx,
-                  slot->flags);
+                  slot->flags,
+                  (slot->flags & kCtxHasCastSpell) ? 1 : 0,
+                  HasResolvedCastCapability() ? 1 : 0);
         WriteRawLog(buf);
     }
 }
@@ -2024,6 +2030,16 @@ static bool IsBootstrapReadyFor(void* ctx, lua_State* L)
            g_bootstrapReadyLuaState.load(std::memory_order_acquire) == reinterpret_cast<uintptr_t>(L);
 }
 
+static bool HasResolvedCastCapability()
+{
+    return g_origCastSpell != nullptr ||
+           g_origCastSpellOnId != nullptr ||
+           g_origUserActionCastSpell != nullptr ||
+           g_origUserActionCastSpellOnId != nullptr ||
+           g_castSpellRegistryRef != LUA_NOREF ||
+           g_castSpellOnIdRegistryRef != LUA_NOREF;
+}
+
 static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool verbose)
 {
     if (!ctx || !L)
@@ -2037,7 +2053,7 @@ static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool 
 
     const DWORD now = GetTickCount();
     const unsigned flags = slot->flags;
-    const unsigned missingMask = (kGameplayContextMask & ~flags);
+    const unsigned missingMask = (kGameplayBootstrapRequiredMask & ~flags);
     if (missingMask != 0) {
         static DWORD s_nextMissingCoreLogTick = 0;
         if (verbose && now >= s_nextMissingCoreLogTick) {
@@ -2227,10 +2243,26 @@ static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
     if (!ctx)
         return;
 
+    if (g_inScriptRegistration) {
+        static DWORD s_nextRegisterLogTick = 0;
+        DWORD now = GetTickCount();
+        if (now >= s_nextRegisterLogTick) {
+            char buf[224];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[Bootstrap] postponed ctx=%p via=%s reason=in_register_callback",
+                      ctx,
+                      reason ? reason : "<none>");
+            WriteRawLog(buf);
+            s_nextRegisterLogTick = now + 1000;
+        }
+        return;
+    }
+
     ObservedContext* slot = FindObservedContext(ctx);
     if (!slot)
         return;
-    if ((slot->flags & kGameplayContextMask) != kGameplayContextMask) {
+    if ((slot->flags & kGameplayBootstrapRequiredMask) != kGameplayBootstrapRequiredMask) {
         static DWORD s_nextCoreWaitLogTick = 0;
         DWORD now = GetTickCount();
         if (now >= s_nextCoreWaitLogTick) {
@@ -2241,14 +2273,68 @@ static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
                       ctx,
                       reason ? reason : "<none>",
                       slot->flags,
-                      (kGameplayContextMask & ~slot->flags));
+                      (kGameplayBootstrapRequiredMask & ~slot->flags));
             WriteRawLog(buf);
             s_nextCoreWaitLogTick = now + 1000;
         }
         return;
     }
 
+    if ((slot->flags & kCtxHasCastSpell) == 0) {
+        const uint32_t epoch = g_bootstrapEpoch.load(std::memory_order_acquire);
+        uint32_t expected = g_bootstrapCastBypassLoggedEpoch.load(std::memory_order_acquire);
+        if (expected != epoch &&
+            g_bootstrapCastBypassLoggedEpoch.compare_exchange_strong(expected, epoch, std::memory_order_acq_rel)) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[Bootstrap] proceeding without register-observed cast flag; cast origin resolved=%s ctx=%p flags=0x%X",
+                      HasResolvedCastCapability() ? "yes" : "no",
+                      ctx,
+                      slot->flags);
+            WriteRawLog(buf);
+        }
+    }
+
     DWORD now = GetTickCount();
+    if (slot->coreReadyTick == 0 || now < slot->coreReadyTick || (now - slot->coreReadyTick) < kGameplayLuaStableMs) {
+        static DWORD s_nextCoreStableLogTick = 0;
+        if (now >= s_nextCoreStableLogTick) {
+            const DWORD elapsed = (slot->coreReadyTick == 0 || now < slot->coreReadyTick) ? 0 : (now - slot->coreReadyTick);
+            const DWORD remaining = (elapsed >= kGameplayLuaStableMs) ? 0 : (kGameplayLuaStableMs - elapsed);
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[Bootstrap] waiting ctx=%p via=%s core_stable_for=%lu remaining=%lu",
+                      ctx,
+                      reason ? reason : "<none>",
+                      static_cast<unsigned long>(elapsed),
+                      static_cast<unsigned long>(remaining));
+            WriteRawLog(buf);
+            s_nextCoreStableLogTick = now + 1000;
+        }
+        return;
+    }
+
+    const uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+    const uint32_t callerTid = GetCurrentThreadId();
+    if (ownerTid == 0 || ownerTid != callerTid) {
+        static DWORD s_nextOwnerWaitLogTick = 0;
+        if (now >= s_nextOwnerWaitLogTick) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[Bootstrap] waiting ctx=%p via=%s owner_tid=%u caller_tid=%u",
+                      ctx,
+                      reason ? reason : "<none>",
+                      ownerTid,
+                      callerTid);
+            WriteRawLog(buf);
+            s_nextOwnerWaitLogTick = now + 1000;
+        }
+        return;
+    }
+
     DWORD nextTick = g_bootstrapNextAttemptTick.load(std::memory_order_acquire);
     if (now < nextTick)
         return;
@@ -5207,6 +5293,11 @@ static bool ResolveRegisterFunction()
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
 {
+    struct ScriptRegistrationScope {
+        ScriptRegistrationScope() { g_inScriptRegistration = true; }
+        ~ScriptRegistrationScope() { g_inScriptRegistration = false; }
+    } registrationScope;
+
     auto containsWalk = [](const char* str) -> bool {
         if (!str) {
             return false;
@@ -5248,6 +5339,25 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
 
     if (slot && name)
         UpdateObservedContextGameplayFlags(slot, name);
+
+    if (ctx && slot && ((slot->flags & kGameplayBootstrapRequiredMask) == kGameplayBootstrapRequiredMask)) {
+        g_ownerScriptContext.store(ctx, std::memory_order_release);
+        g_clientContext = ctx;
+        const uint32_t currentTid = GetCurrentThreadId();
+        uint32_t ownerTid = g_ownerThreadId.load(std::memory_order_acquire);
+        if (ownerTid == 0) {
+            g_ownerThreadId.store(currentTid, std::memory_order_release);
+            Util::OwnerPump::SetOwnerThreadId(currentTid);
+            char ownerBuf[224];
+            sprintf_s(ownerBuf,
+                      sizeof(ownerBuf),
+                      "[GameplayOwner] provisional owner from register ctx=%p tid=%u flags=0x%X",
+                      ctx,
+                      currentTid,
+                      slot->flags);
+            WriteRawLog(ownerBuf);
+        }
+    }
 
     unsigned flag = 0;
     if (name) {
@@ -5479,7 +5589,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
 
     int rc = g_clientRegister ? g_clientRegister(ctx, outFunc, name) : 0;
 
-    if (ctx && slot && ((slot->flags & kGameplayContextMask) == kGameplayContextMask)) {
+    if (ctx && slot && ((slot->flags & kGameplayBootstrapRequiredMask) == kGameplayBootstrapRequiredMask)) {
         MaybeRunEarlyBootstrap(ctx, name ? name : "Hook_Register");
     }
 
