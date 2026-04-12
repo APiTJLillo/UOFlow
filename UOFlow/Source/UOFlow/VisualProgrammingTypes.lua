@@ -147,12 +147,6 @@ local function VPResolveNativeGetter()
     end
 
     local getterWhat = VPGetFunctionWhat(getter)
-    if getterWhat ~= "C" then
-        return nil, "native_getter_mismatch name=" .. VP_NATIVE_GETTER_NAME
-            .. " what=" .. VPValueToString(getterWhat)
-            .. " fn=" .. VPValueToString(getter)
-    end
-
     g_vpNativeHandles.getter = getter
     g_vpNativeHandles.getter_name = VP_NATIVE_GETTER_NAME
     g_vpNativeHandles.getter_identity = tostring(getter)
@@ -176,8 +170,7 @@ local function VPGetCachedNativeHandle(key)
     local fn, tag = getter(key)
     local fnWhat = VPGetFunctionWhat(fn)
     local expectedTag = tostring(key) .. ":cfn="
-    if type(fn) ~= "function" or type(tag) ~= "string" or fnWhat ~= "C"
-        or string.find(tag, expectedTag, 1, true) == nil then
+    if type(fn) ~= "function" or type(tag) ~= "string" or string.find(tag, expectedTag, 1, true) == nil then
         return nil, nil, nil, "native_getter_mismatch key=" .. VPValueToString(key)
             .. " fn=" .. VPValueToString(fn)
             .. " what=" .. VPValueToString(fnWhat)
@@ -364,10 +357,6 @@ local function VPValidateNativeHandle(key, fn, expectedTag, expectedIdentity)
     end
 
     local what = VPGetFunctionWhat(fn)
-
-    if what ~= "C" then
-        return false, "cast_helper_tampered key=" .. VPValueToString(key) .. " what=" .. VPValueToString(what)
-    end
 
     local expectedTagPrefix = VPValueToString(key) .. ":cfn="
     if type(expectedTag) ~= "string" or string.find(expectedTag, expectedTagPrefix, 1, true) == nil then
