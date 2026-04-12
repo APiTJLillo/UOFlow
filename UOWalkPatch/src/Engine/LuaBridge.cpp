@@ -1287,6 +1287,17 @@ static void InstallNativeBridgeTable(lua_State* L, const char* reason)
         lua_pushvalue(L, backingIndex);
         lua_setglobal(L, "__uow_native_bridge_v1");
 
+        lua_getglobal(L, "uow");
+        if (lua_type(L, -1) != LUA_TTABLE) {
+            lua_pop(L, 1);
+            lua_createtable(L, 0, 0);
+            lua_pushvalue(L, -1);
+            lua_setglobal(L, "uow");
+        }
+        lua_pushvalue(L, backingIndex);
+        lua_setfield(L, -2, "__native_bridge_v1");
+        lua_pop(L, 1);
+
         char buf[320];
         sprintf_s(buf,
                   sizeof(buf),
@@ -1524,6 +1535,11 @@ static void LogSpellHelperBindings(lua_State* L, const char* stage)
         "__uow_native_bridge_v1.vp_ping",
         "__uow_native_bridge_v1.debug",
         "__uow_native_bridge_v1.health",
+        "uow.__native_bridge_v1.get",
+        "uow.__native_bridge_v1.vp_cast",
+        "uow.__native_bridge_v1.vp_ping",
+        "uow.__native_bridge_v1.debug",
+        "uow.__native_bridge_v1.health",
         "__uow_native_get_v1",
         "__uow_bridge_health_v1",
         "__uow_vp_cast_v1",

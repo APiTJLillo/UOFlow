@@ -65,13 +65,39 @@ local function VPGetLuaContextTag()
     return "<nil>"
 end
 
-local function ResolveNativeLog()
-    if type(_G) == "table" then
-        local bridge = rawget(_G, "__uow_native_bridge_v1")
-        local bridgeDebug = type(bridge) == "table" and rawget(bridge, "debug") or nil
-        if type(bridgeDebug) == "function" then
-            return bridgeDebug
+local function ResolveNativeBridgeTableRoot()
+    local bridge = nil
+
+    if type(__uow_native_bridge_v1) == "table" then
+        bridge = __uow_native_bridge_v1
+    end
+
+    if type(bridge) ~= "table" and type(_G) == "table" then
+        bridge = rawget(_G, "__uow_native_bridge_v1")
+    end
+
+    if type(bridge) ~= "table" and type(getfenv) == "function" then
+        local env = getfenv(1)
+        if type(env) == "table" then
+            bridge = rawget(env, "__uow_native_bridge_v1")
+            if type(bridge) ~= "table" and type(env._G) == "table" then
+                bridge = rawget(env._G, "__uow_native_bridge_v1")
+            end
         end
+    end
+
+    if type(bridge) ~= "table" and type(uow) == "table" then
+        bridge = rawget(uow, "__native_bridge_v1")
+    end
+
+    return bridge
+end
+
+local function ResolveNativeLog()
+    local bridge = ResolveNativeBridgeTableRoot()
+    local bridgeDebug = type(bridge) == "table" and rawget(bridge, "debug") or nil
+    if type(bridgeDebug) == "function" then
+        return bridgeDebug
     end
     if type(_G) == "table" then
         local rawNativeLog = rawget(_G, "__uow_debug_log_v1")
@@ -140,11 +166,7 @@ local function VPGetFunctionWhat(fn)
 end
 
 local function VPResolveNativeBridgeTable()
-    if type(_G) ~= "table" then
-        return nil, "native_bridge_missing name=" .. VP_NATIVE_BRIDGE_NAME
-    end
-
-    local bridge = rawget(_G, VP_NATIVE_BRIDGE_NAME)
+    local bridge = ResolveNativeBridgeTableRoot()
     if type(bridge) ~= "table" then
         return nil, "native_bridge_missing name=" .. VP_NATIVE_BRIDGE_NAME
     end
