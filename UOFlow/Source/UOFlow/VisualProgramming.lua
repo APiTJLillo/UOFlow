@@ -92,37 +92,20 @@ local function VPUIEmitNativeLog(...)
     logFn(table.concat(parts, " "))
 end
 
-local function VPUITrace(err)
-    local message = tostring(err)
-    if type(debug) == "table" and type(debug.traceback) == "function" then
-        message = debug.traceback(message, 2)
-    end
-    VPUIEmitNativeLog("[VPUI][ERROR] " .. tostring(message))
-    return message
-end
-
 -- Handle test flow button click
 function OnTestFlowClick()
     -- Forward to the interface handler
     if Debug and type(Debug.Print) == "function" then
         Debug.Print("[VPUI] Test clicked")
     end
-    VPUIEmitNativeLog("[VPUI] OnTestFlowClick")
+    VPUIEmitNativeLog("[VPUI] OnTestFlowClick ENTER")
     if VisualProgrammingInterface and VisualProgrammingInterface.Execution then
-        local ok, success, results = xpcall(function()
-            local flowSuccess, flowResults = VisualProgrammingInterface.Execution:testFlow()
-            return flowSuccess, flowResults
-        end, VPUITrace)
+        VPUIEmitNativeLog("[VPUI] testFlow BEFORE")
+        local success, results = VisualProgrammingInterface.Execution:testFlow()
         VPUIEmitNativeLog(
-            "[VPUI] testFlow xpcall",
-            "ok=" .. tostring(ok),
+            "[VPUI] testFlow AFTER",
             "success=" .. tostring(success),
             "resultsType=" .. type(results))
-
-        if not ok then
-            Debug.Print("Flow test exception: " .. tostring(success))
-            return
-        end
 
         if success then
             if results.success then
