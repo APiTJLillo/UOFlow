@@ -1039,10 +1039,23 @@ static int __cdecl Lua_uow_is_cfunc(lua_State* L)
 
 static int __cdecl Lua_uow_call_cast(lua_State* L)
 {
+    WriteRawLog("[Lua] CALL_CAST_V1 ENTER");
+
     int spellId = 0;
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     const std::string sourceTag = ReadOptionalString(L, 2);
+    {
+        char dbg[256];
+        sprintf_s(dbg, sizeof(dbg),
+                  "[Lua] CALL_CAST_V1 ARGS top=%d spell=%d caller=%u owner=%u L=%p",
+                  L ? lua_gettop(L) : -1,
+                  spellId,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId(),
+                  L);
+        WriteRawLog(dbg);
+    }
 
     char enter[256];
     sprintf_s(enter,
