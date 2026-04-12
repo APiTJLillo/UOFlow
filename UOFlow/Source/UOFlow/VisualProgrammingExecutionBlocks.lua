@@ -80,8 +80,16 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     -- Set waiting flag before execution
     self.waitingForTimer = true
     
+    local runtimeParams = {}
+    for key, value in pairs(block.params or {}) do
+        runtimeParams[key] = value
+    end
+    runtimeParams.__vpBlockId = block.id
+    runtimeParams.__vpBlockType = block.type
+    runtimeParams.__vpExecutionTag = "VP:block=" .. tostring(block.id) .. ":type=" .. tostring(block.type)
+
     Debug.Print("Executing action for block " .. block.id)
-    success, result = VisualProgrammingInterface.Actions:execute(block.type, block.params)
+    success, result = VisualProgrammingInterface.Actions:execute(block.type, runtimeParams)
     if UOWNativeLog then
         UOWNativeLog("[VPExec] action returned", tostring(block.id), tostring(block.type), "ok=" .. tostring(success), "result=" .. tostring(result), "timerWaiting=" .. tostring(VisualProgrammingInterface.ActionTimer.isWaiting))
     end

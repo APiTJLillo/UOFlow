@@ -41,6 +41,117 @@ local function VPValueToString(value)
     return tostring(value)
 end
 
+local function VPGetLuaContextTag()
+    local env = nil
+    if type(getfenv) == "function" then
+        env = getfenv(1)
+    end
+
+    if type(env) == "table" then
+        local tagged = rawget(env, "__uow_context_tag")
+        if tagged ~= nil then
+            return tostring(tagged)
+        end
+        return tostring(env)
+    end
+
+    if type(_G) == "table" then
+        local tagged = rawget(_G, "__uow_context_tag")
+        if tagged ~= nil then
+            return tostring(tagged)
+        end
+    end
+
+    return "<nil>"
+end
+
+local function VPEmitUiLog(message)
+    local text = VPValueToString(message)
+    if UOWNativeLog then
+        UOWNativeLog(text)
+    end
+    if type(Debug) == "table" and type(Debug.Print) == "function" then
+        Debug.Print(text)
+    end
+end
+
+local function VPBuildCallContext(params, fallbackTag)
+    local blockId = params and params.__vpBlockId or nil
+    local blockType = params and params.__vpBlockType or nil
+    local executionTag = params and params.__vpExecutionTag or nil
+    if not executionTag then
+        executionTag = "VP:block=" .. tostring(blockId) .. ":type=" .. tostring(blockType or fallbackTag)
+    end
+
+    return {
+        blockId = blockId,
+        blockType = blockType,
+        executionTag = executionTag,
+        luaContextTag = VPGetLuaContextTag()
+    }
+end
+
+local function VPBuildCastSourceTag(tag, callContext, helperLabel)
+    local blockId = type(callContext) == "table" and callContext.blockId or nil
+    local executionTag = type(callContext) == "table" and callContext.executionTag or tag
+    return string.format(
+        "VP|tag=%s|block=%s|helper=%s",
+        VPValueToString(executionTag or tag),
+        VPValueToString(blockId),
+        VPValueToString(helperLabel))
+end
+
+local function VPShouldPassCastSourceTag(label)
+    if type(label) ~= "string" then
+        return false
+    end
+
+    return string.find(label, "UOFlow.Spell.cast", 1, true) ~= nil
+        or string.find(label, "UOW.Spell.cast", 1, true) ~= nil
+        or string.find(label, "uow.cmd.cast", 1, true) ~= nil
+        or string.find(label, "uow_spell_cast", 1, true) ~= nil
+end
+
+local function VPShouldPassCastOnIdSourceTag(label)
+    if type(label) ~= "string" then
+        return false
+    end
+
+    return string.find(label, "UOFlow.Spell.cast_on_id", 1, true) ~= nil
+        or string.find(label, "UOW.Spell.cast_on_id", 1, true) ~= nil
+        or string.find(label, "uow_spell_cast_on_id", 1, true) ~= nil
+end
+
+local function VPLogCastCall(phase, tag, spellId, helperLabel, callContext, ok, result1, result2, errText)
+    local uoflowType = type(UOFlow)
+    local spellTableType = uoflowType == "table" and type(UOFlow.Spell) or "<nil>"
+    local castType = (uoflowType == "table" and spellTableType == "table") and type(UOFlow.Spell.cast) or "<nil>"
+    local executionTag = type(callContext) == "table" and callContext.executionTag or tag
+    local luaContextTag = type(callContext) == "table" and callContext.luaContextTag or VPGetLuaContextTag()
+    local blockId = type(callContext) == "table" and callContext.blockId or nil
+
+    local message = string.format(
+        "[VP_CAST] phase=%s block=%s spell=%s helper=%s type(UOFlow)=%s type(UOFlow.Spell)=%s type(UOFlow.Spell.cast)=%s ctx=%s luaCtx=%s ok=%s ret1=%s ret2=%s err=%s",
+        VPValueToString(phase),
+        VPValueToString(blockId),
+        VPValueToString(spellId),
+        VPValueToString(helperLabel),
+        VPValueToString(uoflowType),
+        VPValueToString(spellTableType),
+        VPValueToString(castType),
+        VPValueToString(executionTag),
+        VPValueToString(luaContextTag),
+        VPValueToString(ok),
+        VPValueToString(result1),
+        VPValueToString(result2),
+        VPValueToString(errText))
+
+    if UOWNativeLog then
+        UOWNativeLog(message)
+    end
+    Debug.Print(message)
+end
+
 local function VPLogSpellState(tag, spellId)
     local activeWindow = "<nil>"
     if SystemData and SystemData.ActiveWindow then
@@ -294,23 +405,28 @@ end
 
 local function VPInvokeFunction(fn, ...)
     if type(fn) ~= "function" then
-        return false, nil, nil
+        return false, nil, nil, "not_function"
     end
 
-    return true, fn(...)
+    local result1, result2 = fn(...)
+    return true, result1, result2, nil
 end
 
-local function VPQueuePendingNativeSpellcast(spellId, tag)
+local function VPQueuePendingNativeSpellcast(spellId, tag, callContext)
     local env = nil
     if type(getfenv) == "function" then
         env = getfenv(1)
     end
 
+    local pendingSource = type(callContext) == "table" and callContext.executionTag or tag
+
     if type(env) == "table" then
         rawset(env, "uow_pending_spellcast", spellId)
+        rawset(env, "uow_pending_spellcast_source", pendingSource)
     end
     if type(_G) == "table" then
         rawset(_G, "uow_pending_spellcast", spellId)
+        rawset(_G, "uow_pending_spellcast_source", pendingSource)
     end
 
     local triggerLabel = nil
@@ -321,12 +437,13 @@ local function VPQueuePendingNativeSpellcast(spellId, tag)
     end
 
     if UOWNativeLog then
-        UOWNativeLog("[VPSpell] queued pending native cast", tostring(tag), "spell=" .. tostring(spellId), "trigger=" .. tostring(triggerLabel))
+        UOWNativeLog("[VPSpell] queued pending native cast", tostring(tag), "spell=" .. tostring(spellId), "source=" .. tostring(pendingSource), "trigger=" .. tostring(triggerLabel))
     end
     Debug.Print(string.format(
-        "[VPSpell] %s queued pending native cast spell=%s trigger=%s",
+        "[VPSpell] %s queued pending native cast spell=%s source=%s trigger=%s",
         VPValueToString(tag),
         VPValueToString(spellId),
+        VPValueToString(pendingSource),
         VPValueToString(triggerLabel)))
 
     Debug.Print(string.format(
@@ -346,28 +463,39 @@ local function VPQueuePendingNativeSpellcast(spellId, tag)
     return true, "queued_pending_native_cast"
 end
 
-local function VPCastSpell(spellId, tag, targetId)
+local function VPCastSpell(spellId, tag, targetId, callContext)
+    local numericSpellId = tonumber(spellId)
+    if not numericSpellId or numericSpellId <= 0 then
+        local invalidMsg = "VP_CAST invalid spellId=" .. VPValueToString(spellId)
+        VPEmitUiLog(invalidMsg)
+        return false, invalidMsg, nil, false
+    end
+
+    spellId = numericSpellId
+    callContext = type(callContext) == "table" and callContext or {}
+    callContext.executionTag = callContext.executionTag or tag
+    callContext.luaContextTag = callContext.luaContextTag or VPGetLuaContextTag()
+
     local castFn = UserActionCastSpell
     local castLabel = "UserActionCastSpell"
-    local helperSummary = nil
     local resolvedCandidates, resolvedSummary = VPResolveSpellHelpers()
-    helperSummary = resolvedSummary
 
     if UOWNativeLog then
-        UOWNativeLog("[VPSpell] cast begin", tostring(tag), "spell=" .. tostring(spellId), "helper=" .. tostring(castLabel))
-        if helperSummary then
-            UOWNativeLog("[VPSpell] helper candidates", tostring(tag), helperSummary)
+        UOWNativeLog("[VPSpell] cast begin", tostring(tag), "spell=" .. tostring(spellId), "helper=" .. tostring(castLabel), "ctx=" .. tostring(callContext.executionTag))
+        if resolvedSummary then
+            UOWNativeLog("[VPSpell] helper candidates", tostring(tag), resolvedSummary)
         end
     end
-    if helperSummary then
-        Debug.Print("[VPSpell] helper candidates " .. helperSummary)
+    if resolvedSummary then
+        Debug.Print("[VPSpell] helper candidates " .. resolvedSummary)
     end
     VPLogSpellState(tag .. ":before", spellId)
 
-    if targetId and tonumber(targetId) then
+    local numericTargetId = targetId and tonumber(targetId) or nil
+    if numericTargetId then
         local onIdCandidates, onIdSummary = VPResolveCastSpellOnIdHelpers()
         if UOWNativeLog then
-            UOWNativeLog("[VPSpell] cast onId begin", tostring(tag), "spell=" .. tostring(spellId), "target=" .. tostring(targetId))
+            UOWNativeLog("[VPSpell] cast onId begin", tostring(tag), "spell=" .. tostring(spellId), "target=" .. tostring(numericTargetId), "ctx=" .. tostring(callContext.executionTag))
             if onIdSummary then
                 UOWNativeLog("[VPSpell] onId candidates", tostring(tag), onIdSummary)
             end
@@ -386,9 +514,26 @@ local function VPCastSpell(spellId, tag, targetId)
             end)
             for _, candidate in ipairs(onIdCandidates) do
                 if type(candidate.fn) == "function" then
+                    local helperSourceTag = VPBuildCastSourceTag(tag, callContext, candidate.label)
                     local beforeState = VPSnapshotSpellState()
-                    local ok, result1, result2 = VPInvokeFunction(candidate.fn, spellId, targetId)
+                    local ok = false
+                    local result1 = nil
+                    local result2 = nil
+                    local errText = nil
+
+                    VPLogCastCall("before", tag, spellId, candidate.label, callContext, nil, nil, nil, nil)
+                    if type(_G) == "table" then
+                        rawset(_G, "uow_vp_cast_active", helperSourceTag)
+                    end
+
+                    if VPShouldPassCastOnIdSourceTag(candidate.label) then
+                        ok, result1, result2, errText = VPInvokeFunction(candidate.fn, spellId, numericTargetId, helperSourceTag)
+                    else
+                        ok, result1, result2, errText = VPInvokeFunction(candidate.fn, spellId, numericTargetId)
+                    end
+
                     local stateChanged = VPDidSpellStateChange(beforeState)
+                    VPLogCastCall("after", tag, spellId, candidate.label, callContext, ok, result1, result2, errText)
                     if UOWNativeLog then
                         UOWNativeLog("[VPSpell] onId result",
                             tostring(tag),
@@ -396,17 +541,23 @@ local function VPCastSpell(spellId, tag, targetId)
                             "ok=" .. tostring(ok),
                             "result1=" .. tostring(result1),
                             "result2=" .. tostring(result2),
-                            "stateChanged=" .. tostring(stateChanged))
+                            "stateChanged=" .. tostring(stateChanged),
+                            "source=" .. tostring(helperSourceTag))
                     end
                     Debug.Print(string.format(
-                        "[VPSpell] %s onId helper=%s ok=%s result1=%s result2=%s stateChanged=%s",
+                        "[VPSpell] %s onId helper=%s ok=%s result1=%s result2=%s stateChanged=%s source=%s",
                         VPValueToString(tag),
                         VPValueToString(candidate.label),
                         VPValueToString(ok),
                         VPValueToString(result1),
                         VPValueToString(result2),
-                        VPValueToString(stateChanged)))
+                        VPValueToString(stateChanged),
+                        VPValueToString(helperSourceTag)))
                     if ok and (result1 ~= nil or result2 ~= nil or stateChanged) then
+                        if stateChanged and result1 == nil and result2 == nil then
+                            result1 = true
+                            result2 = "state_changed"
+                        end
                         VPLogSpellState(tag .. ":after", spellId)
                         return ok, result1, result2, true
                     end
@@ -426,11 +577,28 @@ local function VPCastSpell(spellId, tag, targetId)
         end)
         for _, candidate in ipairs(resolvedCandidates) do
             if type(candidate.fn) == "function" then
+                local helperSourceTag = VPBuildCastSourceTag(tag, callContext, candidate.label)
                 castFn = candidate.fn
                 castLabel = candidate.label
                 local beforeState = VPSnapshotSpellState()
-                local ok, result1, result2 = VPInvokeFunction(castFn, spellId)
+                local ok = false
+                local result1 = nil
+                local result2 = nil
+                local errText = nil
+
+                VPLogCastCall("before", tag, spellId, castLabel, callContext, nil, nil, nil, nil)
+                if type(_G) == "table" then
+                    rawset(_G, "uow_vp_cast_active", helperSourceTag)
+                end
+
+                if VPShouldPassCastSourceTag(castLabel) then
+                    ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, helperSourceTag)
+                else
+                    ok, result1, result2, errText = VPInvokeFunction(castFn, spellId)
+                end
+
                 local stateChanged = VPDidSpellStateChange(beforeState)
+                VPLogCastCall("after", tag, spellId, castLabel, callContext, ok, result1, result2, errText)
                 if UOWNativeLog then
                     UOWNativeLog("[VPSpell] helper result",
                         tostring(tag),
@@ -438,17 +606,23 @@ local function VPCastSpell(spellId, tag, targetId)
                         "ok=" .. tostring(ok),
                         "result1=" .. tostring(result1),
                         "result2=" .. tostring(result2),
-                        "stateChanged=" .. tostring(stateChanged))
+                        "stateChanged=" .. tostring(stateChanged),
+                        "source=" .. tostring(helperSourceTag))
                 end
                 Debug.Print(string.format(
-                    "[VPSpell] %s helper=%s ok=%s result1=%s result2=%s stateChanged=%s",
+                    "[VPSpell] %s helper=%s ok=%s result1=%s result2=%s stateChanged=%s source=%s",
                     VPValueToString(tag),
                     VPValueToString(castLabel),
                     VPValueToString(ok),
                     VPValueToString(result1),
                     VPValueToString(result2),
-                    VPValueToString(stateChanged)))
+                    VPValueToString(stateChanged),
+                    VPValueToString(helperSourceTag)))
                 if ok and (result1 ~= nil or result2 ~= nil or stateChanged) then
+                    if stateChanged and result1 == nil and result2 == nil then
+                        result1 = true
+                        result2 = "state_changed"
+                    end
                     VPLogSpellState(tag .. ":after", spellId)
                     return ok, result1, result2, false
                 end
@@ -456,13 +630,11 @@ local function VPCastSpell(spellId, tag, targetId)
         end
     end
 
-    if castFn ~= UserActionCastSpell then
-        if UOWNativeLog then
-            UOWNativeLog("[VPSpell] helper exhausted", tostring(tag), "lastHelper=" .. tostring(castLabel), "fallingBack=UserActionCastSpell")
-        end
+    if castFn ~= UserActionCastSpell and UOWNativeLog then
+        UOWNativeLog("[VPSpell] helper exhausted", tostring(tag), "lastHelper=" .. tostring(castLabel), "fallingBack=UserActionCastSpell")
     end
 
-    local queuedOk, queuedResult = VPQueuePendingNativeSpellcast(spellId, tag)
+    local queuedOk, queuedResult = VPQueuePendingNativeSpellcast(spellId, tag, callContext)
     if queuedOk then
         VPLogSpellState(tag .. ":after", spellId)
         return queuedOk, queuedResult, nil, false
@@ -472,19 +644,38 @@ local function VPCastSpell(spellId, tag, targetId)
     GameData.UseRequests.UseTarget = 0
     Interface.SpellUseRequest()
 
-    local fallbackFn = rawEnvUserActionCastSpell or rawGlobalUserActionCastSpell or normalUserActionCastSpell or UserActionCastSpell
-    local ok, result = VPInvokeFunction(fallbackFn, spellId)
+    local fallbackSourceTag = VPBuildCastSourceTag(tag, callContext, "UserActionCastSpell")
+    local fallbackFn = UserActionCastSpell
+    local ok = false
+    local result1 = nil
+    local result2 = nil
+    local errText = nil
+
+    VPLogCastCall("before", tag, spellId, "UserActionCastSpell", callContext, nil, nil, nil, nil)
+    if type(_G) == "table" then
+        rawset(_G, "uow_vp_cast_active", fallbackSourceTag)
+    end
+
+    ok, result1, result2, errText = VPInvokeFunction(fallbackFn, spellId)
+    VPLogCastCall("after", tag, spellId, "UserActionCastSpell", callContext, ok, result1, result2, errText)
     if UOWNativeLog then
-        UOWNativeLog("[VPSpell] helper result", tostring(tag), "helper=UserActionCastSpell", "ok=" .. tostring(ok), "result=" .. tostring(result), "fallbackFn=" .. tostring(fallbackFn))
+        UOWNativeLog("[VPSpell] helper result",
+            tostring(tag),
+            "helper=UserActionCastSpell",
+            "ok=" .. tostring(ok),
+            "result1=" .. tostring(result1),
+            "result2=" .. tostring(result2),
+            "source=" .. tostring(fallbackSourceTag))
     end
     Debug.Print(string.format(
-        "[VPSpell] %s helper=UserActionCastSpell ok=%s result=%s fallbackFn=%s",
+        "[VPSpell] %s helper=UserActionCastSpell ok=%s result1=%s result2=%s source=%s",
         VPValueToString(tag),
         VPValueToString(ok),
-        VPValueToString(result),
-        VPValueToString(fallbackFn)))
+        VPValueToString(result1),
+        VPValueToString(result2),
+        VPValueToString(fallbackSourceTag)))
     VPLogSpellState(tag .. ":after", spellId)
-    return ok, result, nil, false
+    return ok, result1, result2, false
 end
 
 -- Initialize block types
@@ -549,8 +740,9 @@ function VisualProgrammingInterface.InitializeBlockTypes()
         end,
         execute = function(params)
             Debug.Print("Executing Cast Spell action")
+            local callContext = VPBuildCallContext(params, "VisualProgramming.CastSpell")
             if UOWNativeLog then
-                UOWNativeLog("[VPSpell] execute", "requested=" .. tostring(params.spellId), "target=" .. tostring(params.target))
+                UOWNativeLog("[VPSpell] execute", "block=" .. tostring(callContext.blockId), "requested=" .. tostring(params.spellId), "target=" .. tostring(params.target), "ctx=" .. tostring(callContext.executionTag))
             end
             -- Look up spell ID from name
             local spellId = nil
@@ -564,7 +756,12 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             if spellId then
                 Debug.Print("Found spell ID: " .. spellId)
                 if UOWNativeLog then
-                    UOWNativeLog("[VPSpell] resolved", "requested=" .. tostring(params.spellId), "spellId=" .. tostring(spellId))
+                    UOWNativeLog("[VPSpell] resolved", "block=" .. tostring(callContext.blockId), "requested=" .. tostring(params.spellId), "spellId=" .. tostring(spellId))
+                end
+                if tonumber(spellId) <= 0 then
+                    local invalidMsg = "VP_CAST invalid spellId=" .. VPValueToString(spellId)
+                    VPEmitUiLog(invalidMsg)
+                    return false, invalidMsg
                 end
                 
                 -- Add casting delay based on spell speed
@@ -583,7 +780,21 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 if params.target == "self" and WindowData and WindowData.PlayerStatus then
                     targetId = WindowData.PlayerStatus.PlayerId
                 end
-                local _, _, _, usedOnId = VPCastSpell(spellId, "VisualProgramming.CastSpell", targetId)
+                local castOk, castResult1, castResult2, usedOnId = VPCastSpell(spellId, "VisualProgramming.CastSpell", targetId, callContext)
+                if UOWNativeLog then
+                    UOWNativeLog("[VPSpell] execute result",
+                        "block=" .. tostring(callContext.blockId),
+                        "spellId=" .. tostring(spellId),
+                        "ok=" .. tostring(castOk),
+                        "result1=" .. tostring(castResult1),
+                        "result2=" .. tostring(castResult2),
+                        "usedOnId=" .. tostring(usedOnId))
+                end
+                if not castOk or castResult1 == false then
+                    local failMsg = VPValueToString(castResult2 or castResult1 or "cast_failed")
+                    VPEmitUiLog("VP_CAST failed block=" .. VPValueToString(callContext.blockId) .. " spellId=" .. VPValueToString(spellId) .. " err=" .. failMsg)
+                    return false, failMsg
+                end
                 
                 -- Queue cast timer
                 Debug.Print("Starting cast sequence: " .. castTime .. "ms")
@@ -625,10 +836,10 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 return false -- Keep execution system waiting
             end
             if UOWNativeLog then
-                UOWNativeLog("[VPSpell] spell id not found", tostring(params.spellId))
+                UOWNativeLog("[VPSpell] spell id not found", "block=" .. tostring(callContext.blockId), tostring(params.spellId))
             end
-            Debug.Print("Spell ID not found")
-            return false
+            VPEmitUiLog("VP_CAST invalid spellId=" .. VPValueToString(spellId or 0))
+            return false, "spell_id_not_found"
         end
     })
 
@@ -639,15 +850,30 @@ function VisualProgrammingInterface.InitializeBlockTypes()
         category = Categories.MAGIC,
         icon = { texture = "icon856001", x = 5, y = 5 },
         params = {},
-        execute = function()
+        execute = function(params)
             local spellId = 29 -- Heal spell ID
+            local callContext = VPBuildCallContext(params, "VisualProgramming.HealSelf")
             
             -- Start casting the spell
             local targetId = nil
             if WindowData and WindowData.PlayerStatus then
                 targetId = WindowData.PlayerStatus.PlayerId
             end
-            local _, _, _, usedOnId = VPCastSpell(spellId, "VisualProgramming.HealSelf", targetId)
+            local castOk, castResult1, castResult2, usedOnId = VPCastSpell(spellId, "VisualProgramming.HealSelf", targetId, callContext)
+            if UOWNativeLog then
+                UOWNativeLog("[VPSpell] heal execute result",
+                    "block=" .. tostring(callContext.blockId),
+                    "spellId=" .. tostring(spellId),
+                    "ok=" .. tostring(castOk),
+                    "result1=" .. tostring(castResult1),
+                    "result2=" .. tostring(castResult2),
+                    "usedOnId=" .. tostring(usedOnId))
+            end
+            if not castOk or castResult1 == false then
+                local failMsg = VPValueToString(castResult2 or castResult1 or "cast_failed")
+                VPEmitUiLog("VP_CAST failed block=" .. VPValueToString(callContext.blockId) .. " spellId=" .. VPValueToString(spellId) .. " err=" .. failMsg)
+                return false, failMsg
+            end
             
             -- Add casting delay based on spell speed
             local castTime = SpellsInfo.GetSpellSpeed(spellId) * 1000

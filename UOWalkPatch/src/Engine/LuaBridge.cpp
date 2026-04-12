@@ -593,6 +593,45 @@ static uint32_t ReadOptionalUInt(lua_State* L, int idx, uint32_t def = 0)
     return static_cast<uint32_t>(v);
 }
 
+static std::string ReadOptionalString(lua_State* L, int idx)
+{
+    if (!L)
+        return {};
+    int top = lua_gettop(L);
+    if (idx > top)
+        return {};
+    int type = lua_type(L, idx);
+    if (type != LUA_TSTRING && type != LUA_TNUMBER)
+        return {};
+    size_t len = 0;
+    const char* value = lua_tolstring(L, idx, &len);
+    if (!value || len == 0)
+        return {};
+    return std::string(value, len);
+}
+
+static void LogLuaCastEntry(const char* funcName,
+                            lua_State* L,
+                            int spellId,
+                            const char* sourceTag,
+                            uint32_t objectId = 0)
+{
+    char buf[416];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaEntry] fn=%s spell=%d target=%u caller=%u owner=%u gameplay_owner=%u L=%p ctx=%p source=%s",
+              funcName ? funcName : "<unknown>",
+              spellId,
+              objectId,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              g_ownerThreadId.load(std::memory_order_relaxed),
+              L,
+              g_ownerScriptContext.load(std::memory_order_relaxed),
+              (sourceTag && *sourceTag) ? sourceTag : "<none>");
+    WriteRawLog(buf);
+}
+
 static int PushLuaCommandResult(lua_State* L, bool ok, const std::string& msg)
 {
     if (!L)
@@ -5833,7 +5872,8 @@ static void CompleteNoClickSpell()
 
 static bool DispatchNoClickCommand(const char* name,
                                    std::function<bool(std::string&)> fn,
-                                   std::string& out_msg)
+                                   std::string& out_msg,
+                                   bool pendingIsSuccess = true)
 {
     if (!fn)
         return false;
@@ -5847,7 +5887,16 @@ static bool DispatchNoClickCommand(const char* name,
         return *result;
     }
     out_msg = "owner_dispatch_pending";
-    return true;
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[NoClick] dispatch pending name=%s caller=%u owner=%u return=%s",
+              name ? name : "<unnamed>",
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              pendingIsSuccess ? "success" : "failure");
+    WriteRawLog(buf);
+    return pendingIsSuccess;
 }
 
 static bool CastWrapperReady()
@@ -6294,6 +6343,9 @@ static int __cdecl Lua_uow_spell_cast_global(lua_State* L)
     int spellId = 0;
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
         spellId = static_cast<int>(lua_tointeger(L, 1));
+    const std::string sourceTag = ReadOptionalString(L, 2);
+
+    LogLuaCastEntry("uow_spell_cast", L, spellId, sourceTag.c_str());
 
     if (L) {
         if (!Engine::LuaState())
@@ -6308,10 +6360,11 @@ static int __cdecl Lua_uow_spell_cast_global(lua_State* L)
     char intro[224];
     sprintf_s(intro,
               sizeof(intro),
-              "[Lua] uow_spell_cast invoked spell=%d caller=%u owner=%u",
+              "[Lua] uow_spell_cast invoked spell=%d caller=%u owner=%u source=%s",
               spellId,
               callerTid,
-              ownerTid);
+              ownerTid,
+              sourceTag.empty() ? "<none>" : sourceTag.c_str());
     WriteRawLog(intro);
 
     std::string msg;
@@ -6330,7 +6383,8 @@ static int __cdecl Lua_uow_spell_cast_global(lua_State* L)
                 }
                 return result;
             },
-            msg);
+            msg,
+            false);
     } else {
         msg = "invalid_spell";
     }
@@ -6364,6 +6418,9 @@ static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
         objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
+    const std::string sourceTag = ReadOptionalString(L, 3);
+
+    LogLuaCastEntry("uow_spell_cast_on_id", L, spellId, sourceTag.c_str(), objectId);
 
     if (L) {
         if (!Engine::LuaState())
@@ -6378,11 +6435,12 @@ static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L)
     char intro[256];
     sprintf_s(intro,
               sizeof(intro),
-              "[Lua] uow_spell_cast_on_id invoked spell=%d target=%u caller=%u owner=%u",
+              "[Lua] uow_spell_cast_on_id invoked spell=%d target=%u caller=%u owner=%u source=%s",
               spellId,
               objectId,
               callerTid,
-              ownerTid);
+              ownerTid,
+              sourceTag.empty() ? "<none>" : sourceTag.c_str());
     WriteRawLog(intro);
 
     std::string msg;
@@ -6401,7 +6459,8 @@ static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L)
                 }
                 return result;
             },
-            msg);
+            msg,
+            false);
     } else {
         msg = "invalid_args";
     }
@@ -6429,6 +6488,13 @@ static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L)
 
 static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
 {
+    int spellId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        spellId = static_cast<int>(lua_tointeger(L, 1));
+    const std::string sourceTag = ReadOptionalString(L, 2);
+
+    LogLuaCastEntry("UOFlow.Spell.cast", L, spellId, sourceTag.c_str());
+
     if (L) {
         if (!Engine::LuaState())
             Engine::ReportLuaState(L);
@@ -6436,17 +6502,15 @@ static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
         ProbeGameplayBindingBootstrap(L, "UOFlow.Spell.cast");
     }
 
-    int spellId = 0;
-    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
-        spellId = static_cast<int>(lua_tointeger(L, 1));
     {
-        char intro[224];
+        char intro[288];
         sprintf_s(intro,
                   sizeof(intro),
-                  "[Lua] UOFlow.Spell.cast invoked spell=%d caller=%u owner=%u",
+                  "[Lua] UOFlow.Spell.cast invoked spell=%d caller=%u owner=%u source=%s",
                   spellId,
                   GetCurrentThreadId(),
-                  Util::OwnerPump::GetOwnerThreadId());
+                  Util::OwnerPump::GetOwnerThreadId(),
+                  sourceTag.empty() ? "<none>" : sourceTag.c_str());
         WriteRawLog(intro);
     }
     if (spellId <= 0) {
@@ -6475,7 +6539,8 @@ static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
             }
             return result;
         },
-        msg);
+        msg,
+        false);
     {
         char outro[288];
         sprintf_s(outro,
@@ -6494,6 +6559,16 @@ static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
 
 static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
 {
+    int spellId = 0;
+    uint32_t objectId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        spellId = static_cast<int>(lua_tointeger(L, 1));
+    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
+        objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
+    const std::string sourceTag = ReadOptionalString(L, 3);
+
+    LogLuaCastEntry("UOFlow.Spell.cast_on_id", L, spellId, sourceTag.c_str(), objectId);
+
     if (L) {
         if (!Engine::LuaState())
             Engine::ReportLuaState(L);
@@ -6501,21 +6576,16 @@ static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
         ProbeGameplayBindingBootstrap(L, "UOFlow.Spell.cast_on_id");
     }
 
-    int spellId = 0;
-    uint32_t objectId = 0;
-    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
-        spellId = static_cast<int>(lua_tointeger(L, 1));
-    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
-        objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
     {
-        char intro[256];
+        char intro[320];
         sprintf_s(intro,
                   sizeof(intro),
-                  "[Lua] UOFlow.Spell.cast_on_id invoked spell=%d target=%u caller=%u owner=%u",
+                  "[Lua] UOFlow.Spell.cast_on_id invoked spell=%d target=%u caller=%u owner=%u source=%s",
                   spellId,
                   objectId,
                   GetCurrentThreadId(),
-                  Util::OwnerPump::GetOwnerThreadId());
+                  Util::OwnerPump::GetOwnerThreadId(),
+                  sourceTag.empty() ? "<none>" : sourceTag.c_str());
         WriteRawLog(intro);
     }
     if (spellId <= 0 || objectId == 0) {
@@ -6538,7 +6608,8 @@ static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
             }
             return result;
         },
-        msg);
+        msg,
+        false);
     {
         char outro[320];
         sprintf_s(outro,
@@ -8262,12 +8333,22 @@ static bool TryConsumePendingSpellRequest(lua_State* L, const char* sourceTag)
 
     int top = lua_gettop(L);
     int spellId = 0;
+    std::string pendingSource;
 
     lua_getglobal(L, "uow_pending_spellcast");
     if (lua_type(L, -1) == LUA_TNUMBER) {
         lua_Integer v = lua_tointeger(L, -1);
         if (v > 0)
             spellId = static_cast<int>(v);
+    }
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "uow_pending_spellcast_source");
+    if (lua_type(L, -1) == LUA_TSTRING || lua_type(L, -1) == LUA_TNUMBER) {
+        size_t len = 0;
+        const char* value = lua_tolstring(L, -1, &len);
+        if (value && len > 0)
+            pendingSource.assign(value, len);
     }
     lua_pop(L, 1);
 
@@ -8278,13 +8359,16 @@ static bool TryConsumePendingSpellRequest(lua_State* L, const char* sourceTag)
 
     lua_pushnil(L);
     lua_setglobal(L, "uow_pending_spellcast");
+    lua_pushnil(L);
+    lua_setglobal(L, "uow_pending_spellcast_source");
 
     const char* tag = (sourceTag && *sourceTag) ? sourceTag : "pending";
     char intro[256];
     sprintf_s(intro,
               sizeof(intro),
-              "[PendingCast] consume source=%s spell=%d caller=%u owner=%u",
+              "[PendingCast] consume source=%s pending_source=%s spell=%d caller=%u owner=%u",
               tag,
+              pendingSource.empty() ? "<none>" : pendingSource.c_str(),
               spellId,
               GetCurrentThreadId(),
               Util::OwnerPump::GetOwnerThreadId());
@@ -8304,7 +8388,8 @@ static bool TryConsumePendingSpellRequest(lua_State* L, const char* sourceTag)
             }
             return result;
         },
-        msg);
+        msg,
+        false);
 
     lua_pushboolean(L, ok ? 1 : 0);
     lua_setglobal(L, "uow_pending_spellcast_ok");
