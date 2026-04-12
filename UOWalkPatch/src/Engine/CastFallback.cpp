@@ -298,7 +298,7 @@ void __fastcall Hook_EnqueueAction(void* self, void*, void* action)
             char buf[192];
             sprintf_s(buf,
                       sizeof(buf),
-                      "[CastQueue] enqueue ret=%s queue=%p action=%p",
+                      "[ActionQueue] enqueue ret=%s queue=%p action=%p",
                       retBuf,
                       self,
                       action);
@@ -316,7 +316,7 @@ void __fastcall Hook_EnqueueAction(void* self, void*, void* action)
                     char buf[160];
                     sprintf_s(buf,
                               sizeof(buf),
-                              "CastQueue snapshot disabled after exception code=0x%08X",
+                              "ActionQueue snapshot disabled after exception code=0x%08X",
                               static_cast<unsigned>(sehCode));
                     WriteRawLog(buf);
                 }
@@ -390,7 +390,7 @@ void Init()
                 g_origEnqueueAction = nullptr;
             } else {
                 char buf[160];
-                sprintf_s(buf, sizeof(buf), "[CastQueue] hook armed at %p", g_enqueueActionTarget);
+                sprintf_s(buf, sizeof(buf), "[ActionQueue] hook armed at %p", g_enqueueActionTarget);
                 WriteRawLog(buf);
             }
         }

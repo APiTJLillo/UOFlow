@@ -75,6 +75,17 @@ local function VPEmitUiLog(message)
     end
 end
 
+if type(_G) == "table" and not rawget(_G, "__UOW_VP_MARKER_20260412A") then
+    rawset(_G, "__UOW_VP_MARKER_20260412A", true)
+    local marker = "[VP_MARKER] build=2026-04-12-a"
+    if UOWNativeLog then
+        UOWNativeLog(marker)
+    end
+    if type(Debug) == "table" and type(Debug.Print) == "function" then
+        Debug.Print(marker)
+    end
+end
+
 local function VPBuildCallContext(params, fallbackTag)
     local blockId = params and params.__vpBlockId or nil
     local blockType = params and params.__vpBlockType or nil
