@@ -954,66 +954,13 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     callContext = type(callContext) == "table" and callContext or {}
     callContext.executionTag = callContext.executionTag or tag
     callContext.luaContextTag = callContext.luaContextTag or VPGetLuaContextTag()
-
-    local bridgeReason = "VPCastSpell/pre_call block="
-        .. VPValueToString(callContext.blockId)
-        .. " spell=" .. VPValueToString(spellId)
-    local integrityOk, bridgeCheckErr, integrityBridge, integrityCastFn, integrityGetterFn, integrityTag, healthTag, healthSource =
-        VPCheckBridgeIntegrity(bridgeReason)
-    local bridgeTable, bridgeErr = VPResolveNativeBridgeTable()
-    local contextToken = VPGetNativeContextToken()
     local castFn, castSource, castResolveErr = VPResolveNativeGlobalFunction(VP_NATIVE_CALL_CAST_NAME)
-    local isCFuncFn, isCFuncSource, isCFuncErr = VPResolveNativeGlobalFunction(VP_NATIVE_IS_CFUNC_NAME)
+    local sourceTag = callContext.nativeSourceTag or tag
     local castLabel = VP_NATIVE_CALL_CAST_NAME .. "(" .. VPValueToString(castSource) .. ")"
-    local castTag = type(castFn) == "function" and ("global:" .. VPValueToString(tostring(castFn))) or nil
-    local getterFn = integrityGetterFn
-    local getterErr = nil
-    if type(getterFn) ~= "function" then
-        getterFn, getterErr = VPResolveNativeGetter()
-    end
-    local getterWhat = VPGetFunctionWhat(getterFn)
-    local isCEntryOk = false
-    local isCEntryErr = nil
-    local isCEntryResult = nil
-    if type(isCFuncFn) ~= "function" then
-        isCEntryErr = isCFuncErr or ("native_entry_missing name=" .. VP_NATIVE_IS_CFUNC_NAME)
-    elseif type(castFn) ~= "function" then
-        isCEntryErr = castResolveErr or ("native_entry_missing name=" .. VP_NATIVE_CALL_CAST_NAME)
-    else
-        local invokeOk, result1, _, invokeErr = VPInvokeFunction(isCFuncFn, castFn)
-        if not invokeOk then
-            isCEntryErr = invokeErr or ("native_entry_missing name=" .. VP_NATIVE_IS_CFUNC_NAME)
-        else
-            isCEntryResult = result1
-            isCEntryOk = result1 == true
-            if not isCEntryOk then
-                isCEntryErr = "native_entry_missing name=" .. VP_NATIVE_CALL_CAST_NAME
-            end
-        end
-    end
     local candidateSummary = {
-        VPDescribeCandidate(VP_NATIVE_BRIDGE_NAME, bridgeTable),
-        "bridge.err=" .. VPValueToString(bridgeErr or bridgeCheckErr),
-        "bridge.integrityOk=" .. VPValueToString(integrityOk),
-        "bridge.integrityErr=" .. VPValueToString(bridgeCheckErr),
-        "bridge.integrityBridge=" .. VPValueToString(integrityBridge),
-        VPDescribeCandidate("bridge.integrity.vp_cast", integrityCastFn),
-        "bridge.token=" .. VPValueToString(contextToken),
-        "bridge.healthTag=" .. VPValueToString(healthTag),
-        "bridge.healthSource=" .. VPValueToString(healthSource),
-        "token=" .. VPValueToString(contextToken),
-        VPDescribeCandidate(VP_NATIVE_IS_CFUNC_NAME, isCFuncFn),
-        "is_cfunc.err=" .. VPValueToString(isCFuncErr),
-        "is_cfunc.source=" .. VPValueToString(isCFuncSource),
-        "is_cfunc.result=" .. VPValueToString(isCEntryResult),
         VPDescribeCandidate(VP_NATIVE_CALL_CAST_NAME, castFn),
         "call_cast.err=" .. VPValueToString(castResolveErr),
         "call_cast.source=" .. VPValueToString(castSource),
-        VPDescribeCandidate(VP_NATIVE_GETTER_NAME, getterFn),
-        "getter.err=" .. VPValueToString(getterErr),
-        "getter.what=" .. VPValueToString(getterWhat),
-        "getter.identity=" .. VPValueToString(g_vpNativeHandles.getter_identity),
-        "vp_cast.tag=" .. VPValueToString(castTag),
         VPDescribeCandidate(castLabel, castFn),
     }
 
@@ -1021,51 +968,24 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         tostring(tag),
         "spell=" .. tostring(spellId),
         "ctx=" .. tostring(callContext.executionTag),
+        "source=" .. tostring(sourceTag),
         "targetId=" .. tostring(targetId),
-        "bridge=" .. VPValueToString(bridgeTable),
-        "token=" .. VPValueToString(contextToken))
+        "call_cast_source=" .. tostring(castSource))
     VPNativeLog("[VPSpell] cast candidates", tostring(tag), table.concat(candidateSummary, " | "))
     Debug.Print("[VPSpell] cast candidates " .. table.concat(candidateSummary, " | "))
     VPLogSpellState(tag .. ":before", spellId)
-    VPInvokeNativePing()
 
-    local logTestFn, logTestSource, logTestErr = VPResolveNativeGlobalFunction("__uow_log_test_v1")
-    if type(logTestFn) == "function" then
-        local probeOk, probeResult1, probeResult2, probeErr = VPInvokeFunction(
-            logTestFn,
-            "VP_LOG_PROBE spell=" .. VPValueToString(spellId) .. " tag=" .. VPValueToString(tag)
-        )
-        local probeMessage = "[VP_LOG_TEST] source=" .. VPValueToString(logTestSource)
-            .. " ok=" .. VPValueToString(probeOk)
-            .. " ret1=" .. VPValueToString(probeResult1)
-            .. " ret2=" .. VPValueToString(probeResult2)
-            .. " err=" .. VPValueToString(probeErr)
-        Debug.Print(probeMessage)
-        VPNativeLog(probeMessage)
-    else
-        local probeMessage = "[VP_LOG_TEST] missing source=" .. VPValueToString(logTestSource)
-            .. " err=" .. VPValueToString(logTestErr)
-        Debug.Print(probeMessage)
-        VPNativeLog(probeMessage)
-    end
-
-    if type(castFn) ~= "function" or not isCEntryOk then
-        local missingMsg = isCEntryErr or castResolveErr or ("native_entry_missing name=" .. VP_NATIVE_CALL_CAST_NAME)
+    if type(castFn) ~= "function" then
+        local missingMsg = castResolveErr or ("native_entry_missing name=" .. VP_NATIVE_CALL_CAST_NAME)
         VPEmitUiLog("VP_CAST " .. missingMsg)
         VPNativeLog("[VPSpell] cast fail",
             tostring(tag),
             missingMsg,
-            "callCastSource=" .. VPValueToString(castSource),
-            "isCFuncSource=" .. VPValueToString(isCFuncSource),
-            "isCFuncResult=" .. VPValueToString(isCEntryResult),
-            "integrityOk=" .. VPValueToString(integrityOk),
-            "integrityErr=" .. VPValueToString(bridgeCheckErr),
-            "healthTag=" .. VPValueToString(healthTag))
+            "callCastSource=" .. VPValueToString(castSource))
         VPLogSpellState(tag .. ":after", spellId)
         return false, missingMsg, nil, false
     end
 
-    local helperSourceTag = VPBuildCastSourceTag(tag, callContext, castLabel)
     local beforeState = VPSnapshotSpellState()
     local ok = false
     local result1 = nil
@@ -1073,45 +993,14 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     local errText = nil
 
     VPLogCastCall("before", tag, spellId, castLabel, callContext, nil, nil, nil, nil)
-    if type(_G) == "table" then
-        rawset(_G, "uow_vp_cast_active", helperSourceTag)
-    end
-
-    local passSourceTag = VPShouldPassCastSourceTag(castLabel)
-    VPLogFunctionIdentity(tag, castLabel, castFn, passSourceTag)
-    VPNativeLog("[VPSpell] native handle",
-        tostring(tag),
-        "helper=" .. VPValueToString(castLabel),
-        "tag=" .. VPValueToString(castTag),
-        "token=" .. VPValueToString(contextToken))
-    VPInvokeBridgeHealth("VPCastSpell/invoke block="
-        .. VPValueToString(callContext.blockId)
-        .. " spell=" .. VPValueToString(spellId))
-    VPNativeLog("[VP_NATIVE_TEST] getter=" .. VPValueToString(VP_NATIVE_GETTER_NAME)
-        .. " token=" .. VPValueToString(contextToken)
-        .. " bridge=" .. VPValueToString(bridgeTable)
-        .. " integrityOk=" .. VPValueToString(integrityOk)
-        .. " integrityErr=" .. VPValueToString(bridgeCheckErr)
-        .. " isCFunc=" .. VPValueToString(isCFuncFn)
-        .. " isCFuncSource=" .. VPValueToString(isCFuncSource)
-        .. " isCResult=" .. VPValueToString(isCEntryResult)
-        .. " getterFn=" .. VPValueToString(getterFn)
-        .. " getterWhat=" .. VPValueToString(getterWhat)
-        .. " fn=" .. VPValueToString(castFn)
-        .. " tag=" .. VPValueToString(castTag)
-        .. " what=" .. VPValueToString(VPGetFunctionWhat(castFn)))
     local preCallMessage = "[VP_CALL] about to call " .. VPValueToString(VP_NATIVE_CALL_CAST_NAME)
         .. " spell=" .. VPValueToString(spellId)
-        .. " source=" .. VPValueToString(helperSourceTag)
+        .. " source=" .. VPValueToString(sourceTag)
         .. " helper=" .. VPValueToString(castLabel)
         .. " fn=" .. VPValueToString(castFn)
     Debug.Print(preCallMessage)
     VPNativeLog(preCallMessage)
-    if passSourceTag then
-        ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, helperSourceTag)
-    else
-        ok, result1, result2, errText = VPInvokeFunction(castFn, spellId)
-    end
+    ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, sourceTag)
     local postCallMessage = "[VP_CALL] after call " .. VPValueToString(VP_NATIVE_CALL_CAST_NAME)
         .. " spell=" .. VPValueToString(spellId)
         .. " ok=" .. VPValueToString(ok)
@@ -1132,7 +1021,7 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         "result2=" .. tostring(result2),
         "stateChanged=" .. tostring(stateChanged),
         "hardSuccess=" .. tostring(hardSuccess),
-        "source=" .. tostring(helperSourceTag))
+        "source=" .. tostring(sourceTag))
     Debug.Print(string.format(
         "[VPSpell] %s helper=%s ok=%s result1=%s result2=%s stateChanged=%s hardSuccess=%s source=%s",
         VPValueToString(tag),
@@ -1142,7 +1031,7 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         VPValueToString(result2),
         VPValueToString(stateChanged),
         VPValueToString(hardSuccess),
-        VPValueToString(helperSourceTag)))
+        VPValueToString(sourceTag)))
 
     if hardSuccess then
         if stateChanged and result1 ~= true then
@@ -1269,7 +1158,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 local uoflowType = type(UOFlow)
                 local spellTableType = uoflowType == "table" and type(UOFlow.Spell) or "<nil>"
                 local castType = (uoflowType == "table" and spellTableType == "table") and type(UOFlow.Spell.cast) or "<nil>"
-                local castSourceTag = VPBuildCastSourceTag("VisualProgramming.CastSpell", callContext, "UOFlow.Spell.cast")
+                callContext.nativeSourceTag = "VP_TEST_BUTTON"
                 VPInvokeBridgeHealth("VP_CAST/node_before block="
                     .. VPValueToString(callContext.blockId)
                     .. " spell=" .. VPValueToString(spellId))
@@ -1281,42 +1170,7 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                     VPValueToString(uoflowType),
                     VPValueToString(spellTableType),
                     VPValueToString(castType),
-                    VPValueToString(castSourceTag)))
-
-                do
-                    local directTestFn, directTestSource, directTestErr = VPResolveNativeGlobalFunction(VP_NATIVE_CALL_CAST_NAME)
-                    VPNativeLog("[VP_DIRECT_TEST] resolve",
-                        "block=" .. VPValueToString(callContext.blockId),
-                        "spell=1",
-                        "source=" .. VPValueToString(directTestSource),
-                        "err=" .. VPValueToString(directTestErr),
-                        "fn=" .. VPValueToString(directTestFn))
-                    Debug.Print(string.format(
-                        "[VP_DIRECT_TEST] resolve block=%s spell=1 source=%s err=%s fn=%s",
-                        VPValueToString(callContext.blockId),
-                        VPValueToString(directTestSource),
-                        VPValueToString(directTestErr),
-                        VPValueToString(directTestFn)))
-                    if type(directTestFn) == "function" then
-                        local directTestOk, directTestResult1, directTestResult2, directTestInvokeErr =
-                            VPInvokeFunction(directTestFn, 1, "VP_DIRECT_TEST")
-                        VPNativeLog("[VP_DIRECT_TEST] result",
-                            "block=" .. VPValueToString(callContext.blockId),
-                            "ok=" .. VPValueToString(directTestOk),
-                            "ret1=" .. VPValueToString(directTestResult1),
-                            "ret2=" .. VPValueToString(directTestResult2),
-                            "err=" .. VPValueToString(directTestInvokeErr))
-                        Debug.Print(string.format(
-                            "[VP_DIRECT_TEST] result block=%s ok=%s ret1=%s ret2=%s err=%s",
-                            VPValueToString(callContext.blockId),
-                            VPValueToString(directTestOk),
-                            VPValueToString(directTestResult1),
-                            VPValueToString(directTestResult2),
-                            VPValueToString(directTestInvokeErr)))
-                    else
-                        VPEmitUiLog("[VP_DIRECT_TEST] missing err=" .. VPValueToString(directTestErr))
-                    end
-                end
+                    VPValueToString(callContext.nativeSourceTag)))
 
                 local castOk = false
                 local castResult1 = nil

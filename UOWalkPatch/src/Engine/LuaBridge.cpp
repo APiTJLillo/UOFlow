@@ -1041,6 +1041,7 @@ static int __cdecl Lua_uow_call_cast(lua_State* L)
 {
     WriteRawLog("[Lua] CALL_CAST_V1 ENTER");
 
+    const int argsTop = L ? lua_gettop(L) : 0;
     int spellId = 0;
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
         spellId = static_cast<int>(lua_tointeger(L, 1));
@@ -1081,19 +1082,44 @@ static int __cdecl Lua_uow_call_cast(lua_State* L)
               sourceTag.empty() ? "<none>" : sourceTag.c_str());
     WriteRawLog(intro);
 
-    const int resultCount = Lua_uow_vp_cast(L);
-
-    bool ok = false;
-    std::string msg;
-    if (L && resultCount >= 2) {
+    auto readResult = [&](int resultCount, bool& outOk, std::string& outMsg) -> bool {
+        outOk = false;
+        outMsg.clear();
+        if (!L || resultCount < 2)
+            return false;
         const int top = lua_gettop(L);
         const int okIndex = top - resultCount + 1;
         const int msgIndex = top - resultCount + 2;
-        ok = lua_toboolean(L, okIndex) != 0;
+        outOk = lua_toboolean(L, okIndex) != 0;
         size_t msgLen = 0;
         const char* rawMsg = lua_tolstring(L, msgIndex, &msgLen);
         if (rawMsg && msgLen)
-            msg.assign(rawMsg, msgLen);
+            outMsg.assign(rawMsg, msgLen);
+        return true;
+    };
+
+    int resultCount = Lua_uow_vp_cast(L);
+
+    bool ok = false;
+    std::string msg;
+    readResult(resultCount, ok, msg);
+
+    if (L && !ok && msg == "bridge_not_ready") {
+        char retry[256];
+        sprintf_s(retry,
+                  sizeof(retry),
+                  "[Lua] CALL_CAST_V1 retry once reason=bridge_not_ready spell=%d caller=%u owner=%u L=%p",
+                  spellId,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId(),
+                  L);
+        WriteRawLog(retry);
+
+        lua_settop(L, argsTop);
+        PromoteGameplayOwnerFromLiveCallback("__uow_call_cast_v1/retry", L);
+        ProbeGameplayBindingBootstrap(L, "__uow_call_cast_v1/retry");
+        resultCount = Lua_uow_vp_cast(L);
+        readResult(resultCount, ok, msg);
     }
 
     char outro[320];
