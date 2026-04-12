@@ -117,6 +117,7 @@ local g_vpNativeHandles = {
 local VP_NATIVE_GETTER_NAME = "__uow_native_get_v1"
 local VP_NATIVE_CAST_NAME = "__uow_vp_cast_v1"
 local VP_NATIVE_PING_NAME = "__uow_vp_ping_v1"
+local VP_NATIVE_CONTEXT_TOKEN_NAME = "__uow_context_token_v1"
 
 local function VPGetFunctionWhat(fn)
     local what = "<nil>"
@@ -129,18 +130,49 @@ local function VPGetFunctionWhat(fn)
     return what
 end
 
+local function VPResolveDirectNativeFunction(name)
+    local fn = nil
+    if type(_G) == "table" then
+        fn = rawget(_G, name)
+    end
+
+    if type(fn) == "function" then
+        return fn
+    end
+
+    if name == VP_NATIVE_GETTER_NAME and type(__uow_native_get_v1) == "function" then
+        return __uow_native_get_v1
+    end
+    if name == VP_NATIVE_CAST_NAME and type(__uow_vp_cast_v1) == "function" then
+        return __uow_vp_cast_v1
+    end
+    if name == VP_NATIVE_PING_NAME and type(__uow_vp_ping_v1) == "function" then
+        return __uow_vp_ping_v1
+    end
+    if name == "__uow_debug_log_v1" and type(__uow_debug_log_v1) == "function" then
+        return __uow_debug_log_v1
+    end
+
+    return nil
+end
+
+local function VPGetNativeContextToken()
+    local token = nil
+    if type(_G) == "table" then
+        token = rawget(_G, VP_NATIVE_CONTEXT_TOKEN_NAME)
+    end
+    if token == nil then
+        token = __uow_context_token_v1
+    end
+    return token
+end
+
 local function VPResolveNativeGetter()
     if type(g_vpNativeHandles.getter) == "function" then
         return g_vpNativeHandles.getter, nil
     end
 
-    local getter = nil
-    if type(_G) == "table" then
-        getter = rawget(_G, VP_NATIVE_GETTER_NAME)
-    end
-    if type(getter) ~= "function" and type(__uow_native_get_v1) == "function" then
-        getter = __uow_native_get_v1
-    end
+    local getter = VPResolveDirectNativeFunction(VP_NATIVE_GETTER_NAME)
 
     if type(getter) ~= "function" then
         return nil, "native_getter_missing name=" .. VP_NATIVE_GETTER_NAME
@@ -377,20 +409,40 @@ local function VPValidateNativeHandle(key, fn, expectedTag, expectedIdentity)
 end
 
 local function VPInvokeNativePing()
-    local pingFn, pingTag, pingIdentity, pingErr = VPGetCachedNativeHandle("vp_ping")
+    local pingFn = VPResolveDirectNativeFunction(VP_NATIVE_PING_NAME)
+    local pingTag = nil
+    local pingIdentity = nil
+    local pingErr = nil
+    local pingLabel = VP_NATIVE_PING_NAME .. "(direct)"
+    if type(pingFn) == "function" then
+        pingTag = "direct:" .. VPValueToString(tostring(pingFn))
+        pingIdentity = tostring(pingFn)
+    else
+        pingFn, pingTag, pingIdentity, pingErr = VPGetCachedNativeHandle("vp_ping")
+        pingLabel = VP_NATIVE_PING_NAME .. "(getter)"
+    end
+
     if type(pingFn) ~= "function" then
         Debug.Print("[VP_PING] missing err=" .. VPValueToString(pingErr))
         return nil, pingErr
     end
 
-    local integrityOk, integrityErr = VPValidateNativeHandle("vp_ping", pingFn, pingTag, pingIdentity)
-    if not integrityOk then
+    local integrityOk = true
+    local integrityErr = nil
+    if pingLabel ~= VP_NATIVE_PING_NAME .. "(direct)" then
+        integrityOk, integrityErr = VPValidateNativeHandle("vp_ping", pingFn, pingTag, pingIdentity)
+    end
+    if integrityOk == false then
         Debug.Print("[VP_PING] invalid err=" .. VPValueToString(integrityErr))
         return nil, integrityErr
     end
 
     local pingResult = pingFn()
-    VPNativeLog("[VP_PING] result", VPValueToString(pingResult), "helper=" .. VP_NATIVE_PING_NAME, "tag=" .. VPValueToString(pingTag))
+    VPNativeLog("[VP_PING] result",
+        VPValueToString(pingResult),
+        "helper=" .. pingLabel,
+        "tag=" .. VPValueToString(pingTag),
+        "token=" .. VPValueToString(VPGetNativeContextToken()))
     Debug.Print("[VP_PING] result=" .. VPValueToString(pingResult))
     return pingResult, nil
 end
@@ -633,11 +685,27 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     callContext.executionTag = callContext.executionTag or tag
     callContext.luaContextTag = callContext.luaContextTag or VPGetLuaContextTag()
 
-    local castLabel = VP_NATIVE_CAST_NAME .. "(native)"
-    local castFn, castTag, castIdentity, castResolveErr = VPGetCachedNativeHandle("vp_cast")
+    local contextToken = VPGetNativeContextToken()
+    local directCastFn = VPResolveDirectNativeFunction(VP_NATIVE_CAST_NAME)
+    local castLabel = VP_NATIVE_CAST_NAME .. "(direct)"
+    local castFn = directCastFn
+    local castTag = nil
+    local castIdentity = nil
+    local castResolveErr = nil
+    local castFromGetter = false
+    if type(castFn) == "function" then
+        castTag = "direct:" .. VPValueToString(tostring(castFn))
+        castIdentity = tostring(castFn)
+    else
+        castLabel = VP_NATIVE_CAST_NAME .. "(getter)"
+        castFn, castTag, castIdentity, castResolveErr = VPGetCachedNativeHandle("vp_cast")
+        castFromGetter = true
+    end
     local getterFn, getterErr = VPResolveNativeGetter()
     local getterWhat = VPGetFunctionWhat(getterFn)
     local candidateSummary = {
+        "token=" .. VPValueToString(contextToken),
+        VPDescribeCandidate(VP_NATIVE_CAST_NAME, directCastFn),
         VPDescribeCandidate(VP_NATIVE_GETTER_NAME, getterFn),
         "getter.err=" .. VPValueToString(getterErr),
         "getter.what=" .. VPValueToString(getterWhat),
@@ -651,7 +719,8 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         tostring(tag),
         "spell=" .. tostring(spellId),
         "ctx=" .. tostring(callContext.executionTag),
-        "targetId=" .. tostring(targetId))
+        "targetId=" .. tostring(targetId),
+        "token=" .. VPValueToString(contextToken))
     VPNativeLog("[VPSpell] cast candidates", tostring(tag), table.concat(candidateSummary, " | "))
     Debug.Print("[VPSpell] cast candidates " .. table.concat(candidateSummary, " | "))
     VPLogSpellState(tag .. ":before", spellId)
@@ -677,8 +746,12 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         rawset(_G, "uow_vp_cast_active", helperSourceTag)
     end
 
-    local integrityOk, integrityErr = VPValidateNativeHandle("vp_cast", castFn, castTag, castIdentity)
-    if not integrityOk then
+    local integrityOk = true
+    local integrityErr = nil
+    if castFromGetter then
+        integrityOk, integrityErr = VPValidateNativeHandle("vp_cast", castFn, castTag, castIdentity)
+    end
+    if integrityOk == false then
         local tamperedMsg = integrityErr or "cast_helper_tampered"
         VPEmitUiLog("VP_CAST " .. tamperedMsg)
         VPNativeLog("[VPSpell] cast fail", tostring(tag), tamperedMsg, "tag=" .. VPValueToString(castTag))
@@ -688,8 +761,15 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
 
     local passSourceTag = VPShouldPassCastSourceTag(castLabel)
     VPLogFunctionIdentity(tag, castLabel, castFn, passSourceTag)
-    VPNativeLog("[VPSpell] native handle", tostring(tag), "helper=" .. VPValueToString(castLabel), "tag=" .. VPValueToString(castTag))
+    VPNativeLog("[VPSpell] native handle",
+        tostring(tag),
+        "helper=" .. VPValueToString(castLabel),
+        "tag=" .. VPValueToString(castTag),
+        "token=" .. VPValueToString(contextToken))
     VPNativeLog("[VP_NATIVE_TEST] getter=" .. VPValueToString(VP_NATIVE_GETTER_NAME)
+        .. " token=" .. VPValueToString(contextToken)
+        .. " directFn=" .. VPValueToString(directCastFn)
+        .. " directWhat=" .. VPValueToString(VPGetFunctionWhat(directCastFn))
         .. " getterFn=" .. VPValueToString(getterFn)
         .. " getterWhat=" .. VPValueToString(getterWhat)
         .. " fn=" .. VPValueToString(castFn)

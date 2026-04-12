@@ -979,6 +979,146 @@ static bool RegisterLuaPathSafe(lua_State* L, lua_CFunction fn, const char* name
     return true;
 }
 
+static void InstallNativeContextToken(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+
+    static std::atomic<uintptr_t> s_lastState{0};
+    static std::atomic<unsigned long> s_epoch{0};
+
+    const uintptr_t stateKey = reinterpret_cast<uintptr_t>(L);
+    uintptr_t priorState = s_lastState.load(std::memory_order_acquire);
+    unsigned long epoch = s_epoch.load(std::memory_order_acquire);
+    if (priorState != stateKey || epoch == 0) {
+        epoch = s_epoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+        s_lastState.store(stateKey, std::memory_order_release);
+    }
+
+    DWORD ownerThreadId = Util::OwnerPump::GetOwnerThreadId();
+    if (!ownerThreadId)
+        ownerThreadId = GetCurrentThreadId();
+
+    char token[128];
+    sprintf_s(token,
+              sizeof(token),
+              "%p:%u:%lu",
+              L,
+              ownerThreadId,
+              epoch);
+
+    int top = lua_gettop(L);
+    __try {
+        lua_pushlstring(L, token, strlen(token));
+        lua_setglobal(L, "__uow_context_token_v1");
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("[LuaContext] failed to install __uow_context_token_v1");
+        lua_settop(L, top);
+        return;
+    }
+    lua_settop(L, top);
+
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaContext] __uow_context_token_v1=%s reason=%s caller=%u owner=%u",
+              token,
+              reason ? reason : "<none>",
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
+}
+
+static void RunNativeGetterSelfTest(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+
+    static std::atomic<uintptr_t> s_lastTestState{0};
+    const uintptr_t stateKey = reinterpret_cast<uintptr_t>(L);
+    uintptr_t expected = 0;
+    if (!s_lastTestState.compare_exchange_strong(expected, stateKey, std::memory_order_acq_rel)) {
+        if (expected == stateKey)
+            return;
+        s_lastTestState.store(stateKey, std::memory_order_release);
+    }
+
+    int top = lua_gettop(L);
+    __try {
+        lua_getglobal(L, "__uow_native_get_v1");
+        const int getterType = lua_type(L, -1);
+        const bool getterIsFn = (getterType == LUA_TFUNCTION);
+        const bool getterIsC = getterIsFn && (lua_iscfunction(L, -1) != 0);
+        void* getterPtr = getterIsC ? reinterpret_cast<void*>(lua_tocfunction(L, -1)) : nullptr;
+
+        if (!getterIsFn) {
+            char miss[256];
+            sprintf_s(miss,
+                      sizeof(miss),
+                      "[LuaSelfTest] __uow_native_get_v1 unavailable reason=%s type=%s L=%p",
+                      reason ? reason : "<none>",
+                      lua_typename(L, getterType),
+                      L);
+            WriteRawLog(miss);
+            lua_settop(L, top);
+            return;
+        }
+
+        lua_pushlstring(L, "vp_cast", 7);
+        const int rc = lua_pcall(L, 1, 2, 0);
+        if (rc != 0) {
+            size_t errLen = 0;
+            const char* errText = lua_tolstring(L, -1, &errLen);
+            char fail[320];
+            sprintf_s(fail,
+                      sizeof(fail),
+                      "[LuaSelfTest] __uow_native_get_v1('vp_cast') rc=%d reason=%s getterIsC=%d getterPtr=%p err=%.*s",
+                      rc,
+                      reason ? reason : "<none>",
+                      getterIsC ? 1 : 0,
+                      getterPtr,
+                      static_cast<int>(errLen),
+                      errText ? errText : "");
+            WriteRawLog(fail);
+            lua_settop(L, top);
+            return;
+        }
+
+        const int fnType = lua_type(L, -2);
+        const int tagType = lua_type(L, -1);
+        const bool fnIsC = (fnType == LUA_TFUNCTION) && (lua_iscfunction(L, -2) != 0);
+        void* fnPtr = fnIsC ? reinterpret_cast<void*>(lua_tocfunction(L, -2)) : nullptr;
+        size_t tagLen = 0;
+        const char* tagText = lua_tolstring(L, -1, &tagLen);
+
+        char ok[384];
+        sprintf_s(ok,
+                  sizeof(ok),
+                  "[LuaSelfTest] __uow_native_get_v1('vp_cast') reason=%s getterIsC=%d getterPtr=%p fnType=%s fnIsC=%d fnPtr=%p tagType=%s tag=%.*s",
+                  reason ? reason : "<none>",
+                  getterIsC ? 1 : 0,
+                  getterPtr,
+                  lua_typename(L, fnType),
+                  fnIsC ? 1 : 0,
+                  fnPtr,
+                  lua_typename(L, tagType),
+                  static_cast<int>(tagLen),
+                  tagText ? tagText : "");
+        WriteRawLog(ok);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaSelfTest] exception during __uow_native_get_v1 self-test reason=%s L=%p",
+                  reason ? reason : "<none>",
+                  L);
+        WriteRawLog(buf);
+    }
+    lua_settop(L, top);
+}
+
 static void LogLuaFunctionBinding(lua_State* L, const char* stage, const char* path)
 {
     if (!L || !path || !*path)
@@ -4077,6 +4217,9 @@ static void EnsureDirectLuaGlobals(lua_State* L)
             WriteRawLog(buf);
         }
     }
+
+    InstallNativeContextToken(L, "EnsureDirectLuaGlobals");
+    RunNativeGetterSelfTest(L, "EnsureDirectLuaGlobals");
 }
 
 static void ForceWalkBinding(lua_State* L, const char* reason)
