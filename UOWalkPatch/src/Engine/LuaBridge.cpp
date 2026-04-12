@@ -566,6 +566,7 @@ static int __cdecl Lua_TextLogAddSingleByteEntry_W(lua_State* L);
 static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L);
 static int __cdecl Lua_uow_spell_cast_global(lua_State* L);
 static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L);
+static int __cdecl Lua_uow_get_native(lua_State* L);
 static int __cdecl Lua_uow_vp_cast(lua_State* L);
 static int __cdecl Lua_uow_vp_ping(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L);
@@ -643,6 +644,59 @@ static int PushLuaCommandResult(lua_State* L, bool ok, const std::string& msg)
         lua_pushlstring(L, "", 0);
     else
         lua_pushlstring(L, msg.c_str(), msg.size());
+    return 2;
+}
+
+static int __cdecl Lua_uow_get_native(lua_State* L)
+{
+    const std::string name = ReadOptionalString(L, 1);
+    lua_CFunction fn = nullptr;
+    const char* canonical = nullptr;
+
+    if (name == "vp_cast") {
+        fn = Lua_uow_vp_cast;
+        canonical = "vp_cast";
+    } else if (name == "vp_ping") {
+        fn = Lua_uow_vp_ping;
+        canonical = "vp_ping";
+    } else if (name == "debug_log") {
+        fn = Lua_UOW_Debug_log;
+        canonical = "debug_log";
+    }
+
+    if (!L)
+        return 0;
+
+    if (!fn || !canonical) {
+        char miss[192];
+        sprintf_s(miss,
+                  sizeof(miss),
+                  "[Lua] uow_get_native missing name=%s caller=%u owner=%u",
+                  name.empty() ? "<none>" : name.c_str(),
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId());
+        WriteRawLog(miss);
+        lua_pushnil(L);
+        static const char kUnknown[] = "unknown_native";
+        lua_pushlstring(L, kUnknown, sizeof(kUnknown) - 1);
+        return 2;
+    }
+
+    char tag[128];
+    sprintf_s(tag, sizeof(tag), "%s:cfn=%p", canonical, reinterpret_cast<const void*>(fn));
+
+    char hit[224];
+    sprintf_s(hit,
+              sizeof(hit),
+              "[Lua] uow_get_native name=%s tag=%s caller=%u owner=%u",
+              canonical,
+              tag,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(hit);
+
+    lua_pushcfunction(L, fn);
+    lua_pushlstring(L, tag, strlen(tag));
     return 2;
 }
 
@@ -968,6 +1022,7 @@ static void LogSpellHelperBindings(lua_State* L, const char* stage)
     static const char* const kPaths[] = {
         "uow_spell_cast",
         "uow_spell_cast_on_id",
+        "uow_get_native",
         "uow_vp_cast",
         "uow_vp_ping",
         "uow_debug_log",
@@ -3995,6 +4050,7 @@ static void EnsureDirectLuaGlobals(lua_State* L)
         // depending on the client's dotted-name registration behavior.
         {Lua_uow_spell_cast_global, "uow_spell_cast"},
         {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
+        {Lua_uow_get_native, "uow_get_native"},
         {Lua_uow_vp_cast, "uow_vp_cast"},
         {Lua_uow_vp_ping, "uow_vp_ping"},
         {Lua_UOW_Debug_log, "uow_debug_log"},
@@ -5291,6 +5347,8 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_UOFlow_Spell_cast_on_id, "uow.cmd.cast_on_id"},
         {Lua_uow_spell_cast_global, "uow_spell_cast"},
         {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
+        {Lua_uow_get_native, "uow_get_native"},
+        {Lua_uow_get_native, "uow.get_native"},
         {Lua_uow_vp_cast, "uow_vp_cast"},
         {Lua_uow_vp_ping, "uow_vp_ping"},
         {Lua_UOFlow_Target_commit_obj, "uow.cmd.commit_obj"},

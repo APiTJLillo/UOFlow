@@ -92,6 +92,62 @@ local function VPNativeLog(...)
     return nil
 end
 
+local g_vpNativeHandles = {
+    getter = nil,
+    vp_cast = nil,
+    vp_cast_tag = nil,
+    vp_cast_identity = nil,
+    vp_ping = nil,
+    vp_ping_tag = nil,
+    vp_ping_identity = nil,
+}
+
+local function VPResolveNativeGetter()
+    if type(g_vpNativeHandles.getter) == "function" then
+        return g_vpNativeHandles.getter
+    end
+
+    local getter = nil
+    if type(_G) == "table" then
+        getter = rawget(_G, "uow_get_native")
+    end
+    if type(getter) ~= "function" and type(uow_get_native) == "function" then
+        getter = uow_get_native
+    end
+    if type(getter) ~= "function" and type(uow) == "table" and type(uow.get_native) == "function" then
+        getter = uow.get_native
+    end
+
+    if type(getter) == "function" then
+        g_vpNativeHandles.getter = getter
+    end
+    return getter
+end
+
+local function VPGetCachedNativeHandle(key)
+    local cachedFn = g_vpNativeHandles[key]
+    local cachedTag = g_vpNativeHandles[key .. "_tag"]
+    local cachedIdentity = g_vpNativeHandles[key .. "_identity"]
+    if type(cachedFn) == "function" then
+        return cachedFn, cachedTag, cachedIdentity, nil
+    end
+
+    local getter = VPResolveNativeGetter()
+    if type(getter) ~= "function" then
+        return nil, nil, nil, "native_getter_missing"
+    end
+
+    local fn, tag = getter(key)
+    if type(fn) ~= "function" then
+        return nil, nil, nil, "native_handle_missing key=" .. VPValueToString(key) .. " tag=" .. VPValueToString(tag)
+    end
+
+    g_vpNativeHandles[key] = fn
+    g_vpNativeHandles[key .. "_tag"] = tag
+    g_vpNativeHandles[key .. "_identity"] = tostring(fn)
+    return fn, tag, g_vpNativeHandles[key .. "_identity"], nil
+end
+
 local function VPEmitUiLog(message)
     local text = VPValueToString(message)
     VPNativeLog(text)
@@ -265,18 +321,49 @@ local function VPLogFunctionIdentity(tag, helperLabel, fn, passSourceTag)
     Debug.Print(message)
 end
 
-local function VPInvokeNativePing(globalTable)
-    local pingFn = type(globalTable) == "table" and rawget(globalTable, "uow_vp_ping") or nil
-    if type(pingFn) ~= "function" and type(uow_vp_ping) == "function" then
-        pingFn = uow_vp_ping
+local function VPValidateNativeHandle(key, fn, expectedTag, expectedIdentity)
+    if type(fn) ~= "function" then
+        return false, "cast_helper_tampered key=" .. VPValueToString(key) .. " type=" .. VPValueToString(type(fn))
     end
 
+    local what = "<nil>"
+    if type(debug) == "table" and type(debug.getinfo) == "function" then
+        local info = debug.getinfo(fn)
+        if type(info) == "table" then
+            what = VPValueToString(info.what)
+        end
+    end
+
+    if what ~= "C" then
+        return false, "cast_helper_tampered key=" .. VPValueToString(key) .. " what=" .. VPValueToString(what)
+    end
+
+    local currentIdentity = tostring(fn)
+    if expectedIdentity and currentIdentity ~= expectedIdentity then
+        return false, "cast_helper_tampered key=" .. VPValueToString(key)
+            .. " identity=" .. VPValueToString(currentIdentity)
+            .. " expected=" .. VPValueToString(expectedIdentity)
+            .. " tag=" .. VPValueToString(expectedTag)
+    end
+
+    return true, nil
+end
+
+local function VPInvokeNativePing()
+    local pingFn, pingTag, pingIdentity, pingErr = VPGetCachedNativeHandle("vp_ping")
     if type(pingFn) ~= "function" then
-        Debug.Print("[VP_PING] missing")
-        return nil, "missing"
+        Debug.Print("[VP_PING] missing err=" .. VPValueToString(pingErr))
+        return nil, pingErr
+    end
+
+    local integrityOk, integrityErr = VPValidateNativeHandle("vp_ping", pingFn, pingTag, pingIdentity)
+    if not integrityOk then
+        Debug.Print("[VP_PING] invalid err=" .. VPValueToString(integrityErr))
+        return nil, integrityErr
     end
 
     local pingResult = pingFn()
+    VPNativeLog("[VP_PING] result", VPValueToString(pingResult), "tag=" .. VPValueToString(pingTag))
     Debug.Print("[VP_PING] result=" .. VPValueToString(pingResult))
     return pingResult, nil
 end
@@ -519,32 +606,13 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     callContext.executionTag = callContext.executionTag or tag
     callContext.luaContextTag = callContext.luaContextTag or VPGetLuaContextTag()
 
-    local env = nil
-    if type(getfenv) == "function" then
-        local value = getfenv(1)
-        if type(value) == "table" then
-            env = value
-        end
-    end
-
-    local globalTable = _G
-    if not globalTable and env and type(env._G) == "table" then
-        globalTable = env._G
-    end
-
-    local castCandidates = {
-        { label = "uow_vp_cast(raw _G)", fn = globalTable and VPLookupRawFunction(globalTable, "uow_vp_cast") or nil },
-        { label = "uow_vp_cast(global)", fn = type(uow_vp_cast) == "function" and uow_vp_cast or nil },
-    }
-    local castLabel = nil
-    local castFn = nil
+    local castLabel = "uow_vp_cast(native)"
+    local castFn, castTag, castIdentity, castResolveErr = VPGetCachedNativeHandle("vp_cast")
     local candidateSummary = {
-        VPDescribeCandidate("env", env),
-        VPDescribeCandidate("_G", globalTable),
-        VPDescribeCandidate("uow_vp_ping(raw _G)", globalTable and rawget(globalTable, "uow_vp_ping") or nil),
-        VPDescribeCandidate("uow_vp_ping(global)", type(uow_vp_ping) == "function" and uow_vp_ping or nil),
-        VPDescribeCandidate("uow_vp_cast(raw _G)", castCandidates[1].fn),
-        VPDescribeCandidate("uow_vp_cast(global)", castCandidates[2].fn),
+        VPDescribeCandidate("uow_get_native", VPResolveNativeGetter()),
+        "vp_cast.tag=" .. VPValueToString(castTag),
+        "vp_cast.identity=" .. VPValueToString(castIdentity),
+        VPDescribeCandidate(castLabel, castFn),
     }
 
     VPNativeLog("[VPSpell] cast begin",
@@ -555,18 +623,10 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     VPNativeLog("[VPSpell] cast candidates", tostring(tag), table.concat(candidateSummary, " | "))
     Debug.Print("[VPSpell] cast candidates " .. table.concat(candidateSummary, " | "))
     VPLogSpellState(tag .. ":before", spellId)
-    VPInvokeNativePing(globalTable)
-
-    for _, candidate in ipairs(castCandidates) do
-        if type(candidate.fn) == "function" then
-            castLabel = candidate.label
-            castFn = candidate.fn
-            break
-        end
-    end
+    VPInvokeNativePing()
 
     if type(castFn) ~= "function" then
-        local missingMsg = "cast_helper_missing helper=uow_vp_cast(raw _G/global)"
+        local missingMsg = "cast_helper_missing helper=uow_get_native(vp_cast) err=" .. VPValueToString(castResolveErr)
         VPEmitUiLog("VP_CAST " .. missingMsg)
         VPNativeLog("[VPSpell] cast fail", tostring(tag), missingMsg)
         VPLogSpellState(tag .. ":after", spellId)
@@ -585,14 +645,19 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         rawset(_G, "uow_vp_cast_active", helperSourceTag)
     end
 
+    local integrityOk, integrityErr = VPValidateNativeHandle("vp_cast", castFn, castTag, castIdentity)
+    if not integrityOk then
+        local tamperedMsg = integrityErr or "cast_helper_tampered"
+        VPEmitUiLog("VP_CAST " .. tamperedMsg)
+        VPNativeLog("[VPSpell] cast fail", tostring(tag), tamperedMsg, "tag=" .. VPValueToString(castTag))
+        VPLogSpellState(tag .. ":after", spellId)
+        return false, tamperedMsg, nil, false
+    end
+
     local passSourceTag = VPShouldPassCastSourceTag(castLabel)
     VPLogFunctionIdentity(tag, castLabel, castFn, passSourceTag)
-    if type(globalTable) == "table" then
-        local nativeProbe = rawget(globalTable, "uow_debug_log")
-        if type(nativeProbe) == "function" then
-            nativeProbe("[VP_NATIVE_TEST] before cast helper=" .. tostring(castLabel))
-        end
-    end
+    VPNativeLog("[VPSpell] native handle", tostring(tag), "helper=" .. VPValueToString(castLabel), "tag=" .. VPValueToString(castTag))
+    VPNativeLog("[VP_NATIVE_TEST] before cast helper=" .. tostring(castLabel) .. " tag=" .. VPValueToString(castTag))
     if passSourceTag then
         ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, helperSourceTag)
     else
