@@ -89,24 +89,37 @@ namespace {
     std::atomic<bool> g_gameplayLuaConfirmed{false};
 
     struct ObservedContext {
-        void* ctx;
-        unsigned flags;
+        void* ctx = nullptr;
+        unsigned flags = 0;
+        uintptr_t lastLuaState = 0;
+        DWORD firstSeenTick = 0;
+        DWORD lastLuaStateChangeTick = 0;
+        DWORD coreReadyTick = 0;
     };
 
     static constexpr size_t kMaxObservedContexts = 8;
-static ObservedContext g_observedContexts[kMaxObservedContexts]{};
+    static ObservedContext g_observedContexts[kMaxObservedContexts]{};
 
-enum ContextLogBits : unsigned {
-    kLogWalk = 1u << 0,
-    kLogBindWalk = 1u << 1,
-};
+    enum ContextLogBits : unsigned {
+        kLogWalk = 1u << 0,
+        kLogBindWalk = 1u << 1,
+        kCtxHasCastSpell = 1u << 8,
+        kCtxHasRequestTargetInfo = 1u << 9,
+        kCtxHasClearCurrentTarget = 1u << 10,
+    };
+    static constexpr unsigned kGameplayContextMask =
+        kCtxHasCastSpell | kCtxHasRequestTargetInfo | kCtxHasClearCurrentTarget;
+    static constexpr DWORD kGameplayLuaStableMs = 400;
 
     static volatile LONG g_pendingRegistration = 0;
     static thread_local bool g_inScriptRegistration = false;
     static std::atomic<void*> g_bootstrapObservedContext{nullptr};
+    static std::atomic<uintptr_t> g_bootstrapObservedLuaState{0};
     static std::atomic<uint32_t> g_bootstrapEpoch{0};
     static std::atomic<uint32_t> g_bootstrapDoneEpoch{0};
     static std::atomic<DWORD> g_bootstrapNextAttemptTick{0};
+    static std::atomic<void*> g_bootstrapReadyContext{nullptr};
+    static std::atomic<uintptr_t> g_bootstrapReadyLuaState{0};
 
     // Late-install control for action wrappers
     static volatile LONG g_actionWrappersInstalled = 0;
@@ -588,6 +601,19 @@ static int __cdecl Lua_UOFlow_status(lua_State* L);
 static void InstallNativeContextToken(lua_State* L, const char* reason);
 static void InstallNativeBridgeTable(lua_State* L, const char* reason);
 static void EnsureReplayHelper(lua_State* L);
+static void* CurrentScriptContext();
+static void* CanonicalOwnerContext();
+static ObservedContext* FindObservedContext(void* ctx);
+static ObservedContext* EnsureObservedContext(void* ctx, bool* isNew = nullptr);
+static void UpdateObservedContextGameplayFlags(ObservedContext* slot, const char* name);
+static void UpdateObservedContextLuaState(ObservedContext* slot, lua_State* L, const char* reason);
+static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool verbose = false);
+static bool IsBootstrapReadyFor(void* ctx, lua_State* L);
+static bool IsGameplayLuaReady(lua_State* L, const char* reason);
+static bool ResolveGameplayScriptContext(lua_State* L,
+                                         void* preferredCtx,
+                                         void** outCtx,
+                                         const char* reason);
 static void PromoteGameplayOwnerFromLiveCallback(const char* reason);
 static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reasonTag);
 
@@ -808,28 +834,72 @@ static void LogNativeBridgeState(const char* label, const char* reason, const Na
     WriteRawLog(buf);
 }
 
-static bool EnsureNativeBridgeHealthy(lua_State* L, const char* reason, bool forceLog)
+static bool EnsureNativeBridgeHealthy(lua_State* L, const char* reason, bool forceLog, bool allowRepair)
 {
     if (!L)
         return false;
 
-    NativeBridgeState state;
-    CaptureNativeBridgeState(L, &state);
-    bool healthy = NativeBridgeIsHealthy(state);
-    if (healthy) {
-        if (forceLog)
-            LogNativeBridgeState("ok", reason, state);
-        return true;
+    void* ctx = nullptr;
+    ResolveGameplayScriptContext(L, CurrentScriptContext(), &ctx, reason ? reason : "bridge_health");
+    if (!ctx)
+        ctx = CanonicalOwnerContext();
+
+    if (allowRepair) {
+        if (!IsGameplayContext(ctx, L, reason ? reason : "bridge_health", forceLog))
+            return false;
+    } else if (!IsBootstrapReadyFor(ctx, L)) {
+        if (forceLog) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[LuaBridgeHealth] not_ready reason=%s ctx=%p L=%p caller=%u owner=%u",
+                      reason ? reason : "<none>",
+                      ctx,
+                      L,
+                      GetCurrentThreadId(),
+                      Util::OwnerPump::GetOwnerThreadId());
+            WriteRawLog(buf);
+        }
+        return false;
     }
 
-    LogNativeBridgeState("drift", reason, state);
-    InstallNativeContextToken(L, reason ? reason : "bridge_repair");
-    InstallNativeBridgeTable(L, reason ? reason : "bridge_repair");
-    NativeBridgeState repairedState;
-    CaptureNativeBridgeState(L, &repairedState);
-    const bool repaired = NativeBridgeIsHealthy(repairedState);
-    LogNativeBridgeState(repaired ? "repaired" : "repair_failed", reason, repairedState);
-    return repaired;
+    DWORD sehCode = 0;
+    __try {
+        NativeBridgeState state;
+        CaptureNativeBridgeState(L, &state);
+        const bool healthy = NativeBridgeIsHealthy(state);
+        if (healthy) {
+            if (forceLog)
+                LogNativeBridgeState("ok", reason, state);
+            return true;
+        }
+
+        LogNativeBridgeState(allowRepair ? "drift" : "read_only_drift", reason, state);
+        if (!allowRepair)
+            return false;
+
+        InstallNativeContextToken(L, reason ? reason : "bridge_repair");
+        InstallNativeBridgeTable(L, reason ? reason : "bridge_repair");
+        NativeBridgeState repairedState;
+        CaptureNativeBridgeState(L, &repairedState);
+        const bool repaired = NativeBridgeIsHealthy(repairedState);
+        LogNativeBridgeState(repaired ? "repaired" : "repair_failed", reason, repairedState);
+        return repaired;
+    }
+    __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaBridgeHealth] exception reason=%s code=0x%08lX ctx=%p L=%p caller=%u owner=%u",
+                  reason ? reason : "<none>",
+                  static_cast<unsigned long>(sehCode),
+                  ctx,
+                  L,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId());
+        WriteRawLog(buf);
+        return false;
+    }
 }
 
 static int __cdecl Lua_uow_get_native(lua_State* L)
@@ -854,6 +924,26 @@ static int __cdecl Lua_uow_get_native(lua_State* L)
 
     if (!L)
         return 0;
+
+    void* ctx = nullptr;
+    ResolveGameplayScriptContext(L, CurrentScriptContext(), &ctx, "__uow_native_get_v1");
+    if (!ctx)
+        ctx = CanonicalOwnerContext();
+    if (!IsBootstrapReadyFor(ctx, L)) {
+        char pending[224];
+        sprintf_s(pending,
+                  sizeof(pending),
+                  "[Lua] __uow_native_get_v1 blocked name=%s reason=not_ready caller=%u owner=%u L=%p",
+                  name.empty() ? "<none>" : name.c_str(),
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId(),
+                  L);
+        WriteRawLog(pending);
+        lua_pushnil(L);
+        static const char kNotReady[] = "not_ready";
+        lua_pushlstring(L, kNotReady, sizeof(kNotReady) - 1);
+        return 2;
+    }
 
     if (!fn || !canonical) {
         char miss[192];
@@ -902,7 +992,25 @@ static int __cdecl Lua_uow_bridge_health(lua_State* L)
         ProbeGameplayBindingBootstrap(L, "__uow_bridge_health_v1");
     }
 
-    const bool healthy = EnsureNativeBridgeHealthy(L, tag, true);
+    void* ctx = nullptr;
+    ResolveGameplayScriptContext(L, CurrentScriptContext(), &ctx, tag);
+    if (!ctx)
+        ctx = CanonicalOwnerContext();
+    if (!IsBootstrapReadyFor(ctx, L)) {
+        char pending[320];
+        sprintf_s(pending,
+                  sizeof(pending),
+                  "[Lua] __uow_bridge_health_v1 reason=%s ready=0 bridge=%p castTag=not_ready caller=%u owner=%u L=%p",
+                  tag,
+                  nullptr,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId(),
+                  L);
+        WriteRawLog(pending);
+        return PushLuaCommandResult(L, false, "not_ready");
+    }
+
+    const bool healthy = EnsureNativeBridgeHealthy(L, tag, true, false);
     NativeBridgeState state;
     CaptureNativeBridgeState(L, &state);
     std::string castTag = BuildBridgeCastTag(state);
@@ -989,6 +1097,12 @@ static int CallSavedOriginal(lua_State* L, const char* savedName);
 static void MaybeUpdateOwnerContext(void* ctx);
 static void* CurrentScriptContext();
 static void* CanonicalOwnerContext();
+static ObservedContext* FindObservedContext(void* ctx);
+static ObservedContext* EnsureObservedContext(void* ctx, bool* isNew);
+static void UpdateObservedContextGameplayFlags(ObservedContext* slot, const char* name);
+static void UpdateObservedContextLuaState(ObservedContext* slot, lua_State* L, const char* reason);
+static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool verbose);
+static bool IsBootstrapReadyFor(void* ctx, lua_State* L);
 static uint32_t NextCastToken();
 static uint32_t CurrentCastToken();
 static void UowTracePushSpell(int spell);
@@ -1811,6 +1925,181 @@ static bool ResolveGameplayScriptContext(lua_State* L,
                                          void** outCtx,
                                          const char* reason);
 
+static ObservedContext* FindObservedContext(void* ctx)
+{
+    if (!ctx)
+        return nullptr;
+    for (size_t i = 0; i < kMaxObservedContexts; ++i) {
+        if (g_observedContexts[i].ctx == ctx)
+            return &g_observedContexts[i];
+    }
+    return nullptr;
+}
+
+static ObservedContext* EnsureObservedContext(void* ctx, bool* isNew)
+{
+    if (isNew)
+        *isNew = false;
+    if (!ctx)
+        return nullptr;
+
+    if (ObservedContext* slot = FindObservedContext(ctx))
+        return slot;
+
+    for (size_t i = 0; i < kMaxObservedContexts; ++i) {
+        if (!g_observedContexts[i].ctx) {
+            g_observedContexts[i].ctx = ctx;
+            g_observedContexts[i].flags = 0;
+            g_observedContexts[i].firstSeenTick = GetTickCount();
+            if (isNew)
+                *isNew = true;
+            return &g_observedContexts[i];
+        }
+    }
+    return nullptr;
+}
+
+static void UpdateObservedContextGameplayFlags(ObservedContext* slot, const char* name)
+{
+    if (!slot || !name)
+        return;
+
+    unsigned add = 0;
+    if (_stricmp(name, "UserActionCastSpell") == 0 || _stricmp(name, "UserActionCastSpellOnId") == 0)
+        add |= kCtxHasCastSpell;
+    else if (_stricmp(name, "RequestTargetInfo") == 0)
+        add |= kCtxHasRequestTargetInfo;
+    else if (_stricmp(name, "ClearCurrentTarget") == 0)
+        add |= kCtxHasClearCurrentTarget;
+
+    if (!add || ((slot->flags & add) == add))
+        return;
+
+    slot->flags |= add;
+    if (slot->coreReadyTick == 0 && (slot->flags & kGameplayContextMask) == kGameplayContextMask) {
+        slot->coreReadyTick = GetTickCount();
+        char buf[224];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[GameplayCtx] core funcs ready ctx=%p flags=0x%X",
+                  slot->ctx,
+                  slot->flags);
+        WriteRawLog(buf);
+    }
+}
+
+static void UpdateObservedContextLuaState(ObservedContext* slot, lua_State* L, const char* reason)
+{
+    if (!slot || !L)
+        return;
+
+    const uintptr_t stateKey = reinterpret_cast<uintptr_t>(L);
+    const DWORD now = GetTickCount();
+    if (slot->lastLuaState == stateKey) {
+        if (slot->lastLuaStateChangeTick == 0)
+            slot->lastLuaStateChangeTick = now;
+        return;
+    }
+
+    const uintptr_t previous = slot->lastLuaState;
+    slot->lastLuaState = stateKey;
+    slot->lastLuaStateChangeTick = now;
+
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[GameplayCtx] lua state %p -> %p ctx=%p via=%s",
+              reinterpret_cast<void*>(previous),
+              L,
+              slot->ctx,
+              reason ? reason : "<none>");
+    WriteRawLog(buf);
+}
+
+static bool IsBootstrapReadyFor(void* ctx, lua_State* L)
+{
+    if (!ctx || !L)
+        return false;
+    return g_bootstrapReadyContext.load(std::memory_order_acquire) == ctx &&
+           g_bootstrapReadyLuaState.load(std::memory_order_acquire) == reinterpret_cast<uintptr_t>(L);
+}
+
+static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool verbose)
+{
+    if (!ctx || !L)
+        return false;
+
+    ObservedContext* slot = FindObservedContext(ctx);
+    if (!slot)
+        return false;
+
+    UpdateObservedContextLuaState(slot, L, reason);
+
+    const DWORD now = GetTickCount();
+    const unsigned flags = slot->flags;
+    const unsigned missingMask = (kGameplayContextMask & ~flags);
+    if (missingMask != 0) {
+        static DWORD s_nextMissingCoreLogTick = 0;
+        if (verbose && now >= s_nextMissingCoreLogTick) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[GameplayCtx] reject ctx=%p reason=%s missing_core=0x%X flags=0x%X",
+                      ctx,
+                      reason ? reason : "<none>",
+                      missingMask,
+                      flags);
+            WriteRawLog(buf);
+            s_nextMissingCoreLogTick = now + 1000;
+        }
+        return false;
+    }
+
+    const DWORD stableSince = slot->lastLuaStateChangeTick;
+    if (slot->lastLuaState != reinterpret_cast<uintptr_t>(L) ||
+        stableSince == 0 ||
+        (now - stableSince) < kGameplayLuaStableMs) {
+        static DWORD s_nextStableLogTick = 0;
+        if (verbose && now >= s_nextStableLogTick) {
+            const DWORD elapsed = (stableSince == 0 || now < stableSince) ? 0 : (now - stableSince);
+            const DWORD remaining = (elapsed >= kGameplayLuaStableMs) ? 0 : (kGameplayLuaStableMs - elapsed);
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[GameplayCtx] reject ctx=%p reason=%s lua=%p stable_for=%lu remaining=%lu",
+                      ctx,
+                      reason ? reason : "<none>",
+                      L,
+                      static_cast<unsigned long>(elapsed),
+                      static_cast<unsigned long>(remaining));
+            WriteRawLog(buf);
+            s_nextStableLogTick = now + 1000;
+        }
+        return false;
+    }
+
+    const uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+    const uint32_t callerTid = GetCurrentThreadId();
+    if (ownerTid == 0 || ownerTid != callerTid) {
+        static DWORD s_nextOwnerLogTick = 0;
+        if (verbose && now >= s_nextOwnerLogTick) {
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[GameplayCtx] reject ctx=%p reason=%s owner_tid=%u caller_tid=%u",
+                      ctx,
+                      reason ? reason : "<none>",
+                      ownerTid,
+                      callerTid);
+            WriteRawLog(buf);
+            s_nextOwnerLogTick = now + 1000;
+        }
+        return false;
+    }
+
+    return true;
+}
+
 static void MaybeUpdateOwnerContext(void* ctx)
 {
     if (!ctx)
@@ -1842,45 +2131,51 @@ static void MaybeUpdateOwnerContext(void* ctx)
         char buf[160];
         sprintf_s(buf, sizeof(buf), "OwnerPump owner thread set: %u (ctx=%p)", currentTid, ctx);
         WriteRawLog(buf);
-        InstallUOFlowConsoleBindingsIfNeeded(ctx, "owner_context");
-        if (auto* L = static_cast<lua_State*>(Engine::LuaState())) {
-            ForceLateCastWrapInstall(L, "owner_context");
-        }
     }
 
     Engine::Lua::ScheduleCastWrapRetry("owner context");
 }
 
-static void NoteBootstrapContextObserved(void* ctx, const char* reason)
+static void NoteBootstrapContextObserved(void* ctx, lua_State* L, const char* reason)
 {
-    if (!ctx)
+    if (!ctx || !L)
         return;
 
-    void* previous = g_bootstrapObservedContext.exchange(ctx, std::memory_order_acq_rel);
-    if (previous == ctx)
+    const uintptr_t stateKey = reinterpret_cast<uintptr_t>(L);
+    void* previousCtx = g_bootstrapObservedContext.load(std::memory_order_acquire);
+    uintptr_t previousState = g_bootstrapObservedLuaState.load(std::memory_order_acquire);
+    if (previousCtx == ctx && previousState == stateKey)
         return;
+
+    g_bootstrapObservedContext.store(ctx, std::memory_order_release);
+    g_bootstrapObservedLuaState.store(stateKey, std::memory_order_release);
 
     const uint32_t epoch = g_bootstrapEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
     g_bootstrapDoneEpoch.store(0, std::memory_order_release);
     g_bootstrapNextAttemptTick.store(0, std::memory_order_release);
+    g_bootstrapReadyContext.store(nullptr, std::memory_order_release);
+    g_bootstrapReadyLuaState.store(0, std::memory_order_release);
     g_consoleBound = false;
     g_spellBindingReady.store(false, std::memory_order_release);
     g_replayHelperInstalled.store(false, std::memory_order_release);
 
-    char buf[256];
-    if (previous) {
+    char buf[320];
+    if (previousCtx || previousState != 0) {
         sprintf_s(buf,
                   sizeof(buf),
-                  "[Bootstrap] context switched %p -> %p via=%s epoch=%u",
-                  previous,
+                  "[Bootstrap] context switched ctx=%p->%p L=%p->%p via=%s epoch=%u",
+                  previousCtx,
                   ctx,
+                  reinterpret_cast<void*>(previousState),
+                  L,
                   reason ? reason : "<none>",
                   epoch);
     } else {
         sprintf_s(buf,
                   sizeof(buf),
-                  "[Bootstrap] context observed %p via=%s epoch=%u",
+                  "[Bootstrap] context observed ctx=%p L=%p via=%s epoch=%u",
                   ctx,
+                  L,
                   reason ? reason : "<none>",
                   epoch);
     }
@@ -1915,14 +2210,22 @@ static void LogBootstrapDoneOnce(void* ctx,
               reason ? reason : "<none>",
               epoch);
     WriteRawLog(buf);
+
+    if (bridgeOk && consoleOk && spellOk && replayOk) {
+        g_bootstrapReadyContext.store(ctx, std::memory_order_release);
+        uintptr_t stateKey = g_bootstrapObservedLuaState.load(std::memory_order_acquire);
+        if (!stateKey) {
+            if (auto* L = static_cast<lua_State*>(Engine::LuaState()))
+                stateKey = reinterpret_cast<uintptr_t>(L);
+        }
+        g_bootstrapReadyLuaState.store(stateKey, std::memory_order_release);
+    }
 }
 
 static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
 {
     if (!ctx)
         return;
-
-    NoteBootstrapContextObserved(ctx, reason);
 
     DWORD now = GetTickCount();
     DWORD nextTick = g_bootstrapNextAttemptTick.load(std::memory_order_acquire);
@@ -1937,6 +2240,11 @@ static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
         return;
 
     MaybeUpdateOwnerContext(ctx);
+    if (ObservedContext* slot = EnsureObservedContext(ctx))
+        UpdateObservedContextLuaState(slot, L, reason);
+    NoteBootstrapContextObserved(ctx, L, reason);
+    if (!IsGameplayContext(ctx, L, reason, true))
+        return;
     const uint32_t epoch = g_bootstrapEpoch.load(std::memory_order_acquire);
 
     Util::OwnerPump::Invoke("early_bootstrap", [ctx, epoch]() {
@@ -1950,17 +2258,19 @@ static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
             L = static_cast<lua_State*>(Engine::LuaState());
         if (!L)
             return;
-        if (!IsGameplayLuaReady(L, "early_bootstrap"))
-            return;
 
         MaybeUpdateOwnerContext(ctx);
+        if (ObservedContext* slot = EnsureObservedContext(ctx))
+            UpdateObservedContextLuaState(slot, L, "early_bootstrap");
+        if (!IsGameplayContext(ctx, L, "early_bootstrap", true))
+            return;
         const bool consoleOk = InstallUOFlowConsoleBindingsIfNeeded(ctx, "early_bootstrap", L);
         ForceSpellBinding(L, "early_bootstrap");
         EnsureReplayHelper(L);
-        const bool bridgeOk = EnsureNativeBridgeHealthy(L, "early_bootstrap", true);
+        const bool bridgeOk = EnsureNativeBridgeHealthy(L, "early_bootstrap", true, true);
         const bool spellOk = g_spellBindingReady.load(std::memory_order_acquire);
         const bool replayOk = g_replayHelperInstalled.load(std::memory_order_acquire);
-        if (consoleOk && spellOk && replayOk)
+        if (consoleOk && spellOk && replayOk && bridgeOk)
             LogBootstrapDoneOnce(ctx, "early_bootstrap", bridgeOk, consoleOk, spellOk, replayOk);
     });
 }
@@ -2016,8 +2326,8 @@ static void PromoteGameplayOwnerFromLiveCallback(const char* reason)
         WriteRawLog(buf);
     }
 
-    if (auto* L = static_cast<lua_State*>(Engine::LuaState()))
-        EnsureNativeBridgeHealthy(L, tag, false);
+    if (ctx)
+        MaybeRunEarlyBootstrap(ctx, tag);
 }
 
 static std::optional<bool> ReadBoolOption(const char* cfgKey, const char* envKey)
@@ -4687,6 +4997,13 @@ static void EnsureDirectLuaGlobals(lua_State* L)
     if (!L)
         return;
 
+    void* ctx = nullptr;
+    ResolveGameplayScriptContext(L, CurrentScriptContext(), &ctx, "EnsureDirectLuaGlobals");
+    if (!ctx)
+        ctx = CanonicalOwnerContext();
+    if (!IsGameplayContext(ctx, L, "EnsureDirectLuaGlobals", true))
+        return;
+
     struct DirectBinding {
         lua_CFunction fn;
         const char* name;
@@ -4722,7 +5039,7 @@ static void EnsureDirectLuaGlobals(lua_State* L)
 
     InstallNativeContextToken(L, "EnsureDirectLuaGlobals");
     InstallNativeBridgeTable(L, "EnsureDirectLuaGlobals");
-    EnsureNativeBridgeHealthy(L, "EnsureDirectLuaGlobals", true);
+    EnsureNativeBridgeHealthy(L, "EnsureDirectLuaGlobals", true, true);
     RunNativeBridgeSelfTest(L, "EnsureDirectLuaGlobals");
     RunNativeGetterSelfTest(L, "EnsureDirectLuaGlobals");
 }
@@ -4777,6 +5094,10 @@ static void ForceSpellBinding(lua_State* L, const char* reason)
     if (!ResolveGameplayScriptContext(L, g_clientContext, &gameplayCtx, tag))
         return;
     g_clientContext = gameplayCtx;
+    if (ObservedContext* slot = EnsureObservedContext(gameplayCtx))
+        UpdateObservedContextLuaState(slot, L, tag);
+    if (!IsGameplayContext(gameplayCtx, L, tag, true))
+        return;
     char buf[224];
     sprintf_s(buf, sizeof(buf), "%s: ensuring UOW.Spell.cast binding (ctx=%p)", tag, gameplayCtx);
     WriteRawLog(buf);
@@ -4810,6 +5131,13 @@ static void EnsureReplayHelper(lua_State* L)
     if (!IsGameplayLuaReady(L, "replay_helper"))
         return;
     if (g_replayHelperInstalled.load(std::memory_order_acquire))
+        return;
+    void* gameplayCtx = nullptr;
+    if (!ResolveGameplayScriptContext(L, CanonicalOwnerContext(), &gameplayCtx, "replay_helper"))
+        return;
+    if (ObservedContext* slot = EnsureObservedContext(gameplayCtx))
+        UpdateObservedContextLuaState(slot, L, "replay_helper");
+    if (!IsGameplayContext(gameplayCtx, L, "replay_helper", true))
         return;
     bool ok = RegisterViaClient(L, Lua_uow_cast_spell_and_target, "uow_cast_spell_and_target");
     if (!ok)
@@ -4859,37 +5187,6 @@ static bool ResolveRegisterFunction()
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
 {
-    auto ensureContextSlot = [](void* context, bool* isNew) -> ObservedContext* {
-        if (!context) {
-            if (isNew) {
-                *isNew = false;
-            }
-            return nullptr;
-        }
-        for (size_t i = 0; i < kMaxObservedContexts; ++i) {
-            if (g_observedContexts[i].ctx == context) {
-                if (isNew) {
-                    *isNew = false;
-                }
-                return &g_observedContexts[i];
-            }
-        }
-        for (size_t i = 0; i < kMaxObservedContexts; ++i) {
-            if (!g_observedContexts[i].ctx) {
-                g_observedContexts[i].ctx = context;
-                g_observedContexts[i].flags = 0;
-                if (isNew) {
-                    *isNew = true;
-                }
-                return &g_observedContexts[i];
-            }
-        }
-        if (isNew) {
-            *isNew = false;
-        }
-        return nullptr;
-    };
-
     auto containsWalk = [](const char* str) -> bool {
         if (!str) {
             return false;
@@ -4919,7 +5216,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
     }
 
     bool isNewCtx = false;
-    ObservedContext* slot = ensureContextSlot(ctx, &isNewCtx);
+    ObservedContext* slot = EnsureObservedContext(ctx, &isNewCtx);
     if (isNewCtx) {
         char info[160];
         sprintf_s(info, sizeof(info), "Observed new script context %p (name=%s func=%p)",
@@ -4928,6 +5225,9 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         Engine::RequestWalkRegistration();
         InterlockedExchange(&g_pendingRegistration, 1);
     }
+
+    if (slot && name)
+        UpdateObservedContextGameplayFlags(slot, name);
 
     unsigned flag = 0;
     if (name) {
@@ -5973,6 +6273,11 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
     }
     g_clientContext = ownerCtx;
 
+    if (ObservedContext* slot = EnsureObservedContext(ownerCtx))
+        UpdateObservedContextLuaState(slot, L, reason ? reason : "console_bind");
+    if (!IsGameplayContext(ownerCtx, L, reason ? reason : "console_bind", true))
+        return false;
+
     if (!Engine::LuaState() && L)
         Engine::ReportLuaState(L);
 
@@ -6092,151 +6397,36 @@ static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reason)
         WriteRawLog(buf);
     }
 
-    const bool bindingsReady =
-        g_consoleBound &&
-        g_spellBindingReady.load(std::memory_order_acquire) &&
-        g_replayHelperInstalled.load(std::memory_order_acquire);
-    const bool actionWrappersReady =
-        (InterlockedCompareExchange(&g_actionWrappersInstalled, 0, 0) != 0);
     DWORD now = GetTickCount();
     static DWORD s_nextProbeLogTick = 0;
     const bool emitProbeLog = (now >= s_nextProbeLogTick);
+    void* gameplayCtx = nullptr;
+    const bool resolved = ResolveGameplayScriptContext(
+        L,
+        g_clientContext ? g_clientContext : CanonicalOwnerContext(),
+        &gameplayCtx,
+        tag);
+    const bool bootstrapReady = resolved && IsBootstrapReadyFor(gameplayCtx, L);
     if (emitProbeLog) {
         char buf[256];
         sprintf_s(buf,
                   sizeof(buf),
-                  "[CompatBootstrap] %s enter L=%p console=%d spell=%d replay=%d actions=%d owner=%p client=%p",
+                  "[CompatBootstrap] %s enter L=%p resolved=%d ctx=%p ready=%d console=%d spell=%d replay=%d",
                   tag,
                   L,
+                  resolved ? 1 : 0,
+                  gameplayCtx,
+                  bootstrapReady ? 1 : 0,
                   g_consoleBound ? 1 : 0,
                   g_spellBindingReady.load(std::memory_order_acquire) ? 1 : 0,
-                  g_replayHelperInstalled.load(std::memory_order_acquire) ? 1 : 0,
-                  actionWrappersReady ? 1 : 0,
-                  CanonicalOwnerContext(),
-                  g_clientContext);
+                  g_replayHelperInstalled.load(std::memory_order_acquire) ? 1 : 0);
         WriteRawLog(buf);
         s_nextProbeLogTick = now + 2000;
     }
-    if (bindingsReady && actionWrappersReady) {
-        if (emitProbeLog) {
-            char buf[160];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[CompatBootstrap] %s skipped: bindings already ready",
-                      tag);
-            WriteRawLog(buf);
-        }
+    if (!resolved)
         return;
-    }
-
-    static DWORD s_nextAttemptTick = 0;
-    if (now < s_nextAttemptTick) {
-        if (emitProbeLog) {
-            char buf[192];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[CompatBootstrap] %s cooldown active for %lu ms",
-                      tag,
-                      static_cast<unsigned long>(s_nextAttemptTick - now));
-            WriteRawLog(buf);
-        }
-        return;
-    }
-    s_nextAttemptTick = now + 500;
-
-    if (!IsGameplayLuaReady(L, tag)) {
-        if (emitProbeLog) {
-            char buf[160];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[CompatBootstrap] %s blocked: gameplay lua not ready",
-                      tag);
-            WriteRawLog(buf);
-        }
-        return;
-    }
-
-    void* gameplayCtx = nullptr;
-    if (ResolveGameplayScriptContext(L,
-                                     g_clientContext ? g_clientContext : CanonicalOwnerContext(),
-                                     &gameplayCtx,
-                                     tag)) {
-        if (emitProbeLog) {
-            char buf[192];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[CompatBootstrap] %s resolved gameplay ctx=%p",
-                      tag,
-                      gameplayCtx);
-            WriteRawLog(buf);
-        }
-        MaybeUpdateOwnerContext(gameplayCtx);
-        const bool installOk = InstallUOFlowConsoleBindingsIfNeeded(gameplayCtx, tag, L);
-        if (emitProbeLog) {
-            char buf[192];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[CompatBootstrap] %s console install result=%d ctx=%p",
-                      tag,
-                      installOk ? 1 : 0,
-                      gameplayCtx);
-            WriteRawLog(buf);
-        }
-    } else {
-        void* fallbackCtx = CanonicalOwnerContext();
-        if (emitProbeLog) {
-            char buf[192];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[CompatBootstrap] %s resolve failed; fallback ctx=%p",
-                      tag,
-                      fallbackCtx);
-            WriteRawLog(buf);
-        }
-        const bool installOk = InstallUOFlowConsoleBindingsIfNeeded(fallbackCtx, tag, L);
-        if (emitProbeLog) {
-            char buf[192];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[CompatBootstrap] %s fallback console install result=%d ctx=%p",
-                      tag,
-                      installOk ? 1 : 0,
-                      fallbackCtx);
-            WriteRawLog(buf);
-        }
-    }
-
-    const bool spellReadyBefore = g_spellBindingReady.load(std::memory_order_acquire);
-    ForceSpellBinding(L, tag);
-    const bool spellReadyAfter = g_spellBindingReady.load(std::memory_order_acquire);
-    const bool replayReadyBefore = g_replayHelperInstalled.load(std::memory_order_acquire);
-    EnsureReplayHelper(L);
-    const bool replayReadyAfter = g_replayHelperInstalled.load(std::memory_order_acquire);
-    if (emitProbeLog) {
-        char buf[192];
-        sprintf_s(buf,
-                  sizeof(buf),
-                  "[CompatBootstrap] %s spell=%d->%d replay=%d->%d",
-                  tag,
-                  spellReadyBefore ? 1 : 0,
-                  spellReadyAfter ? 1 : 0,
-                  replayReadyBefore ? 1 : 0,
-                  replayReadyAfter ? 1 : 0);
-        WriteRawLog(buf);
-    }
-    if (InterlockedCompareExchange(&g_actionWrappersInstalled, 0, 0) == 0) {
-        RequestActionWrapperInstall();
-        TryInstallActionWrappers();
-        if (emitProbeLog) {
-            char buf[192];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[CompatBootstrap] %s action wrapper install attempted; installed=%d",
-                      tag,
-                      InterlockedCompareExchange(&g_actionWrappersInstalled, 0, 0) != 0 ? 1 : 0);
-            WriteRawLog(buf);
-        }
-    }
+    if (!bootstrapReady)
+        MaybeRunEarlyBootstrap(gameplayCtx, tag);
 }
 
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason)
@@ -7227,6 +7417,24 @@ static int __cdecl Lua_uow_vp_cast(lua_State* L)
     const std::string sourceTag = ReadOptionalString(L, 2);
 
     LogLuaCastEntry("__uow_vp_cast_v1", L, spellId, sourceTag.c_str());
+
+    void* ctx = nullptr;
+    ResolveGameplayScriptContext(L, CurrentScriptContext(), &ctx, "__uow_vp_cast_v1");
+    if (!ctx)
+        ctx = CanonicalOwnerContext();
+    if (!IsBootstrapReadyFor(ctx, L)) {
+        char blocked[256];
+        sprintf_s(blocked,
+                  sizeof(blocked),
+                  "[Lua] BRIDGE_V1 vp_cast blocked spell=%d reason=bridge_not_ready caller=%u owner=%u L=%p ctx=%p",
+                  spellId,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId(),
+                  L,
+                  ctx);
+        WriteRawLog(blocked);
+        return PushLuaCommandResult(L, false, "bridge_not_ready");
+    }
 
     char intro[256];
     sprintf_s(intro,
@@ -9991,7 +10199,8 @@ void PollLateInstalls()
     }
     if (auto L = static_cast<lua_State*>(Engine::LuaState()))
         ProcessLateCastWrapLoop(L);
-    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "poller");
+    if (void* ownerCtx = CanonicalOwnerContext())
+        MaybeRunEarlyBootstrap(ownerCtx, "poller");
     if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
         ForceLateCastWrapInstall(L, "poller");
     }
@@ -10023,16 +10232,6 @@ void PollLateInstalls()
         }
     }
     TryInstallDirectActionHooks();
-    if (!g_spellBindingReady.load(std::memory_order_acquire)) {
-        if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-            ForceSpellBinding(L, "PollLateInstalls");
-        }
-    }
-    if (!g_replayHelperInstalled.load(std::memory_order_acquire)) {
-        if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
-            EnsureReplayHelper(L);
-        }
-    }
 }
 
 void ShutdownLuaBridge()
