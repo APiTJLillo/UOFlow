@@ -151,6 +151,7 @@ void* g_buildActionTarget = nullptr;
 void* g_enqueueActionTarget = nullptr;
 std::atomic<bool> g_nativeActive{false};
 std::atomic<int> g_faultStreak{0};
+std::atomic<bool> g_castQueueSnapshotDisabled{false};
 uintptr_t g_moduleBase = 0;
 uintptr_t g_expectedVtable = 0;
 
@@ -282,52 +283,40 @@ void* __fastcall Hook_BuildAction(void* self, void*, void* a1, void* a2)
 void __fastcall Hook_EnqueueAction(void* self, void*, void* action)
 {
     if (g_nativeActive.load(std::memory_order_acquire)) {
-        __try {
-            auto slot0 = *reinterpret_cast<void**>(self);
-            auto slot1 = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(self) + 0x8);
-            ActionSnapshot snap = ReadActionSnapshot(action);
-            uintptr_t ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
+        const uintptr_t ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
+        auto logMinimal = [self, action, ret]() {
             char retBuf[32];
             if (ret >= g_moduleBase)
                 sprintf_s(retBuf, sizeof(retBuf), "UOSA.exe+0x%X", static_cast<unsigned>(ret - g_moduleBase));
             else
                 sprintf_s(retBuf, sizeof(retBuf), "0x%p", reinterpret_cast<void*>(ret));
-            const char* callerLabel = "other";
-            if (ret >= g_moduleBase + 0x00140330 && ret <= g_moduleBase + 0x001404FF)
-                callerLabel = "UserActionCastSpell";
-            else if (ret >= g_moduleBase + 0x00140560 && ret <= g_moduleBase + 0x001406C8)
-                callerLabel = "UserActionCastSpellOnId";
-            if (snap.ok) {
-                char buf[320];
-                sprintf_s(buf,
-                          sizeof(buf),
-                          "[CastQueue] enqueue ret=%s caller=%s queue=%p slot0=%p slot1=%p action=%p spellId=%u targetType=%u targetId=%08X flag18=%u",
-                          retBuf,
-                          callerLabel,
-                          self,
-                          slot0,
-                          slot1,
-                          action,
-                          snap.spellId,
-                          snap.targetType,
-                          snap.targetId,
-                          static_cast<unsigned>(snap.targetReady));
-                WriteRawLog(buf);
-            } else {
-                char buf[200];
-                sprintf_s(buf,
-                          sizeof(buf),
-                          "[CastQueue] enqueue ret=%s caller=%s queue=%p slot0=%p slot1=%p action=%p (snapshot failed)",
-                          retBuf,
-                          callerLabel,
-                          self,
-                          slot0,
-                          slot1,
-                          action);
-                WriteRawLog(buf);
+
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CastQueue] enqueue ret=%s queue=%p action=%p",
+                      retBuf,
+                      self,
+                      action);
+            WriteRawLog(buf);
+        };
+
+        if (g_castQueueSnapshotDisabled.load(std::memory_order_acquire)) {
+            logMinimal();
+        } else {
+            DWORD sehCode = 0;
+            __try {
+                logMinimal();
+            } __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+                if (!g_castQueueSnapshotDisabled.exchange(true, std::memory_order_acq_rel)) {
+                    char buf[160];
+                    sprintf_s(buf,
+                              sizeof(buf),
+                              "CastQueue snapshot disabled after exception code=0x%08X",
+                              static_cast<unsigned>(sehCode));
+                    WriteRawLog(buf);
+                }
             }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            WriteRawLog("[CastQueue] enqueue snapshot threw");
         }
     }
     if (g_origEnqueueAction)
