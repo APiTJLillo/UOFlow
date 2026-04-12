@@ -75,9 +75,9 @@ local function VPEmitUiLog(message)
     end
 end
 
-if type(_G) == "table" and not rawget(_G, "__UOW_VP_MARKER_20260412A") then
-    rawset(_G, "__UOW_VP_MARKER_20260412A", true)
-    local marker = "[VP_MARKER] build=2026-04-12-a"
+if type(_G) == "table" and not rawget(_G, "__UOW_VP_MARKER_3C43483") then
+    rawset(_G, "__UOW_VP_MARKER_3C43483", true)
+    local marker = "[VP_MARKER] VisualProgrammingTypes loaded build=3c43483"
     if UOWNativeLog then
         UOWNativeLog(marker)
     end
@@ -822,13 +822,13 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 end
 
                 VPEmitUiLog(string.format(
-                    "[VP_CAST] phase=node_after block=%s spell=%s ok=%s ret1=%s ret2=%s err=%s",
+                    "[VP_CAST] phase=node_after block=%s spell=%s ok=%s ret1=%s err=%s ret2=%s",
                     VPValueToString(callContext.blockId),
                     VPValueToString(spellId),
                     VPValueToString(castCallOk),
                     VPValueToString(castResult1),
-                    VPValueToString(castResult2),
-                    VPValueToString(castErrorText)))
+                    VPValueToString(castErrorText),
+                    VPValueToString(castResult2)))
 
                 if UOWNativeLog then
                     UOWNativeLog("[VPSpell] execute result",
