@@ -671,10 +671,11 @@ static int __cdecl Lua_uow_get_native(lua_State* L)
         char miss[192];
         sprintf_s(miss,
                   sizeof(miss),
-                  "[Lua] uow_get_native missing name=%s caller=%u owner=%u",
+                  "[Lua] __uow_native_get_v1 missing name=%s caller=%u owner=%u L=%p",
                   name.empty() ? "<none>" : name.c_str(),
                   GetCurrentThreadId(),
-                  Util::OwnerPump::GetOwnerThreadId());
+                  Util::OwnerPump::GetOwnerThreadId(),
+                  L);
         WriteRawLog(miss);
         lua_pushnil(L);
         static const char kUnknown[] = "unknown_native";
@@ -688,11 +689,12 @@ static int __cdecl Lua_uow_get_native(lua_State* L)
     char hit[224];
     sprintf_s(hit,
               sizeof(hit),
-              "[Lua] uow_get_native name=%s tag=%s caller=%u owner=%u",
+              "[Lua] __uow_native_get_v1 name=%s tag=%s caller=%u owner=%u L=%p",
               canonical,
               tag,
               GetCurrentThreadId(),
-              Util::OwnerPump::GetOwnerThreadId());
+              Util::OwnerPump::GetOwnerThreadId(),
+              L);
     WriteRawLog(hit);
 
     lua_pushcfunction(L, fn);
@@ -1020,6 +1022,10 @@ static void LogSpellHelperBindings(lua_State* L, const char* stage)
     if (!L)
         return;
     static const char* const kPaths[] = {
+        "__uow_native_get_v1",
+        "__uow_vp_cast_v1",
+        "__uow_vp_ping_v1",
+        "__uow_debug_log_v1",
         "uow_spell_cast",
         "uow_spell_cast_on_id",
         "uow_get_native",
@@ -4048,6 +4054,10 @@ static void EnsureDirectLuaGlobals(lua_State* L)
     static const DirectBinding kDirectBindings[] = {
         // Flat globals are installed directly so scripts can call them without
         // depending on the client's dotted-name registration behavior.
+        {Lua_uow_get_native, "__uow_native_get_v1"},
+        {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
+        {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
+        {Lua_UOW_Debug_log, "__uow_debug_log_v1"},
         {Lua_uow_spell_cast_global, "uow_spell_cast"},
         {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
         {Lua_uow_get_native, "uow_get_native"},
@@ -5342,6 +5352,10 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
     }
 
     static const ConsoleBinding kCompat[] = {
+        {Lua_uow_get_native, "__uow_native_get_v1"},
+        {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
+        {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
+        {Lua_UOW_Debug_log, "__uow_debug_log_v1"},
         {Lua_UOFlow_bootstrap, "uow.bootstrap"},
         {Lua_UOFlow_Spell_cast, "uow.cmd.cast"},
         {Lua_UOFlow_Spell_cast_on_id, "uow.cmd.cast_on_id"},
@@ -6559,15 +6573,16 @@ static int __cdecl Lua_uow_vp_cast(lua_State* L)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     const std::string sourceTag = ReadOptionalString(L, 2);
 
-    LogLuaCastEntry("uow_vp_cast", L, spellId, sourceTag.c_str());
+    LogLuaCastEntry("__uow_vp_cast_v1", L, spellId, sourceTag.c_str());
 
     char intro[256];
     sprintf_s(intro,
               sizeof(intro),
-              "[Lua] uow_vp_cast invoked spell=%d caller=%u owner=%u source=%s",
+              "[Lua] __uow_vp_cast_v1 invoked spell=%d caller=%u owner=%u L=%p source=%s",
               spellId,
               GetCurrentThreadId(),
               Util::OwnerPump::GetOwnerThreadId(),
+              L,
               sourceTag.empty() ? "<none>" : sourceTag.c_str());
     WriteRawLog(intro);
 
@@ -6589,11 +6604,12 @@ static int __cdecl Lua_uow_vp_cast(lua_State* L)
     char outro[320];
     sprintf_s(outro,
               sizeof(outro),
-              "[Lua] uow_vp_cast result ok=%d msg=%s caller=%u owner=%u",
+              "[Lua] __uow_vp_cast_v1 result ok=%d msg=%s caller=%u owner=%u L=%p",
               ok ? 1 : 0,
               msg.empty() ? "<none>" : msg.c_str(),
               GetCurrentThreadId(),
-              Util::OwnerPump::GetOwnerThreadId());
+              Util::OwnerPump::GetOwnerThreadId(),
+              L);
     WriteRawLog(outro);
 
     return resultCount;
@@ -6604,14 +6620,14 @@ static int __cdecl Lua_uow_vp_ping(lua_State* L)
     if (L) {
         if (!Engine::LuaState())
             Engine::ReportLuaState(L);
-        PromoteGameplayOwnerFromLiveCallback("uow_vp_ping");
-        ProbeGameplayBindingBootstrap(L, "uow_vp_ping");
+        PromoteGameplayOwnerFromLiveCallback("__uow_vp_ping_v1");
+        ProbeGameplayBindingBootstrap(L, "__uow_vp_ping_v1");
     }
 
     char buf[256];
     sprintf_s(buf,
               sizeof(buf),
-              "[Lua] uow_vp_ping invoked caller=%u owner=%u L=%p ctx=%p",
+              "[Lua] __uow_vp_ping_v1 invoked caller=%u owner=%u L=%p ctx=%p",
               GetCurrentThreadId(),
               Util::OwnerPump::GetOwnerThreadId(),
               L,
