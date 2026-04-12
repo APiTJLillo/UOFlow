@@ -149,6 +149,8 @@ local g_vpNativeHandles = {
 
 local VP_NATIVE_BRIDGE_NAME = "__uow_native_bridge_v1"
 local VP_NATIVE_GETTER_NAME = "__uow_native_get_v1"
+local VP_NATIVE_IS_CFUNC_NAME = "__uow_is_cfunc_v1"
+local VP_NATIVE_CALL_CAST_NAME = "__uow_call_cast_v1"
 local VP_NATIVE_HEALTH_NAME = "__uow_bridge_health_v1"
 local VP_NATIVE_CAST_NAME = "__uow_vp_cast_v1"
 local VP_NATIVE_PING_NAME = "__uow_vp_ping_v1"
@@ -414,6 +416,7 @@ local function VPShouldPassCastSourceTag(label)
     return string.find(label, "UOFlow.Spell.cast", 1, true) ~= nil
         or string.find(label, "UOW.Spell.cast", 1, true) ~= nil
         or string.find(label, "uow.cmd.cast", 1, true) ~= nil
+        or string.find(label, "__uow_call_cast_v1", 1, true) ~= nil
         or string.find(label, "uow_vp_cast", 1, true) ~= nil
         or string.find(label, "uow_spell_cast", 1, true) ~= nil
 end
@@ -614,6 +617,31 @@ local function VPLookupRawPath(container, ...)
         return current
     end
     return nil
+end
+
+local function VPResolveNativeGlobalFunction(name)
+    if type(name) ~= "string" or name == "" then
+        return nil, nil, "native_global_missing name=" .. VPValueToString(name)
+    end
+
+    local env = nil
+    if type(getfenv) == "function" then
+        env = getfenv(1)
+    end
+
+    local candidates = {
+        { source = "_G", fn = VPLookupRawFunction(_G, name) },
+        { source = "env", fn = VPLookupRawFunction(env, name) },
+        { source = "env._G", fn = type(env) == "table" and VPLookupRawFunction(rawget(env, "_G"), name) or nil },
+    }
+
+    for _, candidate in ipairs(candidates) do
+        if type(candidate.fn) == "function" then
+            return candidate.fn, candidate.source, nil
+        end
+    end
+
+    return nil, nil, "native_global_missing name=" .. VPValueToString(name)
 end
 
 local function VPSnapshotSpellState()
@@ -825,22 +853,35 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         VPCheckBridgeIntegrity(bridgeReason)
     local bridgeTable, bridgeErr = VPResolveNativeBridgeTable()
     local contextToken = VPGetNativeContextToken()
-    local castLabel = VP_NATIVE_CAST_NAME .. "(bridge)"
-    local castFn = type(bridgeTable) == "table" and rawget(bridgeTable, "vp_cast") or nil
-    local castTag = integrityTag
-    local castResolveErr = bridgeErr
-    if type(castFn) == "function" and type(castTag) ~= "string" then
-        castTag = "bridge:" .. VPValueToString(tostring(castFn))
-    end
-    if type(castFn) ~= "function" and castResolveErr == nil then
-        castResolveErr = "native_bridge_missing name=" .. VP_NATIVE_BRIDGE_NAME .. ".vp_cast"
-    end
+    local castFn, castSource, castResolveErr = VPResolveNativeGlobalFunction(VP_NATIVE_CALL_CAST_NAME)
+    local isCFuncFn, isCFuncSource, isCFuncErr = VPResolveNativeGlobalFunction(VP_NATIVE_IS_CFUNC_NAME)
+    local castLabel = VP_NATIVE_CALL_CAST_NAME .. "(" .. VPValueToString(castSource) .. ")"
+    local castTag = type(castFn) == "function" and ("global:" .. VPValueToString(tostring(castFn))) or nil
     local getterFn = integrityGetterFn
     local getterErr = nil
     if type(getterFn) ~= "function" then
         getterFn, getterErr = VPResolveNativeGetter()
     end
     local getterWhat = VPGetFunctionWhat(getterFn)
+    local isCEntryOk = false
+    local isCEntryErr = nil
+    local isCEntryResult = nil
+    if type(isCFuncFn) ~= "function" then
+        isCEntryErr = isCFuncErr or ("native_entry_missing name=" .. VP_NATIVE_IS_CFUNC_NAME)
+    elseif type(castFn) ~= "function" then
+        isCEntryErr = castResolveErr or ("native_entry_missing name=" .. VP_NATIVE_CALL_CAST_NAME)
+    else
+        local invokeOk, result1, _, invokeErr = VPInvokeFunction(isCFuncFn, castFn)
+        if not invokeOk then
+            isCEntryErr = invokeErr or ("native_entry_missing name=" .. VP_NATIVE_IS_CFUNC_NAME)
+        else
+            isCEntryResult = result1
+            isCEntryOk = result1 == true
+            if not isCEntryOk then
+                isCEntryErr = "native_entry_missing name=" .. VP_NATIVE_CALL_CAST_NAME
+            end
+        end
+    end
     local candidateSummary = {
         VPDescribeCandidate(VP_NATIVE_BRIDGE_NAME, bridgeTable),
         "bridge.err=" .. VPValueToString(bridgeErr or bridgeCheckErr),
@@ -852,6 +893,13 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         "bridge.healthTag=" .. VPValueToString(healthTag),
         "bridge.healthSource=" .. VPValueToString(healthSource),
         "token=" .. VPValueToString(contextToken),
+        VPDescribeCandidate(VP_NATIVE_IS_CFUNC_NAME, isCFuncFn),
+        "is_cfunc.err=" .. VPValueToString(isCFuncErr),
+        "is_cfunc.source=" .. VPValueToString(isCFuncSource),
+        "is_cfunc.result=" .. VPValueToString(isCEntryResult),
+        VPDescribeCandidate(VP_NATIVE_CALL_CAST_NAME, castFn),
+        "call_cast.err=" .. VPValueToString(castResolveErr),
+        "call_cast.source=" .. VPValueToString(castSource),
         VPDescribeCandidate(VP_NATIVE_GETTER_NAME, getterFn),
         "getter.err=" .. VPValueToString(getterErr),
         "getter.what=" .. VPValueToString(getterWhat),
@@ -872,12 +920,15 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     VPLogSpellState(tag .. ":before", spellId)
     VPInvokeNativePing()
 
-    if type(castFn) ~= "function" then
-        local missingMsg = castResolveErr or ("native_bridge_missing name=" .. VP_NATIVE_BRIDGE_NAME .. ".vp_cast")
+    if type(castFn) ~= "function" or not isCEntryOk then
+        local missingMsg = isCEntryErr or castResolveErr or ("native_entry_missing name=" .. VP_NATIVE_CALL_CAST_NAME)
         VPEmitUiLog("VP_CAST " .. missingMsg)
         VPNativeLog("[VPSpell] cast fail",
             tostring(tag),
             missingMsg,
+            "callCastSource=" .. VPValueToString(castSource),
+            "isCFuncSource=" .. VPValueToString(isCFuncSource),
+            "isCFuncResult=" .. VPValueToString(isCEntryResult),
             "integrityOk=" .. VPValueToString(integrityOk),
             "integrityErr=" .. VPValueToString(bridgeCheckErr),
             "healthTag=" .. VPValueToString(healthTag))
@@ -912,6 +963,9 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         .. " bridge=" .. VPValueToString(bridgeTable)
         .. " integrityOk=" .. VPValueToString(integrityOk)
         .. " integrityErr=" .. VPValueToString(bridgeCheckErr)
+        .. " isCFunc=" .. VPValueToString(isCFuncFn)
+        .. " isCFuncSource=" .. VPValueToString(isCFuncSource)
+        .. " isCResult=" .. VPValueToString(isCEntryResult)
         .. " getterFn=" .. VPValueToString(getterFn)
         .. " getterWhat=" .. VPValueToString(getterWhat)
         .. " fn=" .. VPValueToString(castFn)

@@ -595,6 +595,8 @@ static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L);
 static int __cdecl Lua_uow_spell_cast_global(lua_State* L);
 static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L);
 static int __cdecl Lua_uow_get_native(lua_State* L);
+static int __cdecl Lua_uow_is_cfunc(lua_State* L);
+static int __cdecl Lua_uow_call_cast(lua_State* L);
 static int __cdecl Lua_uow_bridge_health(lua_State* L);
 static int __cdecl Lua_uow_vp_cast(lua_State* L);
 static int __cdecl Lua_uow_vp_ping(lua_State* L);
@@ -923,6 +925,12 @@ static int __cdecl Lua_uow_get_native(lua_State* L)
     if (name == "vp_cast") {
         fn = Lua_uow_vp_cast;
         canonical = "vp_cast";
+    } else if (name == "call_cast") {
+        fn = Lua_uow_call_cast;
+        canonical = "call_cast";
+    } else if (name == "is_cfunc") {
+        fn = Lua_uow_is_cfunc;
+        canonical = "is_cfunc";
     } else if (name == "vp_ping") {
         fn = Lua_uow_vp_ping;
         canonical = "vp_ping";
@@ -990,6 +998,78 @@ static int __cdecl Lua_uow_get_native(lua_State* L)
     lua_pushcfunction(L, fn);
     lua_pushlstring(L, tag, strlen(tag));
     return 2;
+}
+
+static int __cdecl Lua_uow_is_cfunc(lua_State* L)
+{
+    const int argType = L ? lua_type(L, 1) : LUA_TNONE;
+    const bool isC = L && argType == LUA_TFUNCTION && (lua_iscfunction(L, 1) != 0);
+
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Lua] __uow_is_cfunc_v1 argType=%s isC=%d caller=%u owner=%u L=%p",
+              LuaTypeNameCompat(argType),
+              isC ? 1 : 0,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L);
+    WriteRawLog(buf);
+
+    if (L) {
+        lua_pushboolean(L, isC ? 1 : 0);
+        return 1;
+    }
+    return 0;
+}
+
+static int __cdecl Lua_uow_call_cast(lua_State* L)
+{
+    int spellId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        spellId = static_cast<int>(lua_tointeger(L, 1));
+    const std::string sourceTag = ReadOptionalString(L, 2);
+
+    LogLuaCastEntry("__uow_call_cast_v1", L, spellId, sourceTag.c_str());
+
+    char intro[256];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[Lua] CALL_CAST_V1 invoked spell=%d caller=%u owner=%u L=%p source=%s",
+              spellId,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L,
+              sourceTag.empty() ? "<none>" : sourceTag.c_str());
+    WriteRawLog(intro);
+
+    const int resultCount = Lua_uow_vp_cast(L);
+
+    bool ok = false;
+    std::string msg;
+    if (L && resultCount >= 2) {
+        const int top = lua_gettop(L);
+        const int okIndex = top - resultCount + 1;
+        const int msgIndex = top - resultCount + 2;
+        ok = lua_toboolean(L, okIndex) != 0;
+        size_t msgLen = 0;
+        const char* rawMsg = lua_tolstring(L, msgIndex, &msgLen);
+        if (rawMsg && msgLen)
+            msg.assign(rawMsg, msgLen);
+    }
+
+    char outro[320];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[Lua] CALL_CAST_V1 result ok=%d msg=%s caller=%u owner=%u L=%p",
+              ok ? 1 : 0,
+              msg.empty() ? "<none>" : msg.c_str(),
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L);
+    WriteRawLog(outro);
+
+    return resultCount;
 }
 
 static int __cdecl Lua_uow_bridge_health(lua_State* L)
@@ -1672,6 +1752,8 @@ static void LogSpellHelperBindings(lua_State* L, const char* stage)
         "uow.__native_bridge_v1.debug",
         "uow.__native_bridge_v1.health",
         "__uow_native_get_v1",
+        "__uow_is_cfunc_v1",
+        "__uow_call_cast_v1",
         "__uow_bridge_health_v1",
         "__uow_vp_cast_v1",
         "__uow_vp_ping_v1",
@@ -5181,6 +5263,8 @@ static void EnsureDirectLuaGlobals(lua_State* L)
         // Flat globals are installed directly so scripts can call them without
         // depending on the client's dotted-name registration behavior.
         {Lua_uow_get_native, "__uow_native_get_v1"},
+        {Lua_uow_is_cfunc, "__uow_is_cfunc_v1"},
+        {Lua_uow_call_cast, "__uow_call_cast_v1"},
         {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
@@ -6502,6 +6586,8 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
 
     static const ConsoleBinding kCompat[] = {
         {Lua_uow_get_native, "__uow_native_get_v1"},
+        {Lua_uow_is_cfunc, "__uow_is_cfunc_v1"},
+        {Lua_uow_call_cast, "__uow_call_cast_v1"},
         {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
