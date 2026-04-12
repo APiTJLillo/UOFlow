@@ -942,6 +942,41 @@ local function VPQueuePendingNativeSpellcast(spellId, tag, callContext)
     return false, reason
 end
 
+local function RunCastProbe(spellId, sourceTag)
+    local dummyFn, dummySource, dummyErr = VPResolveNativeGlobalFunction("DummyPrint")
+    if type(dummyFn) == "function" then
+        local dummyMsg = "[VP_PROBE] DummyPrint source=" .. VPValueToString(dummySource)
+        Debug.Print(dummyMsg)
+        VPNativeLog(dummyMsg)
+        dummyFn()
+    else
+        local dummyMsg = "[VP_PROBE] DummyPrint missing source=" .. VPValueToString(dummySource)
+            .. " err=" .. VPValueToString(dummyErr)
+        Debug.Print(dummyMsg)
+        VPNativeLog(dummyMsg)
+    end
+
+    local logTestFn, logTestSource, logTestErr = VPResolveNativeGlobalFunction("__uow_log_test_v1")
+    if type(logTestFn) == "function" then
+        local logOk, logResult1, logResult2, logErr = VPInvokeFunction(logTestFn, "CAST_PROBE_START")
+        local logMsg = "[VP_PROBE] log_test source=" .. VPValueToString(logTestSource)
+            .. " ok=" .. VPValueToString(logOk)
+            .. " ret1=" .. VPValueToString(logResult1)
+            .. " ret2=" .. VPValueToString(logResult2)
+            .. " err=" .. VPValueToString(logErr)
+        Debug.Print(logMsg)
+        VPNativeLog(logMsg)
+    else
+        local logMsg = "[VP_PROBE] log_test missing source=" .. VPValueToString(logTestSource)
+            .. " err=" .. VPValueToString(logTestErr)
+        Debug.Print(logMsg)
+        VPNativeLog(logMsg)
+    end
+
+    local castFn, castSource, castResolveErr = VPResolveNativeGlobalFunction(VP_NATIVE_CALL_CAST_NAME)
+    return castFn, castSource, castResolveErr
+end
+
 local function VPCastSpell(spellId, tag, targetId, callContext)
     local numericSpellId = tonumber(spellId)
     if not numericSpellId or numericSpellId <= 0 then
@@ -954,8 +989,13 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     callContext = type(callContext) == "table" and callContext or {}
     callContext.executionTag = callContext.executionTag or tag
     callContext.luaContextTag = callContext.luaContextTag or VPGetLuaContextTag()
-    local castFn, castSource, castResolveErr = VPResolveNativeGlobalFunction(VP_NATIVE_CALL_CAST_NAME)
     local sourceTag = callContext.nativeSourceTag or tag
+    local beforeState = VPSnapshotSpellState()
+    local castFn, castSource, castResolveErr = RunCastProbe(spellId, sourceTag)
+    local ok = false
+    local result1 = nil
+    local result2 = nil
+    local errText = nil
     local castLabel = VP_NATIVE_CALL_CAST_NAME .. "(" .. VPValueToString(castSource) .. ")"
     local candidateSummary = {
         VPDescribeCandidate(VP_NATIVE_CALL_CAST_NAME, castFn),
@@ -985,12 +1025,6 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         VPLogSpellState(tag .. ":after", spellId)
         return false, missingMsg, nil, false
     end
-
-    local beforeState = VPSnapshotSpellState()
-    local ok = false
-    local result1 = nil
-    local result2 = nil
-    local errText = nil
 
     VPLogCastCall("before", tag, spellId, castLabel, callContext, nil, nil, nil, nil)
     local preCallMessage = "[VP_CALL] about to call " .. VPValueToString(VP_NATIVE_CALL_CAST_NAME)

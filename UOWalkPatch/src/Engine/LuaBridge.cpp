@@ -644,6 +644,7 @@ static bool ResolveGameplayScriptContext(lua_State* L,
                                          const char* reason);
 static void PromoteGameplayOwnerFromLiveCallback(const char* reason, lua_State* callbackL = nullptr);
 static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reasonTag);
+static void EnsureDirectLuaGlobals(lua_State* L);
 
 static uint32_t ReadOptionalUInt(lua_State* L, int idx, uint32_t def = 0)
 {
@@ -1118,6 +1119,7 @@ static int __cdecl Lua_uow_call_cast(lua_State* L)
         lua_settop(L, argsTop);
         PromoteGameplayOwnerFromLiveCallback("__uow_call_cast_v1/retry", L);
         ProbeGameplayBindingBootstrap(L, "__uow_call_cast_v1/retry");
+        EnsureDirectLuaGlobals(L);
         resultCount = Lua_uow_vp_cast(L);
         readResult(resultCount, ok, msg);
     }
@@ -5480,11 +5482,21 @@ static void EnsureDirectLuaGlobals(lua_State* L)
     if (!L)
         return;
 
+    static std::atomic<uintptr_t> s_lastState{0};
+    static std::atomic<uintptr_t> s_lastCtx{0};
+
     void* ctx = nullptr;
     ResolveGameplayScriptContext(L, CurrentScriptContext(), &ctx, "EnsureDirectLuaGlobals");
     if (!ctx)
         ctx = CanonicalOwnerContext();
     if (!IsGameplayContext(ctx, L, "EnsureDirectLuaGlobals", true))
+        return;
+
+    const uintptr_t stateKey = reinterpret_cast<uintptr_t>(L);
+    const uintptr_t ctxKey = reinterpret_cast<uintptr_t>(ctx);
+    const uintptr_t priorState = s_lastState.load(std::memory_order_acquire);
+    const uintptr_t priorCtx = s_lastCtx.load(std::memory_order_acquire);
+    if (priorState == stateKey && priorCtx == ctxKey)
         return;
 
     struct DirectBinding {
@@ -5529,6 +5541,9 @@ static void EnsureDirectLuaGlobals(lua_State* L)
     EnsureNativeBridgeHealthy(L, "EnsureDirectLuaGlobals", true, true);
     RunNativeBridgeSelfTest(L, "EnsureDirectLuaGlobals");
     RunNativeGetterSelfTest(L, "EnsureDirectLuaGlobals");
+
+    s_lastCtx.store(ctxKey, std::memory_order_release);
+    s_lastState.store(stateKey, std::memory_order_release);
 }
 
 static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
