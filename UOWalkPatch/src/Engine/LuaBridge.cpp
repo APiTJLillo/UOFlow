@@ -581,6 +581,10 @@ static int __cdecl Lua_uow_cmd_request_target(lua_State* L);
 static int __cdecl Lua_uow_cmd_show_cursor(lua_State* L);
 static int __cdecl Lua_UOFlow_bootstrap(lua_State* L);
 static int __cdecl Lua_UOFlow_status(lua_State* L);
+static void InstallNativeContextToken(lua_State* L, const char* reason);
+static void InstallNativeBridgeTable(lua_State* L, const char* reason);
+static void PromoteGameplayOwnerFromLiveCallback(const char* reason);
+static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reasonTag);
 
 static uint32_t ReadOptionalUInt(lua_State* L, int idx, uint32_t def = 0)
 {
@@ -648,6 +652,181 @@ static int PushLuaCommandResult(lua_State* L, bool ok, const std::string& msg)
     return 2;
 }
 
+struct NativeBridgeFieldState {
+    int type = LUA_TNONE;
+    bool isC = false;
+    void* cfn = nullptr;
+    const void* fnObj = nullptr;
+};
+
+struct NativeBridgeState {
+    int bridgeType = LUA_TNONE;
+    const void* bridgePtr = nullptr;
+    NativeBridgeFieldState get;
+    NativeBridgeFieldState cast;
+    NativeBridgeFieldState ping;
+    NativeBridgeFieldState debug;
+    NativeBridgeFieldState health;
+    char token[128] = {};
+};
+
+static int AbsoluteLuaIndex(lua_State* L, int idx)
+{
+    if (!L)
+        return idx;
+    if (idx > 0 || idx <= LUA_REGISTRYINDEX)
+        return idx;
+    return lua_gettop(L) + idx + 1;
+}
+
+static void ReadNativeBridgeFieldState(lua_State* L, int tableIndex, const char* fieldName, NativeBridgeFieldState* out)
+{
+    if (!L || !fieldName || !out)
+        return;
+
+    *out = NativeBridgeFieldState{};
+    const int absIndex = AbsoluteLuaIndex(L, tableIndex);
+    lua_getfield(L, absIndex, fieldName);
+    out->type = lua_type(L, -1);
+    if (out->type == LUA_TFUNCTION) {
+        out->fnObj = lua_topointer(L, -1);
+        out->isC = lua_iscfunction(L, -1) != 0;
+        if (out->isC)
+            out->cfn = reinterpret_cast<void*>(lua_tocfunction(L, -1));
+    } else if (out->type != LUA_TNIL && out->type != LUA_TNONE) {
+        out->fnObj = lua_topointer(L, -1);
+    }
+    lua_pop(L, 1);
+}
+
+static bool CaptureNativeBridgeState(lua_State* L, NativeBridgeState* out)
+{
+    if (!L || !out)
+        return false;
+
+    *out = NativeBridgeState{};
+    const int top = lua_gettop(L);
+    lua_getglobal(L, "__uow_native_bridge_v1");
+    out->bridgeType = lua_type(L, -1);
+    if (out->bridgeType == LUA_TTABLE) {
+        out->bridgePtr = lua_topointer(L, -1);
+        ReadNativeBridgeFieldState(L, -1, "get", &out->get);
+        ReadNativeBridgeFieldState(L, -1, "vp_cast", &out->cast);
+        ReadNativeBridgeFieldState(L, -1, "vp_ping", &out->ping);
+        ReadNativeBridgeFieldState(L, -1, "debug", &out->debug);
+        ReadNativeBridgeFieldState(L, -1, "health", &out->health);
+        lua_getfield(L, -1, "context_token");
+        size_t tokenLen = 0;
+        const char* tokenText = lua_tolstring(L, -1, &tokenLen);
+        if (tokenText && tokenLen) {
+            size_t copyLen = tokenLen;
+            if (copyLen >= sizeof(out->token))
+                copyLen = sizeof(out->token) - 1;
+            memcpy(out->token, tokenText, copyLen);
+            out->token[copyLen] = '\0';
+        }
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+    return out->bridgeType == LUA_TTABLE;
+}
+
+static bool NativeBridgeFieldMatches(const NativeBridgeFieldState& state, lua_CFunction fn)
+{
+    return state.type == LUA_TFUNCTION && state.isC && state.cfn == reinterpret_cast<void*>(fn);
+}
+
+static bool NativeBridgeIsHealthy(const NativeBridgeState& state)
+{
+    return state.bridgeType == LUA_TTABLE
+        && NativeBridgeFieldMatches(state.get, Lua_uow_get_native)
+        && NativeBridgeFieldMatches(state.cast, Lua_uow_vp_cast)
+        && NativeBridgeFieldMatches(state.ping, Lua_uow_vp_ping)
+        && NativeBridgeFieldMatches(state.debug, Lua_UOW_Debug_log)
+        && NativeBridgeFieldMatches(state.health, Lua_uow_bridge_health);
+}
+
+static std::string BuildBridgeCastTag(const NativeBridgeState& state)
+{
+    if (!state.cast.isC || !state.cast.cfn)
+        return "bridge_cast_missing";
+    char tag[96];
+    sprintf_s(tag, sizeof(tag), "vp_cast:cfn=%p", state.cast.cfn);
+    return std::string(tag);
+}
+
+static const char* LuaTypeNameCompat(int type)
+{
+    switch (type) {
+    case LUA_TNONE: return "none";
+    case LUA_TNIL: return "nil";
+    case LUA_TBOOLEAN: return "boolean";
+    case LUA_TLIGHTUSERDATA: return "lightuserdata";
+    case LUA_TNUMBER: return "number";
+    case LUA_TSTRING: return "string";
+    case LUA_TTABLE: return "table";
+    case LUA_TFUNCTION: return "function";
+    case LUA_TUSERDATA: return "userdata";
+    case LUA_TTHREAD: return "thread";
+    default: return "unknown";
+    }
+}
+
+static void LogNativeBridgeState(const char* label, const char* reason, const NativeBridgeState& state)
+{
+    char buf[1024];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaBridgeHealth] %s reason=%s bridge=%p type=%s token=%s get=%s/%d/%p vp_cast=%s/%d/%p vp_ping=%s/%d/%p debug=%s/%d/%p health=%s/%d/%p caller=%u owner=%u",
+              label ? label : "<none>",
+              reason ? reason : "<none>",
+              state.bridgePtr,
+              LuaTypeNameCompat(state.bridgeType),
+              state.token[0] ? state.token : "<none>",
+              LuaTypeNameCompat(state.get.type),
+              state.get.isC ? 1 : 0,
+              state.get.cfn,
+              LuaTypeNameCompat(state.cast.type),
+              state.cast.isC ? 1 : 0,
+              state.cast.cfn,
+              LuaTypeNameCompat(state.ping.type),
+              state.ping.isC ? 1 : 0,
+              state.ping.cfn,
+              LuaTypeNameCompat(state.debug.type),
+              state.debug.isC ? 1 : 0,
+              state.debug.cfn,
+              LuaTypeNameCompat(state.health.type),
+              state.health.isC ? 1 : 0,
+              state.health.cfn,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
+}
+
+static bool EnsureNativeBridgeHealthy(lua_State* L, const char* reason, bool forceLog)
+{
+    if (!L)
+        return false;
+
+    NativeBridgeState state;
+    CaptureNativeBridgeState(L, &state);
+    bool healthy = NativeBridgeIsHealthy(state);
+    if (healthy) {
+        if (forceLog)
+            LogNativeBridgeState("ok", reason, state);
+        return true;
+    }
+
+    LogNativeBridgeState("drift", reason, state);
+    InstallNativeContextToken(L, reason ? reason : "bridge_repair");
+    InstallNativeBridgeTable(L, reason ? reason : "bridge_repair");
+    NativeBridgeState repairedState;
+    CaptureNativeBridgeState(L, &repairedState);
+    const bool repaired = NativeBridgeIsHealthy(repairedState);
+    LogNativeBridgeState(repaired ? "repaired" : "repair_failed", reason, repairedState);
+    return repaired;
+}
+
 static int __cdecl Lua_uow_get_native(lua_State* L)
 {
     const std::string name = ReadOptionalString(L, 1);
@@ -663,6 +842,9 @@ static int __cdecl Lua_uow_get_native(lua_State* L)
     } else if (name == "debug_log") {
         fn = Lua_UOW_Debug_log;
         canonical = "debug_log";
+    } else if (name == "bridge_health") {
+        fn = Lua_uow_bridge_health;
+        canonical = "bridge_health";
     }
 
     if (!L)
@@ -701,6 +883,39 @@ static int __cdecl Lua_uow_get_native(lua_State* L)
     lua_pushcfunction(L, fn);
     lua_pushlstring(L, tag, strlen(tag));
     return 2;
+}
+
+static int __cdecl Lua_uow_bridge_health(lua_State* L)
+{
+    const std::string reason = ReadOptionalString(L, 1);
+    const char* tag = reason.empty() ? "__uow_bridge_health_v1" : reason.c_str();
+
+    if (L) {
+        if (!Engine::LuaState())
+            Engine::ReportLuaState(L);
+        PromoteGameplayOwnerFromLiveCallback("__uow_bridge_health_v1");
+        ProbeGameplayBindingBootstrap(L, "__uow_bridge_health_v1");
+    }
+
+    const bool healthy = EnsureNativeBridgeHealthy(L, tag, true);
+    NativeBridgeState state;
+    CaptureNativeBridgeState(L, &state);
+    std::string castTag = BuildBridgeCastTag(state);
+
+    char buf[320];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Lua] __uow_bridge_health_v1 reason=%s healthy=%d bridge=%p castTag=%s caller=%u owner=%u L=%p",
+              tag,
+              healthy ? 1 : 0,
+              state.bridgePtr,
+              castTag.c_str(),
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L);
+    WriteRawLog(buf);
+
+    return PushLuaCommandResult(L, healthy, castTag);
 }
 
 struct LateWrapTarget {
@@ -1051,7 +1266,7 @@ static void InstallNativeBridgeTable(lua_State* L, const char* reason)
         }
         lua_pop(L, 1);
 
-        lua_createtable(L, 0, 6);
+        lua_createtable(L, 0, 7);
         const int backingIndex = lua_gettop(L);
         lua_pushcfunction(L, Lua_uow_get_native);
         lua_setfield(L, backingIndex, "get");
@@ -1061,6 +1276,8 @@ static void InstallNativeBridgeTable(lua_State* L, const char* reason)
         lua_setfield(L, backingIndex, "vp_ping");
         lua_pushcfunction(L, Lua_UOW_Debug_log);
         lua_setfield(L, backingIndex, "debug");
+        lua_pushcfunction(L, Lua_uow_bridge_health);
+        lua_setfield(L, backingIndex, "health");
         lua_pushlstring(L, "bridge_v1", 9);
         lua_setfield(L, backingIndex, "version");
         lua_pushlstring(L, token, strlen(token));
@@ -1222,10 +1439,16 @@ static void RunNativeBridgeSelfTest(lua_State* L, const char* reason)
         const char* tokenText = lua_tolstring(L, -1, &tokenLen);
         lua_pop(L, 1);
 
-        char buf[352];
+        lua_getfield(L, -1, "health");
+        const int healthType = lua_type(L, -1);
+        const bool healthIsC = (healthType == LUA_TFUNCTION) && (lua_iscfunction(L, -1) != 0);
+        void* healthPtr = healthIsC ? reinterpret_cast<void*>(lua_tocfunction(L, -1)) : nullptr;
+        lua_pop(L, 1);
+
+        char buf[416];
         sprintf_s(buf,
                   sizeof(buf),
-                  "[LuaSelfTest] __uow_native_bridge_v1 reason=%s bridge=%p getType=%s getIsC=%d getPtr=%p castType=%s castIsC=%d castPtr=%p token=%.*s",
+                  "[LuaSelfTest] __uow_native_bridge_v1 reason=%s bridge=%p getType=%s getIsC=%d getPtr=%p castType=%s castIsC=%d castPtr=%p healthType=%s healthIsC=%d healthPtr=%p token=%.*s",
                   reason ? reason : "<none>",
                   bridgePtr,
                   lua_typename(L, getType),
@@ -1234,6 +1457,9 @@ static void RunNativeBridgeSelfTest(lua_State* L, const char* reason)
                   lua_typename(L, castType),
                   castIsC ? 1 : 0,
                   castPtr,
+                  lua_typename(L, healthType),
+                  healthIsC ? 1 : 0,
+                  healthPtr,
                   static_cast<int>(tokenLen),
                   tokenText ? tokenText : "");
         WriteRawLog(buf);
@@ -1297,7 +1523,9 @@ static void LogSpellHelperBindings(lua_State* L, const char* stage)
         "__uow_native_bridge_v1.vp_cast",
         "__uow_native_bridge_v1.vp_ping",
         "__uow_native_bridge_v1.debug",
+        "__uow_native_bridge_v1.health",
         "__uow_native_get_v1",
+        "__uow_bridge_health_v1",
         "__uow_vp_cast_v1",
         "__uow_vp_ping_v1",
         "__uow_debug_log_v1",
@@ -1652,6 +1880,9 @@ static void PromoteGameplayOwnerFromLiveCallback(const char* reason)
                   ctx);
         WriteRawLog(buf);
     }
+
+    if (auto* L = static_cast<lua_State*>(Engine::LuaState()))
+        EnsureNativeBridgeHealthy(L, tag, false);
 }
 
 static std::optional<bool> ReadBoolOption(const char* cfgKey, const char* envKey)
@@ -4330,6 +4561,7 @@ static void EnsureDirectLuaGlobals(lua_State* L)
         // Flat globals are installed directly so scripts can call them without
         // depending on the client's dotted-name registration behavior.
         {Lua_uow_get_native, "__uow_native_get_v1"},
+        {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
         {Lua_UOW_Debug_log, "__uow_debug_log_v1"},
@@ -4355,6 +4587,7 @@ static void EnsureDirectLuaGlobals(lua_State* L)
 
     InstallNativeContextToken(L, "EnsureDirectLuaGlobals");
     InstallNativeBridgeTable(L, "EnsureDirectLuaGlobals");
+    EnsureNativeBridgeHealthy(L, "EnsureDirectLuaGlobals", true);
     RunNativeBridgeSelfTest(L, "EnsureDirectLuaGlobals");
     RunNativeGetterSelfTest(L, "EnsureDirectLuaGlobals");
 }
@@ -5633,6 +5866,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
 
     static const ConsoleBinding kCompat[] = {
         {Lua_uow_get_native, "__uow_native_get_v1"},
+        {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
         {Lua_UOW_Debug_log, "__uow_debug_log_v1"},
