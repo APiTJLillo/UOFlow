@@ -75,9 +75,9 @@ local function VPEmitUiLog(message)
     end
 end
 
-if type(_G) == "table" and not rawget(_G, "__UOW_VP_MARKER_3C43483") then
-    rawset(_G, "__UOW_VP_MARKER_3C43483", true)
-    local marker = "[VP_MARKER] VisualProgrammingTypes loaded build=3c43483"
+if type(_G) == "table" and not rawget(_G, "__UOW_VP_MARKER_A23B6AD") then
+    rawset(_G, "__UOW_VP_MARKER_A23B6AD", true)
+    local marker = "[VP_MARKER] VisualProgrammingTypes.lua build=a23b6ad loaded"
     if UOWNativeLog then
         UOWNativeLog(marker)
     end
@@ -219,6 +219,30 @@ local function VPDescribeCandidate(label, value)
         end
     end
     return string.format("%s=%s/%s%s", label, type(value), VPValueToString(value), suffix)
+end
+
+local function VPLogFunctionIdentity(tag, helperLabel, fn, passSourceTag)
+    local what = "<nil>"
+    if type(fn) == "function" and type(debug) == "table" and type(debug.getinfo) == "function" then
+        local info = debug.getinfo(fn)
+        if type(info) == "table" then
+            what = VPValueToString(info.what)
+        end
+    end
+
+    local message = string.format(
+        "[VPSpell] fn identity tag=%s helper=%s type=%s what=%s fn=%s passSourceTag=%s",
+        VPValueToString(tag),
+        VPValueToString(helperLabel),
+        VPValueToString(type(fn)),
+        VPValueToString(what),
+        VPValueToString(fn),
+        VPValueToString(passSourceTag))
+
+    if UOWNativeLog then
+        UOWNativeLog(message)
+    end
+    Debug.Print(message)
 end
 
 local function VPLookupRawFunction(container, key)
@@ -461,26 +485,53 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     callContext.executionTag = callContext.executionTag or tag
     callContext.luaContextTag = callContext.luaContextTag or VPGetLuaContextTag()
 
-    local castLabel = "UOFlow.Spell.cast"
-    local castFn = type(UOFlow) == "table"
-        and type(UOFlow.Spell) == "table"
-        and type(UOFlow.Spell.cast) == "function"
-        and UOFlow.Spell.cast or nil
+    local env = nil
+    if type(getfenv) == "function" then
+        local value = getfenv(1)
+        if type(value) == "table" then
+            env = value
+        end
+    end
+
+    local globalTable = _G
+    if not globalTable and env and type(env._G) == "table" then
+        globalTable = env._G
+    end
+
+    local castCandidates = {
+        { label = "uow.cmd.cast(raw env)", fn = VPLookupRawPath(env, "uow", "cmd", "cast") },
+        { label = "uow.cmd.cast(raw _G)", fn = VPLookupRawPath(globalTable, "uow", "cmd", "cast") },
+    }
+    local castLabel = nil
+    local castFn = nil
+    local candidateSummary = {
+        VPDescribeCandidate("env", env),
+        VPDescribeCandidate("_G", globalTable),
+        VPDescribeCandidate("uow.cmd.cast(raw env)", castCandidates[1].fn),
+        VPDescribeCandidate("uow.cmd.cast(raw _G)", castCandidates[2].fn),
+    }
 
     if UOWNativeLog then
         UOWNativeLog("[VPSpell] cast begin",
             tostring(tag),
             "spell=" .. tostring(spellId),
-            "helper=" .. tostring(castLabel),
             "ctx=" .. tostring(callContext.executionTag),
             "targetId=" .. tostring(targetId))
-        UOWNativeLog("[VPSpell] deterministic helper", tostring(tag), VPDescribeCandidate(castLabel, castFn))
+        UOWNativeLog("[VPSpell] cmd candidates", tostring(tag), table.concat(candidateSummary, " | "))
     end
-    Debug.Print("[VPSpell] deterministic helper " .. VPDescribeCandidate(castLabel, castFn))
+    Debug.Print("[VPSpell] cmd candidates " .. table.concat(candidateSummary, " | "))
     VPLogSpellState(tag .. ":before", spellId)
 
+    for _, candidate in ipairs(castCandidates) do
+        if type(candidate.fn) == "function" then
+            castLabel = candidate.label
+            castFn = candidate.fn
+            break
+        end
+    end
+
     if type(castFn) ~= "function" then
-        local missingMsg = "cast_helper_missing helper=" .. castLabel
+        local missingMsg = "cast_helper_missing helper=uow.cmd.cast(raw env/raw _G)"
         VPEmitUiLog("VP_CAST " .. missingMsg)
         if UOWNativeLog then
             UOWNativeLog("[VPSpell] cast fail", tostring(tag), missingMsg)
@@ -501,7 +552,9 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         rawset(_G, "uow_vp_cast_active", helperSourceTag)
     end
 
-    if VPShouldPassCastSourceTag(castLabel) then
+    local passSourceTag = VPShouldPassCastSourceTag(castLabel)
+    VPLogFunctionIdentity(tag, castLabel, castFn, passSourceTag)
+    if passSourceTag then
         ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, helperSourceTag)
     else
         ok, result1, result2, errText = VPInvokeFunction(castFn, spellId)
