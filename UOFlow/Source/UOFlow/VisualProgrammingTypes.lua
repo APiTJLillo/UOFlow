@@ -143,6 +143,7 @@ local function VPShouldPassCastSourceTag(label)
     return string.find(label, "UOFlow.Spell.cast", 1, true) ~= nil
         or string.find(label, "UOW.Spell.cast", 1, true) ~= nil
         or string.find(label, "uow.cmd.cast", 1, true) ~= nil
+        or string.find(label, "uow_vp_cast", 1, true) ~= nil
         or string.find(label, "uow_spell_cast", 1, true) ~= nil
 end
 
@@ -262,6 +263,22 @@ local function VPLogFunctionIdentity(tag, helperLabel, fn, passSourceTag)
 
     VPNativeLog(message)
     Debug.Print(message)
+end
+
+local function VPInvokeNativePing(globalTable)
+    local pingFn = type(globalTable) == "table" and rawget(globalTable, "uow_vp_ping") or nil
+    if type(pingFn) ~= "function" and type(uow_vp_ping) == "function" then
+        pingFn = uow_vp_ping
+    end
+
+    if type(pingFn) ~= "function" then
+        Debug.Print("[VP_PING] missing")
+        return nil, "missing"
+    end
+
+    local pingResult = pingFn()
+    Debug.Print("[VP_PING] result=" .. VPValueToString(pingResult))
+    return pingResult, nil
 end
 
 local function VPLookupRawFunction(container, key)
@@ -516,18 +533,18 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     end
 
     local castCandidates = {
-        { label = "uow_spell_cast(raw _G)", fn = globalTable and VPLookupRawFunction(globalTable, "uow_spell_cast") or nil },
-        { label = "uow_spell_cast(global)", fn = type(uow_spell_cast) == "function" and uow_spell_cast or nil },
-        { label = "uow.cmd.cast(raw _G)", fn = VPLookupRawPath(globalTable, "uow", "cmd", "cast") },
+        { label = "uow_vp_cast(raw _G)", fn = globalTable and VPLookupRawFunction(globalTable, "uow_vp_cast") or nil },
+        { label = "uow_vp_cast(global)", fn = type(uow_vp_cast) == "function" and uow_vp_cast or nil },
     }
     local castLabel = nil
     local castFn = nil
     local candidateSummary = {
         VPDescribeCandidate("env", env),
         VPDescribeCandidate("_G", globalTable),
-        VPDescribeCandidate("uow_spell_cast(raw _G)", castCandidates[1].fn),
-        VPDescribeCandidate("uow_spell_cast(global)", castCandidates[2].fn),
-        VPDescribeCandidate("uow.cmd.cast(raw _G)", castCandidates[3].fn),
+        VPDescribeCandidate("uow_vp_ping(raw _G)", globalTable and rawget(globalTable, "uow_vp_ping") or nil),
+        VPDescribeCandidate("uow_vp_ping(global)", type(uow_vp_ping) == "function" and uow_vp_ping or nil),
+        VPDescribeCandidate("uow_vp_cast(raw _G)", castCandidates[1].fn),
+        VPDescribeCandidate("uow_vp_cast(global)", castCandidates[2].fn),
     }
 
     VPNativeLog("[VPSpell] cast begin",
@@ -538,6 +555,7 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     VPNativeLog("[VPSpell] cast candidates", tostring(tag), table.concat(candidateSummary, " | "))
     Debug.Print("[VPSpell] cast candidates " .. table.concat(candidateSummary, " | "))
     VPLogSpellState(tag .. ":before", spellId)
+    VPInvokeNativePing(globalTable)
 
     for _, candidate in ipairs(castCandidates) do
         if type(candidate.fn) == "function" then
@@ -548,7 +566,7 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     end
 
     if type(castFn) ~= "function" then
-        local missingMsg = "cast_helper_missing helper=uow_spell_cast/raw _G/global or uow.cmd.cast(raw _G)"
+        local missingMsg = "cast_helper_missing helper=uow_vp_cast(raw _G/global)"
         VPEmitUiLog("VP_CAST " .. missingMsg)
         VPNativeLog("[VPSpell] cast fail", tostring(tag), missingMsg)
         VPLogSpellState(tag .. ":after", spellId)
