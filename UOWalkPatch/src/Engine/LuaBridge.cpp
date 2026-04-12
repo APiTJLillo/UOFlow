@@ -1120,6 +1120,43 @@ static int __stdcall Lua_uow_call_cast_Std(void* raw)
               GetCurrentThreadId(),
               Util::OwnerPump::GetOwnerThreadId());
     WriteRawLog(buf);
+
+    lua_State* L = static_cast<lua_State*>(raw);
+    __try {
+        char tramp[256];
+        sprintf_s(tramp,
+                  sizeof(tramp),
+                  "[Lua] CALL_CAST_V1 evaluator trampoline raw=%p L=%p caller=%u owner=%u",
+                  raw,
+                  L,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId());
+        WriteRawLog(tramp);
+        return Lua_uow_call_cast(L);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        char fail[256];
+        sprintf_s(fail,
+                  sizeof(fail),
+                  "[Lua] CALL_CAST_V1 evaluator trampoline exception code=0x%08lX raw=%p L=%p",
+                  static_cast<unsigned long>(GetExceptionCode()),
+                  raw,
+                  L);
+        WriteRawLog(fail);
+    }
+
+    if (L) {
+        __try {
+            lua_pushboolean(L, 0);
+            static const char kMsg[] = "not_supported_in_evaluator_raw";
+            lua_pushlstring(L, kMsg, sizeof(kMsg) - 1);
+            return 2;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            WriteRawLog("[Lua] CALL_CAST_V1 evaluator fallback push failed");
+        }
+    }
+
     return 0;
 }
 
