@@ -15,6 +15,7 @@
 #include "Core/Logging.hpp"
 #include "CastCorrelator.h"
 #include "Engine/Addresses.h"
+#include "Engine/LuaBridge.hpp"
 
 namespace Engine::CastFallback {
 namespace {
@@ -246,14 +247,17 @@ void* __fastcall Hook_BuildAction(void* self, void*, void* a1, void* a2)
     __try {
         if (self) {
             ActionSnapshot snap = ReadActionSnapshot(self);
-            if (snap.ok && (snap.vtbl == g_expectedVtable || LooksLikeSpellAction(snap))) {
+            const bool exactMatch = snap.ok && (snap.vtbl == g_expectedVtable);
+            const bool heuristicMatch = snap.ok && LooksLikeSpellAction(snap);
+            const bool wrapperArmed = Engine::Lua::HasRecentCastAttempt();
+            if (snap.ok && (exactMatch || (heuristicMatch && wrapperArmed))) {
                 char buf[320];
                 sprintf_s(buf,
                           sizeof(buf),
                           "[CastUI/native] self=%p vtbl=%p match=%s spellId=%u targetType=%u targetId=%08X iconId=%u flag18=%u",
                           self,
                           reinterpret_cast<void*>(snap.vtbl),
-                          (snap.vtbl == g_expectedVtable) ? "vtbl" : "heuristic",
+                          exactMatch ? "vtbl" : "heuristic",
                           snap.spellId,
                           snap.targetType,
                           snap.targetId,

@@ -8898,6 +8898,16 @@ bool CastSpellNative(int spellId)
     return ok;
 }
 
+bool HasRecentCastAttempt()
+{
+    DWORD lastAttempt = g_lastCastAttemptTick.load(std::memory_order_acquire);
+    uint32_t token = g_lastCastToken.load(std::memory_order_acquire);
+    if (lastAttempt == 0 || token == 0)
+        return false;
+    DWORD now = GetTickCount();
+    return (now - lastAttempt) <= 2000;
+}
+
 bool InitLuaBridge()
 {
     // Prefer configuration file, fall back to environment variable for compatibility.

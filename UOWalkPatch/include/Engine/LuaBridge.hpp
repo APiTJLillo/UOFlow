@@ -16,6 +16,7 @@ namespace Engine::Lua {
     // Invoke the client's Hotbar.UseSlot helper (hotbar IDs and slots are 1-based).
     bool UseHotbarSlot(int hotbarId, int slot);
     bool CastSpellNative(int spellId);
+    bool HasRecentCastAttempt();
 }
 
 extern "C" __declspec(dllexport) void __stdcall SendRaw(const void* bytes, int len);
