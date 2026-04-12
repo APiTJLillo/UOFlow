@@ -567,6 +567,7 @@ static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L);
 static int __cdecl Lua_uow_spell_cast_global(lua_State* L);
 static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L);
 static int __cdecl Lua_uow_get_native(lua_State* L);
+static int __cdecl Lua_uow_bridge_health(lua_State* L);
 static int __cdecl Lua_uow_vp_cast(lua_State* L);
 static int __cdecl Lua_uow_vp_ping(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L);
