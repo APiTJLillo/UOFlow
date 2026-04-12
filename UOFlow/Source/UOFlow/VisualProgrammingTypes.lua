@@ -67,6 +67,12 @@ end
 
 local function ResolveNativeLog()
     if type(_G) == "table" then
+        local bridge = rawget(_G, "__uow_native_bridge_v1")
+        if type(bridge) == "table" and type(bridge.debug) == "function" then
+            return bridge.debug
+        end
+    end
+    if type(_G) == "table" then
         local rawNativeLog = rawget(_G, "__uow_debug_log_v1")
         if type(rawNativeLog) == "function" then
             return rawNativeLog
@@ -114,6 +120,7 @@ local g_vpNativeHandles = {
     vp_ping_identity = nil,
 }
 
+local VP_NATIVE_BRIDGE_NAME = "__uow_native_bridge_v1"
 local VP_NATIVE_GETTER_NAME = "__uow_native_get_v1"
 local VP_NATIVE_CAST_NAME = "__uow_vp_cast_v1"
 local VP_NATIVE_PING_NAME = "__uow_vp_ping_v1"
@@ -130,36 +137,59 @@ local function VPGetFunctionWhat(fn)
     return what
 end
 
+local function VPResolveNativeBridgeTable()
+    if type(_G) ~= "table" then
+        return nil, "native_bridge_missing name=" .. VP_NATIVE_BRIDGE_NAME
+    end
+
+    local bridge = rawget(_G, VP_NATIVE_BRIDGE_NAME)
+    if type(bridge) ~= "table" then
+        return nil, "native_bridge_missing name=" .. VP_NATIVE_BRIDGE_NAME
+    end
+
+    return bridge, nil
+end
+
 local function VPResolveDirectNativeFunction(name)
-    local fn = nil
-    if type(_G) == "table" then
-        fn = rawget(_G, name)
+    local bridge, bridgeErr = VPResolveNativeBridgeTable()
+    if type(bridge) ~= "table" then
+        return nil, nil, bridgeErr
     end
 
-    if type(fn) == "function" then
-        return fn
+    local fieldName = nil
+    if name == VP_NATIVE_GETTER_NAME then
+        fieldName = "get"
+    elseif name == VP_NATIVE_CAST_NAME then
+        fieldName = "vp_cast"
+    elseif name == VP_NATIVE_PING_NAME then
+        fieldName = "vp_ping"
+    elseif name == "__uow_debug_log_v1" then
+        fieldName = "debug"
     end
 
-    if name == VP_NATIVE_GETTER_NAME and type(__uow_native_get_v1) == "function" then
-        return __uow_native_get_v1
-    end
-    if name == VP_NATIVE_CAST_NAME and type(__uow_vp_cast_v1) == "function" then
-        return __uow_vp_cast_v1
-    end
-    if name == VP_NATIVE_PING_NAME and type(__uow_vp_ping_v1) == "function" then
-        return __uow_vp_ping_v1
-    end
-    if name == "__uow_debug_log_v1" and type(__uow_debug_log_v1) == "function" then
-        return __uow_debug_log_v1
+    if type(fieldName) ~= "string" then
+        return nil, bridge, "native_bridge_field_unknown name=" .. VPValueToString(name)
     end
 
-    return nil
+    local fn = bridge[fieldName]
+    if type(fn) ~= "function" then
+        return nil, bridge, "native_bridge_field_missing field=" .. VPValueToString(fieldName)
+    end
+
+    return fn, bridge, nil
 end
 
 local function VPGetNativeContextToken()
     local token = nil
-    if type(_G) == "table" then
-        token = rawget(_G, VP_NATIVE_CONTEXT_TOKEN_NAME)
+    local bridge = nil
+    bridge = VPResolveNativeBridgeTable()
+    if type(bridge) == "table" then
+        token = bridge.context_token
+    end
+    if token == nil then
+        if type(_G) == "table" then
+            token = rawget(_G, VP_NATIVE_CONTEXT_TOKEN_NAME)
+        end
     end
     if token == nil then
         token = __uow_context_token_v1
@@ -172,10 +202,10 @@ local function VPResolveNativeGetter()
         return g_vpNativeHandles.getter, nil
     end
 
-    local getter = VPResolveDirectNativeFunction(VP_NATIVE_GETTER_NAME)
+    local getter, _, getterErr = VPResolveDirectNativeFunction(VP_NATIVE_GETTER_NAME)
 
     if type(getter) ~= "function" then
-        return nil, "native_getter_missing name=" .. VP_NATIVE_GETTER_NAME
+        return nil, getterErr or ("native_getter_missing name=" .. VP_NATIVE_GETTER_NAME)
     end
 
     local getterWhat = VPGetFunctionWhat(getter)
@@ -409,17 +439,12 @@ local function VPValidateNativeHandle(key, fn, expectedTag, expectedIdentity)
 end
 
 local function VPInvokeNativePing()
-    local pingFn = VPResolveDirectNativeFunction(VP_NATIVE_PING_NAME)
+    local pingFn, pingBridge, pingBridgeErr = VPResolveDirectNativeFunction(VP_NATIVE_PING_NAME)
     local pingTag = nil
-    local pingIdentity = nil
-    local pingErr = nil
+    local pingErr = pingBridgeErr
     local pingLabel = VP_NATIVE_PING_NAME .. "(direct)"
     if type(pingFn) == "function" then
         pingTag = "direct:" .. VPValueToString(tostring(pingFn))
-        pingIdentity = tostring(pingFn)
-    else
-        pingFn, pingTag, pingIdentity, pingErr = VPGetCachedNativeHandle("vp_ping")
-        pingLabel = VP_NATIVE_PING_NAME .. "(getter)"
     end
 
     if type(pingFn) ~= "function" then
@@ -427,21 +452,12 @@ local function VPInvokeNativePing()
         return nil, pingErr
     end
 
-    local integrityOk = true
-    local integrityErr = nil
-    if pingLabel ~= VP_NATIVE_PING_NAME .. "(direct)" then
-        integrityOk, integrityErr = VPValidateNativeHandle("vp_ping", pingFn, pingTag, pingIdentity)
-    end
-    if integrityOk == false then
-        Debug.Print("[VP_PING] invalid err=" .. VPValueToString(integrityErr))
-        return nil, integrityErr
-    end
-
     local pingResult = pingFn()
     VPNativeLog("[VP_PING] result",
         VPValueToString(pingResult),
         "helper=" .. pingLabel,
         "tag=" .. VPValueToString(pingTag),
+        "bridge=" .. VPValueToString(pingBridge),
         "token=" .. VPValueToString(VPGetNativeContextToken()))
     Debug.Print("[VP_PING] result=" .. VPValueToString(pingResult))
     return pingResult, nil
@@ -685,33 +701,31 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     callContext.executionTag = callContext.executionTag or tag
     callContext.luaContextTag = callContext.luaContextTag or VPGetLuaContextTag()
 
+    local bridgeTable, bridgeErr = VPResolveNativeBridgeTable()
     local contextToken = VPGetNativeContextToken()
-    local directCastFn = VPResolveDirectNativeFunction(VP_NATIVE_CAST_NAME)
+    local directCastFn, directBridge, directErr = VPResolveDirectNativeFunction(VP_NATIVE_CAST_NAME)
     local castLabel = VP_NATIVE_CAST_NAME .. "(direct)"
     local castFn = directCastFn
     local castTag = nil
-    local castIdentity = nil
-    local castResolveErr = nil
-    local castFromGetter = false
+    local castResolveErr = directErr or bridgeErr
     if type(castFn) == "function" then
         castTag = "direct:" .. VPValueToString(tostring(castFn))
-        castIdentity = tostring(castFn)
-    else
-        castLabel = VP_NATIVE_CAST_NAME .. "(getter)"
-        castFn, castTag, castIdentity, castResolveErr = VPGetCachedNativeHandle("vp_cast")
-        castFromGetter = true
     end
     local getterFn, getterErr = VPResolveNativeGetter()
     local getterWhat = VPGetFunctionWhat(getterFn)
     local candidateSummary = {
+        VPDescribeCandidate(VP_NATIVE_BRIDGE_NAME, bridgeTable),
+        "bridge.err=" .. VPValueToString(bridgeErr),
+        "bridge.token=" .. VPValueToString(contextToken),
         "token=" .. VPValueToString(contextToken),
         VPDescribeCandidate(VP_NATIVE_CAST_NAME, directCastFn),
+        "direct.err=" .. VPValueToString(directErr),
+        "direct.bridge=" .. VPValueToString(directBridge),
         VPDescribeCandidate(VP_NATIVE_GETTER_NAME, getterFn),
         "getter.err=" .. VPValueToString(getterErr),
         "getter.what=" .. VPValueToString(getterWhat),
         "getter.identity=" .. VPValueToString(g_vpNativeHandles.getter_identity),
         "vp_cast.tag=" .. VPValueToString(castTag),
-        "vp_cast.identity=" .. VPValueToString(castIdentity),
         VPDescribeCandidate(castLabel, castFn),
     }
 
@@ -720,6 +734,7 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         "spell=" .. tostring(spellId),
         "ctx=" .. tostring(callContext.executionTag),
         "targetId=" .. tostring(targetId),
+        "bridge=" .. VPValueToString(bridgeTable),
         "token=" .. VPValueToString(contextToken))
     VPNativeLog("[VPSpell] cast candidates", tostring(tag), table.concat(candidateSummary, " | "))
     Debug.Print("[VPSpell] cast candidates " .. table.concat(candidateSummary, " | "))
@@ -744,19 +759,6 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     VPLogCastCall("before", tag, spellId, castLabel, callContext, nil, nil, nil, nil)
     if type(_G) == "table" then
         rawset(_G, "uow_vp_cast_active", helperSourceTag)
-    end
-
-    local integrityOk = true
-    local integrityErr = nil
-    if castFromGetter then
-        integrityOk, integrityErr = VPValidateNativeHandle("vp_cast", castFn, castTag, castIdentity)
-    end
-    if integrityOk == false then
-        local tamperedMsg = integrityErr or "cast_helper_tampered"
-        VPEmitUiLog("VP_CAST " .. tamperedMsg)
-        VPNativeLog("[VPSpell] cast fail", tostring(tag), tamperedMsg, "tag=" .. VPValueToString(castTag))
-        VPLogSpellState(tag .. ":after", spellId)
-        return false, tamperedMsg, nil, false
     end
 
     local passSourceTag = VPShouldPassCastSourceTag(castLabel)

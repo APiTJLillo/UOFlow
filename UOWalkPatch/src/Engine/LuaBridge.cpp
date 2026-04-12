@@ -569,6 +569,7 @@ static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L);
 static int __cdecl Lua_uow_get_native(lua_State* L);
 static int __cdecl Lua_uow_vp_cast(lua_State* L);
 static int __cdecl Lua_uow_vp_ping(lua_State* L);
+static int __cdecl Lua_uow_native_bridge_block_write(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L);
@@ -979,6 +980,23 @@ static bool RegisterLuaPathSafe(lua_State* L, lua_CFunction fn, const char* name
     return true;
 }
 
+static int __cdecl Lua_uow_native_bridge_block_write(lua_State* L)
+{
+    const std::string key = ReadOptionalString(L, 2);
+    const int valueType = L ? lua_type(L, 3) : LUA_TNONE;
+
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaBridge] blocked write __uow_native_bridge_v1 key=%s valueType=%s caller=%u owner=%u",
+              key.empty() ? "<none>" : key.c_str(),
+              L ? lua_typename(L, valueType) : "<nolua>",
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
+    return 0;
+}
+
 static void InstallNativeContextToken(lua_State* L, const char* reason)
 {
     if (!L)
@@ -1028,6 +1046,82 @@ static void InstallNativeContextToken(lua_State* L, const char* reason)
               GetCurrentThreadId(),
               Util::OwnerPump::GetOwnerThreadId());
     WriteRawLog(buf);
+}
+
+static void InstallNativeBridgeTable(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+
+    int top = lua_gettop(L);
+    char token[128] = {};
+    __try {
+        lua_getglobal(L, "__uow_context_token_v1");
+        size_t tokenLen = 0;
+        const char* tokenText = lua_tolstring(L, -1, &tokenLen);
+        if (tokenText && tokenLen) {
+            size_t copyLen = tokenLen;
+            if (copyLen >= sizeof(token))
+                copyLen = sizeof(token) - 1;
+            memcpy(token, tokenText, copyLen);
+            token[copyLen] = '\0';
+        }
+        lua_pop(L, 1);
+
+        lua_createtable(L, 0, 6);
+        const int backingIndex = lua_gettop(L);
+        lua_pushcfunction(L, Lua_uow_get_native);
+        lua_setfield(L, backingIndex, "get");
+        lua_pushcfunction(L, Lua_uow_vp_cast);
+        lua_setfield(L, backingIndex, "vp_cast");
+        lua_pushcfunction(L, Lua_uow_vp_ping);
+        lua_setfield(L, backingIndex, "vp_ping");
+        lua_pushcfunction(L, Lua_UOW_Debug_log);
+        lua_setfield(L, backingIndex, "debug");
+        lua_pushlstring(L, "bridge_v1", 9);
+        lua_setfield(L, backingIndex, "version");
+        lua_pushlstring(L, token, strlen(token));
+        lua_setfield(L, backingIndex, "context_token");
+
+        lua_createtable(L, 0, 0);
+        const int proxyIndex = lua_gettop(L);
+        lua_createtable(L, 0, 3);
+        const int metaIndex = lua_gettop(L);
+        lua_pushvalue(L, backingIndex);
+        lua_setfield(L, metaIndex, "__index");
+        lua_pushcfunction(L, Lua_uow_native_bridge_block_write);
+        lua_setfield(L, metaIndex, "__newindex");
+        lua_pushlstring(L, "uow_native_bridge_v1_locked", 27);
+        lua_setfield(L, metaIndex, "__metatable");
+        lua_setmetatable(L, proxyIndex);
+
+        const void* backingPtr = lua_topointer(L, backingIndex);
+        const void* proxyPtr = lua_topointer(L, proxyIndex);
+        lua_pushvalue(L, proxyIndex);
+        lua_setglobal(L, "__uow_native_bridge_v1");
+
+        char buf[320];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaBridge] __uow_native_bridge_v1 installed reason=%s token=%s proxy=%p backing=%p caller=%u owner=%u",
+                  reason ? reason : "<none>",
+                  token[0] ? token : "<none>",
+                  proxyPtr,
+                  backingPtr,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId());
+        WriteRawLog(buf);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        char buf[224];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaBridge] exception installing __uow_native_bridge_v1 reason=%s L=%p",
+                  reason ? reason : "<none>",
+                  L);
+        WriteRawLog(buf);
+    }
+    lua_settop(L, top);
 }
 
 static void RunNativeGetterSelfTest(lua_State* L, const char* reason)
@@ -1119,6 +1213,74 @@ static void RunNativeGetterSelfTest(lua_State* L, const char* reason)
     lua_settop(L, top);
 }
 
+static void RunNativeBridgeSelfTest(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+
+    int top = lua_gettop(L);
+    __try {
+        lua_getglobal(L, "__uow_native_bridge_v1");
+        const int bridgeType = lua_type(L, -1);
+        if (bridgeType != LUA_TTABLE) {
+            char miss[224];
+            sprintf_s(miss,
+                      sizeof(miss),
+                      "[LuaSelfTest] __uow_native_bridge_v1 missing reason=%s type=%s L=%p",
+                      reason ? reason : "<none>",
+                      lua_typename(L, bridgeType),
+                      L);
+            WriteRawLog(miss);
+            lua_settop(L, top);
+            return;
+        }
+
+        const void* bridgePtr = lua_topointer(L, -1);
+        lua_getfield(L, -1, "get");
+        const int getType = lua_type(L, -1);
+        const bool getIsC = (getType == LUA_TFUNCTION) && (lua_iscfunction(L, -1) != 0);
+        void* getPtr = getIsC ? reinterpret_cast<void*>(lua_tocfunction(L, -1)) : nullptr;
+        lua_pop(L, 1);
+
+        lua_getfield(L, -1, "vp_cast");
+        const int castType = lua_type(L, -1);
+        const bool castIsC = (castType == LUA_TFUNCTION) && (lua_iscfunction(L, -1) != 0);
+        void* castPtr = castIsC ? reinterpret_cast<void*>(lua_tocfunction(L, -1)) : nullptr;
+        lua_pop(L, 1);
+
+        lua_getfield(L, -1, "context_token");
+        size_t tokenLen = 0;
+        const char* tokenText = lua_tolstring(L, -1, &tokenLen);
+        lua_pop(L, 1);
+
+        char buf[352];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaSelfTest] __uow_native_bridge_v1 reason=%s bridge=%p getType=%s getIsC=%d getPtr=%p castType=%s castIsC=%d castPtr=%p token=%.*s",
+                  reason ? reason : "<none>",
+                  bridgePtr,
+                  lua_typename(L, getType),
+                  getIsC ? 1 : 0,
+                  getPtr,
+                  lua_typename(L, castType),
+                  castIsC ? 1 : 0,
+                  castPtr,
+                  static_cast<int>(tokenLen),
+                  tokenText ? tokenText : "");
+        WriteRawLog(buf);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        char buf[224];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaSelfTest] exception during __uow_native_bridge_v1 self-test reason=%s L=%p",
+                  reason ? reason : "<none>",
+                  L);
+        WriteRawLog(buf);
+    }
+    lua_settop(L, top);
+}
+
 static void LogLuaFunctionBinding(lua_State* L, const char* stage, const char* path)
 {
     if (!L || !path || !*path)
@@ -1162,6 +1324,10 @@ static void LogSpellHelperBindings(lua_State* L, const char* stage)
     if (!L)
         return;
     static const char* const kPaths[] = {
+        "__uow_native_bridge_v1.get",
+        "__uow_native_bridge_v1.vp_cast",
+        "__uow_native_bridge_v1.vp_ping",
+        "__uow_native_bridge_v1.debug",
         "__uow_native_get_v1",
         "__uow_vp_cast_v1",
         "__uow_vp_ping_v1",
@@ -4219,6 +4385,8 @@ static void EnsureDirectLuaGlobals(lua_State* L)
     }
 
     InstallNativeContextToken(L, "EnsureDirectLuaGlobals");
+    InstallNativeBridgeTable(L, "EnsureDirectLuaGlobals");
+    RunNativeBridgeSelfTest(L, "EnsureDirectLuaGlobals");
     RunNativeGetterSelfTest(L, "EnsureDirectLuaGlobals");
 }
 
@@ -6719,6 +6887,16 @@ static int __cdecl Lua_uow_vp_cast(lua_State* L)
     LogLuaCastEntry("__uow_vp_cast_v1", L, spellId, sourceTag.c_str());
 
     char intro[256];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[Lua] BRIDGE_V1 vp_cast invoked spell=%d caller=%u owner=%u L=%p source=%s",
+              spellId,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L,
+              sourceTag.empty() ? "<none>" : sourceTag.c_str());
+    WriteRawLog(intro);
+
     sprintf_s(intro,
               sizeof(intro),
               "[Lua] __uow_vp_cast_v1 invoked spell=%d caller=%u owner=%u L=%p source=%s",
