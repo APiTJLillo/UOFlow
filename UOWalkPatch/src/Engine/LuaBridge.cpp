@@ -569,7 +569,6 @@ static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L);
 static int __cdecl Lua_uow_get_native(lua_State* L);
 static int __cdecl Lua_uow_vp_cast(lua_State* L);
 static int __cdecl Lua_uow_vp_ping(lua_State* L);
-static int __cdecl Lua_uow_native_bridge_block_write(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L);
@@ -980,23 +979,6 @@ static bool RegisterLuaPathSafe(lua_State* L, lua_CFunction fn, const char* name
     return true;
 }
 
-static int __cdecl Lua_uow_native_bridge_block_write(lua_State* L)
-{
-    const std::string key = ReadOptionalString(L, 2);
-    const int valueType = L ? lua_type(L, 3) : LUA_TNONE;
-
-    char buf[256];
-    sprintf_s(buf,
-              sizeof(buf),
-              "[LuaBridge] blocked write __uow_native_bridge_v1 key=%s valueType=%s caller=%u owner=%u",
-              key.empty() ? "<none>" : key.c_str(),
-              L ? lua_typename(L, valueType) : "<nolua>",
-              GetCurrentThreadId(),
-              Util::OwnerPump::GetOwnerThreadId());
-    WriteRawLog(buf);
-    return 0;
-}
-
 static void InstallNativeContextToken(lua_State* L, const char* reason)
 {
     if (!L)
@@ -1083,30 +1065,16 @@ static void InstallNativeBridgeTable(lua_State* L, const char* reason)
         lua_pushlstring(L, token, strlen(token));
         lua_setfield(L, backingIndex, "context_token");
 
-        lua_createtable(L, 0, 0);
-        const int proxyIndex = lua_gettop(L);
-        lua_createtable(L, 0, 3);
-        const int metaIndex = lua_gettop(L);
-        lua_pushvalue(L, backingIndex);
-        lua_setfield(L, metaIndex, "__index");
-        lua_pushcfunction(L, Lua_uow_native_bridge_block_write);
-        lua_setfield(L, metaIndex, "__newindex");
-        lua_pushlstring(L, "uow_native_bridge_v1_locked", 27);
-        lua_setfield(L, metaIndex, "__metatable");
-        lua_setmetatable(L, proxyIndex);
-
         const void* backingPtr = lua_topointer(L, backingIndex);
-        const void* proxyPtr = lua_topointer(L, proxyIndex);
-        lua_pushvalue(L, proxyIndex);
+        lua_pushvalue(L, backingIndex);
         lua_setglobal(L, "__uow_native_bridge_v1");
 
         char buf[320];
         sprintf_s(buf,
                   sizeof(buf),
-                  "[LuaBridge] __uow_native_bridge_v1 installed reason=%s token=%s proxy=%p backing=%p caller=%u owner=%u",
+                  "[LuaBridge] __uow_native_bridge_v1 installed reason=%s token=%s table=%p caller=%u owner=%u",
                   reason ? reason : "<none>",
                   token[0] ? token : "<none>",
-                  proxyPtr,
                   backingPtr,
                   GetCurrentThreadId(),
                   Util::OwnerPump::GetOwnerThreadId());
