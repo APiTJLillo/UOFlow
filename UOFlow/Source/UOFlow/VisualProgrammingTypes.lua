@@ -821,19 +821,21 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     local bridgeReason = "VPCastSpell/pre_call block="
         .. VPValueToString(callContext.blockId)
         .. " spell=" .. VPValueToString(spellId)
-    local bridgeOk, bridgeCheckErr, bridgeTable, checkedCastFn, checkedGetterFn, checkedTag, healthTag, healthSource =
+    local integrityOk, bridgeCheckErr, integrityBridge, integrityCastFn, integrityGetterFn, integrityTag, healthTag, healthSource =
         VPCheckBridgeIntegrity(bridgeReason)
-    local bridgeErr = bridgeOk and nil or bridgeCheckErr
+    local bridgeTable, bridgeErr = VPResolveNativeBridgeTable()
     local contextToken = VPGetNativeContextToken()
-    local directCastFn, directBridge, directErr = VPResolveDirectNativeFunction(VP_NATIVE_CAST_NAME)
-    local castLabel = VP_NATIVE_CAST_NAME .. "(direct)"
-    local castFn = bridgeOk and checkedCastFn or directCastFn
-    local castTag = bridgeOk and checkedTag or nil
-    local castResolveErr = bridgeErr or directErr
+    local castLabel = VP_NATIVE_CAST_NAME .. "(bridge)"
+    local castFn = type(bridgeTable) == "table" and rawget(bridgeTable, "vp_cast") or nil
+    local castTag = integrityTag
+    local castResolveErr = bridgeErr
     if type(castFn) == "function" and type(castTag) ~= "string" then
-        castTag = "direct:" .. VPValueToString(tostring(castFn))
+        castTag = "bridge:" .. VPValueToString(tostring(castFn))
     end
-    local getterFn = bridgeOk and checkedGetterFn or nil
+    if type(castFn) ~= "function" and castResolveErr == nil then
+        castResolveErr = "native_bridge_missing name=" .. VP_NATIVE_BRIDGE_NAME .. ".vp_cast"
+    end
+    local getterFn = integrityGetterFn
     local getterErr = nil
     if type(getterFn) ~= "function" then
         getterFn, getterErr = VPResolveNativeGetter()
@@ -841,14 +843,15 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     local getterWhat = VPGetFunctionWhat(getterFn)
     local candidateSummary = {
         VPDescribeCandidate(VP_NATIVE_BRIDGE_NAME, bridgeTable),
-        "bridge.err=" .. VPValueToString(bridgeErr),
+        "bridge.err=" .. VPValueToString(bridgeErr or bridgeCheckErr),
+        "bridge.integrityOk=" .. VPValueToString(integrityOk),
+        "bridge.integrityErr=" .. VPValueToString(bridgeCheckErr),
+        "bridge.integrityBridge=" .. VPValueToString(integrityBridge),
+        VPDescribeCandidate("bridge.integrity.vp_cast", integrityCastFn),
         "bridge.token=" .. VPValueToString(contextToken),
         "bridge.healthTag=" .. VPValueToString(healthTag),
         "bridge.healthSource=" .. VPValueToString(healthSource),
         "token=" .. VPValueToString(contextToken),
-        VPDescribeCandidate(VP_NATIVE_CAST_NAME, directCastFn),
-        "direct.err=" .. VPValueToString(directErr),
-        "direct.bridge=" .. VPValueToString(directBridge),
         VPDescribeCandidate(VP_NATIVE_GETTER_NAME, getterFn),
         "getter.err=" .. VPValueToString(getterErr),
         "getter.what=" .. VPValueToString(getterWhat),
@@ -869,18 +872,15 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     VPLogSpellState(tag .. ":before", spellId)
     VPInvokeNativePing()
 
-    if not bridgeOk then
-        local missingMsg = castResolveErr or "bridge_drift_detected"
-        VPEmitUiLog("VP_CAST " .. missingMsg)
-        VPNativeLog("[VPSpell] cast fail", tostring(tag), missingMsg, "healthTag=" .. VPValueToString(healthTag))
-        VPLogSpellState(tag .. ":after", spellId)
-        return false, missingMsg, nil, false
-    end
-
     if type(castFn) ~= "function" then
-        local missingMsg = castResolveErr or ("bridge_drift_detected helper=" .. VP_NATIVE_CAST_NAME)
+        local missingMsg = castResolveErr or ("native_bridge_missing name=" .. VP_NATIVE_BRIDGE_NAME .. ".vp_cast")
         VPEmitUiLog("VP_CAST " .. missingMsg)
-        VPNativeLog("[VPSpell] cast fail", tostring(tag), missingMsg)
+        VPNativeLog("[VPSpell] cast fail",
+            tostring(tag),
+            missingMsg,
+            "integrityOk=" .. VPValueToString(integrityOk),
+            "integrityErr=" .. VPValueToString(bridgeCheckErr),
+            "healthTag=" .. VPValueToString(healthTag))
         VPLogSpellState(tag .. ":after", spellId)
         return false, missingMsg, nil, false
     end
@@ -909,8 +909,9 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         .. " spell=" .. VPValueToString(spellId))
     VPNativeLog("[VP_NATIVE_TEST] getter=" .. VPValueToString(VP_NATIVE_GETTER_NAME)
         .. " token=" .. VPValueToString(contextToken)
-        .. " directFn=" .. VPValueToString(directCastFn)
-        .. " directWhat=" .. VPValueToString(VPGetFunctionWhat(directCastFn))
+        .. " bridge=" .. VPValueToString(bridgeTable)
+        .. " integrityOk=" .. VPValueToString(integrityOk)
+        .. " integrityErr=" .. VPValueToString(bridgeCheckErr)
         .. " getterFn=" .. VPValueToString(getterFn)
         .. " getterWhat=" .. VPValueToString(getterWhat)
         .. " fn=" .. VPValueToString(castFn)
