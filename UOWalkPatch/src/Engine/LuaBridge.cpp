@@ -111,7 +111,7 @@ namespace {
         kCtxHasCastSpell | kCtxHasRequestTargetInfo | kCtxHasClearCurrentTarget;
     static constexpr unsigned kGameplayBootstrapRequiredMask =
         kCtxHasRequestTargetInfo | kCtxHasClearCurrentTarget;
-    static constexpr DWORD kGameplayLuaStableMs = 400;
+    static constexpr DWORD kGameplayLuaStableMs = 50;
 
     static volatile LONG g_pendingRegistration = 0;
     static thread_local bool g_inScriptRegistration = false;
@@ -618,7 +618,7 @@ static bool ResolveGameplayScriptContext(lua_State* L,
                                          void* preferredCtx,
                                          void** outCtx,
                                          const char* reason);
-static void PromoteGameplayOwnerFromLiveCallback(const char* reason);
+static void PromoteGameplayOwnerFromLiveCallback(const char* reason, lua_State* callbackL = nullptr);
 static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reasonTag);
 
 static uint32_t ReadOptionalUInt(lua_State* L, int idx, uint32_t def = 0)
@@ -992,7 +992,7 @@ static int __cdecl Lua_uow_bridge_health(lua_State* L)
     if (L) {
         if (!Engine::LuaState())
             Engine::ReportLuaState(L);
-        PromoteGameplayOwnerFromLiveCallback("__uow_bridge_health_v1");
+        PromoteGameplayOwnerFromLiveCallback("__uow_bridge_health_v1", L);
         ProbeGameplayBindingBootstrap(L, "__uow_bridge_health_v1");
     }
 
@@ -1098,7 +1098,7 @@ static void LogSavedOriginalUpvalues(lua_State* L, const char* savedName, const 
 static void LogLuaTopTypes(lua_State* L, const char* context, int maxSlots = 6);
 static bool SaveAndReplace(lua_State* L, const char* name, lua_CFunction wrapper);
 static int CallSavedOriginal(lua_State* L, const char* savedName);
-static void MaybeUpdateOwnerContext(void* ctx);
+static void MaybeUpdateOwnerContext(void* ctx, lua_State* callbackL = nullptr);
 static void* CurrentScriptContext();
 static void* CanonicalOwnerContext();
 static ObservedContext* FindObservedContext(void* ctx);
@@ -2052,6 +2052,8 @@ static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool 
     UpdateObservedContextLuaState(slot, L, reason);
 
     const DWORD now = GetTickCount();
+    auto* engineL = static_cast<lua_State*>(Engine::LuaState());
+    const void* observedL = reinterpret_cast<void*>(slot->lastLuaState);
     const unsigned flags = slot->flags;
     const unsigned missingMask = (kGameplayBootstrapRequiredMask & ~flags);
     if (missingMask != 0) {
@@ -2060,11 +2062,14 @@ static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool 
             char buf[256];
             sprintf_s(buf,
                       sizeof(buf),
-                      "[GameplayCtx] reject ctx=%p reason=%s missing_core=0x%X flags=0x%X",
+                      "[GameplayCtx] reject ctx=%p reason=%s missing_core=0x%X flags=0x%X callbackL=%p engineL=%p observedL=%p",
                       ctx,
                       reason ? reason : "<none>",
                       missingMask,
-                      flags);
+                      flags,
+                      L,
+                      engineL,
+                      observedL);
             WriteRawLog(buf);
             s_nextMissingCoreLogTick = now + 1000;
         }
@@ -2079,13 +2084,15 @@ static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool 
         if (verbose && now >= s_nextStableLogTick) {
             const DWORD elapsed = (stableSince == 0 || now < stableSince) ? 0 : (now - stableSince);
             const DWORD remaining = (elapsed >= kGameplayLuaStableMs) ? 0 : (kGameplayLuaStableMs - elapsed);
-            char buf[256];
+            char buf[320];
             sprintf_s(buf,
                       sizeof(buf),
-                      "[GameplayCtx] reject ctx=%p reason=%s lua=%p stable_for=%lu remaining=%lu",
+                      "[GameplayCtx] reject ctx=%p reason=%s callbackL=%p engineL=%p observedL=%p stable_for=%lu remaining=%lu",
                       ctx,
                       reason ? reason : "<none>",
                       L,
+                      engineL,
+                      observedL,
                       static_cast<unsigned long>(elapsed),
                       static_cast<unsigned long>(remaining));
             WriteRawLog(buf);
@@ -2099,14 +2106,17 @@ static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool 
     if (ownerTid == 0 || ownerTid != callerTid) {
         static DWORD s_nextOwnerLogTick = 0;
         if (verbose && now >= s_nextOwnerLogTick) {
-            char buf[256];
+            char buf[320];
             sprintf_s(buf,
                       sizeof(buf),
-                      "[GameplayCtx] reject ctx=%p reason=%s owner_tid=%u caller_tid=%u",
+                      "[GameplayCtx] reject ctx=%p reason=%s owner_tid=%u caller_tid=%u callbackL=%p engineL=%p observedL=%p",
                       ctx,
                       reason ? reason : "<none>",
                       ownerTid,
-                      callerTid);
+                      callerTid,
+                      L,
+                      engineL,
+                      observedL);
             WriteRawLog(buf);
             s_nextOwnerLogTick = now + 1000;
         }
@@ -2116,12 +2126,14 @@ static bool IsGameplayContext(void* ctx, lua_State* L, const char* reason, bool 
     return true;
 }
 
-static void MaybeUpdateOwnerContext(void* ctx)
+static void MaybeUpdateOwnerContext(void* ctx, lua_State* callbackL)
 {
     if (!ctx)
         return;
 
-    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    auto* L = callbackL;
+    if (!L)
+        L = static_cast<lua_State*>(Engine::LuaState());
     void* gameplayCtx = nullptr;
     if (!ResolveGameplayScriptContext(L, ctx, &gameplayCtx, "owner_context"))
         return;
@@ -2199,6 +2211,7 @@ static void NoteBootstrapContextObserved(void* ctx, lua_State* L, const char* re
 }
 
 static void LogBootstrapDoneOnce(void* ctx,
+                                 lua_State* callbackL,
                                  const char* reason,
                                  bool bridgeOk,
                                  bool consoleOk,
@@ -2229,16 +2242,18 @@ static void LogBootstrapDoneOnce(void* ctx,
 
     if (bridgeOk && consoleOk && spellOk && replayOk) {
         g_bootstrapReadyContext.store(ctx, std::memory_order_release);
-        uintptr_t stateKey = g_bootstrapObservedLuaState.load(std::memory_order_acquire);
+        uintptr_t stateKey = reinterpret_cast<uintptr_t>(callbackL);
+        if (!stateKey)
+            stateKey = g_bootstrapObservedLuaState.load(std::memory_order_acquire);
         if (!stateKey) {
-            if (auto* L = static_cast<lua_State*>(Engine::LuaState()))
-                stateKey = reinterpret_cast<uintptr_t>(L);
+            if (auto* engineL = static_cast<lua_State*>(Engine::LuaState()))
+                stateKey = reinterpret_cast<uintptr_t>(engineL);
         }
         g_bootstrapReadyLuaState.store(stateKey, std::memory_order_release);
     }
 }
 
-static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
+static void MaybeRunEarlyBootstrap(void* ctx, lua_State* callbackL, const char* reason)
 {
     if (!ctx)
         return;
@@ -2340,32 +2355,38 @@ static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
         return;
     g_bootstrapNextAttemptTick.store(now + 250, std::memory_order_release);
 
-    auto* L = static_cast<lua_State*>(Engine::LuaState());
-    if (!L && Engine::RefreshLuaStateFromSlot())
+    auto* L = callbackL;
+    if (!L) {
         L = static_cast<lua_State*>(Engine::LuaState());
+        if (!L && Engine::RefreshLuaStateFromSlot())
+            L = static_cast<lua_State*>(Engine::LuaState());
+    }
     if (!L)
         return;
 
-    MaybeUpdateOwnerContext(ctx);
+    MaybeUpdateOwnerContext(ctx, L);
     UpdateObservedContextLuaState(slot, L, reason);
     NoteBootstrapContextObserved(ctx, L, reason);
     if (!IsGameplayContext(ctx, L, reason, true))
         return;
     const uint32_t epoch = g_bootstrapEpoch.load(std::memory_order_acquire);
 
-    Util::OwnerPump::Invoke("early_bootstrap", [ctx, epoch]() {
+    Util::OwnerPump::Invoke("early_bootstrap", [ctx, callbackL, epoch]() {
         if (!ctx)
             return;
         if (g_bootstrapEpoch.load(std::memory_order_acquire) != epoch)
             return;
 
-        auto* L = static_cast<lua_State*>(Engine::LuaState());
-        if (!L && Engine::RefreshLuaStateFromSlot())
+        auto* L = callbackL;
+        if (!L) {
             L = static_cast<lua_State*>(Engine::LuaState());
+            if (!L && Engine::RefreshLuaStateFromSlot())
+                L = static_cast<lua_State*>(Engine::LuaState());
+        }
         if (!L)
             return;
 
-        MaybeUpdateOwnerContext(ctx);
+        MaybeUpdateOwnerContext(ctx, L);
         if (ObservedContext* slot = FindObservedContext(ctx))
             UpdateObservedContextLuaState(slot, L, "early_bootstrap");
         if (!IsGameplayContext(ctx, L, "early_bootstrap", true))
@@ -2377,7 +2398,7 @@ static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
         const bool spellOk = g_spellBindingReady.load(std::memory_order_acquire);
         const bool replayOk = g_replayHelperInstalled.load(std::memory_order_acquire);
         if (consoleOk && spellOk && replayOk && bridgeOk)
-            LogBootstrapDoneOnce(ctx, "early_bootstrap", bridgeOk, consoleOk, spellOk, replayOk);
+            LogBootstrapDoneOnce(ctx, L, "early_bootstrap", bridgeOk, consoleOk, spellOk, replayOk);
     });
 }
 
@@ -2392,7 +2413,7 @@ static void* CurrentScriptContext()
     return nullptr;
 }
 
-static void PromoteGameplayOwnerFromLiveCallback(const char* reason)
+static void PromoteGameplayOwnerFromLiveCallback(const char* reason, lua_State* callbackL)
 {
     const char* tag = (reason && *reason) ? reason : "live_callback";
     g_gameplayLuaConfirmed.store(true, std::memory_order_release);
@@ -2433,7 +2454,7 @@ static void PromoteGameplayOwnerFromLiveCallback(const char* reason)
     }
 
     if (ctx)
-        MaybeRunEarlyBootstrap(ctx, tag);
+        MaybeRunEarlyBootstrap(ctx, callbackL, tag);
 }
 
 static std::optional<bool> ReadBoolOption(const char* cfgKey, const char* envKey)
@@ -5590,7 +5611,7 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
     int rc = g_clientRegister ? g_clientRegister(ctx, outFunc, name) : 0;
 
     if (ctx && slot && ((slot->flags & kGameplayBootstrapRequiredMask) == kGameplayBootstrapRequiredMask)) {
-        MaybeRunEarlyBootstrap(ctx, name ? name : "Hook_Register");
+        MaybeRunEarlyBootstrap(ctx, nullptr, name ? name : "Hook_Register");
     }
 
     // If targeting APIs have been registered, attempt late wrapper install now
@@ -6556,7 +6577,7 @@ static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reason)
     if (!resolved)
         return;
     if (!bootstrapReady)
-        MaybeRunEarlyBootstrap(gameplayCtx, tag);
+        MaybeRunEarlyBootstrap(gameplayCtx, L, tag);
 }
 
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason)
@@ -7403,7 +7424,7 @@ static int __cdecl Lua_uow_spell_cast_global(lua_State* L)
     if (L) {
         if (!Engine::LuaState())
             Engine::ReportLuaState(L);
-        PromoteGameplayOwnerFromLiveCallback("uow_spell_cast");
+        PromoteGameplayOwnerFromLiveCallback("uow_spell_cast", L);
         ProbeGameplayBindingBootstrap(L, "uow_spell_cast");
     }
 
@@ -7478,7 +7499,7 @@ static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L)
     if (L) {
         if (!Engine::LuaState())
             Engine::ReportLuaState(L);
-        PromoteGameplayOwnerFromLiveCallback("uow_spell_cast_on_id");
+        PromoteGameplayOwnerFromLiveCallback("uow_spell_cast_on_id", L);
         ProbeGameplayBindingBootstrap(L, "uow_spell_cast_on_id");
     }
 
@@ -7621,7 +7642,7 @@ static int __cdecl Lua_uow_vp_ping(lua_State* L)
     if (L) {
         if (!Engine::LuaState())
             Engine::ReportLuaState(L);
-        PromoteGameplayOwnerFromLiveCallback("__uow_vp_ping_v1");
+        PromoteGameplayOwnerFromLiveCallback("__uow_vp_ping_v1", L);
         ProbeGameplayBindingBootstrap(L, "__uow_vp_ping_v1");
     }
 
@@ -7655,7 +7676,7 @@ static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
     if (L) {
         if (!Engine::LuaState())
             Engine::ReportLuaState(L);
-        PromoteGameplayOwnerFromLiveCallback("UOFlow.Spell.cast");
+        PromoteGameplayOwnerFromLiveCallback("UOFlow.Spell.cast", L);
         ProbeGameplayBindingBootstrap(L, "UOFlow.Spell.cast");
     }
 
@@ -7729,7 +7750,7 @@ static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
     if (L) {
         if (!Engine::LuaState())
             Engine::ReportLuaState(L);
-        PromoteGameplayOwnerFromLiveCallback("UOFlow.Spell.cast_on_id");
+        PromoteGameplayOwnerFromLiveCallback("UOFlow.Spell.cast_on_id", L);
         ProbeGameplayBindingBootstrap(L, "UOFlow.Spell.cast_on_id");
     }
 
@@ -9631,7 +9652,7 @@ static void MaybeLogLiveSpellBindings(lua_State* L, const char* tag, DWORD minIn
 static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L)
 {
     uint32_t tok = CurrentCastToken();
-    PromoteGameplayOwnerFromLiveCallback("target_mode_compat");
+    PromoteGameplayOwnerFromLiveCallback("target_mode_compat", L);
     ProbeGameplayBindingBootstrap(L, "target_mode_compat");
     TryConsumePendingSpellRequest(L, "target_mode_compat");
     MaybeLogLiveSpellBindings(L, "target_mode_compat/live");
@@ -9677,7 +9698,7 @@ static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L)
 
 static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L)
 {
-    PromoteGameplayOwnerFromLiveCallback("action_type_target_mode_compat");
+    PromoteGameplayOwnerFromLiveCallback("action_type_target_mode_compat", L);
     ProbeGameplayBindingBootstrap(L, "action_type_target_mode_compat");
     TryConsumePendingSpellRequest(L, "action_type_target_mode_compat");
     MaybeLogLiveSpellBindings(L, "action_type_target_mode_compat/live");
@@ -10330,7 +10351,7 @@ void PollLateInstalls()
     if (auto L = static_cast<lua_State*>(Engine::LuaState()))
         ProcessLateCastWrapLoop(L);
     if (void* ownerCtx = CanonicalOwnerContext())
-        MaybeRunEarlyBootstrap(ownerCtx, "poller");
+        MaybeRunEarlyBootstrap(ownerCtx, nullptr, "poller");
     if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
         ForceLateCastWrapInstall(L, "poller");
     }
