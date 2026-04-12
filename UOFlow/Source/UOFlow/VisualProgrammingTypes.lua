@@ -516,7 +516,8 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     end
 
     local castCandidates = {
-        { label = "uow.cmd.cast(raw env)", fn = VPLookupRawPath(env, "uow", "cmd", "cast") },
+        { label = "uow_spell_cast(raw _G)", fn = globalTable and VPLookupRawFunction(globalTable, "uow_spell_cast") or nil },
+        { label = "uow_spell_cast(global)", fn = type(uow_spell_cast) == "function" and uow_spell_cast or nil },
         { label = "uow.cmd.cast(raw _G)", fn = VPLookupRawPath(globalTable, "uow", "cmd", "cast") },
     }
     local castLabel = nil
@@ -524,8 +525,9 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     local candidateSummary = {
         VPDescribeCandidate("env", env),
         VPDescribeCandidate("_G", globalTable),
-        VPDescribeCandidate("uow.cmd.cast(raw env)", castCandidates[1].fn),
-        VPDescribeCandidate("uow.cmd.cast(raw _G)", castCandidates[2].fn),
+        VPDescribeCandidate("uow_spell_cast(raw _G)", castCandidates[1].fn),
+        VPDescribeCandidate("uow_spell_cast(global)", castCandidates[2].fn),
+        VPDescribeCandidate("uow.cmd.cast(raw _G)", castCandidates[3].fn),
     }
 
     VPNativeLog("[VPSpell] cast begin",
@@ -533,8 +535,8 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         "spell=" .. tostring(spellId),
         "ctx=" .. tostring(callContext.executionTag),
         "targetId=" .. tostring(targetId))
-    VPNativeLog("[VPSpell] cmd candidates", tostring(tag), table.concat(candidateSummary, " | "))
-    Debug.Print("[VPSpell] cmd candidates " .. table.concat(candidateSummary, " | "))
+    VPNativeLog("[VPSpell] cast candidates", tostring(tag), table.concat(candidateSummary, " | "))
+    Debug.Print("[VPSpell] cast candidates " .. table.concat(candidateSummary, " | "))
     VPLogSpellState(tag .. ":before", spellId)
 
     for _, candidate in ipairs(castCandidates) do
@@ -546,7 +548,7 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     end
 
     if type(castFn) ~= "function" then
-        local missingMsg = "cast_helper_missing helper=uow.cmd.cast(raw env/raw _G)"
+        local missingMsg = "cast_helper_missing helper=uow_spell_cast/raw _G/global or uow.cmd.cast(raw _G)"
         VPEmitUiLog("VP_CAST " .. missingMsg)
         VPNativeLog("[VPSpell] cast fail", tostring(tag), missingMsg)
         VPLogSpellState(tag .. ":after", spellId)
@@ -567,6 +569,12 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
 
     local passSourceTag = VPShouldPassCastSourceTag(castLabel)
     VPLogFunctionIdentity(tag, castLabel, castFn, passSourceTag)
+    if type(globalTable) == "table" then
+        local nativeProbe = rawget(globalTable, "uow_debug_log")
+        if type(nativeProbe) == "function" then
+            nativeProbe("[VP_NATIVE_TEST] before cast helper=" .. tostring(castLabel))
+        end
+    end
     if passSourceTag then
         ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, helperSourceTag)
     else
