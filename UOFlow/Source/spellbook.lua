@@ -771,8 +771,36 @@ function Spellbook.SpellLButtonUp()
     local icon, serverId = GetAbilityData(curSpell)
 
     if( serverId ~= nil ) then
+		local activeBefore = "<nil>"
+		if SystemData and SystemData.ActiveWindow then
+			activeBefore = tostring(SystemData.ActiveWindow.name)
+		end
+		local lastSpell = "<nil>"
+		local currentSpellId = "<nil>"
+		local currentSpellCasting = "<nil>"
+		if Interface then
+			lastSpell = tostring(Interface.LastSpell)
+			if Interface.CurrentSpell then
+				currentSpellId = tostring(Interface.CurrentSpell.SpellId)
+				currentSpellCasting = tostring(Interface.CurrentSpell.casting)
+			end
+		end
+		Debug.Print(string.format("[Spellbook] click dialog=%s button=%s spell=%s activeBefore=%s lastSpell=%s currentSpellId=%s currentSpellCasting=%s",
+			tostring(this),
+			tostring(SystemData.ActiveWindow.name),
+			tostring(serverId),
+			activeBefore,
+			lastSpell,
+			currentSpellId,
+			currentSpellCasting))
 		UserActionCastSpell(serverId)
 		SystemData.ActiveWindow.name = this
+		Debug.Print(string.format("[Spellbook] after_cast dialog=%s activeAfter=%s lastSpell=%s currentSpellId=%s currentSpellCasting=%s",
+			tostring(this),
+			tostring(SystemData.ActiveWindow.name),
+			tostring(Interface and Interface.LastSpell),
+			tostring(Interface and Interface.CurrentSpell and Interface.CurrentSpell.SpellId),
+			tostring(Interface and Interface.CurrentSpell and Interface.CurrentSpell.casting)))
     end
 end
 

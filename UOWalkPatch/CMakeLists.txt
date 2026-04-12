@@ -75,6 +75,7 @@ add_library(UOWalkPatchDLL SHARED
     src/dllmain.cpp
     src/Core/ActionTrace.cpp
     src/Core/Config.cpp
+    src/Core/CrashHandler.cpp
     src/Core/EarlyTrace.cpp
     src/Core/Logging.cpp
     src/Core/PatternScan.cpp

@@ -6,6 +6,7 @@
 #include <cstdlib>
 
 #include "../include/Core/Logging.hpp"
+#include "../include/Core/CrashHandler.hpp"
 #include "../include/Core/MinHookHelpers.hpp"
 #include "../include/Engine/GlobalState.hpp"
 #include "../include/Engine/Movement.hpp"
@@ -72,7 +73,7 @@ bool TryReadEnvIntA(const char* key, int& outValue, const char* tag)
 #define UOW_COMMIT_HASH "unknown"
 #endif
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
 {
     switch (reason)
     {
@@ -81,6 +82,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         DisableThreadLibraryCalls(hModule);
         Util::OwnerPump::Reset();
         Log::Init(hModule);
+        Core::CrashHandler::Init(hModule);
         char buildBuf[256];
         sprintf_s(buildBuf,
                   sizeof(buildBuf),
@@ -195,6 +197,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         break;
     }
     case DLL_PROCESS_DETACH:
+    {
+        WriteRawLog(reserved
+                        ? "[Init] DLL_PROCESS_DETACH reason=process_exit"
+                        : "[Init] DLL_PROCESS_DETACH reason=free_library");
         Engine::CastFallback::Shutdown();
         TargetCorrelatorShutdown();
         CastCorrelator::Shutdown();
@@ -205,9 +211,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
         Engine::ShutdownMovementHooks();
         Engine::ShutdownGlobalStateWatch();
         Core::MinHookHelpers::Shutdown();
+        Core::CrashHandler::Shutdown();
         Log::Shutdown();
         Util::OwnerPump::Reset();
         break;
+    }
     }
     return TRUE;
 }

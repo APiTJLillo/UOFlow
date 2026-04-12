@@ -2,6 +2,9 @@
 function VisualProgrammingInterface.Execution:executeBlock(block)
     if not block then return false end
     
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] executeBlock", tostring(block.id), tostring(block.type))
+    end
     Debug.Print("Executing block " .. block.type .. " [" .. block.id .. "]")
     
     -- Update block state
@@ -25,8 +28,12 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     end
 
     -- Get action definition
-    local success, action = pcall(function() return VisualProgrammingInterface.Actions:get(block.type) end)
-    if not success or not action then
+    local success = true
+    local action = VisualProgrammingInterface.Actions:get(block.type)
+    if not action then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] action lookup failed", tostring(block.id), tostring(block.type), tostring(action))
+        end
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
         if DoesWindowNameExist(blockWindow) then
             WindowSetTintColor(blockWindow, 255, 0, 0) -- Red for error
@@ -45,11 +52,13 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
         return false
     end
     
-    success, result = pcall(function() 
-        return VisualProgrammingInterface.Actions:validateParams(block.type, block.params)
-    end)
+    local result = nil
+    success, result = VisualProgrammingInterface.Actions:validateParams(block.type, block.params)
     
-    if not success or not result then
+    if not success then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] validate failed", tostring(block.id), tostring(block.type), "ok=" .. tostring(success), "result=" .. tostring(result))
+        end
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
         if DoesWindowNameExist(blockWindow) then
             WindowSetTintColor(blockWindow, 255, 0, 0) -- Red for error
@@ -72,9 +81,10 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     self.waitingForTimer = true
     
     Debug.Print("Executing action for block " .. block.id)
-    success, result = pcall(function()
-        return VisualProgrammingInterface.Actions:execute(block.type, block.params)
-    end)
+    success, result = VisualProgrammingInterface.Actions:execute(block.type, block.params)
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] action returned", tostring(block.id), tostring(block.type), "ok=" .. tostring(success), "result=" .. tostring(result), "timerWaiting=" .. tostring(VisualProgrammingInterface.ActionTimer.isWaiting))
+    end
     
     -- If no timer was started or ActionTimer doesn't exist, clear the waiting flag
     if not VisualProgrammingInterface.ActionTimer.isWaiting then
@@ -87,6 +97,9 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     -- Update block state based on execution result
     if success then
         if not self.waitingForTimer then
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] immediate completion", tostring(block.id), tostring(block.type))
+            end
             Debug.Print("Block " .. block.type .. " [" .. block.id .. "] completed immediately")
             self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.COMPLETED
             if DoesWindowNameExist(blockWindow) then
@@ -96,6 +109,9 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
             -- Let the timer system handle its own state
         end
     else
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] block execution error", tostring(block.id), tostring(block.type), tostring(result))
+        end
         Debug.Print("Block " .. block.type .. " [" .. block.id .. "] failed: " .. tostring(result))
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
         if DoesWindowNameExist(blockWindow) then

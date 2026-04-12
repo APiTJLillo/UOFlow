@@ -1,18 +1,16 @@
 -- Initialize the visual programming interface
-VisualProgrammingInterface = {
-    Actions = {
-        registry = {},
-        defaultParams = {},
-        categories = {
-            GENERAL = "General",
-            COMBAT = "Combat",
-            MAGIC = "Magic",
-            SKILLS = "Skills",
-            ITEMS = "Items",
-            MOVEMENT = "Movement",
-            TARGETING = "Targeting"
-        }
-    }
+VisualProgrammingInterface = VisualProgrammingInterface or {}
+VisualProgrammingInterface.Actions = VisualProgrammingInterface.Actions or {}
+VisualProgrammingInterface.Actions.registry = VisualProgrammingInterface.Actions.registry or {}
+VisualProgrammingInterface.Actions.defaultParams = VisualProgrammingInterface.Actions.defaultParams or {}
+VisualProgrammingInterface.Actions.categories = VisualProgrammingInterface.Actions.categories or {
+    GENERAL = "General",
+    COMBAT = "Combat",
+    MAGIC = "Magic",
+    SKILLS = "Skills",
+    ITEMS = "Items",
+    MOVEMENT = "Movement",
+    TARGETING = "Targeting"
 }
 
 function VisualProgrammingInterface.Initialize()

@@ -32,19 +32,12 @@ function VisualProgrammingInterface.Execution:start()
     end
     
     -- Reset visual states
-    local success, err = pcall(function()
-        for id, _ in pairs(VisualProgrammingInterface.manager.blocks) do
-            local blockWindow = "Block" .. id
-            if DoesWindowNameExist(blockWindow) then
-                WindowSetTintColor(blockWindow, 255, 255, 255) -- Reset to white
-            end
-            self.blockStates[id] = VisualProgrammingInterface.Execution.BlockState.PENDING
+    for id, _ in pairs(VisualProgrammingInterface.manager.blocks) do
+        local blockWindow = "Block" .. id
+        if DoesWindowNameExist(blockWindow) then
+            WindowSetTintColor(blockWindow, 255, 255, 255) -- Reset to white
         end
-    end)
-    
-    if not success then
-        Debug.Print("Error resetting visual states: " .. tostring(err))
-        return false
+        self.blockStates[id] = VisualProgrammingInterface.Execution.BlockState.PENDING
     end
     
     -- Build execution queue in order of connections
@@ -189,6 +182,9 @@ end
 -- Continue execution after pause or between blocks
 function VisualProgrammingInterface.Execution:continueExecution()
     if not self.isRunning or self.isPaused then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] continue blocked", "running=" .. tostring(self.isRunning), "paused=" .. tostring(self.isPaused))
+        end
         Debug.Print("Cannot continue execution: " .. 
             (not self.isRunning and "not running" or
              self.isPaused and "paused" or
@@ -198,12 +194,18 @@ function VisualProgrammingInterface.Execution:continueExecution()
     
     -- If we're waiting for a timer, don't start the next block yet
     if self.waitingForTimer then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] continue waiting", "queue=" .. tostring(#self.executionQueue), "currentBlock=" .. tostring(self.currentBlock and self.currentBlock.id))
+        end
         Debug.Print("Waiting for timer to complete before continuing")
         return
     end
     
     if #self.executionQueue > 0 then
         local nextBlock = table.remove(self.executionQueue, 1)
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] continue nextBlock", tostring(nextBlock.id), tostring(nextBlock.type), "remaining=" .. tostring(#self.executionQueue))
+        end
         Debug.Print("Continuing with next block " .. nextBlock.id)
         
         -- Mark previous block as completed and set to green
@@ -224,6 +226,9 @@ function VisualProgrammingInterface.Execution:continueExecution()
             self.continueTimer = 0
         end
     else
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] continue no more blocks", "current=" .. tostring(self.currentBlock and self.currentBlock.id))
+        end
         Debug.Print("No more blocks to execute")
         -- Mark final block as completed and green before stopping
         if self.currentBlock then

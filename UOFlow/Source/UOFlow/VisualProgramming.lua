@@ -1,19 +1,20 @@
 -- Main entry point for Visual Programming Interface
-VisualProgrammingInterface = {}
+VisualProgrammingInterface = VisualProgrammingInterface or {}
 
 -- Initialize Actions system
-VisualProgrammingInterface.Actions = {
-    categories = {
-        GENERAL = "General",
-        MAGIC = "Magic",
-        ITEMS = "Items",
-        TARGETING = "Targeting",
-        MOVEMENT = "Movement",
-        COMBAT = "Combat",
-        SKILLS = "Skills"
-    },
-    actions = {}
+VisualProgrammingInterface.Actions = VisualProgrammingInterface.Actions or {}
+VisualProgrammingInterface.Actions.categories = VisualProgrammingInterface.Actions.categories or {
+    GENERAL = "General",
+    MAGIC = "Magic",
+    ITEMS = "Items",
+    TARGETING = "Targeting",
+    MOVEMENT = "Movement",
+    COMBAT = "Combat",
+    SKILLS = "Skills"
 }
+VisualProgrammingInterface.Actions.actions = VisualProgrammingInterface.Actions.actions or {}
+VisualProgrammingInterface.Actions.registry = VisualProgrammingInterface.Actions.registry or {}
+VisualProgrammingInterface.Actions.defaultParams = VisualProgrammingInterface.Actions.defaultParams or {}
 
 function VisualProgrammingInterface.Actions:register(action)
     Debug.Print("Registering action: " .. action.name)
@@ -55,11 +56,23 @@ end
 -- Handle test flow button click
 function OnTestFlowClick()
     -- Forward to the interface handler
+    if Debug and type(Debug.Print) == "function" then
+        Debug.Print("[VPUI] Test clicked")
+    end
+    if UOWNativeLog then
+        UOWNativeLog("[VPUI] OnTestFlowClick")
+    end
     if VisualProgrammingInterface and VisualProgrammingInterface.Execution then
         local success, results = VisualProgrammingInterface.Execution:testFlow()
-        
+        if UOWNativeLog then
+            UOWNativeLog("[VPUI] testFlow direct", "success=" .. tostring(success), "resultsType=" .. type(results))
+        end
+
         if success then
             if results.success then
+                if UOWNativeLog then
+                    UOWNativeLog("[VPUI] results.success", "executionOrder=" .. table.concat(results.executionOrder or {}, ","))
+                end
                 Debug.Print("Flow test completed successfully")
                 Debug.Print("Execution order: " .. table.concat(results.executionOrder, ", "))
                 
@@ -72,12 +85,21 @@ function OnTestFlowClick()
                     ))
                 end
             else
+                if UOWNativeLog then
+                    UOWNativeLog("[VPUI] flow test failed", tostring(results.error))
+                end
                 Debug.Print("Flow test failed: " .. (results.error or "Unknown error"))
             end
         else
+            if UOWNativeLog then
+                UOWNativeLog("[VPUI] could not start flow test", tostring(results))
+            end
             Debug.Print("Could not start flow test: " .. (results or "Unknown error"))
         end
     else
+        if UOWNativeLog then
+            UOWNativeLog("[VPUI] execution system missing")
+        end
         Debug.Print("Error: Execution system not initialized")
     end
 end
@@ -150,10 +172,8 @@ end
 
 function VisualProgrammingInterface.Triggers:check()
     for name, trigger in pairs(self.triggers) do
-        local status, result = pcall(trigger.check)
-        if not status then
-            Debug.Print("Error checking trigger: " .. name .. " - " .. tostring(result))
-        elseif result then
+        local result = trigger.check()
+        if result then
             if trigger.config and trigger.config.unique then
                 if self.triggerStates[name][result] then
                     Debug.Print("Trigger already activated for unique instance: " .. name)

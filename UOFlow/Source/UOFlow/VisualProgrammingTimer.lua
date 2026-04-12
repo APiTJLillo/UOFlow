@@ -30,12 +30,8 @@ function Timer:notifyCompletion()
     
     for callbackName, callback in pairs(self.completionCallbacks) do
         Debug.Print("Executing callback: " .. callbackName)
-        local success, err = pcall(callback)
-        if not success then
-            Debug.Print("Warning: Callback " .. callbackName .. " failed: " .. tostring(err))
-        else
-            Debug.Print("Callback " .. callbackName .. " executed successfully")
-        end
+        callback()
+        Debug.Print("Callback " .. callbackName .. " executed successfully")
     end
 end
 
@@ -73,54 +69,49 @@ function Timer:OnUpdate(timePassed)
         self.currentTime = 0
         
         if callback then
-            local success, isComplete = pcall(callback)
+            local success = true
+            local isComplete = callback()
             Debug.Print("Timer callback executed - Queue: " .. tostring(currentQueueId) .. 
                        ", Success: " .. tostring(success) .. 
                        ", Complete: " .. tostring(isComplete))
             
-            if success then
-                if isComplete then
-                    -- Process next queued function
-                    if #self.functionQueue > 0 then
-                        local nextFunc = table.remove(self.functionQueue, 1)
-                        if nextFunc.duration and nextFunc.callback then
-                            Debug.Print("Starting next queued timer - Duration: " .. nextFunc.duration .. 
-                                      "ms, Queue: " .. tostring(nextFunc.queueId))
-                            -- Validate next function parameters
-                            if type(nextFunc.duration) ~= "number" or nextFunc.duration <= 0 then
-                                Debug.Print("Warning: Invalid duration in queued function: " .. tostring(nextFunc.duration))
-                                self:reset()
-                                return
-                            end
-                            if type(nextFunc.callback) ~= "function" then
-                                Debug.Print("Warning: Invalid callback in queued function")
-                                self:reset()
-                                return
-                            end
-                            
-                            -- Start next timer
-                            self.currentTime = 0
-                            self.targetTime = nextFunc.duration / 1000
-                            self.callback = nextFunc.callback
-                            self.currentQueueId = nextFunc.queueId
-                            self.isComplete = false
+            if isComplete then
+                -- Process next queued function
+                if #self.functionQueue > 0 then
+                    local nextFunc = table.remove(self.functionQueue, 1)
+                    if nextFunc.duration and nextFunc.callback then
+                        Debug.Print("Starting next queued timer - Duration: " .. nextFunc.duration .. 
+                                  "ms, Queue: " .. tostring(nextFunc.queueId))
+                        -- Validate next function parameters
+                        if type(nextFunc.duration) ~= "number" or nextFunc.duration <= 0 then
+                            Debug.Print("Warning: Invalid duration in queued function: " .. tostring(nextFunc.duration))
+                            self:reset()
                             return
-                        else
-                            Debug.Print("Warning: Invalid queued function, skipping")
                         end
+                        if type(nextFunc.callback) ~= "function" then
+                            Debug.Print("Warning: Invalid callback in queued function")
+                            self:reset()
+                            return
+                        end
+                        
+                        -- Start next timer
+                        self.currentTime = 0
+                        self.targetTime = nextFunc.duration / 1000
+                        self.callback = nextFunc.callback
+                        self.currentQueueId = nextFunc.queueId
+                        self.isComplete = false
+                        return
+                    else
+                        Debug.Print("Warning: Invalid queued function, skipping")
                     end
-                    
-                    -- Reset timer state but don't notify completion
-                    -- Let the action handle its own completion notification
-                    Debug.Print("No more queued functions, resetting timer")
-                    self:reset()
-                else
-                    Debug.Print("Timer callback not complete, continuing current timer")
                 end
-            else
-                Debug.Print("Timer callback failed: " .. tostring(isComplete))
-                self:notifyCompletion()
+                
+                -- Reset timer state but don't notify completion
+                -- Let the action handle its own completion notification
+                Debug.Print("No more queued functions, resetting timer")
                 self:reset()
+            else
+                Debug.Print("Timer callback not complete, continuing current timer")
             end
         else
             Debug.Print("No callback found for timer, resetting")
@@ -165,14 +156,9 @@ end
 
 -- Ensure the OnUpdate method is called with the correct self reference
 function Timer:initialize()
-    local selfReference = self
-    local function onUpdateWrapper(timePassed)
-        selfReference:OnUpdate(timePassed)
-    end
-    RegisterEventHandler(SystemData.Events.UPDATE_PROCESSED, onUpdateWrapper)
+    Debug.Print("Timer initialize deferred; update registration handled by VisualProgrammingInterface.Show")
 end
 
 -- Initialize the timer
 local actionTimer = Timer:new()
-actionTimer:initialize()
 VisualProgrammingInterface.ActionTimer = actionTimer

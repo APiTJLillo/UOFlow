@@ -349,13 +349,7 @@ function VisualProgrammingInterface.Actions:execute(name, params)
     end
     
     -- Execute the action
-    local success, result = pcall(definition.execute, params)
-    if not success then
-        Debug.Print("Action execution failed: " .. result)
-        return false, result
-    end
-    
-    return result
+    return definition.execute(params)
 end
 
 -- Remove any redundant or unused code

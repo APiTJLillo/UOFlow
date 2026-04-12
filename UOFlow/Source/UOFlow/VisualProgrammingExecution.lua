@@ -5,6 +5,9 @@ function VisualProgrammingInterface.Execution:testFlow()
     -- Stop any existing execution and reset state
     self:stop()
     
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] testFlow begin")
+    end
     Debug.Print("Starting flow test")
     
     -- Initialize test results
@@ -13,6 +16,23 @@ function VisualProgrammingInterface.Execution:testFlow()
         success = true,
         executionOrder = {}
     }
+
+    -- Check if manager exists and is initialized before touching blocks
+    if not VisualProgrammingInterface.manager then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] manager missing")
+        end
+        self.isRunning = false
+        return false, "Manager not initialized"
+    end
+
+    if not VisualProgrammingInterface.manager.blocks then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] blocks missing")
+        end
+        self.isRunning = false
+        return false, "No blocks found"
+    end
     
     -- Reset execution state
     self.blockStates = {}
@@ -30,18 +50,6 @@ function VisualProgrammingInterface.Execution:testFlow()
         VisualProgrammingInterface.ActionTimer.functionQueue = {}
         VisualProgrammingInterface.ActionTimer.currentQueueId = nil
         VisualProgrammingInterface.ActionTimer.isComplete = false
-    end
-    
-    -- Check if manager exists and is initialized
-    if not VisualProgrammingInterface.manager then
-        self.isRunning = false
-        return false, "Manager not initialized"
-    end
-    
-    -- Check if blocks exist
-    if not VisualProgrammingInterface.manager.blocks then
-        self.isRunning = false
-        return false, "No blocks found"
     end
     
     -- Build execution queue (topological sort)
@@ -85,6 +93,9 @@ function VisualProgrammingInterface.Execution:testFlow()
     for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
         table.insert(sortedBlocks, block)
     end
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] sortedBlocks", #sortedBlocks)
+    end
     table.sort(sortedBlocks, function(a, b) 
         return (a and a.y or 0) < (b and b.y or 0)
     end)
@@ -95,6 +106,13 @@ function VisualProgrammingInterface.Execution:testFlow()
     end
     
     Debug.Print("Built execution queue with " .. #executionQueue .. " blocks")
+    if UOWNativeLog then
+        local labels = {}
+        for i, block in ipairs(executionQueue) do
+            labels[i] = tostring(block.id) .. ":" .. tostring(block.type)
+        end
+        UOWNativeLog("[VPExec] queue", table.concat(labels, ","))
+    end
     
     -- Store execution queue for processing in OnUpdate
     self.executionQueue = executionQueue
@@ -102,6 +120,9 @@ function VisualProgrammingInterface.Execution:testFlow()
     -- Execute first block
     if #self.executionQueue > 0 then
         local firstBlock = table.remove(self.executionQueue, 1)
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] firstBlock", tostring(firstBlock.id), tostring(firstBlock.type), "remaining=" .. tostring(#self.executionQueue))
+        end
         table.insert(testResults.executionOrder, firstBlock.id)
         
         Debug.Print("Executing first block " .. firstBlock.id)
@@ -114,6 +135,9 @@ function VisualProgrammingInterface.Execution:testFlow()
         }
         
         if not success then
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] firstBlock failed", tostring(firstBlock.id), tostring(firstBlock.type))
+            end
             testResults.success = false
             testResults.error = "Failed at block " .. firstBlock.id
             
@@ -136,6 +160,9 @@ function VisualProgrammingInterface.Execution:testFlow()
         end
     end
     
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] testFlow returning", "queueRemaining=" .. tostring(#self.executionQueue), "waiting=" .. tostring(self.waitingForTimer))
+    end
     -- Return initial results, remaining blocks will be processed via OnUpdate
     return true, testResults
 end
@@ -222,19 +249,12 @@ function VisualProgrammingInterface.Execution:start()
     end
     
     -- Reset visual states
-    local success, err = pcall(function()
-        for id, _ in pairs(VisualProgrammingInterface.manager.blocks) do
-            local blockWindow = "Block" .. id
-            if DoesWindowNameExist(blockWindow) then
-                WindowSetTintColor(blockWindow, 255, 255, 255) -- Reset to white
-            end
-            self.blockStates[id] = VisualProgrammingInterface.Execution.BlockState.PENDING
+    for id, _ in pairs(VisualProgrammingInterface.manager.blocks) do
+        local blockWindow = "Block" .. id
+        if DoesWindowNameExist(blockWindow) then
+            WindowSetTintColor(blockWindow, 255, 255, 255) -- Reset to white
         end
-    end)
-    
-    if not success then
-        Debug.Print("Error resetting visual states: " .. tostring(err))
-        return false
+        self.blockStates[id] = VisualProgrammingInterface.Execution.BlockState.PENDING
     end
     
     -- Build execution queue in order of connections

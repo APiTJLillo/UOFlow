@@ -86,6 +86,7 @@ namespace {
     void* g_clientContext = nullptr;
     std::atomic<void*> g_ownerScriptContext{nullptr};
     std::atomic<std::uint32_t> g_ownerThreadId{0};
+    std::atomic<bool> g_gameplayLuaConfirmed{false};
 
     struct ObservedContext {
         void* ctx;
@@ -491,6 +492,7 @@ static void TraceRecordGateEntry(GateCallProbe* probe, const GateInvokeTls& snap
 static void TraceLinkCastExec(uint32_t token, int spellId, unsigned counter, uint8_t packetId, int len);
 static void RecordSpellPathObservation(const SpellGateReplayContext& ctx);
 static void DumpSpellPathSummary();
+static int __cdecl Lua_UOW_Debug_log(lua_State* L);
 static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L);
 static uintptr_t SafeReadUintptr(const uintptr_t* ptr);
 static uint8_t SafeReadByte(const uint8_t* ptr, uint8_t fallback);
@@ -542,6 +544,7 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L);
 static int __cdecl Lua_UserActionUseSkill_W(lua_State* L);
 static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L);
 static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L);
+static bool TryConsumePendingSpellRequest(lua_State* L, const char* sourceTag);
 static int __cdecl Lua_RequestTargetInfo_W(lua_State* L);
 static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L);
 static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L);
@@ -561,6 +564,8 @@ static int __cdecl Lua_PrintWStringToChatWindow_W(lua_State* L);
 static int __cdecl Lua_PrintTidToChatWindow_W(lua_State* L);
 static int __cdecl Lua_TextLogAddSingleByteEntry_W(lua_State* L);
 static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L);
+static int __cdecl Lua_uow_spell_cast_global(lua_State* L);
+static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L);
@@ -720,11 +725,18 @@ struct CastSpellSnapshot {
     ValueProbe cursorTargeting;
     ValueProbe actionQueueEnabled;
     ValueProbe actionQueueActive;
+    ValueProbe activeWindowName;
+    ValueProbe useRequestSpell;
+    ValueProbe useRequestTarget;
+    ValueProbe lastSpell;
+    ValueProbe currentSpellId;
+    ValueProbe currentSpellCasting;
 };
 
 static ValueProbe ProbeValue(lua_State* L, const char* const* path, size_t length);
 static CastSpellSnapshot CaptureCastSpellSnapshot(lua_State* L);
 static void LogCastSpellSnapshot(const char* phase, uint32_t token, int spellId, const CastSpellSnapshot& snap);
+static bool PrimeSpellUseRequestState(lua_State* L, int spellId, uint32_t targetId, const char* tag);
 static int InvokeClientLuaFn(LuaFn fn, const char* tag, lua_State* L);
 static bool ProbeValueUnsafe(lua_State* L, const char* const* path, size_t length, ValueProbe& probe);
 static void InstallGateProbeForCallSite(uint8_t* callSite);
@@ -820,6 +832,108 @@ static bool RegisterFunctionSafe(lua_State* L, lua_CFunction fn, const char* nam
         WriteRawLog(buf);
         return false;
     }
+}
+
+static bool RegisterLuaPathSafe(lua_State* L, lua_CFunction fn, const char* name)
+{
+    if (!L || !fn || !name || !*name)
+        return false;
+
+    std::vector<std::string> tokens;
+    if (!SplitLuaPath(name, tokens) || tokens.empty())
+        return false;
+
+    int top = lua_gettop(L);
+    if (tokens.size() == 1) {
+        lua_pushcfunction(L, fn);
+        lua_setglobal(L, name);
+    } else {
+        lua_getglobal(L, tokens[0].c_str());
+        if (lua_type(L, -1) != LUA_TTABLE) {
+            lua_pop(L, 1);
+            lua_createtable(L, 0, 0);
+            lua_pushvalue(L, -1);
+            lua_setglobal(L, tokens[0].c_str());
+        }
+
+        for (size_t i = 1; i + 1 < tokens.size(); ++i) {
+            lua_getfield(L, -1, tokens[i].c_str());
+            if (lua_type(L, -1) != LUA_TTABLE) {
+                lua_pop(L, 1);
+                lua_createtable(L, 0, 0);
+                lua_pushvalue(L, -1);
+                lua_setfield(L, -3, tokens[i].c_str());
+            }
+            lua_remove(L, -2);
+        }
+
+        lua_pushcfunction(L, fn);
+        lua_setfield(L, -2, tokens.back().c_str());
+        lua_settop(L, top);
+    }
+
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "RegisterLuaPathSafe: set '%s' to %p",
+              name,
+              reinterpret_cast<void*>(fn));
+    WriteRawLog(buf);
+    return true;
+}
+
+static void LogLuaFunctionBinding(lua_State* L, const char* stage, const char* path)
+{
+    if (!L || !path || !*path)
+        return;
+
+    std::vector<std::string> tokens;
+    if (!SplitLuaPath(path, tokens) || tokens.empty())
+        return;
+
+    int top = lua_gettop(L);
+    int parentIndex = LUA_GLOBALSINDEX;
+    bool present = false;
+    void* cfnPtr = nullptr;
+    const void* fnObjPtr = nullptr;
+    bool isCFunction = false;
+
+    if (PushLuaFunctionByTokens(L, tokens, false, parentIndex) && lua_type(L, -1) == LUA_TFUNCTION) {
+        present = true;
+        fnObjPtr = lua_topointer(L, -1);
+        isCFunction = lua_iscfunction(L, -1) != 0;
+        if (isCFunction)
+            cfnPtr = reinterpret_cast<void*>(lua_tocfunction(L, -1));
+    }
+    lua_settop(L, top);
+
+    char buf[320];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaBind] %s %s present=%s fnobj=%p kind=%s cfn=%p",
+              stage ? stage : "binding",
+              path,
+              present ? "yes" : "no",
+              fnObjPtr,
+              present ? (isCFunction ? "c" : "lua") : "none",
+              cfnPtr);
+    WriteRawLog(buf);
+}
+
+static void LogSpellHelperBindings(lua_State* L, const char* stage)
+{
+    if (!L)
+        return;
+    static const char* const kPaths[] = {
+        "uow_spell_cast",
+        "uow_spell_cast_on_id",
+        "uow_debug_log",
+        "uow.cmd.cast",
+        "UOW.Spell.cast",
+        "UOFlow.Spell.cast",
+    };
+    for (const char* path : kPaths)
+        LogLuaFunctionBinding(L, stage, path);
 }
 
 static bool IsRegistryWrapper(lua_State* L, const char* name)
@@ -1063,17 +1177,34 @@ static void ProcessLateCastWrapLoop(lua_State* L)
     ForceLateCastWrapInstall(L, "loop");
 }
 
+static bool IsGameplayLuaReady(lua_State* L, const char* reason);
+static bool ResolveGameplayScriptContext(lua_State* L,
+                                         void* preferredCtx,
+                                         void** outCtx,
+                                         const char* reason);
+
 static void MaybeUpdateOwnerContext(void* ctx)
 {
     if (!ctx)
         return;
 
-    void* expected = nullptr;
-    if (g_ownerScriptContext.compare_exchange_strong(expected, ctx, std::memory_order_acq_rel)) {
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    void* gameplayCtx = nullptr;
+    if (!ResolveGameplayScriptContext(L, ctx, &gameplayCtx, "owner_context"))
+        return;
+    ctx = gameplayCtx;
+
+    void* previous = g_ownerScriptContext.exchange(ctx, std::memory_order_acq_rel);
+    if (previous != ctx) {
         char buf[160];
-        sprintf_s(buf, sizeof(buf), "Owner script context established: %p (tid=%u)", ctx, GetCurrentThreadId());
+        if (!previous) {
+            sprintf_s(buf, sizeof(buf), "Owner script context established: %p (tid=%u)", ctx, GetCurrentThreadId());
+        } else {
+            sprintf_s(buf, sizeof(buf), "Owner script context updated: %p -> %p (tid=%u)", previous, ctx, GetCurrentThreadId());
+        }
         WriteRawLog(buf);
     }
+    g_clientContext = ctx;
 
     const std::uint32_t currentTid = GetCurrentThreadId();
     std::uint32_t recorded = g_ownerThreadId.load(std::memory_order_acquire);
@@ -1094,13 +1225,54 @@ static void MaybeUpdateOwnerContext(void* ctx)
 
 static void* CurrentScriptContext()
 {
-    if (g_clientContext)
-        return g_clientContext;
     if (const auto* info = Engine::Info()) {
         if (info->scriptContext)
             return info->scriptContext;
     }
+    if (g_clientContext)
+        return g_clientContext;
     return nullptr;
+}
+
+static void PromoteGameplayOwnerFromLiveCallback(const char* reason)
+{
+    const char* tag = (reason && *reason) ? reason : "live_callback";
+    g_gameplayLuaConfirmed.store(true, std::memory_order_release);
+
+    void* ctx = CurrentScriptContext();
+    if (!ctx)
+        ctx = g_ownerScriptContext.load(std::memory_order_acquire);
+
+    if (ctx) {
+        void* previous = g_ownerScriptContext.exchange(ctx, std::memory_order_acq_rel);
+        g_clientContext = ctx;
+        if (previous != ctx) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[GameplayOwner] %s ctx=%p previous=%p tid=%u",
+                      tag,
+                      ctx,
+                      previous,
+                      GetCurrentThreadId());
+            WriteRawLog(buf);
+        }
+    }
+
+    const std::uint32_t currentTid = GetCurrentThreadId();
+    std::uint32_t recorded = g_ownerThreadId.load(std::memory_order_acquire);
+    if (recorded == 0 || recorded != currentTid) {
+        g_ownerThreadId.store(currentTid, std::memory_order_release);
+        Util::OwnerPump::SetOwnerThreadId(currentTid);
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[GameplayOwner] %s owner thread set=%u ctx=%p",
+                  tag,
+                  currentTid,
+                  ctx);
+        WriteRawLog(buf);
+    }
 }
 
 static std::optional<bool> ReadBoolOption(const char* cfgKey, const char* envKey)
@@ -1499,7 +1671,75 @@ static bool EvaluateHasReceivedServerFeatures(lua_State* L, bool& outReady)
         return false;
     }
     outReady = lua_toboolean(L, -1) != 0;
+    if (outReady)
+        g_gameplayLuaConfirmed.store(true, std::memory_order_release);
     lua_settop(L, top);
+    return true;
+}
+
+static bool IsGameplayLuaReady(lua_State* L, const char* reason)
+{
+    if (g_gameplayLuaConfirmed.load(std::memory_order_acquire))
+        return true;
+
+    if (!L)
+        return false;
+
+    bool ready = false;
+    if (EvaluateHasReceivedServerFeatures(L, ready) && ready)
+        return true;
+
+    static DWORD s_nextLogTick = 0;
+    DWORD now = GetTickCount();
+    if (now >= s_nextLogTick) {
+        char buf[224];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaReady] waiting for gameplay Lua state (%s)",
+                  reason && *reason ? reason : "unknown");
+        WriteRawLog(buf);
+        s_nextLogTick = now + 2000;
+    }
+    return false;
+}
+
+static bool ResolveGameplayScriptContext(lua_State* L,
+                                         void* preferredCtx,
+                                         void** outCtx,
+                                         const char* reason)
+{
+    if (outCtx)
+        *outCtx = nullptr;
+    if (!IsGameplayLuaReady(L, reason))
+        return false;
+
+    void* resolved = nullptr;
+    if (const auto* info = Engine::Info()) {
+        if (info->scriptContext)
+            resolved = info->scriptContext;
+    }
+    if (!resolved)
+        resolved = preferredCtx;
+    if (!resolved)
+        resolved = g_clientContext;
+
+    if (!resolved) {
+        static DWORD s_nextMissingCtxLog = 0;
+        DWORD now = GetTickCount();
+        if (now >= s_nextMissingCtxLog) {
+            char buf[224];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[LuaReady] gameplay Lua state is ready, but script context is unavailable (%s)",
+                      reason && *reason ? reason : "unknown");
+            WriteRawLog(buf);
+            s_nextMissingCtxLog = now + 2000;
+        }
+        return false;
+    }
+
+    if (outCtx)
+        *outCtx = resolved;
     return true;
 }
 
@@ -1778,13 +2018,11 @@ static void GuardLuaStack(lua_State* L, const char* tag, int topBefore, int retu
 
 static void* CanonicalOwnerContext()
 {
-    void* owner = g_ownerScriptContext.load(std::memory_order_acquire);
-    if (!owner) {
-        if (const auto* info = Engine::Info()) {
-            owner = info->scriptContext;
-        }
+    if (const auto* info = Engine::Info()) {
+        if (info->scriptContext)
+            return info->scriptContext;
     }
-    return owner;
+    return g_ownerScriptContext.load(std::memory_order_acquire);
 }
 
 static uint32_t NextCastToken()
@@ -3003,22 +3241,168 @@ static CastSpellSnapshot CaptureCastSpellSnapshot(lua_State* L)
         const char* path[] = {"ActionQueueWindow", "QueueActive"};
         snap.actionQueueActive = ProbeValue(L, path, ARRAYSIZE(path));
     }
+    {
+        const char* path[] = {"SystemData", "ActiveWindow", "name"};
+        snap.activeWindowName = ProbeValue(L, path, ARRAYSIZE(path));
+    }
+    {
+        const char* path[] = {"GameData", "UseRequests", "UseSpellcast"};
+        snap.useRequestSpell = ProbeValue(L, path, ARRAYSIZE(path));
+    }
+    {
+        const char* path[] = {"GameData", "UseRequests", "UseTarget"};
+        snap.useRequestTarget = ProbeValue(L, path, ARRAYSIZE(path));
+    }
+    {
+        const char* path[] = {"Interface", "LastSpell"};
+        snap.lastSpell = ProbeValue(L, path, ARRAYSIZE(path));
+    }
+    {
+        const char* path[] = {"Interface", "CurrentSpell", "SpellId"};
+        snap.currentSpellId = ProbeValue(L, path, ARRAYSIZE(path));
+    }
+    {
+        const char* path[] = {"Interface", "CurrentSpell", "casting"};
+        snap.currentSpellCasting = ProbeValue(L, path, ARRAYSIZE(path));
+    }
     return snap;
 }
 
 static void LogCastSpellSnapshot(const char* phase, uint32_t token, int spellId, const CastSpellSnapshot& snap)
 {
-    char buf[512];
+    char buf[1024];
     sprintf_s(buf, sizeof(buf),
-        "[Lua] CastSpell snapshot %s tok=%u spell=%d sysQueue=%s settingsQueue=%s settingsEnable=%s cursor=%s queueEnabled=%s queueActive=%s",
+        "[Lua] CastSpell snapshot %s tok=%u spell=%d sysQueue=%s settingsQueue=%s settingsEnable=%s cursor=%s queueEnabled=%s queueActive=%s activeWindow=%s useSpell=%s useTarget=%s lastSpell=%s currentSpellId=%s currentSpellCasting=%s",
         phase ? phase : "?", token, spellId,
         snap.systemQueue.summary.c_str(),
         snap.settingsQueue.summary.c_str(),
         snap.settingsEnableQueue.summary.c_str(),
         snap.cursorTargeting.summary.c_str(),
         snap.actionQueueEnabled.summary.c_str(),
-        snap.actionQueueActive.summary.c_str());
+        snap.actionQueueActive.summary.c_str(),
+        snap.activeWindowName.summary.c_str(),
+        snap.useRequestSpell.summary.c_str(),
+        snap.useRequestTarget.summary.c_str(),
+        snap.lastSpell.summary.c_str(),
+        snap.currentSpellId.summary.c_str(),
+        snap.currentSpellCasting.summary.c_str());
     WriteRawLog(buf);
+}
+
+static bool PrimeSpellUseRequestState(lua_State* L, int spellId, uint32_t targetId, const char* tag)
+{
+    if (!L || spellId <= 0)
+        return false;
+
+    const char* safeTag = tag ? tag : "unknown";
+    const unsigned target = static_cast<unsigned>(targetId);
+    DWORD ownerTid = g_ownerThreadId.load(std::memory_order_acquire);
+    DWORD currentTid = GetCurrentThreadId();
+    if (ownerTid != 0 && ownerTid != currentTid) {
+        char failBuf[224];
+        sprintf_s(failBuf,
+                  sizeof(failBuf),
+                  "[CastUI] spell state prime skipped tag=%s spell=%d target=%u reason=owner_thread_mismatch owner=%u caller=%u",
+                  safeTag,
+                  spellId,
+                  target,
+                  static_cast<unsigned>(ownerTid),
+                  static_cast<unsigned>(currentTid));
+        WriteRawLog(failBuf);
+        return false;
+    }
+
+    const char* reason = nullptr;
+    bool primed = false;
+    DWORD sehCode = 0;
+
+    __try {
+        int top = lua_gettop(L);
+        do {
+            lua_getglobal(L, "GameData");
+            if (lua_type(L, -1) != LUA_TTABLE) {
+                reason = "missing:GameData";
+                break;
+            }
+
+            lua_getfield(L, -1, "UseRequests");
+            if (lua_type(L, -1) != LUA_TTABLE) {
+                reason = "missing:GameData.UseRequests";
+                break;
+            }
+
+            lua_pushinteger(L, spellId);
+            lua_setfield(L, -2, "UseSpellcast");
+            lua_pushinteger(L, static_cast<lua_Integer>(targetId));
+            lua_setfield(L, -2, "UseTarget");
+            lua_settop(L, top);
+
+            lua_getglobal(L, "Interface");
+            if (lua_type(L, -1) != LUA_TTABLE) {
+                reason = "missing:Interface";
+                break;
+            }
+
+            lua_getfield(L, -1, "SpellUseRequest");
+            lua_remove(L, -2);
+            if (lua_type(L, -1) != LUA_TFUNCTION) {
+                reason = "missing:Interface.SpellUseRequest";
+                break;
+            }
+
+            if (lua_pcall(L, 0, 0, 0) != 0) {
+                const char* err = lua_tolstring(L, -1, nullptr);
+                char errBuf[256];
+                sprintf_s(errBuf,
+                          sizeof(errBuf),
+                          "[CastUI] spell state prime failed tag=%s spell=%d target=%u err=%s",
+                          safeTag,
+                          spellId,
+                          target,
+                          err ? err : "<unknown>");
+                WriteRawLog(errBuf);
+                reason = "pcall_failed";
+                break;
+            }
+
+            primed = true;
+        } while (false);
+        lua_settop(L, top);
+    }
+    __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        char sehBuf[256];
+        sprintf_s(sehBuf,
+                  sizeof(sehBuf),
+                  "[CastUI] spell state prime fault tag=%s spell=%d target=%u code=0x%08lX",
+                  safeTag,
+                  spellId,
+                  target,
+                  static_cast<unsigned long>(sehCode));
+        WriteRawLog(sehBuf);
+        return false;
+    }
+
+    if (primed) {
+        char okBuf[192];
+        sprintf_s(okBuf,
+                  sizeof(okBuf),
+                  "[CastUI] spell state primed tag=%s spell=%d target=%u",
+                  safeTag,
+                  spellId,
+                  target);
+        WriteRawLog(okBuf);
+    } else if (reason) {
+        char failBuf[224];
+        sprintf_s(failBuf,
+                  sizeof(failBuf),
+                  "[CastUI] spell state prime skipped tag=%s spell=%d target=%u reason=%s",
+                  safeTag,
+                  spellId,
+                  target,
+                  reason);
+        WriteRawLog(failBuf);
+    }
+    return primed;
 }
 
 static void LogLuaTopTypes(lua_State* L, const char* context, int maxSlots)
@@ -3502,29 +3886,16 @@ static void TryInstallDirectActionHooks()
 
 static bool RegisterViaClient(lua_State* L, lua_CFunction fn, const char* name)
 {
-    if (!fn || !name)
+    if (!fn || !name || !L)
         return false;
 
     if (!g_clientRegister && !g_origRegister)
         return false;
 
-    void* context = g_clientContext;
-    const GlobalStateInfo* info = Engine::Info();
-    void* candidateCtx = info ? info->scriptContext : nullptr;
-    if ((!context || (candidateCtx && context != candidateCtx))) {
-        context = candidateCtx;
-        g_clientContext = context;
-        if (context) {
-            char buf[128];
-            sprintf_s(buf, sizeof(buf), "RegisterViaClient: refreshed script context %p", context);
-            WriteRawLog(buf);
-        }
-    }
-
-    if (!context) {
-        WriteRawLog("RegisterViaClient: script context unavailable");
+    void* context = nullptr;
+    if (!ResolveGameplayScriptContext(L, g_clientContext, &context, name))
         return false;
-    }
+    g_clientContext = context;
 
     ClientRegisterFn target = g_origRegister ? g_origRegister : g_clientRegister;
     if (!target)
@@ -3555,9 +3926,42 @@ static bool RegisterViaClient(lua_State* L, lua_CFunction fn, const char* name)
     return success;
 }
 
+static void EnsureDirectLuaGlobals(lua_State* L)
+{
+    if (!L)
+        return;
+
+    struct DirectBinding {
+        lua_CFunction fn;
+        const char* name;
+    };
+
+    static const DirectBinding kDirectBindings[] = {
+        // Flat globals are installed directly so scripts can call them without
+        // depending on the client's dotted-name registration behavior.
+        {Lua_uow_spell_cast_global, "uow_spell_cast"},
+        {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
+        {Lua_UOW_Debug_log, "uow_debug_log"},
+        {Lua_UOW_Debug_dump_spell_paths, "uow_dump_spell_paths"},
+    };
+
+    for (const auto& binding : kDirectBindings) {
+        if (!RegisterFunctionSafe(L, binding.fn, binding.name)) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "EnsureDirectLuaGlobals: failed for '%s'",
+                      binding.name ? binding.name : "<null>");
+            WriteRawLog(buf);
+        }
+    }
+}
+
 static void ForceWalkBinding(lua_State* L, const char* reason)
 {
     if (!L)
+        return;
+    if (!IsGameplayLuaReady(L, reason ? reason : "EnsureWalkBinding"))
         return;
 
     InterlockedExchange(&g_pendingRegistration, 0);
@@ -3593,25 +3997,38 @@ static void ForceSpellBinding(lua_State* L, const char* reason)
 {
     if (!L)
         return;
-    if (!g_clientContext)
+    if (!IsGameplayLuaReady(L, reason ? reason : "EnsureSpellBinding"))
         return;
     if (g_spellBindingReady.load(std::memory_order_acquire))
         return;
 
     const char* tag = reason ? reason : "EnsureSpellBinding";
+    void* gameplayCtx = nullptr;
+    if (!ResolveGameplayScriptContext(L, g_clientContext, &gameplayCtx, tag))
+        return;
+    g_clientContext = gameplayCtx;
     char buf[224];
-    sprintf_s(buf, sizeof(buf), "%s: ensuring UOW.Spell.cast binding (ctx=%p)", tag, g_clientContext);
+    sprintf_s(buf, sizeof(buf), "%s: ensuring UOW.Spell.cast binding (ctx=%p)", tag, gameplayCtx);
     WriteRawLog(buf);
 
-    bool primary = RegisterViaClient(L, Lua_UOW_Spell_Cast, "UOW.Spell.cast");
-    bool alias = RegisterViaClient(L, Lua_UOW_Spell_Cast, "UOFlow.Spell.cast");
-    if (primary || alias) {
+    // Bind the visible spell helpers to the no-click/native cast path, not the
+    // legacy replay helper, so programmatic callers exercise the same pipeline.
+    bool primary = RegisterViaClient(L, Lua_UOFlow_Spell_cast, "UOW.Spell.cast");
+    bool alias = RegisterViaClient(L, Lua_UOFlow_Spell_cast, "UOFlow.Spell.cast");
+    RegisterLuaPathSafe(L, Lua_UOFlow_Spell_cast, "UOW.Spell.cast");
+    RegisterLuaPathSafe(L, Lua_UOFlow_Spell_cast, "UOFlow.Spell.cast");
+    RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "UOW.Debug.Log");
+    EnsureDirectLuaGlobals(L);
+    LogSpellHelperBindings(L, tag);
+    bool flat = true;
+    if (primary || alias || flat) {
         g_spellBindingReady.store(true, std::memory_order_release);
         char okBuf[192];
         sprintf_s(okBuf, sizeof(okBuf),
-            "%s: spell helper installed (alias=%s)",
+            "%s: spell helper installed (alias=%s flat=%s)",
             tag,
-            alias ? "yes" : "no");
+            alias ? "yes" : "no",
+            flat ? "yes" : "no");
         WriteRawLog(okBuf);
     }
 }
@@ -3619,6 +4036,8 @@ static void ForceSpellBinding(lua_State* L, const char* reason)
 static void EnsureReplayHelper(lua_State* L)
 {
     if (!L)
+        return;
+    if (!IsGameplayLuaReady(L, "replay_helper"))
         return;
     if (g_replayHelperInstalled.load(std::memory_order_acquire))
         return;
@@ -3729,10 +4148,6 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         InterlockedExchange(&g_pendingRegistration, 1);
     }
 
-    if (ctx) {
-        MaybeUpdateOwnerContext(ctx);
-    }
-
     bool isNewCtx = false;
     ObservedContext* slot = ensureContextSlot(ctx, &isNewCtx);
     if (isNewCtx) {
@@ -3742,7 +4157,6 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         WriteRawLog(info);
         Engine::RequestWalkRegistration();
         InterlockedExchange(&g_pendingRegistration, 1);
-        MaybeUpdateOwnerContext(ctx);
     }
 
     unsigned flag = 0;
@@ -4044,12 +4458,13 @@ static int __cdecl Lua_UOW_Spell_Cast(lua_State* L)
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER) {
         spellId = static_cast<int>(lua_tointeger(L, 1));
     }
-    char buf[128];
-    sprintf_s(buf, sizeof(buf), "[Lua] UOW.Spell.cast invoked spell=%d", spellId);
+    char buf[160];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Lua] UOW.Spell.cast invoked spell=%d -> forwarding to UOFlow.Spell.cast",
+              spellId);
     WriteRawLog(buf);
-    bool ok = Engine::Lua::CastSpellNative(spellId);
-    lua_pushboolean(L, ok ? 1 : 0);
-    return 1;
+    return Lua_UOFlow_Spell_cast(L);
 }
 
 static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L)
@@ -4068,6 +4483,7 @@ static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L)
               spellId,
               targetId);
     WriteRawLog(intro);
+    PrimeSpellUseRequestState(L, spellId, static_cast<uint32_t>(targetId < 0 ? 0 : targetId), "replay_cast_on_id");
 
     auto invokeGlobal = [&](const char* name,
                             int nargs,
@@ -4769,13 +5185,11 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         }
         return false;
     }
+    if (!IsGameplayLuaReady(L, reason ? reason : "console_bind"))
+        return false;
     LateWrapResetGuard(reason ? reason : "console_bind", ownerCtx, L);
 
-    if (!ownerCtx)
-        ownerCtx = CanonicalOwnerContext();
-    if (!ownerCtx)
-        ownerCtx = g_clientContext;
-    if (!ownerCtx) {
+    if (!ResolveGameplayScriptContext(L, ownerCtx ? ownerCtx : CanonicalOwnerContext(), &ownerCtx, reason ? reason : "console_bind")) {
         DWORD now = GetTickCount();
         if (now >= s_nextOwnerCtxLog) {
             WriteRawLog("InstallUOFlowConsoleBindingsIfNeeded: owner context unavailable");
@@ -4783,6 +5197,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         }
         return false;
     }
+    g_clientContext = ownerCtx;
 
     if (!Engine::LuaState() && L)
         Engine::ReportLuaState(L);
@@ -4818,6 +5233,8 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_UOFlow_bootstrap, "uow.bootstrap"},
         {Lua_UOFlow_Spell_cast, "uow.cmd.cast"},
         {Lua_UOFlow_Spell_cast_on_id, "uow.cmd.cast_on_id"},
+        {Lua_uow_spell_cast_global, "uow_spell_cast"},
+        {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
         {Lua_UOFlow_Target_commit_obj, "uow.cmd.commit_obj"},
         {Lua_UOFlow_Target_commit_ground, "uow.cmd.commit_ground"},
         {Lua_UOFlow_Target_cancel, "uow.cmd.cancel_target"},
@@ -4826,7 +5243,10 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_uow_cmd_clear_target, "uow.cmd.clear_target"},
         {Lua_uow_cmd_request_target, "uow.cmd.req_target"},
         {Lua_uow_cmd_show_cursor, "uow.cmd.show_cursor"},
+        {Lua_UOW_Debug_log, "UOW.Debug.Log"},
+        {Lua_UOW_Debug_log, "uow_debug_log"},
         {Lua_UOW_Debug_dump_spell_paths, "UOW.Debug.DumpSpellPaths"},
+        {Lua_UOW_Debug_dump_spell_paths, "uow_dump_spell_paths"},
     };
 
     for (const auto& binding : kCompat) {
@@ -4840,6 +5260,14 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         }
     }
 
+    for (const auto& binding : kRequired)
+        RegisterLuaPathSafe(L, binding.fn, binding.name);
+    for (const auto& binding : kCompat)
+        RegisterLuaPathSafe(L, binding.fn, binding.name);
+
+    EnsureDirectLuaGlobals(L);
+    LogSpellHelperBindings(L, "console_bind");
+
     g_consoleBound = true;
     Util::OwnerPump::SetDrainAllowed(true);
 
@@ -4852,6 +5280,180 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
     ForceLateCastWrapInstall(L, reason ? reason : "console_bind");
     RequestLateCastWrapLoop(reason ? reason : "console_bind_reset");
     return true;
+}
+
+static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reason)
+{
+    const char* tag = (reason && *reason) ? reason : "compat_bootstrap";
+    if (!L) {
+        static DWORD s_nextNullLogTick = 0;
+        DWORD now = GetTickCount();
+        if (now >= s_nextNullLogTick) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CompatBootstrap] %s skipped: null lua state",
+                      tag);
+            WriteRawLog(buf);
+            s_nextNullLogTick = now + 2000;
+        }
+        return;
+    }
+
+    if (TryConsumePendingSpellRequest(L, tag)) {
+        char buf[160];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[CompatBootstrap] %s consumed pending spell request",
+                  tag);
+        WriteRawLog(buf);
+    }
+
+    const bool bindingsReady =
+        g_consoleBound &&
+        g_spellBindingReady.load(std::memory_order_acquire) &&
+        g_replayHelperInstalled.load(std::memory_order_acquire);
+    const bool actionWrappersReady =
+        (InterlockedCompareExchange(&g_actionWrappersInstalled, 0, 0) != 0);
+    DWORD now = GetTickCount();
+    static DWORD s_nextProbeLogTick = 0;
+    const bool emitProbeLog = (now >= s_nextProbeLogTick);
+    if (emitProbeLog) {
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[CompatBootstrap] %s enter L=%p console=%d spell=%d replay=%d actions=%d owner=%p client=%p",
+                  tag,
+                  L,
+                  g_consoleBound ? 1 : 0,
+                  g_spellBindingReady.load(std::memory_order_acquire) ? 1 : 0,
+                  g_replayHelperInstalled.load(std::memory_order_acquire) ? 1 : 0,
+                  actionWrappersReady ? 1 : 0,
+                  CanonicalOwnerContext(),
+                  g_clientContext);
+        WriteRawLog(buf);
+        s_nextProbeLogTick = now + 2000;
+    }
+    if (bindingsReady && actionWrappersReady) {
+        if (emitProbeLog) {
+            char buf[160];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CompatBootstrap] %s skipped: bindings already ready",
+                      tag);
+            WriteRawLog(buf);
+        }
+        return;
+    }
+
+    static DWORD s_nextAttemptTick = 0;
+    if (now < s_nextAttemptTick) {
+        if (emitProbeLog) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CompatBootstrap] %s cooldown active for %lu ms",
+                      tag,
+                      static_cast<unsigned long>(s_nextAttemptTick - now));
+            WriteRawLog(buf);
+        }
+        return;
+    }
+    s_nextAttemptTick = now + 500;
+
+    if (!IsGameplayLuaReady(L, tag)) {
+        if (emitProbeLog) {
+            char buf[160];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CompatBootstrap] %s blocked: gameplay lua not ready",
+                      tag);
+            WriteRawLog(buf);
+        }
+        return;
+    }
+
+    void* gameplayCtx = nullptr;
+    if (ResolveGameplayScriptContext(L,
+                                     g_clientContext ? g_clientContext : CanonicalOwnerContext(),
+                                     &gameplayCtx,
+                                     tag)) {
+        if (emitProbeLog) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CompatBootstrap] %s resolved gameplay ctx=%p",
+                      tag,
+                      gameplayCtx);
+            WriteRawLog(buf);
+        }
+        MaybeUpdateOwnerContext(gameplayCtx);
+        const bool installOk = InstallUOFlowConsoleBindingsIfNeeded(gameplayCtx, tag, L);
+        if (emitProbeLog) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CompatBootstrap] %s console install result=%d ctx=%p",
+                      tag,
+                      installOk ? 1 : 0,
+                      gameplayCtx);
+            WriteRawLog(buf);
+        }
+    } else {
+        void* fallbackCtx = CanonicalOwnerContext();
+        if (emitProbeLog) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CompatBootstrap] %s resolve failed; fallback ctx=%p",
+                      tag,
+                      fallbackCtx);
+            WriteRawLog(buf);
+        }
+        const bool installOk = InstallUOFlowConsoleBindingsIfNeeded(fallbackCtx, tag, L);
+        if (emitProbeLog) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CompatBootstrap] %s fallback console install result=%d ctx=%p",
+                      tag,
+                      installOk ? 1 : 0,
+                      fallbackCtx);
+            WriteRawLog(buf);
+        }
+    }
+
+    const bool spellReadyBefore = g_spellBindingReady.load(std::memory_order_acquire);
+    ForceSpellBinding(L, tag);
+    const bool spellReadyAfter = g_spellBindingReady.load(std::memory_order_acquire);
+    const bool replayReadyBefore = g_replayHelperInstalled.load(std::memory_order_acquire);
+    EnsureReplayHelper(L);
+    const bool replayReadyAfter = g_replayHelperInstalled.load(std::memory_order_acquire);
+    if (emitProbeLog) {
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[CompatBootstrap] %s spell=%d->%d replay=%d->%d",
+                  tag,
+                  spellReadyBefore ? 1 : 0,
+                  spellReadyAfter ? 1 : 0,
+                  replayReadyBefore ? 1 : 0,
+                  replayReadyAfter ? 1 : 0);
+        WriteRawLog(buf);
+    }
+    if (InterlockedCompareExchange(&g_actionWrappersInstalled, 0, 0) == 0) {
+        RequestActionWrapperInstall();
+        TryInstallActionWrappers();
+        if (emitProbeLog) {
+            char buf[192];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CompatBootstrap] %s action wrapper install attempted; installed=%d",
+                      tag,
+                      InterlockedCompareExchange(&g_actionWrappersInstalled, 0, 0) != 0 ? 1 : 0);
+            WriteRawLog(buf);
+        }
+    }
 }
 
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason)
@@ -5407,6 +6009,7 @@ static bool NoClickCastSpell_Internal(int spellId)
               spellId,
               GetCurrentThreadId());
     WriteRawLog(buf);
+    PrimeSpellUseRequestState(L, spellId, 0, "no_click");
 
     const bool wrapperReady = CastWrapperReady();
     const bool directEligible = g_allowDirectCastFallback && g_origCastSpell;
@@ -5654,6 +6257,7 @@ static bool TryCastSpellOnIdViaClient(lua_State* L, int spellId, uint32_t object
 {
     if (!L || objectId == 0)
         return false;
+    PrimeSpellUseRequestState(L, spellId, objectId, "cast_on_id");
     if (CastOnIdWrapperReady() && InvokeCastOnIdWrapper(L, spellId, objectId))
         return true;
     if (!g_allowDirectCastFallback || !g_origCastSpellOnId)
@@ -5674,11 +6278,166 @@ static bool NoClickCastSpellOnId_Internal(int spellId, uint32_t objectId)
     return CommitTargetObject_Internal(objectId, TargetCommitKind::Object);
 }
 
-static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
+static int __cdecl Lua_uow_spell_cast_global(lua_State* L)
 {
     int spellId = 0;
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
         spellId = static_cast<int>(lua_tointeger(L, 1));
+
+    if (L) {
+        if (!Engine::LuaState())
+            Engine::ReportLuaState(L);
+        PromoteGameplayOwnerFromLiveCallback("uow_spell_cast");
+        ProbeGameplayBindingBootstrap(L, "uow_spell_cast");
+    }
+
+    const uint32_t callerTid = GetCurrentThreadId();
+    const uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+
+    char intro[224];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[Lua] uow_spell_cast invoked spell=%d caller=%u owner=%u",
+              spellId,
+              callerTid,
+              ownerTid);
+    WriteRawLog(intro);
+
+    std::string msg;
+    bool ok = false;
+    if (spellId > 0) {
+        ok = DispatchNoClickCommand(
+            "uow_spell_cast",
+            [spellId](std::string& innerMsg) {
+                bool result = NoClickCastSpell_Internal(spellId);
+                if (result && innerMsg.empty()) {
+                    char okMsg[96];
+                    sprintf_s(okMsg, sizeof(okMsg), "uow_spell_cast ok (spell=%d)", spellId);
+                    innerMsg = okMsg;
+                } else if (!result && innerMsg.empty()) {
+                    innerMsg = "uow_spell_cast failed";
+                }
+                return result;
+            },
+            msg);
+    } else {
+        msg = "invalid_spell";
+    }
+
+    char outro[320];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[Lua] uow_spell_cast result ok=%d msg=%s caller=%u owner=%u",
+              ok ? 1 : 0,
+              msg.empty() ? "<none>" : msg.c_str(),
+              callerTid,
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(outro);
+
+    if (L) {
+        lua_pushboolean(L, ok ? 1 : 0);
+        if (msg.empty())
+            lua_pushlstring(L, "", 0);
+        else
+            lua_pushlstring(L, msg.c_str(), msg.size());
+        return 2;
+    }
+    return 0;
+}
+
+static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L)
+{
+    int spellId = 0;
+    uint32_t objectId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        spellId = static_cast<int>(lua_tointeger(L, 1));
+    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
+        objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
+
+    if (L) {
+        if (!Engine::LuaState())
+            Engine::ReportLuaState(L);
+        PromoteGameplayOwnerFromLiveCallback("uow_spell_cast_on_id");
+        ProbeGameplayBindingBootstrap(L, "uow_spell_cast_on_id");
+    }
+
+    const uint32_t callerTid = GetCurrentThreadId();
+    const uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+
+    char intro[256];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[Lua] uow_spell_cast_on_id invoked spell=%d target=%u caller=%u owner=%u",
+              spellId,
+              objectId,
+              callerTid,
+              ownerTid);
+    WriteRawLog(intro);
+
+    std::string msg;
+    bool ok = false;
+    if (spellId > 0 && objectId != 0) {
+        ok = DispatchNoClickCommand(
+            "uow_spell_cast_on_id",
+            [spellId, objectId](std::string& innerMsg) {
+                bool result = NoClickCastSpellOnId_Internal(spellId, objectId);
+                if (result && innerMsg.empty()) {
+                    char okMsg[128];
+                    sprintf_s(okMsg, sizeof(okMsg), "uow_spell_cast_on_id ok (spell=%d target=%u)", spellId, objectId);
+                    innerMsg = okMsg;
+                } else if (!result && innerMsg.empty()) {
+                    innerMsg = "uow_spell_cast_on_id failed";
+                }
+                return result;
+            },
+            msg);
+    } else {
+        msg = "invalid_args";
+    }
+
+    char outro[352];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[Lua] uow_spell_cast_on_id result ok=%d msg=%s caller=%u owner=%u",
+              ok ? 1 : 0,
+              msg.empty() ? "<none>" : msg.c_str(),
+              callerTid,
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(outro);
+
+    if (L) {
+        lua_pushboolean(L, ok ? 1 : 0);
+        if (msg.empty())
+            lua_pushlstring(L, "", 0);
+        else
+            lua_pushlstring(L, msg.c_str(), msg.size());
+        return 2;
+    }
+    return 0;
+}
+
+static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
+{
+    if (L) {
+        if (!Engine::LuaState())
+            Engine::ReportLuaState(L);
+        PromoteGameplayOwnerFromLiveCallback("UOFlow.Spell.cast");
+        ProbeGameplayBindingBootstrap(L, "UOFlow.Spell.cast");
+    }
+
+    int spellId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        spellId = static_cast<int>(lua_tointeger(L, 1));
+    {
+        char intro[224];
+        sprintf_s(intro,
+                  sizeof(intro),
+                  "[Lua] UOFlow.Spell.cast invoked spell=%d caller=%u owner=%u",
+                  spellId,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId());
+        WriteRawLog(intro);
+    }
     if (spellId <= 0) {
         WriteRawLog("[Lua] UOFlow.Spell.cast rejected: invalid spell id");
         std::string msg = "invalid_spell";
@@ -5706,6 +6465,17 @@ static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
             return result;
         },
         msg);
+    {
+        char outro[288];
+        sprintf_s(outro,
+                  sizeof(outro),
+                  "[Lua] UOFlow.Spell.cast result ok=%d msg=%s caller=%u owner=%u",
+                  ok ? 1 : 0,
+                  msg.empty() ? "<none>" : msg.c_str(),
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId());
+        WriteRawLog(outro);
+    }
     if (!ok)
         LogUOFlowStatus("UOFlow.Spell.cast", ok, msg);
     return PushLuaCommandResult(L, ok, msg);
@@ -5713,12 +6483,30 @@ static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L)
 
 static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
 {
+    if (L) {
+        if (!Engine::LuaState())
+            Engine::ReportLuaState(L);
+        PromoteGameplayOwnerFromLiveCallback("UOFlow.Spell.cast_on_id");
+        ProbeGameplayBindingBootstrap(L, "UOFlow.Spell.cast_on_id");
+    }
+
     int spellId = 0;
     uint32_t objectId = 0;
     if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
         objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
+    {
+        char intro[256];
+        sprintf_s(intro,
+                  sizeof(intro),
+                  "[Lua] UOFlow.Spell.cast_on_id invoked spell=%d target=%u caller=%u owner=%u",
+                  spellId,
+                  objectId,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId());
+        WriteRawLog(intro);
+    }
     if (spellId <= 0 || objectId == 0) {
         WriteRawLog("[Lua] UOFlow.Spell.cast_on_id rejected: invalid spell or object id");
         std::string err = "invalid_args";
@@ -5740,6 +6528,17 @@ static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L)
             return result;
         },
         msg);
+    {
+        char outro[320];
+        sprintf_s(outro,
+                  sizeof(outro),
+                  "[Lua] UOFlow.Spell.cast_on_id result ok=%d msg=%s caller=%u owner=%u",
+                  ok ? 1 : 0,
+                  msg.empty() ? "<none>" : msg.c_str(),
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId());
+        WriteRawLog(outro);
+    }
     if (!ok)
         LogUOFlowStatus("UOFlow.Spell.cast_on_id", ok, msg);
     return PushLuaCommandResult(L, ok, msg);
@@ -5960,6 +6759,77 @@ static int __cdecl Lua_UOFlow_status(lua_State* L)
               busy ? "active" : "idle",
               windowMs);
     return PushLuaCommandResult(L, true, buf);
+}
+
+static int __cdecl Lua_UOW_Debug_log(lua_State* L)
+{
+    std::string msg = "[LuaDebug]";
+    if (!L) {
+        WriteRawLog(msg.c_str());
+        return 0;
+    }
+
+    int top = lua_gettop(L);
+    for (int i = 1; i <= top; ++i) {
+        msg.push_back(' ');
+        int t = lua_type(L, i);
+        switch (t) {
+        case LUA_TSTRING:
+        {
+            size_t len = 0;
+            const char* s = lua_tolstring(L, i, &len);
+            if (s && len)
+                msg.append(s, len);
+            else
+                msg.append("<empty>");
+            break;
+        }
+        case LUA_TNUMBER:
+        {
+            char buf[64];
+            sprintf_s(buf, sizeof(buf), "%g", lua_tonumber(L, i));
+            msg.append(buf);
+            break;
+        }
+        case LUA_TBOOLEAN:
+            msg.append(lua_toboolean(L, i) ? "true" : "false");
+            break;
+        case LUA_TNIL:
+            msg.append("nil");
+            break;
+        default:
+        {
+            const char* tn = lua_typename(L, t);
+            msg.push_back('<');
+            msg.append(tn ? tn : "?");
+            msg.push_back('>');
+            break;
+        }
+        }
+    }
+
+    if (msg.find("[VPSpell]") != std::string::npos) {
+        static DWORD s_lastVpSpellBindingLog = 0;
+        DWORD now = GetTickCount();
+        if (now - s_lastVpSpellBindingLog >= 250) {
+            s_lastVpSpellBindingLog = now;
+            char buf[256];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[LuaDebug] live spell binding probe L=%p caller=%u owner=%u",
+                      L,
+                      GetCurrentThreadId(),
+                      Util::OwnerPump::GetOwnerThreadId());
+            WriteRawLog(buf);
+            LogSpellHelperBindings(L, "UOW.Debug.Log/live");
+            LogLuaFunctionBinding(L, "UOW.Debug.Log/live", "UserActionCastSpell");
+            LogLuaFunctionBinding(L, "UOW.Debug.Log/live", "UserActionCastSpellOnId");
+            LogLuaFunctionBinding(L, "UOW.Debug.Log/live", "uow_debug_log");
+        }
+    }
+
+    WriteRawLog(msg.c_str());
+    return 0;
 }
 
 static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L)
@@ -7304,9 +8174,215 @@ static void LogLuaErrorTop(lua_State* L, const char* context, int maxSlots)
     }
 }
 
+static int InvokeLuaPathProbe(lua_State* L,
+                              const char* path,
+                              const char* tag,
+                              bool pushNumberArg,
+                              lua_Number numberArg,
+                              const char* stringArg)
+{
+    if (!L || !path || !*path)
+        return -1;
+
+    std::vector<std::string> tokens;
+    if (!SplitLuaPath(path, tokens) || tokens.empty())
+        return -1;
+
+    int top = lua_gettop(L);
+    int parentIndex = LUA_GLOBALSINDEX;
+    if (!PushLuaFunctionByTokens(L, tokens, false, parentIndex) || lua_type(L, -1) != LUA_TFUNCTION) {
+        lua_settop(L, top);
+        char buf[256];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaProbe] %s missing fn='%s'",
+                  tag ? tag : "probe",
+                  path);
+        WriteRawLog(buf);
+        return -1;
+    }
+
+    int nargs = 0;
+    if (pushNumberArg) {
+        lua_pushnumber(L, numberArg);
+        nargs = 1;
+    } else if (stringArg) {
+        lua_pushlstring(L, stringArg, strlen(stringArg));
+        nargs = 1;
+    }
+
+    int status = lua_pcall(L, nargs, LUA_MULTRET, 0);
+    if (status != 0) {
+        const char* err = lua_tolstring(L, -1, nullptr);
+        char buf[320];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaProbe] %s call fn='%s' status=%d err=%s",
+                  tag ? tag : "probe",
+                  path,
+                  status,
+                  err ? err : "<none>");
+        WriteRawLog(buf);
+        lua_settop(L, top);
+        return 0;
+    }
+
+    int rc = lua_gettop(L) - top;
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaProbe] %s call fn='%s' rc=%d",
+              tag ? tag : "probe",
+              path,
+              rc);
+    WriteRawLog(buf);
+    if (rc > 0)
+        LogLuaReturns(L, tag ? tag : path, rc);
+    lua_settop(L, top);
+    return rc;
+}
+
+static bool TryConsumePendingSpellRequest(lua_State* L, const char* sourceTag)
+{
+    if (!L)
+        return false;
+
+    int top = lua_gettop(L);
+    int spellId = 0;
+
+    lua_getglobal(L, "uow_pending_spellcast");
+    if (lua_type(L, -1) == LUA_TNUMBER) {
+        lua_Integer v = lua_tointeger(L, -1);
+        if (v > 0)
+            spellId = static_cast<int>(v);
+    }
+    lua_pop(L, 1);
+
+    if (spellId <= 0) {
+        lua_settop(L, top);
+        return false;
+    }
+
+    lua_pushnil(L);
+    lua_setglobal(L, "uow_pending_spellcast");
+
+    const char* tag = (sourceTag && *sourceTag) ? sourceTag : "pending";
+    char intro[256];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[PendingCast] consume source=%s spell=%d caller=%u owner=%u",
+              tag,
+              spellId,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(intro);
+
+    std::string msg;
+    bool ok = DispatchNoClickCommand(
+        "pending_spellcast",
+        [spellId](std::string& innerMsg) {
+            bool result = NoClickCastSpell_Internal(spellId);
+            if (result && innerMsg.empty()) {
+                char okMsg[96];
+                sprintf_s(okMsg, sizeof(okMsg), "pending_spellcast ok (spell=%d)", spellId);
+                innerMsg = okMsg;
+            } else if (!result && innerMsg.empty()) {
+                innerMsg = "pending_spellcast failed";
+            }
+            return result;
+        },
+        msg);
+
+    lua_pushboolean(L, ok ? 1 : 0);
+    lua_setglobal(L, "uow_pending_spellcast_ok");
+    if (msg.empty())
+        lua_pushnil(L);
+    else
+        lua_pushlstring(L, msg.c_str(), msg.size());
+    lua_setglobal(L, "uow_pending_spellcast_msg");
+    lua_pushnumber(L, static_cast<lua_Number>(spellId));
+    lua_setglobal(L, "uow_pending_spellcast_last");
+
+    char outro[320];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[PendingCast] result source=%s spell=%d ok=%d msg=%s",
+              tag,
+              spellId,
+              ok ? 1 : 0,
+              msg.empty() ? "<none>" : msg.c_str());
+    WriteRawLog(outro);
+
+    lua_settop(L, top);
+    return true;
+}
+
+static void MaybeLogLiveSpellBindings(lua_State* L, const char* tag, DWORD minIntervalMs = 250)
+{
+    if (!L)
+        return;
+    static DWORD s_lastLogTick = 0;
+    static LONG s_probeOnce = 0;
+    DWORD now = GetTickCount();
+    if (now - s_lastLogTick < minIntervalMs)
+        return;
+    s_lastLogTick = now;
+
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaBind] live probe via %s L=%p caller=%u owner=%u",
+              tag ? tag : "compat",
+              L,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
+
+    int top = lua_gettop(L);
+    const void* globalsPtr = nullptr;
+    const void* registryPtr = nullptr;
+    __try {
+        lua_pushvalue(L, LUA_GLOBALSINDEX);
+        globalsPtr = lua_topointer(L, -1);
+        lua_pop(L, 1);
+        lua_pushvalue(L, LUA_REGISTRYINDEX);
+        registryPtr = lua_topointer(L, -1);
+        lua_pop(L, 1);
+        lua_settop(L, top);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        WriteRawLog("[LuaBind] live probe: exception while inspecting globals");
+    }
+
+    char envBuf[256];
+    sprintf_s(envBuf,
+              sizeof(envBuf),
+              "[LuaBind] %s globals=%p registry=%p",
+              tag ? tag : "live",
+              globalsPtr,
+              registryPtr);
+    WriteRawLog(envBuf);
+
+    LogSpellHelperBindings(L, tag ? tag : "live");
+    LogLuaFunctionBinding(L, tag ? tag : "live", "UserActionCastSpell");
+    LogLuaFunctionBinding(L, tag ? tag : "live", "UserActionCastSpellOnId");
+    LogLuaFunctionBinding(L, tag ? tag : "live", "uow_debug_log");
+
+    if (InterlockedCompareExchange(&s_probeOnce, 1, 0) == 0) {
+        InvokeLuaPathProbe(L, "uow_debug_log", "liveProbe/uow_debug_log", false, 0, "__live_probe__");
+        InvokeLuaPathProbe(L, "uow_spell_cast", "liveProbe/uow_spell_cast", true, 0, nullptr);
+        InvokeLuaPathProbe(L, "UOFlow.Spell.cast", "liveProbe/UOFlow.Spell.cast", true, 0, nullptr);
+        InvokeLuaPathProbe(L, "UserActionCastSpell", "liveProbe/UserActionCastSpell", true, 0, nullptr);
+    }
+}
+
 static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L)
 {
     uint32_t tok = CurrentCastToken();
+    PromoteGameplayOwnerFromLiveCallback("target_mode_compat");
+    ProbeGameplayBindingBootstrap(L, "target_mode_compat");
+    TryConsumePendingSpellRequest(L, "target_mode_compat");
+    MaybeLogLiveSpellBindings(L, "target_mode_compat/live");
     bool verbose = true;
     if (!g_logBudgetTargetUnlimited) {
         LONG remaining = InterlockedDecrement(&g_logBudgetTarget);
@@ -7349,6 +8425,10 @@ static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L)
 
 static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L)
 {
+    PromoteGameplayOwnerFromLiveCallback("action_type_target_mode_compat");
+    ProbeGameplayBindingBootstrap(L, "action_type_target_mode_compat");
+    TryConsumePendingSpellRequest(L, "action_type_target_mode_compat");
+    MaybeLogLiveSpellBindings(L, "action_type_target_mode_compat/live");
     bool verbose = true;
     if (!g_logBudgetActionTypeUnlimited) {
         LONG remaining = InterlockedDecrement(&g_logBudgetActionType);
@@ -7953,6 +9033,14 @@ void PollLateInstalls()
     if (now - s_lastTryTick < 500)
         return;
     s_lastTryTick = now;
+    if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
+        if (IsGameplayLuaReady(L, "poller")) {
+            if (const auto* info = Engine::Info()) {
+                if (info->scriptContext)
+                    MaybeUpdateOwnerContext(info->scriptContext);
+            }
+        }
+    }
     if (auto L = static_cast<lua_State*>(Engine::LuaState()))
         ProcessLateCastWrapLoop(L);
     InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "poller");
@@ -8011,6 +9099,9 @@ void ShutdownLuaBridge()
     g_registerResolved = false;
     g_registerTarget = nullptr;
     g_clientContext = nullptr;
+    g_gameplayLuaConfirmed.store(false, std::memory_order_release);
+    g_ownerScriptContext.store(nullptr, std::memory_order_release);
+    g_ownerThreadId.store(0, std::memory_order_release);
 }
 
 } // namespace Engine::Lua
