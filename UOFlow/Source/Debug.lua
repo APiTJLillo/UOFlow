@@ -100,10 +100,13 @@ local function UOWResolveNativeLogger()
 	local globalUOW = type(globalTable) == "table" and rawget(globalTable, "UOW") or nil
 
 	local candidates = {
-		UOWLookupRawFunction(env, "uow_debug_log"),
-		UOWLookupRawFunction(globalTable, "uow_debug_log"),
+		UOWLookupRawFunction(env, "__uow_debug_log_v1"),
+		UOWLookupRawFunction(globalTable, "__uow_debug_log_v1"),
 		type(envUOW) == "table" and type(envUOW.Debug) == "table" and UOWLookupRawFunction(envUOW.Debug, "Log") or nil,
 		type(globalUOW) == "table" and type(globalUOW.Debug) == "table" and UOWLookupRawFunction(globalUOW.Debug, "Log") or nil,
+		UOWLookupRawFunction(env, "uow_debug_log"),
+		UOWLookupRawFunction(globalTable, "uow_debug_log"),
+		type(__uow_debug_log_v1) == "function" and __uow_debug_log_v1 or nil,
 		type(uow_debug_log) == "function" and uow_debug_log or nil,
 		UOW and UOW.Debug and type(UOW.Debug.Log) == "function" and UOW.Debug.Log or nil,
 	}

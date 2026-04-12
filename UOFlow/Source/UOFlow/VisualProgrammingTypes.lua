@@ -134,6 +134,81 @@ local function VPNativeLog(...)
     return nil
 end
 
+local g_vpDebugPrintTeeInstalled = false
+local g_vpDebugPrintForwarding = false
+local g_vpRunSequence = 0
+
+local function VPGetActiveRunId()
+    if type(_G) == "table" then
+        local runId = rawget(_G, "__uow_vp_active_run_id")
+        if runId ~= nil then
+            return tostring(runId)
+        end
+    end
+    return nil
+end
+
+local function VPSetActiveRunId(runId)
+    if type(_G) ~= "table" then
+        return
+    end
+    if runId == nil then
+        rawset(_G, "__uow_vp_active_run_id", nil)
+    else
+        rawset(_G, "__uow_vp_active_run_id", tostring(runId))
+    end
+end
+
+local function VPBuildDllLogLine(message)
+    local runId = VPGetActiveRunId()
+    local prefix = "[LUA]"
+    if type(runId) == "string" and runId ~= "" then
+        prefix = prefix .. "[VP run=" .. runId .. "]"
+    end
+    return prefix .. " " .. VPValueToString(message)
+end
+
+local function VPForwardToDllLog(message)
+    if g_vpDebugPrintForwarding then
+        return nil
+    end
+
+    local logFn = ResolveNativeLog()
+    if type(logFn) ~= "function" then
+        return nil
+    end
+
+    g_vpDebugPrintForwarding = true
+    local result = logFn(VPBuildDllLogLine(message))
+    g_vpDebugPrintForwarding = false
+    return result
+end
+
+local function VPInstallDebugPrintTee()
+    if g_vpDebugPrintTeeInstalled then
+        return
+    end
+    if type(_G) == "table" and rawget(_G, "__UOW_VP_DEBUG_PRINT_TEE_INSTALLED") then
+        g_vpDebugPrintTeeInstalled = true
+        return
+    end
+    if type(Debug) ~= "table" or type(Debug.Print) ~= "function" then
+        return
+    end
+
+    local originalPrint = Debug.Print
+    Debug.Print = function(message, ...)
+        VPForwardToDllLog(message)
+        return originalPrint(message, ...)
+    end
+
+    g_vpDebugPrintTeeInstalled = true
+    if type(_G) == "table" then
+        rawset(_G, "__UOW_VP_DEBUG_PRINT_TEE_INSTALLED", true)
+    end
+    VPForwardToDllLog("[LUA_TEE] Debug.Print -> DLL log")
+end
+
 local g_vpNativeHandles = {
     getter = nil,
     getter_name = nil,
@@ -373,26 +448,45 @@ local function VPEmitUiLog(message)
     end
 end
 
-if type(_G) == "table" and not rawget(_G, "__UOW_VP_MARKER_131BBF7_NATIVE_V1") then
-    rawset(_G, "__UOW_VP_MARKER_131BBF7_NATIVE_V1", true)
-    local marker = "[VP_MARKER] VisualProgrammingTypes.lua build=131bbf7-native_v1 loaded"
+VPInstallDebugPrintTee()
+
+if type(_G) == "table" and not rawget(_G, "__UOW_VP_MARKER_DEBUGTEE_V1") then
+    rawset(_G, "__UOW_VP_MARKER_DEBUGTEE_V1", true)
+    local marker = "[VP_MARKER] VisualProgrammingTypes.lua build=debugtee_v1 loaded"
     VPNativeLog(marker)
     if type(Debug) == "table" and type(Debug.Print) == "function" then
         Debug.Print(marker)
     end
 end
 
+local function VPNextRunId(blockId, blockType)
+    g_vpRunSequence = g_vpRunSequence + 1
+    local loginTick = Interface and Interface.TimeSinceLogin or 0
+    return string.format(
+        "%s-%s-%s-%s",
+        VPValueToString(blockType or "vp"),
+        VPValueToString(blockId),
+        VPValueToString(loginTick),
+        VPValueToString(g_vpRunSequence))
+end
+
 local function VPBuildCallContext(params, fallbackTag)
     local blockId = params and params.__vpBlockId or nil
     local blockType = params and params.__vpBlockType or nil
+    local runId = params and params.__vpRunId or nil
+    if not runId then
+        runId = VPNextRunId(blockId, blockType or fallbackTag)
+    end
     local executionTag = params and params.__vpExecutionTag or nil
     if not executionTag then
-        executionTag = "VP:block=" .. tostring(blockId) .. ":type=" .. tostring(blockType or fallbackTag)
+        executionTag = "VP:run=" .. tostring(runId) .. ":block=" .. tostring(blockId) .. ":type=" .. tostring(blockType or fallbackTag)
     end
+    VPSetActiveRunId(runId)
 
     return {
         blockId = blockId,
         blockType = blockType,
+        runId = runId,
         executionTag = executionTag,
         luaContextTag = VPGetLuaContextTag()
     }
@@ -934,6 +1028,26 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     Debug.Print("[VPSpell] cast candidates " .. table.concat(candidateSummary, " | "))
     VPLogSpellState(tag .. ":before", spellId)
     VPInvokeNativePing()
+
+    local logTestFn, logTestSource, logTestErr = VPResolveNativeGlobalFunction("__uow_log_test_v1")
+    if type(logTestFn) == "function" then
+        local probeOk, probeResult1, probeResult2, probeErr = VPInvokeFunction(
+            logTestFn,
+            "VP_LOG_PROBE spell=" .. VPValueToString(spellId) .. " tag=" .. VPValueToString(tag)
+        )
+        local probeMessage = "[VP_LOG_TEST] source=" .. VPValueToString(logTestSource)
+            .. " ok=" .. VPValueToString(probeOk)
+            .. " ret1=" .. VPValueToString(probeResult1)
+            .. " ret2=" .. VPValueToString(probeResult2)
+            .. " err=" .. VPValueToString(probeErr)
+        Debug.Print(probeMessage)
+        VPNativeLog(probeMessage)
+    else
+        local probeMessage = "[VP_LOG_TEST] missing source=" .. VPValueToString(logTestSource)
+            .. " err=" .. VPValueToString(logTestErr)
+        Debug.Print(probeMessage)
+        VPNativeLog(probeMessage)
+    end
 
     if type(castFn) ~= "function" or not isCEntryOk then
         local missingMsg = isCEntryErr or castResolveErr or ("native_entry_missing name=" .. VP_NATIVE_CALL_CAST_NAME)

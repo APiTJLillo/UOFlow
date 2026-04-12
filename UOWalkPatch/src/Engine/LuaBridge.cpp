@@ -95,6 +95,7 @@ namespace {
         DWORD firstSeenTick = 0;
         DWORD lastLuaStateChangeTick = 0;
         DWORD coreReadyTick = 0;
+        DWORD evaluatorProbeAttemptTick = 0;
     };
 
     static constexpr size_t kMaxObservedContexts = 8;
@@ -106,6 +107,7 @@ namespace {
         kCtxHasCastSpell = 1u << 8,
         kCtxHasRequestTargetInfo = 1u << 9,
         kCtxHasClearCurrentTarget = 1u << 10,
+        kCtxEvaluatorProbesBound = 1u << 11,
     };
     static constexpr unsigned kGameplayContextMask =
         kCtxHasCastSpell | kCtxHasRequestTargetInfo | kCtxHasClearCurrentTarget;
@@ -183,6 +185,8 @@ namespace {
     static std::atomic<uint32_t> g_wordsPendingToken{0};
     static std::atomic<uint32_t> g_wordsLoggedToken{0};
     static std::atomic<bool> g_replayHelperInstalled{false};
+    static std::atomic<bool> g_dummyPrintBindingReady{false};
+    static std::atomic<bool> g_logTestBindingReady{false};
     static std::atomic<uint32_t> g_targetCompatLastArmToken{0};
     static bool g_warnNativeCastOnId = false;
     static bool g_warnNativeRequestTarget = false;
@@ -521,7 +525,11 @@ static void TraceLinkCastExec(uint32_t token, int spellId, unsigned counter, uin
 static void RecordSpellPathObservation(const SpellGateReplayContext& ctx);
 static void DumpSpellPathSummary();
 static int __cdecl Lua_UOW_Debug_log(lua_State* L);
+static int __cdecl Lua_UOW_Log_test(lua_State* L);
 static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L);
+static int __stdcall Lua_DummyPrint_Std(void* raw);
+static int __stdcall Lua_UOW_Debug_log_Std(void* raw);
+static int __stdcall Lua_UOW_Log_test_Std(void* raw);
 static uintptr_t SafeReadUintptr(const uintptr_t* ptr);
 static uint8_t SafeReadByte(const uint8_t* ptr, uint8_t fallback);
 static uint8_t* TryResolveCallsiteFromReturn(uintptr_t ret);
@@ -564,6 +572,7 @@ static bool WaitForSendLogged(DWORD timeoutMs);
 static void MarkTargetRequestObserved();
 
 static int __stdcall Hook_Register(void* ctx, void* func, const char* name);
+static int __cdecl Lua_DummyPrint(lua_State* L);
 static int __cdecl Lua_Walk(lua_State* L);
 static int __cdecl Lua_BindWalk(lua_State* L);
 static int __cdecl Lua_UOW_Spell_Cast(lua_State* L);
@@ -613,6 +622,10 @@ static int __cdecl Lua_UOFlow_bootstrap(lua_State* L);
 static int __cdecl Lua_UOFlow_status(lua_State* L);
 static void InstallNativeContextToken(lua_State* L, const char* reason);
 static void InstallNativeBridgeTable(lua_State* L, const char* reason);
+static void EnsureDebugLogBindingsAnyState(lua_State* L, const char* reason);
+static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason);
+static void ForceDummyPrintBinding(lua_State* L, const char* reason);
+static void ForceLogTestBinding(lua_State* L, const char* reason);
 static void EnsureReplayHelper(lua_State* L);
 static void* CurrentScriptContext();
 static void* CanonicalOwnerContext();
@@ -1273,6 +1286,7 @@ static void MaybeLearnSpellGateContext(GateCallProbe* probe, const GateInvokeTls
 static bool SpellContextsEqual(const SpellGateReplayContext& a, const SpellGateReplayContext& b);
 static bool InvokeSpellGateDirect(const SpellGateReplayContext& ctx);
 static void ForceSpellBinding(lua_State* L, const char* reason);
+static void LogLuaFunctionBinding(lua_State* L, const char* stage, const char* path);
 
 // Configurable verbosity for Lua arg/ret logging
 static bool g_traceLuaVerbose = false;
@@ -1404,6 +1418,41 @@ static bool RegisterLuaPathSafe(lua_State* L, lua_CFunction fn, const char* name
               reinterpret_cast<void*>(fn));
     WriteRawLog(buf);
     return true;
+}
+
+static void EnsureDebugLogBindingsAnyState(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+
+    RegisterFunctionSafe(L, Lua_UOW_Debug_log, "__uow_debug_log_v1");
+    RegisterFunctionSafe(L, Lua_UOW_Log_test, "__uow_log_test_v1");
+    RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "Debug.Log");
+    RegisterLuaPathSafe(L, Lua_UOW_Log_test, "Debug.LogTest");
+    RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "UOW.Debug.Log");
+    RegisterLuaPathSafe(L, Lua_UOW_Log_test, "UOW.Debug.LogTest");
+
+    static DWORD s_lastLogTick = 0;
+    DWORD now = GetTickCount();
+    if (now - s_lastLogTick < 1000)
+        return;
+    s_lastLogTick = now;
+
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaDebug] ensured logger bindings reason=%s L=%p caller=%u owner=%u",
+              reason ? reason : "<none>",
+              L,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
+    LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "__uow_debug_log_v1");
+    LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "__uow_log_test_v1");
+    LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "Debug.Log");
+    LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "Debug.LogTest");
+    LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "UOW.Debug.Log");
+    LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "UOW.Debug.LogTest");
 }
 
 static void InstallNativeContextToken(lua_State* L, const char* reason)
@@ -2275,8 +2324,10 @@ static void NoteBootstrapContextObserved(void* ctx, lua_State* L, const char* re
     g_bootstrapReadyLuaState.store(0, std::memory_order_release);
     g_bootstrapState.store(kBootstrapObserved, std::memory_order_release);
     g_consoleBound = false;
+    g_dummyPrintBindingReady.store(false, std::memory_order_release);
     g_spellBindingReady.store(false, std::memory_order_release);
     g_replayHelperInstalled.store(false, std::memory_order_release);
+    g_logTestBindingReady.store(false, std::memory_order_release);
 
     char buf[320];
     if (previousCtx || previousState != 0) {
@@ -2513,6 +2564,8 @@ static void MaybeRunEarlyBootstrap(void* ctx, lua_State* callbackL, const char* 
         if (!IsGameplayContext(ctx, L, "early_bootstrap", true))
             return;
         const bool consoleOk = InstallUOFlowConsoleBindingsIfNeeded(ctx, "early_bootstrap", L);
+        ForceDummyPrintBinding(L, "early_bootstrap");
+        ForceLogTestBinding(L, "early_bootstrap");
         ForceSpellBinding(L, "early_bootstrap");
         EnsureReplayHelper(L);
         const bool bridgeOk = EnsureNativeBridgeHealthy(L, "early_bootstrap", true, true);
@@ -5242,6 +5295,83 @@ static bool RegisterViaClient(lua_State* L, lua_CFunction fn, const char* name)
     return success;
 }
 
+static bool RegisterRawViaClient(lua_State* L, void* fn, const char* name)
+{
+    if (!fn || !name || !L)
+        return false;
+
+    if (!g_clientRegister && !g_origRegister)
+        return false;
+
+    void* context = nullptr;
+    if (!ResolveGameplayScriptContext(L, g_clientContext, &context, name))
+        return false;
+    g_clientContext = context;
+
+    ClientRegisterFn target = g_origRegister ? g_origRegister : g_clientRegister;
+    if (!target)
+        return false;
+
+    bool success = false;
+    __try {
+        int rc = target(context, fn, name);
+        success = (rc != 0);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        char buf[160];
+        sprintf_s(buf, sizeof(buf), "Client raw register threw for '%s'", name ? name : "<null>");
+        WriteRawLog(buf);
+        success = false;
+    }
+
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "RegisterRawViaClient('%s') ctx=%p fn=%p => %s",
+              name ? name : "<null>",
+              context,
+              fn,
+              success ? "ok" : "fail");
+    WriteRawLog(buf);
+    return success;
+}
+
+static bool RegisterRawViaContext(void* context, void* fn, const char* name)
+{
+    if (!context || !fn || !name)
+        return false;
+
+    ClientRegisterFn target = g_origRegister ? g_origRegister : g_clientRegister;
+    if (!target)
+        return false;
+
+    bool success = false;
+    __try {
+        int rc = target(context, fn, name);
+        success = (rc != 0);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "RegisterRawViaContext('%s') threw",
+                  name ? name : "<null>");
+        WriteRawLog(buf);
+        success = false;
+    }
+
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "RegisterRawViaContext('%s') ctx=%p fn=%p => %s",
+              name ? name : "<null>",
+              context,
+              fn,
+              success ? "ok" : "fail");
+    WriteRawLog(buf);
+    return success;
+}
+
 static void EnsureDirectLuaGlobals(lua_State* L)
 {
     if (!L)
@@ -5269,12 +5399,14 @@ static void EnsureDirectLuaGlobals(lua_State* L)
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
         {Lua_UOW_Debug_log, "__uow_debug_log_v1"},
+        {Lua_UOW_Log_test, "__uow_log_test_v1"},
         {Lua_uow_spell_cast_global, "uow_spell_cast"},
         {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
         {Lua_uow_get_native, "uow_get_native"},
         {Lua_uow_vp_cast, "uow_vp_cast"},
         {Lua_uow_vp_ping, "uow_vp_ping"},
-        {Lua_UOW_Debug_log, "uow_debug_log"},
+        {Lua_UOW_Debug_log, "Debug.Log"},
+        {Lua_UOW_Log_test, "Debug.LogTest"},
         {Lua_UOW_Debug_dump_spell_paths, "uow_dump_spell_paths"},
     };
 
@@ -5294,6 +5426,131 @@ static void EnsureDirectLuaGlobals(lua_State* L)
     EnsureNativeBridgeHealthy(L, "EnsureDirectLuaGlobals", true, true);
     RunNativeBridgeSelfTest(L, "EnsureDirectLuaGlobals");
     RunNativeGetterSelfTest(L, "EnsureDirectLuaGlobals");
+}
+
+static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
+{
+    if (!ctx)
+        return;
+
+    ObservedContext* slot = EnsureObservedContext(ctx);
+    if (!slot)
+        return;
+    if ((slot->flags & kCtxEvaluatorProbesBound) == kCtxEvaluatorProbesBound)
+        return;
+
+    DWORD now = GetTickCount();
+    if (slot->evaluatorProbeAttemptTick != 0 && (now - slot->evaluatorProbeAttemptTick) < 250)
+        return;
+    slot->evaluatorProbeAttemptTick = now;
+
+    const char* tag = (reason && *reason) ? reason : "evaluator";
+    char intro[224];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[EvaluatorBind] attempting ctx=%p via=%s",
+              ctx,
+              tag);
+    WriteRawLog(intro);
+
+    // Evaluator-domain probes are intentionally flat globals only.
+    // This callback domain does not reliably expose a gameplay lua_State*.
+    bool dummyOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_DummyPrint_Std), "DummyPrint");
+    bool debugFlatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Debug_log_Std), "uow_debug_log");
+    bool debugCompatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Debug_log_Std), "__uow_debug_log_v1");
+    bool logTestFlatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Log_test_Std), "uow_log_test");
+    bool logTestCompatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Log_test_Std), "__uow_log_test_v1");
+
+    if (dummyOk && (debugFlatOk || debugCompatOk) && (logTestFlatOk || logTestCompatOk)) {
+        slot->flags |= kCtxEvaluatorProbesBound;
+        char okBuf[256];
+        sprintf_s(okBuf,
+                  sizeof(okBuf),
+                  "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s",
+                  ctx,
+                  dummyOk ? "yes" : "no",
+                  (debugFlatOk || debugCompatOk) ? "yes" : "no",
+                  (logTestFlatOk || logTestCompatOk) ? "yes" : "no");
+        WriteRawLog(okBuf);
+    } else {
+        char failBuf[256];
+        sprintf_s(failBuf,
+                  sizeof(failBuf),
+                  "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s",
+                  ctx,
+                  dummyOk ? "yes" : "no",
+                  (debugFlatOk || debugCompatOk) ? "yes" : "no",
+                  (logTestFlatOk || logTestCompatOk) ? "yes" : "no");
+        WriteRawLog(failBuf);
+    }
+}
+
+static void ForceDummyPrintBinding(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+    if (g_dummyPrintBindingReady.exchange(true, std::memory_order_acq_rel))
+        return;
+
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "%s: preserving evaluator-domain DummyPrint (gameplay binding skipped)",
+              reason ? reason : "EnsureDummyPrintBinding");
+    WriteRawLog(buf);
+}
+
+static void ForceLogTestBinding(lua_State* L, const char* reason)
+{
+    if (!L)
+        return;
+    if (!IsGameplayLuaReady(L, reason ? reason : "EnsureLogTestBinding"))
+        return;
+    if (g_logTestBindingReady.load(std::memory_order_acquire))
+        return;
+
+    const char* tag = reason ? reason : "EnsureLogTestBinding";
+    void* gameplayCtx = nullptr;
+    if (!ResolveGameplayScriptContext(L, g_clientContext, &gameplayCtx, tag))
+        return;
+    g_clientContext = gameplayCtx;
+    if (ObservedContext* slot = EnsureObservedContext(gameplayCtx))
+        UpdateObservedContextLuaState(slot, L, tag);
+    if (!IsGameplayContext(gameplayCtx, L, tag, true))
+        return;
+
+    char intro[224];
+    sprintf_s(intro,
+              sizeof(intro),
+              "%s: ensuring uow_log_test binding via client helper (ctx=%p)",
+              tag,
+              gameplayCtx);
+    WriteRawLog(intro);
+
+    bool flat = false;
+    flat = RegisterViaClient(L, Lua_UOW_Log_test, "__uow_log_test_v1") || flat;
+
+    bool debugPath = RegisterLuaPathSafe(L, Lua_UOW_Log_test, "Debug.LogTest");
+    bool uowPath = RegisterLuaPathSafe(L, Lua_UOW_Log_test, "UOW.Debug.LogTest");
+
+    LogLuaFunctionBinding(L, tag, "__uow_log_test_v1");
+    LogLuaFunctionBinding(L, tag, "Debug.LogTest");
+    LogLuaFunctionBinding(L, tag, "UOW.Debug.LogTest");
+
+    if (flat || debugPath || uowPath) {
+        g_logTestBindingReady.store(true, std::memory_order_release);
+        char okBuf[192];
+        sprintf_s(okBuf,
+                  sizeof(okBuf),
+                  "%s: log test helper installed (flat=%s debug=%s uow=%s)",
+                  tag,
+                  flat ? "yes" : "no",
+                  debugPath ? "yes" : "no",
+                  uowPath ? "yes" : "no");
+        WriteRawLog(okBuf);
+    } else {
+        WriteRawLog("ForceLogTestBinding: failed to install any uow_log_test aliases");
+    }
 }
 
 static void ForceWalkBinding(lua_State* L, const char* reason)
@@ -5735,6 +5992,9 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
 
     int rc = g_clientRegister ? g_clientRegister(ctx, outFunc, name) : 0;
 
+    if (ctx)
+        TryInstallEvaluatorProbeBindings(ctx, name ? name : "Hook_Register");
+
     if (ctx && slot && ((slot->flags & kGameplayBootstrapRequiredMask) == kGameplayBootstrapRequiredMask)) {
         MaybeRunEarlyBootstrap(ctx, nullptr, name ? name : "Hook_Register");
     }
@@ -5778,6 +6038,19 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
 static int __cdecl Lua_DummyPrint(lua_State*)
 {
     WriteRawLog("[Lua] DummyPrint() was invoked!");
+    return 0;
+}
+
+static int __stdcall Lua_DummyPrint_Std(void* L)
+{
+    char buf[192];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Lua] DummyPrint() evaluator invoked raw=%p caller=%u owner=%u",
+              L,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
     return 0;
 }
 
@@ -6592,6 +6865,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
         {Lua_UOW_Debug_log, "__uow_debug_log_v1"},
+        {Lua_UOW_Log_test, "__uow_log_test_v1"},
         {Lua_UOFlow_bootstrap, "uow.bootstrap"},
         {Lua_UOFlow_Spell_cast, "uow.cmd.cast"},
         {Lua_UOFlow_Spell_cast_on_id, "uow.cmd.cast_on_id"},
@@ -6609,8 +6883,10 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_uow_cmd_clear_target, "uow.cmd.clear_target"},
         {Lua_uow_cmd_request_target, "uow.cmd.req_target"},
         {Lua_uow_cmd_show_cursor, "uow.cmd.show_cursor"},
+        {Lua_UOW_Debug_log, "Debug.Log"},
+        {Lua_UOW_Log_test, "Debug.LogTest"},
         {Lua_UOW_Debug_log, "UOW.Debug.Log"},
-        {Lua_UOW_Debug_log, "uow_debug_log"},
+        {Lua_UOW_Log_test, "UOW.Debug.LogTest"},
         {Lua_UOW_Debug_dump_spell_paths, "UOW.Debug.DumpSpellPaths"},
         {Lua_UOW_Debug_dump_spell_paths, "uow_dump_spell_paths"},
     };
@@ -6665,6 +6941,8 @@ static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reason)
         }
         return;
     }
+
+    EnsureDebugLogBindingsAnyState(L, tag);
 
     if (TryConsumePendingSpellRequest(L, tag)) {
         char buf[160];
@@ -8216,6 +8494,79 @@ static int __cdecl Lua_UOW_Debug_log(lua_State* L)
     }
 
     WriteRawLog(msg.c_str());
+    return 0;
+}
+
+static int __cdecl Lua_UOW_Log_test(lua_State* L)
+{
+    std::string payload = "uow_log_test";
+    if (L) {
+        const int top = lua_gettop(L);
+        if (top >= 1) {
+            size_t len = 0;
+            const char* s = lua_tolstring(L, 1, &len);
+            if (s && len)
+                payload.assign(s, len);
+        }
+    }
+
+    const void* globalsPtr = nullptr;
+    const void* registryPtr = nullptr;
+    if (L) {
+        const int top = lua_gettop(L);
+        lua_pushvalue(L, LUA_GLOBALSINDEX);
+        globalsPtr = lua_topointer(L, -1);
+        lua_pop(L, 1);
+        lua_pushvalue(L, LUA_REGISTRYINDEX);
+        registryPtr = lua_topointer(L, -1);
+        lua_pop(L, 1);
+        lua_settop(L, top);
+    }
+
+    char buf[384];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaLogTest] payload=%s caller=%u owner=%u L=%p globals=%p registry=%p",
+              payload.c_str(),
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L,
+              globalsPtr,
+              registryPtr);
+    WriteRawLog(buf);
+
+    if (L) {
+        std::string result = "uow_log_test_ok:";
+        result += payload;
+        lua_pushlstring(L, result.c_str(), result.size());
+        return 1;
+    }
+    return 0;
+}
+
+static int __stdcall Lua_UOW_Debug_log_Std(void* L)
+{
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaDebugRaw] evaluator uow_debug_log invoked raw=%p caller=%u owner=%u",
+              L,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
+    return 0;
+}
+
+static int __stdcall Lua_UOW_Log_test_Std(void* L)
+{
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaLogTestRaw] evaluator uow_log_test invoked raw=%p caller=%u owner=%u",
+              L,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
     return 0;
 }
 
@@ -10449,7 +10800,10 @@ void PollLateInstalls()
         return;
     s_lastTryTick = now;
     if (auto L = static_cast<lua_State*>(Engine::LuaState())) {
+        EnsureDebugLogBindingsAnyState(L, "poller");
         if (IsGameplayLuaReady(L, "poller")) {
+            ForceDummyPrintBinding(L, "poller");
+            ForceLogTestBinding(L, "poller");
             if (const auto* info = Engine::Info()) {
                 if (info->scriptContext)
                     MaybeUpdateOwnerContext(info->scriptContext, L);
@@ -10536,6 +10890,10 @@ void ShutdownLuaBridge()
     g_gameplayLuaConfirmed.store(false, std::memory_order_release);
     g_ownerScriptContext.store(nullptr, std::memory_order_release);
     g_ownerThreadId.store(0, std::memory_order_release);
+    g_dummyPrintBindingReady.store(false, std::memory_order_release);
+    g_logTestBindingReady.store(false, std::memory_order_release);
+    g_spellBindingReady.store(false, std::memory_order_release);
+    g_replayHelperInstalled.store(false, std::memory_order_release);
 }
 
 } // namespace Engine::Lua
