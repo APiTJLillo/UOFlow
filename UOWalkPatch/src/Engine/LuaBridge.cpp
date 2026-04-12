@@ -103,6 +103,10 @@ enum ContextLogBits : unsigned {
 
     static volatile LONG g_pendingRegistration = 0;
     static thread_local bool g_inScriptRegistration = false;
+    static std::atomic<void*> g_bootstrapObservedContext{nullptr};
+    static std::atomic<uint32_t> g_bootstrapEpoch{0};
+    static std::atomic<uint32_t> g_bootstrapDoneEpoch{0};
+    static std::atomic<DWORD> g_bootstrapNextAttemptTick{0};
 
     // Late-install control for action wrappers
     static volatile LONG g_actionWrappersInstalled = 0;
@@ -583,6 +587,7 @@ static int __cdecl Lua_UOFlow_bootstrap(lua_State* L);
 static int __cdecl Lua_UOFlow_status(lua_State* L);
 static void InstallNativeContextToken(lua_State* L, const char* reason);
 static void InstallNativeBridgeTable(lua_State* L, const char* reason);
+static void EnsureReplayHelper(lua_State* L);
 static void PromoteGameplayOwnerFromLiveCallback(const char* reason);
 static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reasonTag);
 
@@ -1844,6 +1849,120 @@ static void MaybeUpdateOwnerContext(void* ctx)
     }
 
     Engine::Lua::ScheduleCastWrapRetry("owner context");
+}
+
+static void NoteBootstrapContextObserved(void* ctx, const char* reason)
+{
+    if (!ctx)
+        return;
+
+    void* previous = g_bootstrapObservedContext.exchange(ctx, std::memory_order_acq_rel);
+    if (previous == ctx)
+        return;
+
+    const uint32_t epoch = g_bootstrapEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+    g_bootstrapDoneEpoch.store(0, std::memory_order_release);
+    g_bootstrapNextAttemptTick.store(0, std::memory_order_release);
+    g_consoleBound = false;
+    g_spellBindingReady.store(false, std::memory_order_release);
+    g_replayHelperInstalled.store(false, std::memory_order_release);
+
+    char buf[256];
+    if (previous) {
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[Bootstrap] context switched %p -> %p via=%s epoch=%u",
+                  previous,
+                  ctx,
+                  reason ? reason : "<none>",
+                  epoch);
+    } else {
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[Bootstrap] context observed %p via=%s epoch=%u",
+                  ctx,
+                  reason ? reason : "<none>",
+                  epoch);
+    }
+    WriteRawLog(buf);
+}
+
+static void LogBootstrapDoneOnce(void* ctx,
+                                 const char* reason,
+                                 bool bridgeOk,
+                                 bool consoleOk,
+                                 bool spellOk,
+                                 bool replayOk)
+{
+    const uint32_t epoch = g_bootstrapEpoch.load(std::memory_order_acquire);
+    if (epoch == 0)
+        return;
+
+    uint32_t expected = 0;
+    if (!g_bootstrapDoneEpoch.compare_exchange_strong(expected, epoch, std::memory_order_acq_rel))
+        return;
+
+    char buf[320];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Bootstrap] done ctx=%p owner=%u bridge=%s console=%d spell=%d replay=%d reason=%s epoch=%u",
+              ctx,
+              Util::OwnerPump::GetOwnerThreadId(),
+              bridgeOk ? "ok" : "fail",
+              consoleOk ? 1 : 0,
+              spellOk ? 1 : 0,
+              replayOk ? 1 : 0,
+              reason ? reason : "<none>",
+              epoch);
+    WriteRawLog(buf);
+}
+
+static void MaybeRunEarlyBootstrap(void* ctx, const char* reason)
+{
+    if (!ctx)
+        return;
+
+    NoteBootstrapContextObserved(ctx, reason);
+
+    DWORD now = GetTickCount();
+    DWORD nextTick = g_bootstrapNextAttemptTick.load(std::memory_order_acquire);
+    if (now < nextTick)
+        return;
+    g_bootstrapNextAttemptTick.store(now + 250, std::memory_order_release);
+
+    auto* L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L && Engine::RefreshLuaStateFromSlot())
+        L = static_cast<lua_State*>(Engine::LuaState());
+    if (!L)
+        return;
+
+    MaybeUpdateOwnerContext(ctx);
+    const uint32_t epoch = g_bootstrapEpoch.load(std::memory_order_acquire);
+
+    Util::OwnerPump::Invoke("early_bootstrap", [ctx, epoch]() {
+        if (!ctx)
+            return;
+        if (g_bootstrapEpoch.load(std::memory_order_acquire) != epoch)
+            return;
+
+        auto* L = static_cast<lua_State*>(Engine::LuaState());
+        if (!L && Engine::RefreshLuaStateFromSlot())
+            L = static_cast<lua_State*>(Engine::LuaState());
+        if (!L)
+            return;
+        if (!IsGameplayLuaReady(L, "early_bootstrap"))
+            return;
+
+        MaybeUpdateOwnerContext(ctx);
+        const bool consoleOk = InstallUOFlowConsoleBindingsIfNeeded(ctx, "early_bootstrap", L);
+        ForceSpellBinding(L, "early_bootstrap");
+        EnsureReplayHelper(L);
+        const bool bridgeOk = EnsureNativeBridgeHealthy(L, "early_bootstrap", true);
+        const bool spellOk = g_spellBindingReady.load(std::memory_order_acquire);
+        const bool replayOk = g_replayHelperInstalled.load(std::memory_order_acquire);
+        if (consoleOk && spellOk && replayOk)
+            LogBootstrapDoneOnce(ctx, "early_bootstrap", bridgeOk, consoleOk, spellOk, replayOk);
+    });
 }
 
 static void* CurrentScriptContext()
@@ -5039,6 +5158,10 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
     }
 
     int rc = g_clientRegister ? g_clientRegister(ctx, outFunc, name) : 0;
+
+    if (ctx) {
+        MaybeRunEarlyBootstrap(ctx, name ? name : "Hook_Register");
+    }
 
     // If targeting APIs have been registered, attempt late wrapper install now
     if (name && ( _stricmp(name, "RequestTargetInfo") == 0 || _stricmp(name, "ClearCurrentTarget") == 0)) {
