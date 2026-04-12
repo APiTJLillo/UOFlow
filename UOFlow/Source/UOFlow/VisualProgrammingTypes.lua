@@ -986,11 +986,26 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         .. " fn=" .. VPValueToString(castFn)
         .. " tag=" .. VPValueToString(castTag)
         .. " what=" .. VPValueToString(VPGetFunctionWhat(castFn)))
+    local preCallMessage = "[VP_CALL] about to call " .. VPValueToString(VP_NATIVE_CALL_CAST_NAME)
+        .. " spell=" .. VPValueToString(spellId)
+        .. " source=" .. VPValueToString(helperSourceTag)
+        .. " helper=" .. VPValueToString(castLabel)
+        .. " fn=" .. VPValueToString(castFn)
+    Debug.Print(preCallMessage)
+    VPNativeLog(preCallMessage)
     if passSourceTag then
         ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, helperSourceTag)
     else
         ok, result1, result2, errText = VPInvokeFunction(castFn, spellId)
     end
+    local postCallMessage = "[VP_CALL] after call " .. VPValueToString(VP_NATIVE_CALL_CAST_NAME)
+        .. " spell=" .. VPValueToString(spellId)
+        .. " ok=" .. VPValueToString(ok)
+        .. " ret1=" .. VPValueToString(result1)
+        .. " ret2=" .. VPValueToString(result2)
+        .. " err=" .. VPValueToString(errText)
+    Debug.Print(postCallMessage)
+    VPNativeLog(postCallMessage)
 
     local stateChanged = VPDidSpellStateChange(beforeState)
     local hardSuccess = ok and VPIsHardCastSuccess(result1, stateChanged)
@@ -1153,6 +1168,41 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                     VPValueToString(spellTableType),
                     VPValueToString(castType),
                     VPValueToString(castSourceTag)))
+
+                do
+                    local directTestFn, directTestSource, directTestErr = VPResolveNativeGlobalFunction(VP_NATIVE_CALL_CAST_NAME)
+                    VPNativeLog("[VP_DIRECT_TEST] resolve",
+                        "block=" .. VPValueToString(callContext.blockId),
+                        "spell=1",
+                        "source=" .. VPValueToString(directTestSource),
+                        "err=" .. VPValueToString(directTestErr),
+                        "fn=" .. VPValueToString(directTestFn))
+                    Debug.Print(string.format(
+                        "[VP_DIRECT_TEST] resolve block=%s spell=1 source=%s err=%s fn=%s",
+                        VPValueToString(callContext.blockId),
+                        VPValueToString(directTestSource),
+                        VPValueToString(directTestErr),
+                        VPValueToString(directTestFn)))
+                    if type(directTestFn) == "function" then
+                        local directTestOk, directTestResult1, directTestResult2, directTestInvokeErr =
+                            VPInvokeFunction(directTestFn, 1, "VP_DIRECT_TEST")
+                        VPNativeLog("[VP_DIRECT_TEST] result",
+                            "block=" .. VPValueToString(callContext.blockId),
+                            "ok=" .. VPValueToString(directTestOk),
+                            "ret1=" .. VPValueToString(directTestResult1),
+                            "ret2=" .. VPValueToString(directTestResult2),
+                            "err=" .. VPValueToString(directTestInvokeErr))
+                        Debug.Print(string.format(
+                            "[VP_DIRECT_TEST] result block=%s ok=%s ret1=%s ret2=%s err=%s",
+                            VPValueToString(callContext.blockId),
+                            VPValueToString(directTestOk),
+                            VPValueToString(directTestResult1),
+                            VPValueToString(directTestResult2),
+                            VPValueToString(directTestInvokeErr)))
+                    else
+                        VPEmitUiLog("[VP_DIRECT_TEST] missing err=" .. VPValueToString(directTestErr))
+                    end
+                end
 
                 local castOk = false
                 local castResult1 = nil
