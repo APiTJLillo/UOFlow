@@ -530,6 +530,7 @@ static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L);
 static int __stdcall Lua_DummyPrint_Std(void* raw);
 static int __stdcall Lua_UOW_Debug_log_Std(void* raw);
 static int __stdcall Lua_UOW_Log_test_Std(void* raw);
+static int __stdcall Lua_uow_call_cast_Std(void* raw);
 static uintptr_t SafeReadUintptr(const uintptr_t* ptr);
 static uint8_t SafeReadByte(const uint8_t* ptr, uint8_t fallback);
 static uint8_t* TryResolveCallsiteFromReturn(uintptr_t ret);
@@ -1043,6 +1044,17 @@ static int __cdecl Lua_uow_call_cast(lua_State* L)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     const std::string sourceTag = ReadOptionalString(L, 2);
 
+    char enter[256];
+    sprintf_s(enter,
+              sizeof(enter),
+              "[Lua] CALL_CAST_V1 ENTER spell=%d caller=%u owner=%u L=%p source=%s",
+              spellId,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L,
+              sourceTag.empty() ? "<none>" : sourceTag.c_str());
+    WriteRawLog(enter);
+
     LogLuaCastEntry("__uow_call_cast_v1", L, spellId, sourceTag.c_str());
 
     char intro[256];
@@ -1083,6 +1095,19 @@ static int __cdecl Lua_uow_call_cast(lua_State* L)
     WriteRawLog(outro);
 
     return resultCount;
+}
+
+static int __stdcall Lua_uow_call_cast_Std(void* raw)
+{
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[Lua] CALL_CAST_V1 ENTER raw=%p caller=%u owner=%u source=evaluator",
+              raw,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
+    return 0;
 }
 
 static int __cdecl Lua_uow_bridge_health(lua_State* L)
@@ -1425,6 +1450,12 @@ static void EnsureDebugLogBindingsAnyState(lua_State* L, const char* reason)
     if (!L)
         return;
 
+    static std::atomic<uintptr_t> s_lastBoundState{0};
+    const uintptr_t stateKey = reinterpret_cast<uintptr_t>(L);
+    const uintptr_t prior = s_lastBoundState.load(std::memory_order_acquire);
+    if (prior == stateKey)
+        return;
+
     RegisterFunctionSafe(L, Lua_UOW_Debug_log, "__uow_debug_log_v1");
     RegisterFunctionSafe(L, Lua_UOW_Log_test, "__uow_log_test_v1");
     RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "Debug.Log");
@@ -1432,11 +1463,7 @@ static void EnsureDebugLogBindingsAnyState(lua_State* L, const char* reason)
     RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "UOW.Debug.Log");
     RegisterLuaPathSafe(L, Lua_UOW_Log_test, "UOW.Debug.LogTest");
 
-    static DWORD s_lastLogTick = 0;
-    DWORD now = GetTickCount();
-    if (now - s_lastLogTick < 1000)
-        return;
-    s_lastLogTick = now;
+    s_lastBoundState.store(stateKey, std::memory_order_release);
 
     char buf[224];
     sprintf_s(buf,
@@ -5460,27 +5487,30 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
     bool debugCompatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Debug_log_Std), "__uow_debug_log_v1");
     bool logTestFlatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Log_test_Std), "uow_log_test");
     bool logTestCompatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_Log_test_Std), "__uow_log_test_v1");
+    bool castCompatOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_uow_call_cast_Std), "__uow_call_cast_v1");
 
     if (dummyOk && (debugFlatOk || debugCompatOk) && (logTestFlatOk || logTestCompatOk)) {
         slot->flags |= kCtxEvaluatorProbesBound;
         char okBuf[256];
         sprintf_s(okBuf,
                   sizeof(okBuf),
-                  "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s",
+                  "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s cast=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
                   (debugFlatOk || debugCompatOk) ? "yes" : "no",
-                  (logTestFlatOk || logTestCompatOk) ? "yes" : "no");
+                  (logTestFlatOk || logTestCompatOk) ? "yes" : "no",
+                  castCompatOk ? "yes" : "no");
         WriteRawLog(okBuf);
     } else {
         char failBuf[256];
         sprintf_s(failBuf,
                   sizeof(failBuf),
-                  "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s",
+                  "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s cast=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
                   (debugFlatOk || debugCompatOk) ? "yes" : "no",
-                  (logTestFlatOk || logTestCompatOk) ? "yes" : "no");
+                  (logTestFlatOk || logTestCompatOk) ? "yes" : "no",
+                  castCompatOk ? "yes" : "no");
         WriteRawLog(failBuf);
     }
 }
