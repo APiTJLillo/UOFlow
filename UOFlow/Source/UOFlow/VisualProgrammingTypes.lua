@@ -805,27 +805,24 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                     VPValueToString(castType),
                     VPValueToString(castSourceTag)))
 
-                local castFn = uoflowType == "table" and spellTableType == "table" and type(UOFlow.Spell.cast) == "function" and UOFlow.Spell.cast or nil
-                local castCallOk = false
+                local castOk = false
                 local castResult1 = nil
                 local castResult2 = nil
-                local castErrorText = nil
                 local usedOnId = false
 
-                if type(castFn) == "function" then
-                    castCallOk, castResult1, castResult2 = pcall(castFn, spellId, castSourceTag)
-                    if not castCallOk then
-                        castErrorText = castResult1
-                    end
-                else
-                    castErrorText = "missing_cast_fn"
+                castOk, castResult1, castResult2, usedOnId =
+                    VPCastSpell(spellId, "VisualProgramming.CastSpell", targetId, callContext)
+
+                local castErrorText = nil
+                if not castOk then
+                    castErrorText = VPValueToString(castResult2 or castResult1 or "cast_failed")
                 end
 
                 VPEmitUiLog(string.format(
                     "[VP_CAST] phase=node_after block=%s spell=%s ok=%s ret1=%s err=%s ret2=%s",
                     VPValueToString(callContext.blockId),
                     VPValueToString(spellId),
-                    VPValueToString(castCallOk),
+                    VPValueToString(castOk),
                     VPValueToString(castResult1),
                     VPValueToString(castErrorText),
                     VPValueToString(castResult2)))
@@ -834,19 +831,14 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                     UOWNativeLog("[VPSpell] execute result",
                         "block=" .. tostring(callContext.blockId),
                         "spellId=" .. tostring(spellId),
-                        "ok=" .. tostring(castCallOk),
+                        "ok=" .. tostring(castOk),
                         "result1=" .. tostring(castResult1),
                         "result2=" .. tostring(castResult2),
                         "error=" .. tostring(castErrorText),
                         "usedOnId=" .. tostring(usedOnId))
                 end
-                if not castCallOk then
-                    local failMsg = VPValueToString(castErrorText or "cast_pcall_failed")
-                    VPEmitUiLog("VP_CAST failed block=" .. VPValueToString(callContext.blockId) .. " spellId=" .. VPValueToString(spellId) .. " err=" .. failMsg)
-                    return false, failMsg
-                end
-                if castResult1 ~= true then
-                    local failMsg = VPValueToString(castResult2 or castResult1 or castErrorText or "cast_failed")
+                if not castOk then
+                    local failMsg = VPValueToString(castResult2 or castResult1 or "cast_failed")
                     VPEmitUiLog("VP_CAST failed block=" .. VPValueToString(callContext.blockId) .. " spellId=" .. VPValueToString(spellId) .. " err=" .. failMsg)
                     return false, failMsg
                 end

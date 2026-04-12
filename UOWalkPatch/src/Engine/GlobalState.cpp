@@ -21,6 +21,9 @@ static LONG g_once = 0;
 static PVOID g_vehHandle = nullptr;
 static bool g_luaStateCaptured = false;
 static GlobalStateInfo* g_lastValidatedInfo = nullptr;
+static BYTE* g_globalStateWatchPage = nullptr;
+static SIZE_T g_globalStatePageSize = 0;
+static LONG g_guardNearMissLogged = 0;
 
 // Forward declarations
 static void* FindGlobalStateInfo();
@@ -30,6 +33,7 @@ static void InstallWriteWatch();
 static DWORD WINAPI WaitForLua(LPVOID);
 static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x);
 static GlobalStateInfo* ReadSlotUnsafe();
+static bool IsOnWatchPage(const void* addr);
 
 void* FindRegisterLuaFunction() {
     HMODULE hExe = GetModuleHandleA(nullptr);
@@ -441,16 +445,32 @@ static GlobalStateInfo* ValidateGlobalState(GlobalStateInfo* candidate) {
 
 static LONG CALLBACK VehHandler(EXCEPTION_POINTERS* x) {
     if (x->ExceptionRecord->ExceptionCode == STATUS_GUARD_PAGE_VIOLATION &&
-        x->ExceptionRecord->NumberParameters >= 2 &&
-        (void*)x->ExceptionRecord->ExceptionInformation[1] == g_globalStateSlot)
+        x->ExceptionRecord->NumberParameters >= 2)
     {
-        DWORD oldProtect;
-        VirtualProtect(g_globalStateSlot, sizeof(void*), PAGE_READWRITE, &oldProtect);
+        void* faultAddr = reinterpret_cast<void*>(x->ExceptionRecord->ExceptionInformation[1]);
+        if (IsOnWatchPage(faultAddr)) {
+            DWORD oldProtect = 0;
+            if (g_globalStateWatchPage && g_globalStatePageSize) {
+                VirtualProtect(g_globalStateWatchPage, g_globalStatePageSize, PAGE_READWRITE, &oldProtect);
+            }
+            else if (g_globalStateSlot) {
+                VirtualProtect(g_globalStateSlot, sizeof(void*), PAGE_READWRITE, &oldProtect);
+            }
 
-        GlobalStateInfo* info = ReadSlotUnsafe();
-        ValidateGlobalState(info);
+            if (faultAddr == g_globalStateSlot) {
+                GlobalStateInfo* info = ReadSlotUnsafe();
+                ValidateGlobalState(info);
+            }
+            else if (InterlockedCompareExchange(&g_guardNearMissLogged, 1, 0) == 0) {
+                char buffer[160];
+                sprintf_s(buffer, sizeof(buffer),
+                    "Guard-page hit on watched page but non-slot addr=%p slot=%p (pass-through)",
+                    faultAddr, g_globalStateSlot);
+                WriteRawLog(buffer);
+            }
 
-        return EXCEPTION_CONTINUE_EXECUTION;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -465,19 +485,32 @@ static void InstallWriteWatch() {
 
         SYSTEM_INFO si;
         GetSystemInfo(&si);
-        BYTE* page = (BYTE*)g_globalStateSlot - ((uintptr_t)g_globalStateSlot & (si.dwPageSize - 1));
+        g_globalStatePageSize = si.dwPageSize;
+        g_globalStateWatchPage =
+            (BYTE*)g_globalStateSlot - ((uintptr_t)g_globalStateSlot & (si.dwPageSize - 1));
 
         DWORD oldProtect;
-        if (VirtualProtect(page, si.dwPageSize, PAGE_READWRITE | PAGE_GUARD, &oldProtect)) {
+        if (VirtualProtect(g_globalStateWatchPage, g_globalStatePageSize, PAGE_READWRITE | PAGE_GUARD, &oldProtect)) {
             g_vehHandle = AddVectoredExceptionHandler(1, VehHandler);
             WriteRawLog("Guard-page write watch installed successfully");
         }
         else {
             sprintf_s(buffer, sizeof(buffer), "Failed to set guard page at %p: error %lu",
-                page, GetLastError());
+                g_globalStateWatchPage, GetLastError());
             WriteRawLog(buffer);
         }
     }
+}
+
+static bool IsOnWatchPage(const void* addr)
+{
+    if (!addr || !g_globalStateWatchPage || !g_globalStatePageSize) {
+        return false;
+    }
+
+    uintptr_t fault = reinterpret_cast<uintptr_t>(addr);
+    uintptr_t pageStart = reinterpret_cast<uintptr_t>(g_globalStateWatchPage);
+    return fault >= pageStart && fault < (pageStart + g_globalStatePageSize);
 }
 
 static GlobalStateInfo* ReadSlotUnsafe()
@@ -542,6 +575,9 @@ void ShutdownGlobalStateWatch() {
         RemoveVectoredExceptionHandler(g_vehHandle);
         g_vehHandle = nullptr;
     }
+    g_globalStateWatchPage = nullptr;
+    g_globalStatePageSize = 0;
+    g_guardNearMissLogged = 0;
 }
 
 void ReportLuaState(void* L) {
@@ -603,4 +639,3 @@ bool RefreshLuaStateFromSlot()
 }
 
 } // namespace Engine
-
