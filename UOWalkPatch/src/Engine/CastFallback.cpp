@@ -554,6 +554,104 @@ bool IsNativeHookActive()
            g_enqueueActionTarget != nullptr;
 }
 
+bool RunEnqueueUnhooked(void* queue,
+                        void* actionObject,
+                        void* actionRef,
+                        std::uintptr_t* before0,
+                        std::uintptr_t* before1,
+                        std::uintptr_t* after0,
+                        std::uintptr_t* after1)
+{
+    if (before0) *before0 = 0;
+    if (before1) *before1 = 0;
+    if (after0) *after0 = 0;
+    if (after1) *after1 = 0;
+
+    if (!queue || !actionObject || !g_enqueueActionTarget)
+        return false;
+
+    QueueSnapshot beforeQueue = ReadQueueSnapshot(queue);
+    if (before0) *before0 = beforeQueue.ok ? beforeQueue.slot0 : 0;
+    if (before1) *before1 = beforeQueue.ok ? beforeQueue.slot1 : 0;
+
+    bool reenableHook = false;
+    if (g_enqueueActionTarget && g_origEnqueueAction) {
+        if (MH_DisableHook(g_enqueueActionTarget) == MH_OK)
+            reenableHook = true;
+    }
+
+    DWORD sehCode = 0;
+    bool ok = false;
+    void* enqueueTarget = g_enqueueActionTarget;
+    __try {
+        __asm {
+            mov eax, queue
+            push actionRef
+            push actionObject
+            mov edx, enqueueTarget
+            call edx
+        }
+        ok = true;
+    } __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[CastExpect] unhooked enqueue fault queue=%p action=%p ref=%p code=0x%08lX",
+                  queue,
+                  actionObject,
+                  actionRef,
+                  static_cast<unsigned long>(sehCode));
+        WriteRawLog(buf);
+        ok = false;
+    }
+
+    if (reenableHook)
+        MH_EnableHook(g_enqueueActionTarget);
+
+    QueueSnapshot afterQueue = ReadQueueSnapshot(queue);
+    if (after0) *after0 = afterQueue.ok ? afterQueue.slot0 : 0;
+    if (after1) *after1 = afterQueue.ok ? afterQueue.slot1 : 0;
+    return ok;
+}
+
+void NoteDirectEnqueue(std::uint32_t token,
+                       void* actionObject,
+                       std::uintptr_t before0,
+                       std::uintptr_t before1,
+                       std::uintptr_t after0,
+                       std::uintptr_t after1)
+{
+    ActionSnapshot snap = ReadActionSnapshot(actionObject);
+    ExpectedCastState expected = CopyExpectedCastState();
+    QueueSnapshot beforeQueue{};
+    beforeQueue.ok = true;
+    beforeQueue.slot0 = before0;
+    beforeQueue.slot1 = before1;
+    QueueSnapshot afterQueue{};
+    afterQueue.ok = true;
+    afterQueue.slot0 = after0;
+    afterQueue.slot1 = after1;
+
+    if (!MatchesExpectedAction(expected, snap))
+        return;
+
+    RecordEnqueueMatch(expected, snap, actionObject, beforeQueue, afterQueue);
+    char buf[320];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[CastExpect] direct enqueue matched tok=%u spell=%u targetType=%u targetId=%08X flag18=%u slots(before=%p,%p after=%p,%p)",
+              expected.token,
+              snap.spellId,
+              snap.targetType,
+              snap.targetId,
+              static_cast<unsigned>(snap.targetReady),
+              reinterpret_cast<void*>(before0),
+              reinterpret_cast<void*>(before1),
+              reinterpret_cast<void*>(after0),
+              reinterpret_cast<void*>(after1));
+    WriteRawLog(buf);
+}
+
 void ArmExpectedCast(std::uint32_t token,
                      std::uint32_t spellId,
                      std::uint32_t targetType,

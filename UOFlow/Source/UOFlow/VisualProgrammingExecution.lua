@@ -186,11 +186,6 @@ function VisualProgrammingInterface.Execution:buildExecutionQueueFromSnapshot(sn
 
     if UOWNativeLog then
         UOWNativeLog("[VPExec] built queue", tostring(#executionQueue))
-        local labels = {}
-        for i, block in ipairs(executionQueue) do
-            labels[i] = VPExecSafeString(block.id) .. ":" .. VPExecSafeString(block.type)
-        end
-        UOWNativeLog("[VPExec] queue", table.concat(labels, ","))
     end
 
     return executionQueue
@@ -284,10 +279,19 @@ function VisualProgrammingInterface.Execution:testFlow()
 
     -- Store execution queue for processing in OnUpdate
     self.executionQueue = executionQueue
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] queue stored", tostring(#self.executionQueue))
+    end
     self.isRunning = true
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] isRunning", tostring(self.isRunning))
+    end
     
     -- Execute first block
     if #self.executionQueue > 0 then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] remove first pending", tostring(#self.executionQueue))
+        end
         local firstBlock = table.remove(self.executionQueue, 1)
         if UOWNativeLog then
             UOWNativeLog("[VPExec] firstBlock", VPExecSafeString(firstBlock.id), VPExecSafeString(firstBlock.type), "remaining=" .. tostring(#self.executionQueue))

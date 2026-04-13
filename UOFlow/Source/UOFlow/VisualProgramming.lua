@@ -59,6 +59,18 @@ local function VPUIEmitNativeLog(...)
     end
 end
 
+local function VPUIJoinList(values)
+    if type(values) ~= "table" then
+        return ""
+    end
+
+    local parts = {}
+    for i = 1, #values do
+        parts[i] = tostring(values[i])
+    end
+    return table.concat(parts, ",")
+end
+
 -- Handle test flow button click
 function OnTestFlowClick()
     -- Forward to the interface handler
@@ -79,9 +91,9 @@ function OnTestFlowClick()
 
         if success then
             if results.success then
-                VPUIEmitNativeLog("[VPUI] results.success", "executionOrder=" .. table.concat(results.executionOrder or {}, ","))
+                VPUIEmitNativeLog("[VPUI] results.success", "executionOrder=" .. VPUIJoinList(results.executionOrder))
                 Debug.Print("Flow test completed successfully")
-                Debug.Print("Execution order: " .. table.concat(results.executionOrder, ", "))
+                Debug.Print("Execution order: " .. VPUIJoinList(results.executionOrder))
                 
                 -- Print details for each block
                 for id, block in pairs(results.blocks) do

@@ -3031,7 +3031,7 @@ __declspec(noinline) static void* ResolveActionQueueObject()
     return ReadClientGlobalPointer(0x00E3D558);
 }
 
-__declspec(noinline) static bool DirectBuildAndEnqueueSpell(int spellId, std::string& outMsg)
+__declspec(noinline) static bool DirectBuildAndEnqueueSpell(int spellId, uint32_t token, std::string& outMsg)
 {
 #if !defined(_M_IX86)
     outMsg = "unsupported_arch";
@@ -3056,6 +3056,11 @@ __declspec(noinline) static bool DirectBuildAndEnqueueSpell(int spellId, std::st
     NativeActionPair actionPair{};
     int localKey = 1;
     DWORD sehCode = 0;
+    int stage = 0;
+    uintptr_t before0 = 0;
+    uintptr_t before1 = 0;
+    uintptr_t after0 = 0;
+    uintptr_t after1 = 0;
 
     __try {
         __asm {
@@ -3080,40 +3085,28 @@ __declspec(noinline) static bool DirectBuildAndEnqueueSpell(int spellId, std::st
             mov edx, ebx
             lock xadd dword ptr [eax], edx
 direct_spell_skip_factory_addref:
+            mov stage, 1
             mov eax, dword ptr [ecx]
             mov eax, dword ptr [eax]
             lea edx, actionPair
             push edx
             call eax
 
+            mov stage, 2
             mov ecx, dword ptr [actionPair]
             mov edx, dword ptr [ecx]
             mov eax, dword ptr [edx + 14h]
             push esi
             call eax
 
-            mov eax, dword ptr [factoryPair + 4]
-            mov dword ptr [actionPair + 4], eax
+            mov stage, 3
+            mov eax, dword ptr [actionPair + 4]
             test eax, eax
             je direct_spell_skip_action_addref
             add eax, 4
             mov edx, ebx
             lock xadd dword ptr [eax], edx
 direct_spell_skip_action_addref:
-            mov eax, queue
-            push dword ptr [actionPair + 4]
-            push dword ptr [actionPair]
-            mov edx, enqueue
-            call edx
-
-            lea eax, factoryPair
-            mov edx, postWakeA
-            call edx
-
-            lea eax, actionPair
-            mov edx, postWakeB
-            call edx
-
             pop edi
             pop esi
             pop ebx
@@ -3123,8 +3116,53 @@ direct_spell_skip_action_addref:
         char buf[192];
         sprintf_s(buf,
                   sizeof(buf),
-                  "[LuaPlusCast] direct spell helper fault spell=%d code=0x%08lX",
+                  "[LuaPlusCast] direct spell helper fault spell=%d stage=%d code=0x%08lX",
                   spellId,
+                  stage,
+                  static_cast<unsigned long>(sehCode));
+        WriteRawLog(buf);
+        outMsg = "native_direct_fault";
+        return false;
+    }
+
+    stage = 4;
+    if (!Engine::CastFallback::RunEnqueueUnhooked(queue,
+                                                  actionPair.object,
+                                                  actionPair.ref,
+                                                  &before0,
+                                                  &before1,
+                                                  &after0,
+                                                  &after1)) {
+        outMsg = "enqueue_call_failed";
+        return false;
+    }
+
+    Engine::CastFallback::NoteDirectEnqueue(token,
+                                            actionPair.object,
+                                            before0,
+                                            before1,
+                                            after0,
+                                            after1);
+
+    __try {
+        __asm {
+            mov stage, 5
+            lea eax, actionPair
+            mov edx, postWakeA
+            call edx
+
+            mov stage, 6
+            lea eax, factoryPair
+            mov edx, postWakeB
+            call edx
+        }
+    } __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaPlusCast] direct spell helper fault spell=%d stage=%d code=0x%08lX",
+                  spellId,
+                  stage,
                   static_cast<unsigned long>(sehCode));
         WriteRawLog(buf);
         outMsg = "native_direct_fault";
@@ -3135,7 +3173,7 @@ direct_spell_skip_action_addref:
 #endif
 }
 
-__declspec(noinline) static bool DirectBuildAndEnqueueSpellOnId(int spellId, uint32_t targetId, std::string& outMsg)
+__declspec(noinline) static bool DirectBuildAndEnqueueSpellOnId(int spellId, uint32_t token, uint32_t targetId, std::string& outMsg)
 {
 #if !defined(_M_IX86)
     outMsg = "unsupported_arch";
@@ -3160,6 +3198,11 @@ __declspec(noinline) static bool DirectBuildAndEnqueueSpellOnId(int spellId, uin
     NativeActionPair actionPair{};
     int localKey = 1;
     DWORD sehCode = 0;
+    int stage = 0;
+    uintptr_t before0 = 0;
+    uintptr_t before1 = 0;
+    uintptr_t after0 = 0;
+    uintptr_t after1 = 0;
 
     __try {
         __asm {
@@ -3185,51 +3228,41 @@ __declspec(noinline) static bool DirectBuildAndEnqueueSpellOnId(int spellId, uin
             mov edx, ebx
             lock xadd dword ptr [eax], edx
 direct_spell_on_id_skip_factory_addref:
+            mov stage, 1
             mov eax, dword ptr [ecx]
             mov eax, dword ptr [eax]
             lea edx, actionPair
             push edx
             call eax
 
+            mov stage, 2
             mov ecx, dword ptr [actionPair]
             mov edx, dword ptr [ecx]
             mov eax, dword ptr [edx + 14h]
             push esi
             call eax
 
+            mov stage, 3
             mov ecx, dword ptr [actionPair]
             mov edx, dword ptr [ecx]
             mov eax, dword ptr [edx + 8]
             push 4
             call eax
 
+            mov stage, 4
             mov ecx, dword ptr [actionPair]
             mov dword ptr [ecx + 10h], edi
             mov edx, dword ptr [actionPair]
             mov byte ptr [edx + 18h], bl
 
-            mov eax, dword ptr [factoryPair + 4]
-            mov dword ptr [actionPair + 4], eax
+            mov stage, 5
+            mov eax, dword ptr [actionPair + 4]
             test eax, eax
             je direct_spell_on_id_skip_action_addref
             add eax, 4
             mov edx, ebx
             lock xadd dword ptr [eax], edx
 direct_spell_on_id_skip_action_addref:
-            mov eax, queue
-            push dword ptr [actionPair + 4]
-            push dword ptr [actionPair]
-            mov edx, enqueue
-            call edx
-
-            lea eax, factoryPair
-            mov edx, postWakeA
-            call edx
-
-            lea eax, actionPair
-            mov edx, postWakeB
-            call edx
-
             pop edi
             pop esi
             pop ebx
@@ -3239,9 +3272,55 @@ direct_spell_on_id_skip_action_addref:
         char buf[224];
         sprintf_s(buf,
                   sizeof(buf),
-                  "[LuaPlusCast] direct spell_on_id helper fault spell=%d target=%u code=0x%08lX",
+                  "[LuaPlusCast] direct spell_on_id helper fault spell=%d target=%u stage=%d code=0x%08lX",
                   spellId,
                   targetId,
+                  stage,
+                  static_cast<unsigned long>(sehCode));
+        WriteRawLog(buf);
+        outMsg = "native_direct_fault";
+        return false;
+    }
+
+    stage = 6;
+    if (!Engine::CastFallback::RunEnqueueUnhooked(queue,
+                                                  actionPair.object,
+                                                  actionPair.ref,
+                                                  &before0,
+                                                  &before1,
+                                                  &after0,
+                                                  &after1)) {
+        outMsg = "enqueue_call_failed";
+        return false;
+    }
+
+    Engine::CastFallback::NoteDirectEnqueue(token,
+                                            actionPair.object,
+                                            before0,
+                                            before1,
+                                            after0,
+                                            after1);
+
+    __try {
+        __asm {
+            mov stage, 7
+            lea eax, actionPair
+            mov edx, postWakeA
+            call edx
+
+            mov stage, 8
+            lea eax, factoryPair
+            mov edx, postWakeB
+            call edx
+        }
+    } __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        char buf[224];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaPlusCast] direct spell_on_id helper fault spell=%d target=%u stage=%d code=0x%08lX",
+                  spellId,
+                  targetId,
+                  stage,
                   static_cast<unsigned long>(sehCode));
         WriteRawLog(buf);
         outMsg = "native_direct_fault";
@@ -9229,7 +9308,7 @@ static int __stdcall Lua_UOW_CastSpell_Raw(void* raw)
             "UOWCastSpellRaw",
             [spellId, token](std::string& innerMsg) {
                 ScopedForcedActionGate forcedGate("UOWCastSpellRaw");
-                bool result = DirectBuildAndEnqueueSpell(spellId, innerMsg);
+                bool result = DirectBuildAndEnqueueSpell(spellId, token, innerMsg);
                 Engine::CastFallback::ExpectedCastResult expected = Engine::CastFallback::ConsumeExpectedCast(token);
                 char buf[320];
                 sprintf_s(buf,
@@ -9341,7 +9420,7 @@ static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw)
             "UOWCastSpellOnIdRaw",
             [spellId, objectId, token](std::string& innerMsg) {
                 ScopedForcedActionGate forcedGate("UOWCastSpellOnIdRaw");
-                bool result = DirectBuildAndEnqueueSpellOnId(spellId, objectId, innerMsg);
+                bool result = DirectBuildAndEnqueueSpellOnId(spellId, token, objectId, innerMsg);
                 Engine::CastFallback::ExpectedCastResult expected = Engine::CastFallback::ConsumeExpectedCast(token);
                 char buf[352];
                 sprintf_s(buf,

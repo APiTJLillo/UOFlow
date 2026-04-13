@@ -23,6 +23,19 @@ struct ExpectedCastResult {
 void Init();
 void Shutdown();
 bool IsNativeHookActive();
+bool RunEnqueueUnhooked(void* queue,
+                        void* actionObject,
+                        void* actionRef,
+                        std::uintptr_t* before0,
+                        std::uintptr_t* before1,
+                        std::uintptr_t* after0,
+                        std::uintptr_t* after1);
+void NoteDirectEnqueue(std::uint32_t token,
+                       void* actionObject,
+                       std::uintptr_t before0,
+                       std::uintptr_t before1,
+                       std::uintptr_t after0,
+                       std::uintptr_t after1);
 void ArmExpectedCast(std::uint32_t token,
                      std::uint32_t spellId,
                      std::uint32_t targetType,
