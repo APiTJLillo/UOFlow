@@ -118,6 +118,46 @@ Why this matters for UOWalkPatch:
      UOFlow-owned Lua scripts.
   2. Preserve public Lua spell APIs (`UOFlow.Spell.cast`, `UOW.Spell.cast`,
      `uow.cmd.cast`) as Lua wrappers.
+
+2026-04-13 - direct native cast path
+====================================
+
+- `UserActionCastSpell` (`0x00540330`) and `UserActionCastSpellOnId`
+  (`0x00540560`) are LuaPlus/raw client callbacks. Treat captured original
+  pointers as opaque raw ABI pointers, not `int(lua_State*)` call targets.
+
+- The cast gate at `DAT_00E3D540 + 0x5C2` is transient:
+  - native handlers set it to `1`
+  - do cast-related work
+  - then restore it to `0`
+  - raw callbacks may need a scoped forced-open guard if they run outside the
+    client's natural open window
+
+- The reliable phase-1 cast path is direct native action construction/enqueue:
+  - action factory lookup: `0x005648F0`
+  - queue enqueue: `0x00560BD0`
+  - post-enqueue tail: `0x00475460`, `0x00476020`
+
+- `0x00560BD0` enqueue convention:
+  - queue object in `EAX`
+  - action pair passed by value on the stack (`push pair.ref`, `push pair.obj`)
+  - function returns with `ret 8`
+
+- `0x005648F0` lookup convention:
+  - `EDX = DAT_00E3D558 + 0x14`
+  - `EAX = &localKey`
+  - `localKey = 1`
+
+- For `OnId` casts the client action semantics are:
+  - set spell id via vfunc `+0x14`
+  - set targetType `4` via vfunc `+0x08`
+  - write `targetId` to `action + 0x10`
+  - write `flag18 = 1` to `action + 0x18`
+
+- `PrimeSpellUseRequestState(...)` is useful only as diagnostics. It is not the
+  real client cast path and must not gate raw callback spell execution.
+
+- `pcall` / `xpcall` remain disallowed in critical UOFlow runtime paths.
   3. Back those wrappers with one simple raw LuaPlus callback global:
      `UOWCastSpellRaw(spellId)`.
   4. Keep gameplay/native `lua_CFunction` helpers for internal/native paths,

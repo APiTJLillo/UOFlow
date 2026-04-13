@@ -35,6 +35,13 @@ Then summarize in 5-10 bullets what you think is true before coding.
    - `UOFlow.Spell.cast invoked ...`
    - `UOWCastSpellRaw invoked ...`
 13. If those lines are missing, do not claim cast path is reached.
+14. `UserActionCastSpell` / `UserActionCastSpellOnId` client pointers are LuaPlus/raw ABI callbacks, not `int(lua_State*)` call targets. Do not invoke the captured original pointers through `InvokeClientLuaFn(...)`.
+15. Phase-1 native cast recovery uses the direct client action path:
+   - gate `DAT_00E3D540 + 0x5C2`
+   - action factory `0x005648F0`
+   - enqueue `0x00560BD0`
+   - action tail `0x00475460` / `0x00476020`
+16. `PrimeSpellUseRequestState(...)` is debug-only and must not be in the raw callback critical path for spell casting.
 
 ---
 

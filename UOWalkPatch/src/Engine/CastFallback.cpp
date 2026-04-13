@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 #include <minhook.h>
 
@@ -157,6 +158,19 @@ uintptr_t g_moduleBase = 0;
 uintptr_t g_expectedVtable = 0;
 std::atomic<int> g_logActionQueue{0};
 
+struct ExpectedCastState {
+    bool armed = false;
+    std::uint32_t token = 0;
+    std::uint32_t spellId = 0;
+    std::uint32_t targetType = 0;
+    std::uint32_t targetId = 0;
+    bool onId = false;
+    ExpectedCastResult result{};
+};
+
+std::mutex g_expectedCastMutex;
+ExpectedCastState g_expectedCast{};
+
 struct ActionSnapshot {
     uintptr_t vtbl = 0;
     uint32_t targetType = 0;
@@ -218,6 +232,65 @@ static bool LooksLikeSpellAction(const ActionSnapshot& snap)
     if (snap.targetType > 8)
         return false;
     return true;
+}
+
+static bool MatchesExpectedAction(const ExpectedCastState& expected, const ActionSnapshot& snap)
+{
+    if (!expected.armed || !snap.ok)
+        return false;
+    if (snap.spellId != expected.spellId)
+        return false;
+    if (snap.targetType != expected.targetType)
+        return false;
+    if (expected.onId) {
+        if (snap.targetId != expected.targetId)
+            return false;
+        if (snap.targetReady != 1)
+            return false;
+    }
+    return true;
+}
+
+static void RecordBuildMatch(const ExpectedCastState& expected, const ActionSnapshot& snap, void* action)
+{
+    std::lock_guard<std::mutex> lock(g_expectedCastMutex);
+    if (!g_expectedCast.armed || g_expectedCast.token != expected.token)
+        return;
+    g_expectedCast.result.hooksActive = true;
+    g_expectedCast.result.buildMatched = true;
+    g_expectedCast.result.buildAction = reinterpret_cast<std::uintptr_t>(action);
+    g_expectedCast.result.spellId = snap.spellId;
+    g_expectedCast.result.targetType = snap.targetType;
+    g_expectedCast.result.targetId = snap.targetId;
+    g_expectedCast.result.flag18 = snap.targetReady;
+}
+
+static void RecordEnqueueMatch(const ExpectedCastState& expected,
+                               const ActionSnapshot& snap,
+                               void* action,
+                               const QueueSnapshot& beforeQueue,
+                               const QueueSnapshot& afterQueue)
+{
+    std::lock_guard<std::mutex> lock(g_expectedCastMutex);
+    if (!g_expectedCast.armed || g_expectedCast.token != expected.token)
+        return;
+    g_expectedCast.result.hooksActive = true;
+    g_expectedCast.result.enqueueMatched = true;
+    g_expectedCast.result.enqueueAction = reinterpret_cast<std::uintptr_t>(action);
+    g_expectedCast.result.spellId = snap.spellId;
+    g_expectedCast.result.targetType = snap.targetType;
+    g_expectedCast.result.targetId = snap.targetId;
+    g_expectedCast.result.flag18 = snap.targetReady;
+    g_expectedCast.result.queueSlot0Before = beforeQueue.ok ? beforeQueue.slot0 : 0;
+    g_expectedCast.result.queueSlot1Before = beforeQueue.ok ? beforeQueue.slot1 : 0;
+    g_expectedCast.result.queueSlot0After = afterQueue.ok ? afterQueue.slot0 : 0;
+    g_expectedCast.result.queueSlot1After = afterQueue.ok ? afterQueue.slot1 : 0;
+}
+
+static ExpectedCastState CopyExpectedCastState()
+{
+    std::lock_guard<std::mutex> lock(g_expectedCastMutex);
+    return g_expectedCast;
 }
 
 bool ShouldEnableFallback()
@@ -284,105 +357,104 @@ void* __fastcall Hook_BuildAction(void* self, void*, void* a1, void* a2)
     if (!g_nativeActive.load(std::memory_order_acquire))
         return g_origBuildAction(self, a1, a2);
 
-    bool faulted = false;
-    DWORD faultCode = 0;
-
-    __try {
-        if (self) {
-            ActionSnapshot snap = ReadActionSnapshot(self);
-            const bool exactMatch = snap.ok && (snap.vtbl == g_expectedVtable);
-            const bool heuristicMatch = snap.ok && LooksLikeSpellAction(snap);
-            const bool wrapperArmed = Engine::Lua::HasRecentCastAttempt();
-            if (snap.ok && (exactMatch || (heuristicMatch && wrapperArmed))) {
-                char buf[320];
-                sprintf_s(buf,
-                          sizeof(buf),
-                          "[CastUI/native] self=%p vtbl=%p match=%s spellId=%u targetType=%u targetId=%08X iconId=%u flag18=%u",
-                          self,
-                          reinterpret_cast<void*>(snap.vtbl),
-                          exactMatch ? "vtbl" : "heuristic",
-                          snap.spellId,
-                          snap.targetType,
-                          snap.targetId,
-                          snap.iconId,
-                          static_cast<unsigned>(snap.targetReady));
-                WriteRawLog(buf);
-                CastCorrelator::OnCastAttempt(snap.spellId);
-            }
+    if (self) {
+        ActionSnapshot snap = ReadActionSnapshot(self);
+        ExpectedCastState expected = CopyExpectedCastState();
+        const bool exactMatch = snap.ok && (snap.vtbl == g_expectedVtable);
+        const bool heuristicMatch = snap.ok && LooksLikeSpellAction(snap);
+        const bool wrapperArmed = Engine::Lua::HasRecentCastAttempt();
+        if (snap.ok && (exactMatch || (heuristicMatch && wrapperArmed))) {
+            char buf[320];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CastUI/native] self=%p vtbl=%p match=%s spellId=%u targetType=%u targetId=%08X iconId=%u flag18=%u",
+                      self,
+                      reinterpret_cast<void*>(snap.vtbl),
+                      exactMatch ? "vtbl" : "heuristic",
+                      snap.spellId,
+                      snap.targetType,
+                      snap.targetId,
+                      snap.iconId,
+                      static_cast<unsigned>(snap.targetReady));
+            WriteRawLog(buf);
+            CastCorrelator::OnCastAttempt(snap.spellId);
+        }
+        if (MatchesExpectedAction(expected, snap)) {
+            RecordBuildMatch(expected, snap, self);
+            char buf[224];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CastExpect] build matched tok=%u spell=%u targetType=%u targetId=%08X flag18=%u",
+                      expected.token,
+                      snap.spellId,
+                      snap.targetType,
+                      snap.targetId,
+                      static_cast<unsigned>(snap.targetReady));
+            WriteRawLog(buf);
         }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        faulted = true;
-        faultCode = GetExceptionCode();
-    }
 
-    if (faulted) {
-        int streak = g_faultStreak.fetch_add(1, std::memory_order_acq_rel) + 1;
-        if (streak >= kMaxNativeFaults)
-            DisableNativeFallback(faultCode);
-    } else {
-        g_faultStreak.store(0, std::memory_order_release);
-    }
-
+    g_faultStreak.store(0, std::memory_order_release);
     return g_origBuildAction(self, a1, a2);
 }
 
 void __fastcall Hook_EnqueueAction(void* self, void*, void* action)
 {
     ActionSnapshot actionSnap = ReadActionSnapshot(action);
+    ExpectedCastState expected = CopyExpectedCastState();
     const bool castScopedLog = actionSnap.ok && LooksLikeSpellAction(actionSnap) && Engine::Lua::HasRecentCastAttempt();
     const bool shouldLog = g_nativeActive.load(std::memory_order_acquire) && (ShouldLogActionQueue() || castScopedLog);
 
-    QueueSnapshot beforeQueue = shouldLog ? ReadQueueSnapshot(self) : QueueSnapshot{};
+    const bool needQueueSnapshot = shouldLog || expected.armed;
+    QueueSnapshot beforeQueue = needQueueSnapshot ? ReadQueueSnapshot(self) : QueueSnapshot{};
 
     if (g_origEnqueueAction)
         g_origEnqueueAction(self, action);
 
+    QueueSnapshot afterQueue = needQueueSnapshot ? ReadQueueSnapshot(self) : QueueSnapshot{};
+    if (MatchesExpectedAction(expected, actionSnap)) {
+        RecordEnqueueMatch(expected, actionSnap, action, beforeQueue, afterQueue);
+        char buf[288];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[CastExpect] enqueue matched tok=%u spell=%u targetType=%u targetId=%08X flag18=%u slots(before=%p,%p after=%p,%p)",
+                  expected.token,
+                  actionSnap.spellId,
+                  actionSnap.targetType,
+                  actionSnap.targetId,
+                  static_cast<unsigned>(actionSnap.targetReady),
+                  reinterpret_cast<void*>(beforeQueue.ok ? beforeQueue.slot0 : 0),
+                  reinterpret_cast<void*>(beforeQueue.ok ? beforeQueue.slot1 : 0),
+                  reinterpret_cast<void*>(afterQueue.ok ? afterQueue.slot0 : 0),
+                  reinterpret_cast<void*>(afterQueue.ok ? afterQueue.slot1 : 0));
+        WriteRawLog(buf);
+    }
+
     if (shouldLog) {
         const uintptr_t ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
-        QueueSnapshot afterQueue = ReadQueueSnapshot(self);
-        auto logSnapshot = [self, action, ret, actionSnap, beforeQueue, afterQueue]() {
-            char retBuf[32];
-            if (ret >= g_moduleBase)
-                sprintf_s(retBuf, sizeof(retBuf), "UOSA.exe+0x%X", static_cast<unsigned>(ret - g_moduleBase));
-            else
-                sprintf_s(retBuf, sizeof(retBuf), "0x%p", reinterpret_cast<void*>(ret));
-
-            char buf[352];
-            sprintf_s(buf,
-                      sizeof(buf),
-                      "[ActionQueue] enqueue ret=%s queue=%p action=%p spellId=%u targetType=%u targetId=%08X flag18=%u slots(before=%p,%p after=%p,%p)",
-                      retBuf,
-                      self,
-                      action,
-                      actionSnap.spellId,
-                      actionSnap.targetType,
-                      actionSnap.targetId,
-                      static_cast<unsigned>(actionSnap.targetReady),
-                      reinterpret_cast<void*>(beforeQueue.ok ? beforeQueue.slot0 : 0),
-                      reinterpret_cast<void*>(beforeQueue.ok ? beforeQueue.slot1 : 0),
-                      reinterpret_cast<void*>(afterQueue.ok ? afterQueue.slot0 : 0),
-                      reinterpret_cast<void*>(afterQueue.ok ? afterQueue.slot1 : 0));
-            WriteRawLog(buf);
-        };
-
-        if (g_castQueueSnapshotDisabled.load(std::memory_order_acquire)) {
-            logSnapshot();
+        char retBuf[32];
+        if (ret >= g_moduleBase) {
+            sprintf_s(retBuf, sizeof(retBuf), "UOSA.exe+0x%X", static_cast<unsigned>(ret - g_moduleBase));
         } else {
-            DWORD sehCode = 0;
-            __try {
-                logSnapshot();
-            } __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
-                if (!g_castQueueSnapshotDisabled.exchange(true, std::memory_order_acq_rel)) {
-                    char buf[160];
-                    sprintf_s(buf,
-                              sizeof(buf),
-                              "ActionQueue snapshot disabled after exception code=0x%08X",
-                              static_cast<unsigned>(sehCode));
-                    WriteRawLog(buf);
-                }
-            }
+            sprintf_s(retBuf, sizeof(retBuf), "0x%p", reinterpret_cast<void*>(ret));
         }
+
+        char buf[352];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[ActionQueue] enqueue ret=%s queue=%p action=%p spellId=%u targetType=%u targetId=%08X flag18=%u slots(before=%p,%p after=%p,%p)",
+                  retBuf,
+                  self,
+                  action,
+                  actionSnap.spellId,
+                  actionSnap.targetType,
+                  actionSnap.targetId,
+                  static_cast<unsigned>(actionSnap.targetReady),
+                  reinterpret_cast<void*>(beforeQueue.ok ? beforeQueue.slot0 : 0),
+                  reinterpret_cast<void*>(beforeQueue.ok ? beforeQueue.slot1 : 0),
+                  reinterpret_cast<void*>(afterQueue.ok ? afterQueue.slot0 : 0),
+                  reinterpret_cast<void*>(afterQueue.ok ? afterQueue.slot1 : 0));
+        WriteRawLog(buf);
     }
 }
 
@@ -473,6 +545,43 @@ void Shutdown()
     }
     g_origBuildAction = nullptr;
     g_origEnqueueAction = nullptr;
+}
+
+bool IsNativeHookActive()
+{
+    return g_nativeActive.load(std::memory_order_acquire) &&
+           g_buildActionTarget != nullptr &&
+           g_enqueueActionTarget != nullptr;
+}
+
+void ArmExpectedCast(std::uint32_t token,
+                     std::uint32_t spellId,
+                     std::uint32_t targetType,
+                     std::uint32_t targetId,
+                     bool onId)
+{
+    std::lock_guard<std::mutex> lock(g_expectedCastMutex);
+    g_expectedCast = {};
+    g_expectedCast.armed = true;
+    g_expectedCast.token = token;
+    g_expectedCast.spellId = spellId;
+    g_expectedCast.targetType = targetType;
+    g_expectedCast.targetId = targetId;
+    g_expectedCast.onId = onId;
+    g_expectedCast.result.hooksActive = IsNativeHookActive();
+}
+
+ExpectedCastResult ConsumeExpectedCast(std::uint32_t token)
+{
+    std::lock_guard<std::mutex> lock(g_expectedCastMutex);
+    ExpectedCastResult result{};
+    result.hooksActive = IsNativeHookActive();
+    if (g_expectedCast.armed && g_expectedCast.token == token)
+        result = g_expectedCast.result;
+    g_expectedCast = {};
+    if (!result.hooksActive)
+        result.hooksActive = IsNativeHookActive();
+    return result;
 }
 
 } // namespace Engine::CastFallback

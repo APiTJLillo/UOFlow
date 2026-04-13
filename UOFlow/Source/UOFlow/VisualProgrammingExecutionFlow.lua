@@ -79,64 +79,19 @@ function VisualProgrammingInterface.Execution:start()
         self.blockStates[id] = VisualProgrammingInterface.Execution.BlockState.PENDING
     end
     
-    -- Build execution queue in order of connections
-    local visited = {}
-    local function visit(block)
-        if not block or type(block) ~= "table" or block.id == nil then
-            return
-        end
-        if visited[block.id] then return end
-        
-        -- Add current block to queue
-        table.insert(self.executionQueue, block)
-        visited[block.id] = true
-        Debug.Print("Added block " .. block.id .. " to execution queue")
-        
-        -- Visit next block in chain if it exists
-        if block.connections and #block.connections > 0 then
-            local firstConnection = block.connections[1]
-            if type(firstConnection) == "table" and firstConnection.id ~= nil then
-                local nextBlockId = firstConnection.id
-                local nextBlock = VisualProgrammingInterface.manager:getBlock(nextBlockId)
-                if nextBlock then
-                    Debug.Print("Following connection from block " .. block.id .. " to block " .. nextBlockId)
-                    visit(nextBlock)
-                end
-            end
-        end
+    local snapshotByKey, orderedRecords = nil, nil
+    if type(self.buildExecutionSnapshot) == "function" then
+        snapshotByKey, orderedRecords = self:buildExecutionSnapshot()
     end
-    
-    -- Find the first block (one with no incoming connections)
-    local firstBlock = nil
-    for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
-        if type(block) == "table" and block.id ~= nil then
-            local hasIncoming = false
-            for _, otherBlock in pairs(VisualProgrammingInterface.manager.blocks) do
-                if type(otherBlock) == "table" and otherBlock.connections then
-                    for _, conn in ipairs(otherBlock.connections) do
-                        if type(conn) == "table" and conn.id == block.id then
-                            hasIncoming = true
-                            break
-                        end
-                    end
-                end
-                if hasIncoming then break end
-            end
-            if not hasIncoming then
-                firstBlock = block
-                break
-            end
-        end
+    if snapshotByKey and type(self.buildExecutionQueueFromSnapshot) == "function" then
+        self.executionQueue = self:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords)
     end
-    
-    -- Start building queue from the first block
-    if firstBlock then
-        Debug.Print("Starting execution queue with block " .. firstBlock.id)
-        visit(firstBlock)
-    else
-        Debug.Print("Error: Could not find starting block")
+    if #self.executionQueue == 0 then
+        Debug.Print("Error: Could not build execution queue")
         return false
     end
+
+    Debug.Print("Starting execution queue with block " .. tostring(self.executionQueue[1] and self.executionQueue[1].id))
     
     -- Start execution timer
     self:continueExecution()

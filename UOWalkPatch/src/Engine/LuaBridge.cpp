@@ -28,6 +28,8 @@
 #include "Net/SendTrace.hpp"
 #include "Engine/GlobalState.hpp"
 #include "Engine/Movement.hpp"
+#include "Engine/Addresses.h"
+#include "Engine/CastFallback.hpp"
 #include "Engine/LuaBridge.hpp"
 #include "Util/OwnerPump.hpp"
 #include "Core/Utils.hpp"
@@ -2990,6 +2992,266 @@ private:
     bool m_applied = false;
 };
 
+struct NativeActionPair
+{
+    void* object = nullptr;
+    void* ref = nullptr;
+};
+
+__declspec(noinline) static uintptr_t ResolveClientGlobalPointerAddress(uintptr_t va)
+{
+    uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    if (!base)
+        return 0;
+    return base + (va - 0x00400000u);
+}
+
+__declspec(noinline) static void* ReadClientGlobalPointer(uintptr_t va)
+{
+    uintptr_t addr = ResolveClientGlobalPointerAddress(va);
+    if (!addr)
+        return nullptr;
+    __try {
+        return *reinterpret_cast<void**>(addr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+__declspec(noinline) static uintptr_t ResolveClientProc(uint32_t rva)
+{
+    uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    if (!base)
+        return 0;
+    return base + rva;
+}
+
+__declspec(noinline) static void* ResolveActionQueueObject()
+{
+    return ReadClientGlobalPointer(0x00E3D558);
+}
+
+__declspec(noinline) static bool DirectBuildAndEnqueueSpell(int spellId, std::string& outMsg)
+{
+#if !defined(_M_IX86)
+    outMsg = "unsupported_arch";
+    return false;
+#else
+    if (spellId <= 0) {
+        outMsg = "invalid_spell";
+        return false;
+    }
+
+    void* queue = ResolveActionQueueObject();
+    uintptr_t actionFactory = ResolveClientProc(Engine::Addresses::RVA_ActionFactoryLookup);
+    uintptr_t enqueue = ResolveClientProc(Engine::Addresses::RVA_EnqueueAction);
+    uintptr_t postWakeA = ResolveClientProc(Engine::Addresses::RVA_ActionPostWakeA);
+    uintptr_t postWakeB = ResolveClientProc(Engine::Addresses::RVA_ActionPostWakeB);
+    if (!queue || !actionFactory || !enqueue || !postWakeA || !postWakeB) {
+        outMsg = "native_addresses_missing";
+        return false;
+    }
+
+    NativeActionPair factoryPair{};
+    NativeActionPair actionPair{};
+    int localKey = 1;
+    DWORD sehCode = 0;
+
+    __try {
+        __asm {
+            push ebx
+            push esi
+            push edi
+            mov ebx, 1
+            lea eax, localKey
+            mov edx, queue
+            add edx, 14h
+            mov esi, spellId
+            mov ecx, actionFactory
+            call ecx
+
+            mov ecx, dword ptr [eax]
+            mov eax, dword ptr [eax + 4]
+            mov dword ptr [factoryPair], ecx
+            mov dword ptr [factoryPair + 4], eax
+            test eax, eax
+            je direct_spell_skip_factory_addref
+            add eax, 4
+            mov edx, ebx
+            lock xadd dword ptr [eax], edx
+direct_spell_skip_factory_addref:
+            mov eax, dword ptr [ecx]
+            mov eax, dword ptr [eax]
+            lea edx, actionPair
+            push edx
+            call eax
+
+            mov ecx, dword ptr [actionPair]
+            mov edx, dword ptr [ecx]
+            mov eax, dword ptr [edx + 14h]
+            push esi
+            call eax
+
+            mov eax, dword ptr [factoryPair + 4]
+            mov dword ptr [actionPair + 4], eax
+            test eax, eax
+            je direct_spell_skip_action_addref
+            add eax, 4
+            mov edx, ebx
+            lock xadd dword ptr [eax], edx
+direct_spell_skip_action_addref:
+            mov eax, queue
+            push dword ptr [actionPair + 4]
+            push dword ptr [actionPair]
+            mov edx, enqueue
+            call edx
+
+            lea eax, factoryPair
+            mov edx, postWakeA
+            call edx
+
+            lea eax, actionPair
+            mov edx, postWakeB
+            call edx
+
+            pop edi
+            pop esi
+            pop ebx
+        }
+    }
+    __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaPlusCast] direct spell helper fault spell=%d code=0x%08lX",
+                  spellId,
+                  static_cast<unsigned long>(sehCode));
+        WriteRawLog(buf);
+        outMsg = "native_direct_fault";
+        return false;
+    }
+
+    return true;
+#endif
+}
+
+__declspec(noinline) static bool DirectBuildAndEnqueueSpellOnId(int spellId, uint32_t targetId, std::string& outMsg)
+{
+#if !defined(_M_IX86)
+    outMsg = "unsupported_arch";
+    return false;
+#else
+    if (spellId <= 0 || targetId == 0) {
+        outMsg = "invalid_args";
+        return false;
+    }
+
+    void* queue = ResolveActionQueueObject();
+    uintptr_t actionFactory = ResolveClientProc(Engine::Addresses::RVA_ActionFactoryLookup);
+    uintptr_t enqueue = ResolveClientProc(Engine::Addresses::RVA_EnqueueAction);
+    uintptr_t postWakeA = ResolveClientProc(Engine::Addresses::RVA_ActionPostWakeA);
+    uintptr_t postWakeB = ResolveClientProc(Engine::Addresses::RVA_ActionPostWakeB);
+    if (!queue || !actionFactory || !enqueue || !postWakeA || !postWakeB) {
+        outMsg = "native_addresses_missing";
+        return false;
+    }
+
+    NativeActionPair factoryPair{};
+    NativeActionPair actionPair{};
+    int localKey = 1;
+    DWORD sehCode = 0;
+
+    __try {
+        __asm {
+            push ebx
+            push esi
+            push edi
+            mov ebx, 1
+            lea eax, localKey
+            mov edx, queue
+            add edx, 14h
+            mov esi, spellId
+            mov edi, targetId
+            mov ecx, actionFactory
+            call ecx
+
+            mov ecx, dword ptr [eax]
+            mov eax, dword ptr [eax + 4]
+            mov dword ptr [factoryPair], ecx
+            mov dword ptr [factoryPair + 4], eax
+            test eax, eax
+            je direct_spell_on_id_skip_factory_addref
+            add eax, 4
+            mov edx, ebx
+            lock xadd dword ptr [eax], edx
+direct_spell_on_id_skip_factory_addref:
+            mov eax, dword ptr [ecx]
+            mov eax, dword ptr [eax]
+            lea edx, actionPair
+            push edx
+            call eax
+
+            mov ecx, dword ptr [actionPair]
+            mov edx, dword ptr [ecx]
+            mov eax, dword ptr [edx + 14h]
+            push esi
+            call eax
+
+            mov ecx, dword ptr [actionPair]
+            mov edx, dword ptr [ecx]
+            mov eax, dword ptr [edx + 8]
+            push 4
+            call eax
+
+            mov ecx, dword ptr [actionPair]
+            mov dword ptr [ecx + 10h], edi
+            mov edx, dword ptr [actionPair]
+            mov byte ptr [edx + 18h], bl
+
+            mov eax, dword ptr [factoryPair + 4]
+            mov dword ptr [actionPair + 4], eax
+            test eax, eax
+            je direct_spell_on_id_skip_action_addref
+            add eax, 4
+            mov edx, ebx
+            lock xadd dword ptr [eax], edx
+direct_spell_on_id_skip_action_addref:
+            mov eax, queue
+            push dword ptr [actionPair + 4]
+            push dword ptr [actionPair]
+            mov edx, enqueue
+            call edx
+
+            lea eax, factoryPair
+            mov edx, postWakeA
+            call edx
+
+            lea eax, actionPair
+            mov edx, postWakeB
+            call edx
+
+            pop edi
+            pop esi
+            pop ebx
+        }
+    }
+    __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        char buf[224];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[LuaPlusCast] direct spell_on_id helper fault spell=%d target=%u code=0x%08lX",
+                  spellId,
+                  targetId,
+                  static_cast<unsigned long>(sehCode));
+        WriteRawLog(buf);
+        outMsg = "native_direct_fault";
+        return false;
+    }
+
+    return true;
+#endif
+}
+
 static bool HavePrimaryCastWrappers()
 {
     uint32_t mask = g_actionWrapperMask.load(std::memory_order_acquire);
@@ -3640,6 +3902,35 @@ static void RestoreManualCastToken(uint32_t previousTok, bool manualAssigned)
     if (!manualAssigned)
         return;
     g_tlsCurrentCastToken = previousTok;
+}
+
+static uint32_t BeginManualCastAttempt(int spellId,
+                                       const char* reason,
+                                       uint32_t& previousTok,
+                                       bool& manualAssigned)
+{
+    manualAssigned = ActivateManualCastToken(previousTok, reason);
+    const uint32_t token = CurrentCastToken();
+    if (token != 0) {
+        g_lastCastToken.store(token, std::memory_order_release);
+        ArmWordsLogWindow(token);
+    }
+
+    DWORD now = GetTickCount();
+    g_lastCastAttemptTick.store(now, std::memory_order_release);
+    UowTracePushSpell(spellId);
+    CastCorrelator::OnCastAttempt(static_cast<uint32_t>(spellId < 0 ? 0 : spellId));
+
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaPlusCast] manual attempt tok=%u spell=%d reason=%s manual=%s",
+              token,
+              spellId,
+              reason ? reason : "raw",
+              manualAssigned ? "yes" : "no");
+    WriteRawLog(buf);
+    return token;
 }
 
 static void UowTracePushSpell(int spell)
@@ -7690,64 +7981,33 @@ static bool InvokeCastOnIdWrapper(lua_State* L, int spellId, uint32_t objectId)
 
 static bool InvokeCastOriginal(lua_State* L, int mappedSpellId, int displaySpellId)
 {
-    if (!g_allowDirectCastFallback || !g_origCastSpell || !L)
+    (void)L;
+    (void)mappedSpellId;
+    if (!g_allowDirectCastFallback || !g_origCastSpell)
         return false;
-    char directBuf[128];
-    sprintf_s(directBuf, sizeof(directBuf), "[Cast] direct-orig invoke spell=%u", static_cast<unsigned>(displaySpellId));
-    WriteRawLog(directBuf);
-    bool ok = false;
-    bool ranInline = Util::OwnerPump::Invoke("UOFlow.cast.orig", [L, mappedSpellId, &ok]() {
-        int top = lua_gettop(L);
-        lua_pushinteger(L, mappedSpellId);
-        int rc = InvokeClientLuaFn(reinterpret_cast<LuaFn>(g_origCastSpell), "UserActionCastSpell", L);
-        lua_settop(L, top);
-        ok = (rc >= 0);
-    });
-    if (!ranInline) {
-        WriteRawLog("[NoClick] cast orig path deferred; owner thread unavailable");
-        return false;
-    }
-    if (ok) {
-        char msg[128];
-        sprintf_s(msg, sizeof(msg), "[NoClick] cast via orig path spell=%u", static_cast<unsigned>(displaySpellId));
-        WriteRawLog(msg);
-    }
-    return ok;
+    char msg[192];
+    sprintf_s(msg,
+              sizeof(msg),
+              "[CastABI] blocked direct raw ptr invoke tag=UserActionCastSpell spell=%u",
+              static_cast<unsigned>(displaySpellId));
+    WriteRawLog(msg);
+    return false;
 }
 
 static bool InvokeCastOnIdOriginal(lua_State* L, int mappedSpellId, uint32_t objectId, int displaySpellId)
 {
-    if (!g_allowDirectCastFallback || !g_origCastSpellOnId || !L || objectId == 0)
+    (void)L;
+    (void)mappedSpellId;
+    if (!g_allowDirectCastFallback || !g_origCastSpellOnId || objectId == 0)
         return false;
-    char directBuf[128];
-    sprintf_s(directBuf, sizeof(directBuf), "[Cast] direct-orig invoke spell=%u", static_cast<unsigned>(displaySpellId));
-    WriteRawLog(directBuf);
-    bool ok = false;
-    bool ranInline = Util::OwnerPump::Invoke("UOFlow.cast_on_id.orig", [L, mappedSpellId, objectId, &ok]() {
-        int top = lua_gettop(L);
-        lua_pushinteger(L, mappedSpellId);
-        lua_pushinteger(L, static_cast<lua_Integer>(objectId));
-        int rc = InvokeClientLuaFn(reinterpret_cast<LuaFn>(g_origCastSpellOnId), "UserActionCastSpellOnId", L);
-        lua_settop(L, top);
-        ok = (rc >= 0);
-    });
-    if (!ranInline) {
-        WriteRawLog("[NoClick] cast_on_id orig path deferred; owner thread unavailable");
-        return false;
-    }
-    if (ok) {
-        char generic[128];
-        sprintf_s(generic, sizeof(generic), "[NoClick] cast via orig path spell=%u", static_cast<unsigned>(displaySpellId));
-        WriteRawLog(generic);
-        char msg[160];
-        sprintf_s(msg,
-                  sizeof(msg),
-                  "[NoClick] cast_on_id via orig path spell=%u target=%u",
-                  static_cast<unsigned>(displaySpellId),
-                  objectId);
-        WriteRawLog(msg);
-    }
-    return ok;
+    char msg[224];
+    sprintf_s(msg,
+              sizeof(msg),
+              "[CastABI] blocked direct raw ptr invoke tag=UserActionCastSpellOnId spell=%u target=%u",
+              static_cast<unsigned>(displaySpellId),
+              objectId);
+    WriteRawLog(msg);
+    return false;
 }
 
 // Casting decision tree:
@@ -8953,17 +9213,51 @@ static int __stdcall Lua_UOW_CastSpell_Raw(void* raw)
     if (gateValue == 0xFF) {
         msg = "gate_fault";
     } else if (extracted && spellId > 0) {
+        uint32_t previousTok = 0;
+        bool manualAssigned = false;
+        const uint32_t token = BeginManualCastAttempt(spellId, "UOWCastSpellRaw", previousTok, manualAssigned);
+        if (!Engine::CastFallback::IsNativeHookActive()) {
+            msg = "native_hooks_inactive";
+            RestoreManualCastToken(previousTok, manualAssigned);
+        } else {
+            Engine::CastFallback::ArmExpectedCast(token,
+                                                  static_cast<uint32_t>(spellId),
+                                                  0u,
+                                                  0u,
+                                                  false);
         ok = DispatchNoClickCommand(
             "UOWCastSpellRaw",
-            [spellId](std::string& innerMsg) {
+            [spellId, token](std::string& innerMsg) {
                 ScopedForcedActionGate forcedGate("UOWCastSpellRaw");
-                bool result = NoClickCastSpell_Internal(spellId);
-                if (!result && innerMsg.empty())
+                bool result = DirectBuildAndEnqueueSpell(spellId, innerMsg);
+                Engine::CastFallback::ExpectedCastResult expected = Engine::CastFallback::ConsumeExpectedCast(token);
+                char buf[320];
+                sprintf_s(buf,
+                          sizeof(buf),
+                          "[LuaPlusCast] direct spell evidence tok=%u build=%d enqueue=%d spell=%u targetType=%u targetId=%08X flag18=%u",
+                          token,
+                          expected.buildMatched ? 1 : 0,
+                          expected.enqueueMatched ? 1 : 0,
+                          expected.spellId,
+                          expected.targetType,
+                          expected.targetId,
+                          static_cast<unsigned>(expected.flag18));
+                WriteRawLog(buf);
+                if (!expected.hooksActive && innerMsg.empty()) {
+                    innerMsg = "native_hooks_inactive";
+                    result = false;
+                } else if (result && !expected.enqueueMatched) {
+                    innerMsg = "enqueue_missing";
+                    result = false;
+                } else if (!result && innerMsg.empty()) {
                     innerMsg = "native_cast_failed";
+                }
                 return result;
             },
             msg,
             false);
+            RestoreManualCastToken(previousTok, manualAssigned);
+        }
     } else {
         msg = extracted ? "invalid_spell" : "arg_extract_failed";
     }
@@ -9031,17 +9325,51 @@ static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw)
     if (gateValue == 0xFF) {
         msg = "gate_fault";
     } else if (extracted && spellId > 0 && objectId != 0) {
+        uint32_t previousTok = 0;
+        bool manualAssigned = false;
+        const uint32_t token = BeginManualCastAttempt(spellId, "UOWCastSpellOnIdRaw", previousTok, manualAssigned);
+        if (!Engine::CastFallback::IsNativeHookActive()) {
+            msg = "native_hooks_inactive";
+            RestoreManualCastToken(previousTok, manualAssigned);
+        } else {
+            Engine::CastFallback::ArmExpectedCast(token,
+                                                  static_cast<uint32_t>(spellId),
+                                                  4u,
+                                                  objectId,
+                                                  true);
         ok = DispatchNoClickCommand(
             "UOWCastSpellOnIdRaw",
-            [spellId, objectId](std::string& innerMsg) {
+            [spellId, objectId, token](std::string& innerMsg) {
                 ScopedForcedActionGate forcedGate("UOWCastSpellOnIdRaw");
-                bool result = NoClickCastSpellOnId_Internal(spellId, objectId);
-                if (!result && innerMsg.empty())
+                bool result = DirectBuildAndEnqueueSpellOnId(spellId, objectId, innerMsg);
+                Engine::CastFallback::ExpectedCastResult expected = Engine::CastFallback::ConsumeExpectedCast(token);
+                char buf[352];
+                sprintf_s(buf,
+                          sizeof(buf),
+                          "[LuaPlusCast] direct spell_on_id evidence tok=%u build=%d enqueue=%d spell=%u targetType=%u targetId=%08X flag18=%u",
+                          token,
+                          expected.buildMatched ? 1 : 0,
+                          expected.enqueueMatched ? 1 : 0,
+                          expected.spellId,
+                          expected.targetType,
+                          expected.targetId,
+                          static_cast<unsigned>(expected.flag18));
+                WriteRawLog(buf);
+                if (!expected.hooksActive && innerMsg.empty()) {
+                    innerMsg = "native_hooks_inactive";
+                    result = false;
+                } else if (result && !expected.enqueueMatched) {
+                    innerMsg = "enqueue_missing";
+                    result = false;
+                } else if (!result && innerMsg.empty()) {
                     innerMsg = "native_cast_on_id_failed";
+                }
                 return result;
             },
             msg,
             false);
+            RestoreManualCastToken(previousTok, manualAssigned);
+        }
     } else {
         msg = extracted ? "invalid_args" : "arg_extract_failed";
     }
@@ -9657,7 +9985,8 @@ static int __cdecl Lua_UserActionCastSpell_W(lua_State* L)
             if (g_traceLuaVerbose && savedCount > 0)
                 LogLuaReturns(L, "UserActionCastSpell", savedCount);
         } else if (g_origUserActionCastSpell) {
-            directValue = InvokeClientLuaFn(g_origUserActionCastSpell, "UserActionCastSpell", L);
+            WriteRawLog("[Lua] UserActionCastSpell direct raw fallback blocked (LuaPlus ABI)");
+            directValue = 0;
             usedDirect = true;
             retInfo = CaptureLuaReturn(L, directValue);
             if (g_traceLuaVerbose && directValue > 0)
@@ -9813,7 +10142,8 @@ static int __cdecl Lua_UserActionCastSpellOnId_W(lua_State* L)
             if (g_traceLuaVerbose && rc > 0)
                 LogLuaReturns(L, "UserActionCastSpellOnId", rc);
         } else if (g_origUserActionCastSpellOnId) {
-            directValue = InvokeClientLuaFn(g_origUserActionCastSpellOnId, "UserActionCastSpellOnId", L);
+            WriteRawLog("[Lua] UserActionCastSpellOnId direct raw fallback blocked (LuaPlus ABI)");
+            directValue = 0;
             usedDirect = true;
             retInfo = CaptureLuaReturn(L, directValue);
             if (g_traceLuaVerbose && directValue > 0)

@@ -9,6 +9,193 @@ local function VPExecSafeString(value)
     return "<" .. valueType .. ">"
 end
 
+local function VPExecNormalizeId(value)
+    if value == nil then
+        return nil
+    end
+    return tostring(value)
+end
+
+local function VPExecSnapshotConnectionIds(block)
+    local ids = {}
+    if type(block) ~= "table" or type(block.connections) ~= "table" then
+        return ids
+    end
+
+    for _, connection in ipairs(block.connections) do
+        local connectionId = nil
+        if type(connection) == "table" then
+            connectionId = connection.id
+        elseif type(connection) == "number" or type(connection) == "string" then
+            connectionId = connection
+        end
+
+        local key = VPExecNormalizeId(connectionId)
+        if key then
+            table.insert(ids, key)
+        end
+    end
+
+    return ids
+end
+
+local function VPExecCompareRecords(a, b)
+    local ay = tonumber(a and a.y) or 0
+    local by = tonumber(b and b.y) or 0
+    if ay ~= by then
+        return ay < by
+    end
+    return VPExecSafeString(a and a.key) < VPExecSafeString(b and b.key)
+end
+
+function VisualProgrammingInterface.Execution:resolveBlockById(blockId)
+    local manager = VisualProgrammingInterface.manager
+    if not manager or type(manager.blocks) ~= "table" then
+        return nil
+    end
+
+    local directBlock = manager.blocks[blockId]
+    if type(directBlock) == "table" then
+        return directBlock
+    end
+
+    if type(manager.getBlock) == "function" then
+        local managerBlock = manager:getBlock(blockId)
+        if type(managerBlock) == "table" then
+            return managerBlock
+        end
+    end
+
+    local targetKey = VPExecNormalizeId(blockId)
+    for _, block in pairs(manager.blocks) do
+        if type(block) == "table" and VPExecNormalizeId(block.id) == targetKey then
+            return block
+        end
+    end
+
+    return nil
+end
+
+function VisualProgrammingInterface.Execution:buildExecutionSnapshot()
+    local manager = VisualProgrammingInterface.manager
+    if not manager or type(manager.blocks) ~= "table" then
+        return nil, nil, "No blocks found"
+    end
+
+    local snapshotByKey = {}
+    local orderedRecords = {}
+
+    for id, block in pairs(manager.blocks) do
+        if type(block) == "table" and block.id ~= nil then
+            local key = VPExecNormalizeId(block.id)
+            local record = {
+                id = block.id,
+                key = key,
+                type = block.type,
+                y = tonumber(block.y) or 0,
+                connectionIds = VPExecSnapshotConnectionIds(block)
+            }
+            snapshotByKey[key] = record
+            table.insert(orderedRecords, record)
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] sortedBlock candidate", VPExecSafeString(record.id), VPExecSafeString(record.type), "y=" .. VPExecSafeString(record.y))
+            end
+        else
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] skipping invalid manager entry", VPExecSafeString(id), "type=" .. type(block))
+            end
+        end
+    end
+
+    table.sort(orderedRecords, VPExecCompareRecords)
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] sortedBlocks", #orderedRecords)
+    end
+
+    return snapshotByKey, orderedRecords, nil
+end
+
+function VisualProgrammingInterface.Execution:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords)
+    local executionQueue = {}
+    local visited = {}
+    local rootRecords = {}
+
+    for _, record in ipairs(orderedRecords or {}) do
+        local hasIncoming = false
+        for _, otherRecord in ipairs(orderedRecords or {}) do
+            for _, connectionKey in ipairs(otherRecord.connectionIds or {}) do
+                if connectionKey == record.key then
+                    hasIncoming = true
+                    break
+                end
+            end
+            if hasIncoming then
+                break
+            end
+        end
+        if not hasIncoming then
+            table.insert(rootRecords, record)
+        end
+    end
+
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] rootCount", tostring(#rootRecords))
+    end
+
+    local visitList = (#rootRecords > 0) and rootRecords or (orderedRecords or {})
+
+    local function visitRecord(record)
+        if type(record) ~= "table" or not record.key then
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] visit invalid record", VPExecSafeString(record))
+            end
+            return
+        end
+        if visited[record.key] then
+            return
+        end
+        visited[record.key] = true
+
+        local liveBlock = self:resolveBlockById(record.id)
+        if type(liveBlock) == "table" then
+            table.insert(executionQueue, liveBlock)
+        else
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] live block missing", VPExecSafeString(record.id), VPExecSafeString(record.type))
+            end
+        end
+
+        for _, connectionKey in ipairs(record.connectionIds or {}) do
+            local nextRecord = snapshotByKey[connectionKey]
+            if nextRecord then
+                visitRecord(nextRecord)
+            else
+                if UOWNativeLog then
+                    UOWNativeLog("[VPExec] missing snapshot connection", VPExecSafeString(record.id), "to=" .. VPExecSafeString(connectionKey))
+                end
+            end
+        end
+    end
+
+    for _, record in ipairs(visitList) do
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] visit root", VPExecSafeString(record.id), VPExecSafeString(record.type), "y=" .. VPExecSafeString(record.y), "roots=" .. tostring(#rootRecords))
+        end
+        visitRecord(record)
+    end
+
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] built queue", tostring(#executionQueue))
+        local labels = {}
+        for i, block in ipairs(executionQueue) do
+            labels[i] = VPExecSafeString(block.id) .. ":" .. VPExecSafeString(block.type)
+        end
+        UOWNativeLog("[VPExec] queue", table.concat(labels, ","))
+    end
+
+    return executionQueue
+end
+
 function VisualProgrammingInterface.Execution:testFlow()
     -- Hard reset without scheduling delayed stop/reset callbacks that can race the new run
     if type(self.hardResetForTestRun) == "function" then
@@ -73,128 +260,18 @@ function VisualProgrammingInterface.Execution:testFlow()
         VisualProgrammingInterface.ActionTimer.isComplete = false
     end
     
-    -- Build execution queue (topological sort)
-    local executionQueue = {}
-    local visited = {}
-    local function visit(block)
-        if not block then
-            Debug.Print("Warning: Attempted to visit nil block")
-            if UOWNativeLog then
-                UOWNativeLog("[VPExec] visit nil block")
-            end
-            return
+    local snapshotByKey, orderedRecords, snapshotErr = self:buildExecutionSnapshot()
+    if not snapshotByKey then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] snapshot error", VPExecSafeString(snapshotErr))
         end
-        if type(block) ~= "table" then
-            Debug.Print("Warning: Attempted to visit non-table block: " .. VPExecSafeString(block))
-            if UOWNativeLog then
-                UOWNativeLog("[VPExec] visit non-table block", VPExecSafeString(block), "type=" .. type(block))
-            end
-            return
-        end
-        if block.id == nil then
-            Debug.Print("Warning: Attempted to visit block without id")
-            if UOWNativeLog then
-                UOWNativeLog("[VPExec] visit block missing id", VPExecSafeString(block.type), "y=" .. VPExecSafeString(block.y))
-            end
-            return
-        end
-        if visited[block.id] then return end
-        
-        -- Verify block is properly tracked
-        if not VisualProgrammingInterface.manager.blocks[block.id] then
-            Debug.Print("Warning: Block " .. block.id .. " not tracked by manager")
-            -- Add block to manager's tracking
-            VisualProgrammingInterface.manager.blocks[block.id] = block
-            Debug.Print("Added block " .. block.id .. " to manager tracking")
-        end
-        
-        visited[block.id] = true
-        table.insert(executionQueue, block)
-        
-        -- Check if connections exist
-        if type(block.connections) == "table" then
-            for _, connection in ipairs(block.connections) do
-                if type(connection) == "table" and connection.id ~= nil then
-                    local nextBlock = VisualProgrammingInterface.manager:getBlock(connection.id)
-                    if nextBlock then
-                        visit(nextBlock)
-                    else
-                        Debug.Print("Warning: Connected block " .. connection.id .. " not found")
-                    end
-                end
-            end
-        end
-    end
-    
-    -- Get blocks sorted by vertical position
-    local sortedBlocks = {}
-    for id, block in pairs(VisualProgrammingInterface.manager.blocks) do
-        if type(block) == "table" then
-            table.insert(sortedBlocks, block)
-            if UOWNativeLog then
-                UOWNativeLog("[VPExec] sortedBlock candidate", VPExecSafeString(id), VPExecSafeString(block.type), "y=" .. VPExecSafeString(block.y))
-            end
-        else
-            if UOWNativeLog then
-                UOWNativeLog("[VPExec] skipping non-table manager entry", VPExecSafeString(id), "type=" .. type(block))
-            end
-        end
-    end
-    if UOWNativeLog then
-        UOWNativeLog("[VPExec] sortedBlocks", #sortedBlocks)
-    end
-    table.sort(sortedBlocks, function(a, b) 
-        local ay = (type(a) == "table" and tonumber(a.y)) or 0
-        local by = (type(b) == "table" and tonumber(b.y)) or 0
-        return ay < by
-    end)
-    
-    -- Build execution queue from root blocks first, falling back to all blocks only if needed.
-    local rootBlocks = {}
-    for _, block in ipairs(sortedBlocks) do
-        local hasIncoming = false
-        if block and block.id ~= nil then
-            for _, otherBlock in ipairs(sortedBlocks) do
-                if type(otherBlock) == "table" and type(otherBlock.connections) == "table" then
-                    for _, conn in ipairs(otherBlock.connections) do
-                        if type(conn) == "table" and conn.id == block.id then
-                            hasIncoming = true
-                            break
-                        end
-                    end
-                end
-                if hasIncoming then
-                    break
-                end
-            end
-        end
-        if not hasIncoming then
-            table.insert(rootBlocks, block)
-        end
-    end
-    if UOWNativeLog then
-        UOWNativeLog("[VPExec] rootCount", tostring(#rootBlocks))
+        self.executionQueue = {}
+        self.isRunning = false
+        return false, snapshotErr or "No executable blocks"
     end
 
-    local visitList = (#rootBlocks > 0) and rootBlocks or sortedBlocks
-    for _, block in ipairs(visitList) do
-        if UOWNativeLog then
-            UOWNativeLog("[VPExec] visit root", VPExecSafeString(block.id), VPExecSafeString(block.type), "y=" .. VPExecSafeString(block.y), "roots=" .. tostring(#rootBlocks))
-        end
-        visit(block)
-    end
-    
+    local executionQueue = self:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords)
     Debug.Print("Built execution queue with " .. #executionQueue .. " blocks")
-    if UOWNativeLog then
-        UOWNativeLog("[VPExec] built queue", tostring(#executionQueue))
-    end
-    if UOWNativeLog then
-        local labels = {}
-        for i, block in ipairs(executionQueue) do
-            labels[i] = VPExecSafeString(block.id) .. ":" .. VPExecSafeString(block.type)
-        end
-        UOWNativeLog("[VPExec] queue", table.concat(labels, ","))
-    end
     
     if #executionQueue == 0 then
         if UOWNativeLog then
