@@ -12,6 +12,52 @@ function VisualProgrammingInterface.Execution.OnUpdate(self, timePassed)
     if type(timePassed) == "table" then
         timePassed = timePassed[1]
     end
+
+    local pendingRaw = VisualProgrammingInterface.Execution.pendingRawDispatch
+    if type(pendingRaw) == "table" then
+        if pendingRaw.stage == "queue" then
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] pending raw queue",
+                    "helper=" .. tostring(pendingRaw.helper),
+                    "spell=" .. tostring(pendingRaw.spellId),
+                    "targetId=" .. tostring(pendingRaw.targetId),
+                    "block=" .. tostring(pendingRaw.blockId))
+            end
+            pendingRaw.stage = "pump"
+            if pendingRaw.helper == "UOWCastSpellOnIdRaw" and type(UOWCastSpellOnIdRaw) == "function" then
+                UOWCastSpellOnIdRaw(pendingRaw.spellId, pendingRaw.targetId)
+            elseif pendingRaw.helper == "UOWCastSpellRaw" and type(UOWCastSpellRaw) == "function" then
+                UOWCastSpellRaw(pendingRaw.spellId)
+            else
+                pendingRaw.stage = "done"
+            end
+            return
+        elseif pendingRaw.stage == "pump" then
+            pendingRaw.pumpAttempts = (pendingRaw.pumpAttempts or 0) + 1
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] pending raw pump",
+                    "attempt=" .. tostring(pendingRaw.pumpAttempts),
+                    "helper=" .. tostring(pendingRaw.helper),
+                    "spell=" .. tostring(pendingRaw.spellId),
+                    "targetId=" .. tostring(pendingRaw.targetId))
+            end
+            if type(UOWPumpQueuedRawCasts) == "function" then
+                UOWPumpQueuedRawCasts()
+            end
+            if pendingRaw.pumpAttempts >= 3 then
+                pendingRaw.stage = "done"
+            end
+            return
+        elseif pendingRaw.stage == "done" then
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] pending raw done",
+                    "helper=" .. tostring(pendingRaw.helper),
+                    "spell=" .. tostring(pendingRaw.spellId),
+                    "targetId=" .. tostring(pendingRaw.targetId))
+            end
+            VisualProgrammingInterface.Execution.pendingRawDispatch = nil
+        end
+    end
     
     -- Handle block reset timers
     if VisualProgrammingInterface.Execution.resetBlockId or 

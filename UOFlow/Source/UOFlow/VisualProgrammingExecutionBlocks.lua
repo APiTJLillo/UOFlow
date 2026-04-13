@@ -10,6 +10,14 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     -- Update block state
     self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.RUNNING
     self.currentBlock = block
+
+    local headBlock = self.executionQueue and self.executionQueue[1] or nil
+    if headBlock == block then
+        table.remove(self.executionQueue, 1)
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] consume queue head", tostring(block.id), tostring(block.type), "remaining=" .. tostring(#self.executionQueue))
+        end
+    end
     
     -- Update visual state
     local blockWindow = "Block" .. block.id

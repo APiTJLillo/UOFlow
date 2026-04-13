@@ -16,6 +16,7 @@ function VisualProgrammingInterface.Execution:hardResetForTestRun()
     self.resetTimer = 0
     self.resetBlockId = nil
     self.resetBlockIds = {}
+    self.pendingRawDispatch = nil
 
     if VisualProgrammingInterface.ActionTimer then
         VisualProgrammingInterface.ActionTimer.isWaiting = false
@@ -215,7 +216,7 @@ function VisualProgrammingInterface.Execution:continueExecution()
     end
     
     if #self.executionQueue > 0 then
-        local nextBlock = table.remove(self.executionQueue, 1)
+        local nextBlock = self.executionQueue[1]
         if UOWNativeLog then
             UOWNativeLog("[VPExec] continue nextBlock", tostring(nextBlock.id), tostring(nextBlock.type), "remaining=" .. tostring(#self.executionQueue))
         end

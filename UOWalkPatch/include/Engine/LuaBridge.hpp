@@ -11,6 +11,8 @@ namespace Engine::Lua {
     void ScheduleCastWrapRetry(const char* reason = nullptr);
     // Called from safe, game-thread contexts (e.g., movement update) to retry wrapper installs
     void PollLateInstalls();
+    // Consume deferred raw-cast requests from safe owner-thread/update contexts.
+    void PollQueuedRawCasts();
     // Notified whenever SendPacket executes (used to correlate delayed CastSpell packets).
     void NotifySendPacket(unsigned counter, const void* bytes, int len);
     // Invoke the client's Hotbar.UseSlot helper (hotbar IDs and slots are 1-based).

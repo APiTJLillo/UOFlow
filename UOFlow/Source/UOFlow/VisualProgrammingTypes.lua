@@ -922,6 +922,7 @@ local function VPResolveLuaSpellCastWrapper()
 
     local candidates = {
         { label = "UOWCastSpellRaw", fn = type(UOWCastSpellRaw) == "function" and UOWCastSpellRaw or nil },
+        { label = "uow_vp_cast", fn = type(uow_vp_cast) == "function" and uow_vp_cast or nil },
         { label = "uow_spell_cast", fn = type(uow_spell_cast) == "function" and uow_spell_cast or nil },
         { label = "uow.cmd.cast", fn = type(uow) == "table" and type(uow.cmd) == "table" and type(uow.cmd.cast) == "function" and uow.cmd.cast or nil },
         { label = "UOWLuaSpellCastWrapper", fn = type(UOWLuaSpellCastWrapper) == "function" and UOWLuaSpellCastWrapper or nil },
@@ -947,6 +948,7 @@ local function VPResolveLuaSpellCastOnIdWrapper()
 
     local candidates = {
         { label = "UOWCastSpellOnIdRaw", fn = type(UOWCastSpellOnIdRaw) == "function" and UOWCastSpellOnIdRaw or nil },
+        { label = "uow_vp_cast_on_id", fn = type(uow_vp_cast_on_id) == "function" and uow_vp_cast_on_id or nil },
         { label = "uow_spell_cast_on_id", fn = type(uow_spell_cast_on_id) == "function" and uow_spell_cast_on_id or nil },
         { label = "uow.cmd.cast_on_id", fn = type(uow) == "table" and type(uow.cmd) == "table" and type(uow.cmd.cast_on_id) == "function" and uow.cmd.cast_on_id or nil },
         { label = "UOWLuaSpellCastOnIdWrapper", fn = type(UOWLuaSpellCastOnIdWrapper) == "function" and UOWLuaSpellCastOnIdWrapper or nil },
@@ -1025,6 +1027,20 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
             tostring(tag),
             missingMsg)
         return false, missingMsg, nil, false
+    end
+
+    if VPIsRawCastHelper(castLabel) and type(callContext.onBeforeRawDispatch) == "function" then
+        local armedOk, armedMsg = callContext.onBeforeRawDispatch(usedOnId, castLabel, spellId, numericTargetId)
+        VPNativeLog("[VPSpell] raw dispatch arm",
+            tostring(tag),
+            "helper=" .. tostring(castLabel),
+            "ok=" .. tostring(armedOk ~= false),
+            "msg=" .. tostring(armedMsg))
+        if armedOk == false then
+            local failMsg = armedMsg or "raw_dispatch_arm_failed"
+            VPEmitUiLog("VP_CAST " .. tostring(failMsg))
+            return false, failMsg, nil, usedOnId
+        end
     end
 
     local preCallMessage = "[VP_CALL] about to call " .. VPValueToString(castLabel)
@@ -1165,13 +1181,105 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 -- Create unique queue IDs for each timer
                 local castQueueId = "cast_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
                 local recoveryQueueId = "recovery_" .. spellId .. "_" .. tostring(Interface.TimeSinceLogin)
-                
-                -- Start casting the spell
-                Debug.Print("Starting spell cast")
                 local targetId = nil
                 if params.target == "self" and WindowData and WindowData.PlayerStatus then
                     targetId = WindowData.PlayerStatus.PlayerId
                 end
+
+                local function queueCastTimers(queueUsedOnId)
+                    Debug.Print("Starting cast sequence: " .. castTime .. "ms")
+                    WaitTimer(castTime, function()
+                        Debug.Print("Cast time complete")
+
+                        if params.target == "self" and not queueUsedOnId then
+                            Debug.Print("Targeting self with PlayerId: " .. tostring(WindowData.PlayerStatus.PlayerId))
+                            GameData.UseRequests.UseTarget = WindowData.PlayerStatus.PlayerId
+                            WaitTimer(500, function()
+                                HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
+                                Debug.Print("Self-targeting complete")
+
+                                Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
+                                WaitTimer(recoveryTime, function()
+                                    Debug.Print("Recovery time complete - full sequence done")
+                                    VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                                    return true
+                                end, recoveryQueueId)
+
+                                return true
+                            end, castQueueId .. "_target")
+                        else
+                            Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
+                            WaitTimer(recoveryTime, function()
+                                Debug.Print("Recovery time complete - full sequence done")
+                                VisualProgrammingInterface.ActionTimer:notifyCompletion()
+                                return true
+                            end, recoveryQueueId)
+                        end
+
+                        return true
+                    end, castQueueId)
+                end
+
+                callContext.onBeforeRawDispatch = function(queueUsedOnId, helperLabel)
+                    if callContext.rawDispatchArmed then
+                        return true, "already_armed"
+                    end
+                    callContext.rawDispatchArmed = true
+                    VPNativeLog("[VPSpell] pre-arm timers",
+                        "block=" .. tostring(callContext.blockId),
+                        "helper=" .. tostring(helperLabel),
+                        "usedOnId=" .. tostring(queueUsedOnId),
+                        "castQueueId=" .. tostring(castQueueId),
+                        "recoveryQueueId=" .. tostring(recoveryQueueId))
+                    queueCastTimers(queueUsedOnId)
+                    return true, "armed"
+                end
+
+                if targetId and targetId > 0 and type(UOWCastSpellOnIdRaw) == "function" then
+                    local armOk, armMsg = callContext.onBeforeRawDispatch(true, "UOWCastSpellOnIdRaw(node)")
+                    VPNativeLog("[VPSpell] direct raw cast_on_id path",
+                        "block=" .. tostring(callContext.blockId),
+                        "spellId=" .. tostring(spellId),
+                        "targetId=" .. tostring(targetId),
+                        "armOk=" .. tostring(armOk ~= false),
+                        "armMsg=" .. tostring(armMsg))
+                    if armOk == false then
+                        local failMsg = tostring(armMsg or "raw_dispatch_arm_failed")
+                        VPEmitUiLog("VP_CAST " .. failMsg)
+                        return false, failMsg
+                    end
+
+                    VPEmitUiLog(string.format(
+                        "[VP_CAST] phase=node_before block=%s spell=%s helper=%s source=%s",
+                        VPValueToString(callContext.blockId),
+                        VPValueToString(spellId),
+                        "UOWCastSpellOnIdRaw",
+                        VPValueToString("VP_TEST_BUTTON")))
+                    if type(VisualProgrammingInterface.Execution) == "table" then
+                        VisualProgrammingInterface.Execution.pendingRawDispatch = {
+                            helper = "UOWCastSpellOnIdRaw",
+                            spellId = spellId,
+                            targetId = targetId,
+                            blockId = callContext.blockId,
+                            source = "VP_TEST_BUTTON",
+                            stage = "queue",
+                            pumpAttempts = 0
+                        }
+                        VPNativeLog("[VPSpell] pending raw dispatch scheduled",
+                            "block=" .. tostring(callContext.blockId),
+                            "spell=" .. tostring(spellId),
+                            "targetId=" .. tostring(targetId),
+                            "helper=UOWCastSpellOnIdRaw")
+                        return true, "pending_raw_dispatch", nil, true
+                    end
+
+                    local failMsg = "raw_dispatch_schedule_missing_execution"
+                    VPEmitUiLog("VP_CAST " .. failMsg)
+                    return false, failMsg
+                end
+                
+                -- Start casting the spell
+                Debug.Print("Starting spell cast")
                 local uoflowType = type(UOFlow)
                 local spellTableType = uoflowType == "table" and type(UOFlow.Spell) or "<nil>"
                 local castType = (uoflowType == "table" and spellTableType == "table") and type(UOFlow.Spell.cast) or "<nil>"
@@ -1221,43 +1329,10 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                     VPEmitUiLog("VP_CAST failed block=" .. VPValueToString(callContext.blockId) .. " spellId=" .. VPValueToString(spellId) .. " err=" .. failMsg)
                     return false, failMsg
                 end
-                
-                -- Queue cast timer
-                Debug.Print("Starting cast sequence: " .. castTime .. "ms")
-                WaitTimer(castTime, function()
-                    Debug.Print("Cast time complete")
-                    
-                    -- Handle targeting
-                    if params.target == "self" and not usedOnId then
-                        Debug.Print("Targeting self with PlayerId: " .. tostring(WindowData.PlayerStatus.PlayerId))
-                        GameData.UseRequests.UseTarget = WindowData.PlayerStatus.PlayerId
-                        -- Add a small delay between setting target and handling targeting
-                        WaitTimer(500, function()
-                            HandleSingleLeftClkTarget(WindowData.PlayerStatus.PlayerId)
-                            Debug.Print("Self-targeting complete")
-                            
-                            -- Queue recovery timer after targeting completes
-                            Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
-                            WaitTimer(recoveryTime, function()
-                                Debug.Print("Recovery time complete - full sequence done")
-                                VisualProgrammingInterface.ActionTimer:notifyCompletion()
-                                return true -- Complete recovery timer
-                            end, recoveryQueueId)
-                            
-                            return true
-                        end, castQueueId .. "_target")
-                    else
-                        -- If not self-targeting, queue recovery timer immediately
-                        Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
-                        WaitTimer(recoveryTime, function()
-                            Debug.Print("Recovery time complete - full sequence done")
-                            VisualProgrammingInterface.ActionTimer:notifyCompletion()
-                            return true -- Complete recovery timer
-                        end, recoveryQueueId)
-                    end
-                    
-                    return true
-                end, castQueueId)
+
+                if not callContext.rawDispatchArmed then
+                    queueCastTimers(usedOnId)
+                end
                 
                 return false -- Keep execution system waiting
             end

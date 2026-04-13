@@ -288,12 +288,12 @@ function VisualProgrammingInterface.Execution:testFlow()
     if UOWNativeLog then
         UOWNativeLog("[VPExec] queue stored", tostring(#self.executionQueue))
     end
-    self.primingFirstBlock = true
-    self.isRunning = true
-    if UOWNativeLog then
-        UOWNativeLog("[VPExec] isRunning", tostring(self.isRunning), "priming=" .. tostring(self.primingFirstBlock))
-    end
-    
+        self.primingFirstBlock = true
+        self.isRunning = true
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] isRunning", tostring(self.isRunning), "priming=" .. tostring(self.primingFirstBlock))
+        end
+
     -- Execute first block
     if #self.executionQueue > 0 then
         if UOWNativeLog then
@@ -311,6 +311,11 @@ function VisualProgrammingInterface.Execution:testFlow()
             UOWNativeLog("[VPExec] firstBlock", VPExecSafeString(firstBlock.id), VPExecSafeString(firstBlock.type), "remaining=" .. tostring(#self.executionQueue))
         end
         table.insert(testResults.executionOrder, firstBlock.id)
+
+        self.primingFirstBlock = false
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] priming cleared before firstBlock", VPExecSafeString(firstBlock.id), VPExecSafeString(firstBlock.type))
+        end
 
         local success = self:executeBlock(firstBlock)
         self.primingFirstBlock = false

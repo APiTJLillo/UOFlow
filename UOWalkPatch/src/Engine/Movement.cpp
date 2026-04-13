@@ -506,6 +506,7 @@ static bool ReadVec3Safe(void* ptr, Vec3& out)
 
 static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr, uint32_t dir, int runFlag) {
     Util::OwnerPump::DrainOnOwnerThread();
+    Engine::Lua::PollQueuedRawCasts();
 
     if (!g_moveCandidate && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0) {
         g_moveCandidate = thisPtr;

@@ -101,47 +101,63 @@ function UOWNativeLog(...)
 end
 
 local function UOWResolveLuaCallableSpellCast()
-    if type(uow_spell_cast) == "function" then
-        return uow_spell_cast, "uow_spell_cast"
-    end
+	if type(UOWCastSpellRaw) == "function" then
+		return UOWCastSpellRaw, "UOWCastSpellRaw"
+	end
 
-    if type(UOWCastSpellRaw) == "function" then
-        return UOWCastSpellRaw, "UOWCastSpellRaw"
-    end
+	if type(uow_vp_cast) == "function" then
+		return uow_vp_cast, "uow_vp_cast"
+	end
 
-    local globalTable = _G
-    if type(globalTable) == "table" then
-        local helperFn = rawget(globalTable, "uow_spell_cast")
-        if type(helperFn) == "function" then
-            return helperFn, "uow_spell_cast(_G)"
-        end
-        local rawFn = rawget(globalTable, "UOWCastSpellRaw")
-        if type(rawFn) == "function" then
-            return rawFn, "UOWCastSpellRaw(_G)"
-        end
-    end
+	if type(uow_spell_cast) == "function" then
+		return uow_spell_cast, "uow_spell_cast"
+	end
+
+	local globalTable = _G
+	if type(globalTable) == "table" then
+		local rawFn = rawget(globalTable, "UOWCastSpellRaw")
+		if type(rawFn) == "function" then
+			return rawFn, "UOWCastSpellRaw(_G)"
+		end
+		local vpHelperFn = rawget(globalTable, "uow_vp_cast")
+		if type(vpHelperFn) == "function" then
+			return vpHelperFn, "uow_vp_cast(_G)"
+		end
+		local helperFn = rawget(globalTable, "uow_spell_cast")
+		if type(helperFn) == "function" then
+			return helperFn, "uow_spell_cast(_G)"
+		end
+	end
 
     return nil, nil
 end
 
 local function UOWResolveLuaCallableSpellCastOnId()
-    if type(uow_spell_cast_on_id) == "function" then
-        return uow_spell_cast_on_id, "uow_spell_cast_on_id"
-    end
-
     if type(UOWCastSpellOnIdRaw) == "function" then
         return UOWCastSpellOnIdRaw, "UOWCastSpellOnIdRaw"
     end
 
+	if type(uow_vp_cast_on_id) == "function" then
+        return uow_vp_cast_on_id, "uow_vp_cast_on_id"
+	end
+
+	if type(uow_spell_cast_on_id) == "function" then
+        return uow_spell_cast_on_id, "uow_spell_cast_on_id"
+	end
+
     local globalTable = _G
     if type(globalTable) == "table" then
-        local helperFn = rawget(globalTable, "uow_spell_cast_on_id")
-        if type(helperFn) == "function" then
-            return helperFn, "uow_spell_cast_on_id(_G)"
-        end
         local rawFn = rawget(globalTable, "UOWCastSpellOnIdRaw")
         if type(rawFn) == "function" then
             return rawFn, "UOWCastSpellOnIdRaw(_G)"
+        end
+        local vpHelperFn = rawget(globalTable, "uow_vp_cast_on_id")
+        if type(vpHelperFn) == "function" then
+            return vpHelperFn, "uow_vp_cast_on_id(_G)"
+        end
+        local helperFn = rawget(globalTable, "uow_spell_cast_on_id")
+        if type(helperFn) == "function" then
+            return helperFn, "uow_spell_cast_on_id(_G)"
         end
     end
 
@@ -164,6 +180,9 @@ local function UOWSpellCastWrapper(spellId)
 	UOWNativeLog("[LuaSpell] cast request spellId=", tostring(numericSpellId), " helper=", tostring(castLabel))
 	local ok = castFn(numericSpellId)
 	local success = (ok == true)
+	if not success and (castLabel == "UOWCastSpellRaw" or castLabel == "UOWCastSpellRaw(_G)") and ok == nil then
+		success = true
+	end
 	UOWNativeLog(
 		"[LuaSpell] cast result spellId=",
 		tostring(numericSpellId),
@@ -198,6 +217,9 @@ local function UOWSpellCastOnIdWrapper(spellId, objectId)
 	UOWNativeLog("[LuaSpell] cast_on_id request spellId=", tostring(numericSpellId), " target=", tostring(numericObjectId), " helper=", tostring(castLabel))
 	local ok = castFn(numericSpellId, numericObjectId)
 	local success = (ok == true)
+	if not success and (castLabel == "UOWCastSpellOnIdRaw" or castLabel == "UOWCastSpellOnIdRaw(_G)") and ok == nil then
+		success = true
+	end
 	UOWNativeLog(
 		"[LuaSpell] cast_on_id result spellId=",
 		tostring(numericSpellId),

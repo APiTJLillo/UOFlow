@@ -250,6 +250,9 @@ namespace {
     static std::atomic<DWORD> g_lastCastAttemptTick{0};
     static std::atomic<uint32_t> g_castSpellTokenSeed{0};
     static std::atomic<uint32_t> g_lastCastToken{0};
+    static std::atomic<int> g_pendingRawCastSpell{0};
+    static std::atomic<uint32_t> g_pendingRawCastTarget{0};
+    static std::atomic<int> g_pendingRawCastMode{0}; // 0=none, 1=spell, 2=spell_on_id
     static volatile LONG g_castSpellCalleeDumps = 0;
 
     struct CastSpellFrameBuffer {
@@ -542,6 +545,7 @@ static int __stdcall Lua_DummyPrint_Std(void* raw);
 static int __stdcall Lua_UOW_Debug_log_Std(void* raw);
 static int __stdcall Lua_UOW_Log_test_Std(void* raw);
 static int __stdcall Lua_uow_call_cast_Std(void* raw);
+static int __stdcall Lua_UOW_PumpQueuedRawCasts_Raw(void* raw);
 static uintptr_t SafeReadUintptr(const uintptr_t* ptr);
 static uint8_t SafeReadByte(const uint8_t* ptr, uint8_t fallback);
 static uint8_t* TryResolveCallsiteFromReturn(uintptr_t ret);
@@ -553,6 +557,10 @@ static bool OpenTargetForSpell_Fallback(const char* reason,
                                         bool trackCastState = true,
                                         bool dedupe = true,
                                         std::string* out_reason = nullptr);
+static bool DispatchNoClickCommand(const char* name,
+                                   std::function<bool(std::string&)> fn,
+                                   std::string& out_msg,
+                                   bool pendingIsSuccess = true);
 static bool QueueForceOpenTargetCursor(uint32_t action,
                                        uint32_t sub,
                                        uint32_t extra,
@@ -594,6 +602,8 @@ static int __cdecl Lua_UserActionUseSkill_W(lua_State* L);
 static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L);
 static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L);
 static bool TryConsumePendingSpellRequest(lua_State* L, const char* sourceTag);
+static void QueuePendingRawCastRequest(int spellId, uint32_t targetId, bool useOnId, const char* sourceTag);
+static bool ConsumePendingRawCastRequest(const char* sourceTag);
 static int __cdecl Lua_RequestTargetInfo_W(lua_State* L);
 static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L);
 static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L);
@@ -620,6 +630,7 @@ static int __cdecl Lua_uow_is_cfunc(lua_State* L);
 static int __cdecl Lua_uow_call_cast(lua_State* L);
 static int __cdecl Lua_uow_bridge_health(lua_State* L);
 static int __cdecl Lua_uow_vp_cast(lua_State* L);
+static int __cdecl Lua_uow_vp_cast_on_id(lua_State* L);
 static int __cdecl Lua_uow_vp_ping(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L);
@@ -1923,6 +1934,7 @@ static void LogSpellHelperBindings(lua_State* L, const char* stage)
         "__uow_call_cast_v1",
         "__uow_bridge_health_v1",
         "__uow_vp_cast_v1",
+        "__uow_vp_cast_on_id_v1",
         "__uow_vp_ping_v1",
         "__uow_debug_log_v1",
         "UOWCastSpellRaw",
@@ -1930,6 +1942,7 @@ static void LogSpellHelperBindings(lua_State* L, const char* stage)
         "uow_spell_cast_on_id",
         "uow_get_native",
         "uow_vp_cast",
+        "uow_vp_cast_on_id",
         "uow_vp_ping",
         "uow_debug_log",
         "uow.cmd.cast",
@@ -4012,6 +4025,119 @@ static uint32_t BeginManualCastAttempt(int spellId,
     return token;
 }
 
+static void QueuePendingRawCastRequest(int spellId, uint32_t targetId, bool useOnId, const char* sourceTag)
+{
+    g_pendingRawCastSpell.store(spellId, std::memory_order_release);
+    g_pendingRawCastTarget.store(targetId, std::memory_order_release);
+    g_pendingRawCastMode.store(useOnId ? 2 : 1, std::memory_order_release);
+
+    char buf[256];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[QueuedRawCast] queued source=%s mode=%s spell=%d target=%u caller=%u owner=%u",
+              sourceTag ? sourceTag : "<none>",
+              useOnId ? "on_id" : "spell",
+              spellId,
+              targetId,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
+}
+
+static bool ConsumePendingRawCastRequest(const char* sourceTag)
+{
+    const int mode = g_pendingRawCastMode.exchange(0, std::memory_order_acq_rel);
+    if (mode == 0)
+        return false;
+
+    const int spellId = g_pendingRawCastSpell.load(std::memory_order_acquire);
+    const uint32_t targetId = g_pendingRawCastTarget.load(std::memory_order_acquire);
+    const bool useOnId = (mode == 2);
+
+    char intro[256];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[QueuedRawCast] consume source=%s mode=%s spell=%d target=%u caller=%u owner=%u",
+              sourceTag ? sourceTag : "<none>",
+              useOnId ? "on_id" : "spell",
+              spellId,
+              targetId,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(intro);
+
+    std::string msg;
+    bool ok = false;
+    if (spellId > 0 && (!useOnId || targetId != 0)) {
+        uint32_t previousTok = 0;
+        bool manualAssigned = false;
+        const uint32_t token = BeginManualCastAttempt(spellId,
+                                                      useOnId ? "queued_raw_cast_on_id" : "queued_raw_cast",
+                                                      previousTok,
+                                                      manualAssigned);
+        if (!Engine::CastFallback::IsNativeHookActive()) {
+            msg = "native_hooks_inactive";
+            RestoreManualCastToken(previousTok, manualAssigned);
+        } else {
+            Engine::CastFallback::ArmExpectedCast(token,
+                                                  static_cast<uint32_t>(spellId),
+                                                  useOnId ? 4u : 0u,
+                                                  useOnId ? targetId : 0u,
+                                                  useOnId);
+            ok = DispatchNoClickCommand(
+                useOnId ? "queued_raw_cast_on_id" : "queued_raw_cast",
+                [spellId, targetId, token, useOnId](std::string& innerMsg) {
+                    ScopedForcedActionGate forcedGate(useOnId ? "queued_raw_cast_on_id" : "queued_raw_cast");
+                    bool result = useOnId
+                        ? DirectBuildAndEnqueueSpellOnId(spellId, token, targetId, innerMsg)
+                        : DirectBuildAndEnqueueSpell(spellId, token, innerMsg);
+                    Engine::CastFallback::ExpectedCastResult expected = Engine::CastFallback::ConsumeExpectedCast(token);
+                    char buf[352];
+                    sprintf_s(buf,
+                              sizeof(buf),
+                              "[QueuedRawCast] evidence tok=%u build=%d enqueue=%d spell=%u targetType=%u targetId=%08X flag18=%u mode=%s",
+                              token,
+                              expected.buildMatched ? 1 : 0,
+                              expected.enqueueMatched ? 1 : 0,
+                              expected.spellId,
+                              expected.targetType,
+                              expected.targetId,
+                              static_cast<unsigned>(expected.flag18),
+                              useOnId ? "on_id" : "spell");
+                    WriteRawLog(buf);
+                    if (!expected.hooksActive && innerMsg.empty()) {
+                        innerMsg = "native_hooks_inactive";
+                        result = false;
+                    } else if (result && !expected.enqueueMatched) {
+                        innerMsg = "enqueue_missing";
+                        result = false;
+                    } else if (!result && innerMsg.empty()) {
+                        innerMsg = useOnId ? "native_cast_on_id_failed" : "native_cast_failed";
+                    }
+                    return result;
+                },
+                msg,
+                false);
+            RestoreManualCastToken(previousTok, manualAssigned);
+        }
+    } else {
+        msg = useOnId ? "invalid_args" : "invalid_spell";
+    }
+
+    char outro[320];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[QueuedRawCast] result source=%s mode=%s spell=%d target=%u ok=%d msg=%s",
+              sourceTag ? sourceTag : "<none>",
+              useOnId ? "on_id" : "spell",
+              spellId,
+              targetId,
+              ok ? 1 : 0,
+              msg.empty() ? "<none>" : msg.c_str());
+    WriteRawLog(outro);
+    return ok;
+}
+
 static void UowTracePushSpell(int spell)
 {
     g_castSpellCurSpell.store(spell, std::memory_order_relaxed);
@@ -5986,12 +6112,14 @@ static void EnsureDirectLuaGlobals(lua_State* L)
         {Lua_uow_call_cast, "__uow_call_cast_v1"},
         {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
+        {Lua_uow_vp_cast_on_id, "__uow_vp_cast_on_id_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
         {Lua_UOW_Log_test, "__uow_log_test_v1"},
         {Lua_uow_spell_cast_global, "uow_spell_cast"},
         {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
         {Lua_uow_get_native, "uow_get_native"},
         {Lua_uow_vp_cast, "uow_vp_cast"},
+        {Lua_uow_vp_cast_on_id, "uow_vp_cast_on_id"},
         {Lua_uow_vp_ping, "uow_vp_ping"},
         {Lua_UOW_Log_test, "Debug.LogTest"},
         {Lua_UOW_Debug_dump_spell_paths, "uow_dump_spell_paths"},
@@ -6051,31 +6179,34 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
     bool dummyOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_DummyPrint_Std), "DummyPrint");
     bool castOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_CastSpell_Raw), "UOWCastSpellRaw");
     bool castOnIdOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_CastSpellOnId_Raw), "UOWCastSpellOnIdRaw");
+    bool pumpOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_PumpQueuedRawCasts_Raw), "UOWPumpQueuedRawCasts");
 
-    if (dummyOk && castOk && castOnIdOk) {
+    if (dummyOk && castOk && castOnIdOk && pumpOk) {
         slot->flags |= kCtxEvaluatorProbesBound;
         char okBuf[320];
         sprintf_s(okBuf,
                   sizeof(okBuf),
-                  "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s",
+                  "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s pump=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
                   "disabled",
                   "disabled",
                   castOk ? "yes" : "no",
-                  castOnIdOk ? "yes" : "no");
+                  castOnIdOk ? "yes" : "no",
+                  pumpOk ? "yes" : "no");
         WriteRawLog(okBuf);
     } else {
         char failBuf[320];
         sprintf_s(failBuf,
                   sizeof(failBuf),
-                  "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s",
+                  "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s pump=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
                   "disabled",
                   "disabled",
                   castOk ? "yes" : "no",
-                  castOnIdOk ? "yes" : "no");
+                  castOnIdOk ? "yes" : "no",
+                  pumpOk ? "yes" : "no");
         WriteRawLog(failBuf);
     }
 }
@@ -7514,6 +7645,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_uow_call_cast, "__uow_call_cast_v1"},
         {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
+        {Lua_uow_vp_cast_on_id, "__uow_vp_cast_on_id_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
         {Lua_UOW_Log_test, "__uow_log_test_v1"},
         {Lua_UOFlow_bootstrap, "uow.bootstrap"},
@@ -7523,6 +7655,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_uow_get_native, "uow_get_native"},
         {Lua_uow_get_native, "uow.get_native"},
         {Lua_uow_vp_cast, "uow_vp_cast"},
+        {Lua_uow_vp_cast_on_id, "uow_vp_cast_on_id"},
         {Lua_uow_vp_ping, "uow_vp_ping"},
         {Lua_UOFlow_Target_commit_obj, "uow.cmd.commit_obj"},
         {Lua_UOFlow_Target_commit_ground, "uow.cmd.commit_ground"},
@@ -7999,7 +8132,7 @@ static void CompleteNoClickSpell()
 static bool DispatchNoClickCommand(const char* name,
                                    std::function<bool(std::string&)> fn,
                                    std::string& out_msg,
-                                   bool pendingIsSuccess = true)
+                                   bool pendingIsSuccess)
 {
     if (!fn)
         return false;
@@ -8699,74 +8832,42 @@ static int __cdecl Lua_uow_vp_cast(lua_State* L)
         spellId = static_cast<int>(lua_tointeger(L, 1));
     const std::string sourceTag = ReadOptionalString(L, 2);
 
-    LogLuaCastEntry("__uow_vp_cast_v1", L, spellId, sourceTag.c_str());
-
-    void* ctx = nullptr;
-    ResolveGameplayScriptContext(L, CurrentScriptContext(), &ctx, "__uow_vp_cast_v1");
-    if (!ctx)
-        ctx = CanonicalOwnerContext();
-    if (!IsBootstrapReadyFor(ctx, L)) {
-        char blocked[256];
-        sprintf_s(blocked,
-                  sizeof(blocked),
-                  "[Lua] BRIDGE_V1 vp_cast blocked spell=%d reason=bridge_not_ready caller=%u owner=%u L=%p ctx=%p",
-                  spellId,
-                  GetCurrentThreadId(),
-                  Util::OwnerPump::GetOwnerThreadId(),
-                  L,
-                  ctx);
-        WriteRawLog(blocked);
-        return PushLuaCommandResult(L, false, "bridge_not_ready");
-    }
-
     char intro[256];
     sprintf_s(intro,
               sizeof(intro),
-              "[Lua] BRIDGE_V1 vp_cast invoked spell=%d caller=%u owner=%u L=%p source=%s",
+              "[Lua] uow_vp_cast invoked spell=%d caller=%u owner=%u L=%p source=%s",
               spellId,
               GetCurrentThreadId(),
               Util::OwnerPump::GetOwnerThreadId(),
               L,
               sourceTag.empty() ? "<none>" : sourceTag.c_str());
     WriteRawLog(intro);
+    return Lua_uow_spell_cast_global(L);
+}
 
+static int __cdecl Lua_uow_vp_cast_on_id(lua_State* L)
+{
+    int spellId = 0;
+    uint32_t objectId = 0;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        spellId = static_cast<int>(lua_tointeger(L, 1));
+    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
+        objectId = static_cast<uint32_t>(lua_tointeger(L, 2));
+    const std::string sourceTag = ReadOptionalString(L, 3);
+
+    char intro[288];
     sprintf_s(intro,
               sizeof(intro),
-              "[Lua] __uow_vp_cast_v1 invoked spell=%d caller=%u owner=%u L=%p source=%s",
+              "[Lua] uow_vp_cast_on_id invoked spell=%d target=%u caller=%u owner=%u L=%p source=%s",
               spellId,
+              objectId,
               GetCurrentThreadId(),
               Util::OwnerPump::GetOwnerThreadId(),
               L,
               sourceTag.empty() ? "<none>" : sourceTag.c_str());
     WriteRawLog(intro);
 
-    int resultCount = Lua_UOFlow_Spell_cast(L);
-
-    bool ok = false;
-    std::string msg;
-    if (L && resultCount >= 2) {
-        const int top = lua_gettop(L);
-        const int okIndex = top - resultCount + 1;
-        const int msgIndex = top - resultCount + 2;
-        ok = lua_toboolean(L, okIndex) != 0;
-        size_t msgLen = 0;
-        const char* rawMsg = lua_tolstring(L, msgIndex, &msgLen);
-        if (rawMsg && msgLen)
-            msg.assign(rawMsg, msgLen);
-    }
-
-    char outro[320];
-    sprintf_s(outro,
-              sizeof(outro),
-              "[Lua] __uow_vp_cast_v1 result ok=%d msg=%s caller=%u owner=%u L=%p",
-              ok ? 1 : 0,
-              msg.empty() ? "<none>" : msg.c_str(),
-              GetCurrentThreadId(),
-              Util::OwnerPump::GetOwnerThreadId(),
-              L);
-    WriteRawLog(outro);
-
-    return resultCount;
+    return Lua_uow_spell_cast_on_id_global(L);
 }
 
 static int __cdecl Lua_uow_vp_ping(lua_State* L)
@@ -9272,6 +9373,7 @@ static bool PushLuaPlusBooleanReturn(void* ctx, bool value)
             push boolValue
             call eax
             lea eax, scratch
+            mov ecx, ctx
             mov edx, finalizeReturn
             call edx
             pop esi
@@ -9338,8 +9440,6 @@ static int __stdcall Lua_UOW_CastSpell_Raw(void* raw)
               spellId);
     WriteRawLog(intro);
 
-    bool ok = false;
-    std::string msg;
     const uint8_t gateValue = ReadActionGateByte();
     char gateBuf[160];
     sprintf_s(gateBuf,
@@ -9350,72 +9450,17 @@ static int __stdcall Lua_UOW_CastSpell_Raw(void* raw)
     WriteRawLog(gateBuf);
 
     if (gateValue == 0xFF) {
-        msg = "gate_fault";
+        WriteRawLog("[LuaPlusCast] UOWCastSpellRaw queue skipped gate_fault");
     } else if (extracted && spellId > 0) {
-        uint32_t previousTok = 0;
-        bool manualAssigned = false;
-        const uint32_t token = BeginManualCastAttempt(spellId, "UOWCastSpellRaw", previousTok, manualAssigned);
-        if (!Engine::CastFallback::IsNativeHookActive()) {
-            msg = "native_hooks_inactive";
-            RestoreManualCastToken(previousTok, manualAssigned);
-        } else {
-            Engine::CastFallback::ArmExpectedCast(token,
-                                                  static_cast<uint32_t>(spellId),
-                                                  0u,
-                                                  0u,
-                                                  false);
-        ok = DispatchNoClickCommand(
-            "UOWCastSpellRaw",
-            [spellId, token](std::string& innerMsg) {
-                ScopedForcedActionGate forcedGate("UOWCastSpellRaw");
-                bool result = DirectBuildAndEnqueueSpell(spellId, token, innerMsg);
-                Engine::CastFallback::ExpectedCastResult expected = Engine::CastFallback::ConsumeExpectedCast(token);
-                char buf[320];
-                sprintf_s(buf,
-                          sizeof(buf),
-                          "[LuaPlusCast] direct spell evidence tok=%u build=%d enqueue=%d spell=%u targetType=%u targetId=%08X flag18=%u",
-                          token,
-                          expected.buildMatched ? 1 : 0,
-                          expected.enqueueMatched ? 1 : 0,
-                          expected.spellId,
-                          expected.targetType,
-                          expected.targetId,
-                          static_cast<unsigned>(expected.flag18));
-                WriteRawLog(buf);
-                if (!expected.hooksActive && innerMsg.empty()) {
-                    innerMsg = "native_hooks_inactive";
-                    result = false;
-                } else if (result && !expected.enqueueMatched) {
-                    innerMsg = "enqueue_missing";
-                    result = false;
-                } else if (!result && innerMsg.empty()) {
-                    innerMsg = "native_cast_failed";
-                }
-                return result;
-            },
-            msg,
-            false);
-            RestoreManualCastToken(previousTok, manualAssigned);
-        }
+        QueuePendingRawCastRequest(spellId, 0u, false, "UOWCastSpellRaw");
     } else {
-        msg = extracted ? "invalid_spell" : "arg_extract_failed";
+        WriteRawLog(extracted ? "[LuaPlusCast] UOWCastSpellRaw queue skipped invalid_spell"
+                              : "[LuaPlusCast] UOWCastSpellRaw queue skipped arg_extract_failed");
     }
 
-    char outro[256];
-    sprintf_s(outro,
-              sizeof(outro),
-              "[LuaPlusCast] UOWCastSpellRaw result ok=%d spell=%d msg=%s",
-              ok ? 1 : 0,
-              spellId,
-              msg.empty() ? "<none>" : msg.c_str());
-    WriteRawLog(outro);
-
-    if (!PushLuaPlusBooleanReturn(ctx, ok)) {
-        WriteRawLog("[LuaPlusCast] UOWCastSpellRaw return stage failed");
-        return 0;
-    }
-
-    return 1;
+    (void)ctx;
+    WriteRawLog("[LuaPlusCast] UOWCastSpellRaw queued and returning no values");
+    return 0;
 }
 
 static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw)
@@ -9449,8 +9494,6 @@ static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw)
               objectId);
     WriteRawLog(intro);
 
-    bool ok = false;
-    std::string msg;
     const uint8_t gateValue = ReadActionGateByte();
     char gateBuf[192];
     sprintf_s(gateBuf,
@@ -9462,73 +9505,32 @@ static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw)
     WriteRawLog(gateBuf);
 
     if (gateValue == 0xFF) {
-        msg = "gate_fault";
+        WriteRawLog("[LuaPlusCast] UOWCastSpellOnIdRaw queue skipped gate_fault");
     } else if (extracted && spellId > 0 && objectId != 0) {
-        uint32_t previousTok = 0;
-        bool manualAssigned = false;
-        const uint32_t token = BeginManualCastAttempt(spellId, "UOWCastSpellOnIdRaw", previousTok, manualAssigned);
-        if (!Engine::CastFallback::IsNativeHookActive()) {
-            msg = "native_hooks_inactive";
-            RestoreManualCastToken(previousTok, manualAssigned);
-        } else {
-            Engine::CastFallback::ArmExpectedCast(token,
-                                                  static_cast<uint32_t>(spellId),
-                                                  4u,
-                                                  objectId,
-                                                  true);
-        ok = DispatchNoClickCommand(
-            "UOWCastSpellOnIdRaw",
-            [spellId, objectId, token](std::string& innerMsg) {
-                ScopedForcedActionGate forcedGate("UOWCastSpellOnIdRaw");
-                bool result = DirectBuildAndEnqueueSpellOnId(spellId, token, objectId, innerMsg);
-                Engine::CastFallback::ExpectedCastResult expected = Engine::CastFallback::ConsumeExpectedCast(token);
-                char buf[352];
-                sprintf_s(buf,
-                          sizeof(buf),
-                          "[LuaPlusCast] direct spell_on_id evidence tok=%u build=%d enqueue=%d spell=%u targetType=%u targetId=%08X flag18=%u",
-                          token,
-                          expected.buildMatched ? 1 : 0,
-                          expected.enqueueMatched ? 1 : 0,
-                          expected.spellId,
-                          expected.targetType,
-                          expected.targetId,
-                          static_cast<unsigned>(expected.flag18));
-                WriteRawLog(buf);
-                if (!expected.hooksActive && innerMsg.empty()) {
-                    innerMsg = "native_hooks_inactive";
-                    result = false;
-                } else if (result && !expected.enqueueMatched) {
-                    innerMsg = "enqueue_missing";
-                    result = false;
-                } else if (!result && innerMsg.empty()) {
-                    innerMsg = "native_cast_on_id_failed";
-                }
-                return result;
-            },
-            msg,
-            false);
-            RestoreManualCastToken(previousTok, manualAssigned);
-        }
+        QueuePendingRawCastRequest(spellId, objectId, true, "UOWCastSpellOnIdRaw");
     } else {
-        msg = extracted ? "invalid_args" : "arg_extract_failed";
+        WriteRawLog(extracted ? "[LuaPlusCast] UOWCastSpellOnIdRaw queue skipped invalid_args"
+                              : "[LuaPlusCast] UOWCastSpellOnIdRaw queue skipped arg_extract_failed");
     }
 
-    char outro[320];
-    sprintf_s(outro,
-              sizeof(outro),
-              "[LuaPlusCast] UOWCastSpellOnIdRaw result ok=%d spell=%d target=%u msg=%s",
-              ok ? 1 : 0,
-              spellId,
-              objectId,
-              msg.empty() ? "<none>" : msg.c_str());
-    WriteRawLog(outro);
+    (void)ctx;
+    WriteRawLog("[LuaPlusCast] UOWCastSpellOnIdRaw queued and returning no values");
+    return 0;
+}
 
-    if (!PushLuaPlusBooleanReturn(ctx, ok)) {
-        WriteRawLog("[LuaPlusCast] UOWCastSpellOnIdRaw return stage failed");
-        return 0;
-    }
-
-    return 1;
+static int __stdcall Lua_UOW_PumpQueuedRawCasts_Raw(void* raw)
+{
+    (void)raw;
+    char intro[160];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[LuaPlusCast] UOWPumpQueuedRawCasts invoked caller=%u owner=%u",
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(intro);
+    ConsumePendingRawCastRequest("raw_pump_helper");
+    WriteRawLog("[LuaPlusCast] UOWPumpQueuedRawCasts returning no values");
+    return 0;
 }
 
 static int __cdecl Lua_UOW_Debug_log(lua_State* L)
@@ -11893,9 +11895,15 @@ bool InitLuaBridge()
 }
 
 // Lightweight polling entry-point to retry late installs from a game-thread context
+void PollQueuedRawCasts()
+{
+    ConsumePendingRawCastRequest("poller_raw");
+}
+
 void PollLateInstalls()
 {
     Util::OwnerPump::DrainOnOwnerThread();
+    ConsumePendingRawCastRequest("poller");
     static DWORD s_lastTryTick = 0;
     DWORD now = GetTickCount();
     const uint32_t bootstrapState = g_bootstrapState.load(std::memory_order_acquire);
