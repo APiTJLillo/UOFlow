@@ -8010,15 +8010,56 @@ static bool TryCastSpellOnIdViaClient(lua_State* L, int spellId, uint32_t object
 {
     if (!L || objectId == 0)
         return false;
-    PrimeSpellUseRequestState(L, spellId, objectId, "cast_on_id");
-    if (CastOnIdWrapperReady() && InvokeCastOnIdWrapper(L, spellId, objectId))
-        return true;
-    if (!g_allowDirectCastFallback || !g_origCastSpellOnId)
+
+    const bool primeOk = PrimeSpellUseRequestState(L, spellId, objectId, "cast_on_id");
+    const bool wrapperReady = CastOnIdWrapperReady();
+    const bool directReady = g_allowDirectCastFallback && g_origCastSpellOnId;
+
+    char intro[256];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[CastOnId] client route spell=%d target=%u prime=%s wrapper=%s direct=%s",
+              spellId,
+              objectId,
+              primeOk ? "ok" : "fail",
+              wrapperReady ? "ready" : "no",
+              directReady ? "ready" : "no");
+    WriteRawLog(intro);
+
+    if (!primeOk) {
+        WriteRawLog("[CastOnId] skipping client wrapper/orig due to prime_failed");
+        return false;
+    }
+
+    if (wrapperReady) {
+        bool wrapperOk = InvokeCastOnIdWrapper(L, spellId, objectId);
+        char buf[192];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "[CastOnId] wrapper route spell=%d target=%u ok=%d",
+                  spellId,
+                  objectId,
+                  wrapperOk ? 1 : 0);
+        WriteRawLog(buf);
+        if (wrapperOk)
+            return true;
+    }
+
+    if (!directReady)
         return false;
     int mappedId = 0;
     if (!MapSpellIdForClient(spellId, mappedId))
         return false;
-    return InvokeCastOnIdOriginal(L, mappedId, objectId, spellId);
+    bool directOk = InvokeCastOnIdOriginal(L, mappedId, objectId, spellId);
+    char outro[192];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[CastOnId] direct route spell=%d target=%u ok=%d",
+              spellId,
+              objectId,
+              directOk ? 1 : 0);
+    WriteRawLog(outro);
+    return directOk;
 }
 
 static bool NoClickCastSpellOnId_Internal(int spellId, uint32_t objectId)
