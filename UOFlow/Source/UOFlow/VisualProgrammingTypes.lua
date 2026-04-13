@@ -939,6 +939,28 @@ local function VPResolveLuaSpellCastWrapper()
     return nil, nil, table.concat(summary, " | ")
 end
 
+local function VPResolveLuaSpellCastOnIdWrapper()
+    if type(UOWInstallLuaSpellWrappers) == "function" then
+        UOWInstallLuaSpellWrappers()
+    end
+
+    local candidates = {
+        { label = "UOFlow.Spell.cast_on_id", fn = type(UOFlow) == "table" and type(UOFlow.Spell) == "table" and type(UOFlow.Spell.cast_on_id) == "function" and UOFlow.Spell.cast_on_id or nil },
+        { label = "UOW.Spell.cast_on_id", fn = type(UOW) == "table" and type(UOW.Spell) == "table" and type(UOW.Spell.cast_on_id) == "function" and UOW.Spell.cast_on_id or nil },
+        { label = "uow.cmd.cast_on_id", fn = type(uow) == "table" and type(uow.cmd) == "table" and type(uow.cmd.cast_on_id) == "function" and uow.cmd.cast_on_id or nil },
+    }
+
+    local summary = {}
+    for _, candidate in ipairs(candidates) do
+        table.insert(summary, VPDescribeCandidate(candidate.label, candidate.fn))
+        if type(candidate.fn) == "function" then
+            return candidate.fn, candidate.label, table.concat(summary, " | ")
+        end
+    end
+
+    return nil, nil, table.concat(summary, " | ")
+end
+
 local function VPCastSpell(spellId, tag, targetId, callContext)
     local numericSpellId = tonumber(spellId)
     if not numericSpellId or numericSpellId <= 0 then
@@ -952,25 +974,41 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     callContext.executionTag = callContext.executionTag or tag
     callContext.luaContextTag = callContext.luaContextTag or VPGetLuaContextTag()
     local sourceTag = callContext.nativeSourceTag or tag
+    local numericTargetId = tonumber(targetId)
+    local useCastOnId = numericTargetId and numericTargetId > 0
     local beforeState = VPSnapshotSpellState()
-    local castFn, castLabel, candidateSummary = VPResolveLuaSpellCastWrapper()
+    local castFn, castLabel, candidateSummary = nil, nil, nil
     local ok = false
     local result1 = nil
     local result2 = nil
     local errText = nil
+    local usedOnId = false
+
+    if useCastOnId then
+        castFn, castLabel, candidateSummary = VPResolveLuaSpellCastOnIdWrapper()
+        usedOnId = type(castFn) == "function"
+    end
+
+    if type(castFn) ~= "function" then
+        castFn, castLabel, candidateSummary = VPResolveLuaSpellCastWrapper()
+        usedOnId = false
+    end
 
     VPNativeLog("[VPSpell] cast begin",
         tostring(tag),
         "spell=" .. tostring(spellId),
         "ctx=" .. tostring(callContext.executionTag),
         "source=" .. tostring(sourceTag),
-        "targetId=" .. tostring(targetId))
+        "targetId=" .. tostring(targetId),
+        "useCastOnId=" .. tostring(usedOnId))
     VPNativeLog("[VPSpell] cast candidates", tostring(tag), candidateSummary)
     Debug.Print("[VPSpell] cast candidates " .. candidateSummary)
     VPLogSpellState(tag .. ":before", spellId)
 
     if type(castFn) ~= "function" then
-        local missingMsg = "native_cast_missing name=UOFlow.Spell.cast"
+        local missingMsg = usedOnId
+            and "native_cast_missing name=UOFlow.Spell.cast_on_id"
+            or "native_cast_missing name=UOFlow.Spell.cast"
         VPEmitUiLog("VP_CAST " .. missingMsg)
         VPNativeLog("[VPSpell] cast fail",
             tostring(tag),
@@ -987,7 +1025,11 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         .. " fn=" .. VPValueToString(castFn)
     Debug.Print(preCallMessage)
     VPNativeLog(preCallMessage)
-    ok, result1, result2, errText = VPInvokeFunction(castFn, spellId)
+    if usedOnId then
+        ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, numericTargetId)
+    else
+        ok, result1, result2, errText = VPInvokeFunction(castFn, spellId)
+    end
     local postCallMessage = "[VP_CALL] after call " .. VPValueToString(castLabel)
         .. " spell=" .. VPValueToString(spellId)
         .. " ok=" .. VPValueToString(ok)
@@ -1022,13 +1064,13 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
 
     if hardSuccess then
         VPLogSpellState(tag .. ":after", spellId)
-        return true, result1, result2, false
+        return true, result1, result2, usedOnId
     end
 
     local hardFail = VPValueToString(result2 or result1 or errText or "native_cast_failed")
     VPEmitUiLog("VP_CAST " .. hardFail)
     VPLogSpellState(tag .. ":after", spellId)
-    return false, hardFail, nil, false
+    return false, hardFail, nil, usedOnId
 end
 
 -- Initialize block types

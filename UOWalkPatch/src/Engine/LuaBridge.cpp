@@ -531,8 +531,10 @@ static int __cdecl Lua_UOW_Log_test(lua_State* L);
 static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L);
 static int __cdecl Lua_UOW_Debug_log_LuaPlus(void);
 static int __stdcall Lua_UOW_CastSpell_Raw(void* raw);
+static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw);
 static bool TryExtractLuaPlusStringArg(void* ctx, void* callbackTag, const char*& outValue);
 static bool TryExtractLuaPlusNumberArg(void* ctx, void* callbackTag, double& outValue);
+static bool TryExtractLuaPlusTwoNumberArgs(void* ctx, void* callbackTag, double& outFirst, double& outSecond);
 static bool PushLuaPlusBooleanReturn(void* ctx, bool value);
 static int __stdcall Lua_DummyPrint_Std(void* raw);
 static int __stdcall Lua_UOW_Debug_log_Std(void* raw);
@@ -5592,34 +5594,37 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
 
     // Evaluator-domain registration must stay minimal.
     // DummyPrint is the canonical proven-safe evaluator callback.
-    // Phase 1 of the LuaPlus migration adds exactly one more raw global
-    // for spell casting so Lua wrappers can call into the native cast core
-    // without depending on dotted gameplay lua_CFunction bindings.
+    // Phase 1 of the LuaPlus migration adds raw spell entry points so
+    // Lua wrappers can call into the native cast core without depending
+    // on dotted gameplay lua_CFunction bindings.
     bool dummyOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_DummyPrint_Std), "DummyPrint");
     bool castOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_CastSpell_Raw), "UOWCastSpellRaw");
+    bool castOnIdOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_CastSpellOnId_Raw), "UOWCastSpellOnIdRaw");
 
-    if (dummyOk && castOk) {
+    if (dummyOk && castOk && castOnIdOk) {
         slot->flags |= kCtxEvaluatorProbesBound;
-        char okBuf[256];
+        char okBuf[320];
         sprintf_s(okBuf,
                   sizeof(okBuf),
-                  "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s cast=%s",
+                  "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
                   "disabled",
                   "disabled",
-                  castOk ? "yes" : "no");
+                  castOk ? "yes" : "no",
+                  castOnIdOk ? "yes" : "no");
         WriteRawLog(okBuf);
     } else {
-        char failBuf[256];
+        char failBuf[320];
         sprintf_s(failBuf,
                   sizeof(failBuf),
-                  "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s cast=%s",
+                  "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
                   "disabled",
                   "disabled",
-                  castOk ? "yes" : "no");
+                  castOk ? "yes" : "no",
+                  castOnIdOk ? "yes" : "no");
         WriteRawLog(failBuf);
     }
 }
@@ -7739,7 +7744,7 @@ static bool NoClickCastSpell_Internal(int spellId)
               spellId,
               GetCurrentThreadId());
     WriteRawLog(buf);
-    PrimeSpellUseRequestState(L, spellId, 0, "no_click");
+    const bool primeOk = PrimeSpellUseRequestState(L, spellId, 0, "no_click");
 
     const bool wrapperReady = CastWrapperReady();
     const bool directEligible = g_allowDirectCastFallback && g_origCastSpell;
@@ -7841,14 +7846,32 @@ static bool NoClickCastSpell_Internal(int spellId)
     bool sendObserved = WaitForSendLogged(kTargetFallbackSendWaitMs);
     bool fallbackForDirectOnly = directOk && !wrapperReady && !gateCtxAvailable;
     bool fallbackForGateCtx = gateCtxOk;
-    bool needTargetFallback = !sendObserved || fallbackForDirectOnly || fallbackForGateCtx;
+    bool fallbackForPrimeFailure = !primeOk;
+    bool needTargetFallback = !sendObserved || fallbackForDirectOnly || fallbackForGateCtx || fallbackForPrimeFailure;
     const char* gateReason = "not_needed";
     if (!sendObserved)
         gateReason = "send_missing";
+    else if (fallbackForPrimeFailure)
+        gateReason = "prime_failed";
     else if (fallbackForGateCtx)
         gateReason = "gate_ctx";
     else if (fallbackForDirectOnly)
         gateReason = "direct_orig";
+
+    char summary[256];
+    sprintf_s(summary,
+              sizeof(summary),
+              "[NoClick] cast summary tok=%u spell=%d prime=%s wrapper=%s direct=%s gate_ctx=%s send=%s fallback_reason=%s",
+              tok,
+              spellId,
+              primeOk ? "ok" : "fail",
+              wrapperOk ? "ok" : "no",
+              directOk ? "ok" : "no",
+              gateCtxOk ? "ok" : "no",
+              sendObserved ? "yes" : "no",
+              gateReason);
+    WriteRawLog(summary);
+
     if (needTargetFallback) {
         bool fallbackOk = OpenTargetForSpell_Fallback(gateReason);
         LogCastPath("fallback", tok, fallbackOk ? "ok" : "fail", fallbackOk ? gateReason : "open_failed");
@@ -8680,6 +8703,33 @@ static bool TryExtractLuaPlusNumberArg(void* ctx, void* callbackTag, double& out
     return true;
 }
 
+static bool TryExtractLuaPlusTwoNumberArgs(void* ctx, void* callbackTag, double& outFirst, double& outSecond)
+{
+    outFirst = 0.0;
+    outSecond = 0.0;
+    if (!ctx || !callbackTag)
+        return false;
+
+    using LuaPlusExtractArgsFn = unsigned char(__stdcall*)(void*, void*, void*, unsigned int);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    if (!base)
+        return false;
+
+    auto* extractArgs = reinterpret_cast<LuaPlusExtractArgsFn>(base + 0x00596FD1);
+    if (!extractArgs)
+        return false;
+
+    LuaPlusArgSlot args[2]{};
+    args[0].type = 1;
+    args[1].type = 1;
+    if (!extractArgs(ctx, callbackTag, args, 2))
+        return false;
+
+    outFirst = args[0].numberValue;
+    outSecond = args[1].numberValue;
+    return true;
+}
+
 static bool PushLuaPlusBooleanReturn(void* ctx, bool value)
 {
     if (!ctx)
@@ -8804,6 +8854,72 @@ static int __stdcall Lua_UOW_CastSpell_Raw(void* raw)
 
     if (!PushLuaPlusBooleanReturn(ctx, ok)) {
         WriteRawLog("[LuaPlusCast] UOWCastSpellRaw return stage failed");
+        return 0;
+    }
+
+    return 1;
+}
+
+static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw)
+{
+    void* ctx = CurrentScriptContext();
+    if (!ctx)
+        ctx = g_clientContext;
+
+    double spellNumber = 0.0;
+    double targetNumber = 0.0;
+    const bool extracted = TryExtractLuaPlusTwoNumberArgs(
+        ctx,
+        reinterpret_cast<void*>(&Lua_UOW_CastSpellOnId_Raw),
+        spellNumber,
+        targetNumber);
+    const int spellId = extracted ? static_cast<int>(spellNumber) : 0;
+    const uint32_t objectId = extracted && targetNumber > 0.0
+        ? static_cast<uint32_t>(targetNumber)
+        : 0;
+
+    char intro[288];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[LuaPlusCast] UOWCastSpellOnIdRaw invoked raw=%p caller=%u owner=%u ctx=%p extracted=%s spell=%d target=%u",
+              raw,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              ctx,
+              extracted ? "yes" : "no",
+              spellId,
+              objectId);
+    WriteRawLog(intro);
+
+    bool ok = false;
+    std::string msg;
+    if (extracted && spellId > 0 && objectId != 0) {
+        ok = DispatchNoClickCommand(
+            "UOWCastSpellOnIdRaw",
+            [spellId, objectId](std::string& innerMsg) {
+                bool result = NoClickCastSpellOnId_Internal(spellId, objectId);
+                if (!result && innerMsg.empty())
+                    innerMsg = "native_cast_on_id_failed";
+                return result;
+            },
+            msg,
+            false);
+    } else {
+        msg = extracted ? "invalid_args" : "arg_extract_failed";
+    }
+
+    char outro[320];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[LuaPlusCast] UOWCastSpellOnIdRaw result ok=%d spell=%d target=%u msg=%s",
+              ok ? 1 : 0,
+              spellId,
+              objectId,
+              msg.empty() ? "<none>" : msg.c_str());
+    WriteRawLog(outro);
+
+    if (!PushLuaPlusBooleanReturn(ctx, ok)) {
+        WriteRawLog("[LuaPlusCast] UOWCastSpellOnIdRaw return stage failed");
         return 0;
     }
 

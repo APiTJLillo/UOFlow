@@ -116,6 +116,22 @@ local function UOWResolveRawSpellCast()
 	return nil
 end
 
+local function UOWResolveRawSpellCastOnId()
+	if type(UOWCastSpellOnIdRaw) == "function" then
+		return UOWCastSpellOnIdRaw
+	end
+
+	local globalTable = _G
+	if type(globalTable) == "table" then
+		local rawFn = rawget(globalTable, "UOWCastSpellOnIdRaw")
+		if type(rawFn) == "function" then
+			return rawFn
+		end
+	end
+
+	return nil
+end
+
 local function UOWSpellCastWrapper(spellId)
 	local numericSpellId = tonumber(spellId)
 	if not numericSpellId or numericSpellId <= 0 then
@@ -147,6 +163,40 @@ local function UOWSpellCastWrapper(spellId)
 	return false, "native_cast_failed"
 end
 
+local function UOWSpellCastOnIdWrapper(spellId, objectId)
+	local numericSpellId = tonumber(spellId)
+	local numericObjectId = tonumber(objectId)
+	if not numericSpellId or numericSpellId <= 0 or not numericObjectId or numericObjectId <= 0 then
+		UOWNativeLog("[LuaSpell] cast_on_id invalid args spellId=", tostring(spellId), " target=", tostring(objectId))
+		return false, "native_cast_failed"
+	end
+
+	local rawCast = UOWResolveRawSpellCastOnId()
+	if type(rawCast) ~= "function" then
+		UOWNativeLog("[LuaSpell] cast_on_id raw missing spellId=", tostring(numericSpellId), " target=", tostring(numericObjectId))
+		return false, "native_cast_failed"
+	end
+
+	UOWNativeLog("[LuaSpell] cast_on_id request spellId=", tostring(numericSpellId), " target=", tostring(numericObjectId))
+	local ok = rawCast(numericSpellId, numericObjectId)
+	local success = (ok ~= false)
+	UOWNativeLog(
+		"[LuaSpell] cast_on_id result spellId=",
+		tostring(numericSpellId),
+		" target=",
+		tostring(numericObjectId),
+		" ok=",
+		tostring(success),
+		" raw=",
+		tostring(ok))
+
+	if success then
+		return true, "ok"
+	end
+
+	return false, "native_cast_failed"
+end
+
 function UOWInstallLuaSpellWrappers()
 	local globalTable = _G
 	if type(globalTable) ~= "table" then
@@ -161,8 +211,11 @@ function UOWInstallLuaSpellWrappers()
 	globalTable.uow.cmd = type(globalTable.uow.cmd) == "table" and globalTable.uow.cmd or {}
 
 	globalTable.UOFlow.Spell.cast = UOWSpellCastWrapper
+	globalTable.UOFlow.Spell.cast_on_id = UOWSpellCastOnIdWrapper
 	globalTable.UOW.Spell.cast = UOWSpellCastWrapper
+	globalTable.UOW.Spell.cast_on_id = UOWSpellCastOnIdWrapper
 	globalTable.uow.cmd.cast = UOWSpellCastWrapper
+	globalTable.uow.cmd.cast_on_id = UOWSpellCastOnIdWrapper
 	return true
 end
 
