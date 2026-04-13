@@ -1,8 +1,11 @@
 -- Block execution and state management
 function VisualProgrammingInterface.Execution:executeBlock(block)
     if not block then return false end
-    
-    if UOWNativeLog then
+
+    local suppressTransitionLog = self.silentTransition == true
+    self.silentTransition = false
+
+    if not suppressTransitionLog and UOWNativeLog then
         UOWNativeLog("[VPExec] executeBlock", tostring(block.id), tostring(block.type))
     end
     Debug.Print("Executing block " .. block.type .. " [" .. block.id .. "]")
@@ -14,7 +17,7 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     local headBlock = self.executionQueue and self.executionQueue[1] or nil
     if headBlock == block then
         table.remove(self.executionQueue, 1)
-        if UOWNativeLog then
+        if not suppressTransitionLog and UOWNativeLog then
             UOWNativeLog("[VPExec] consume queue head", tostring(block.id), tostring(block.type), "remaining=" .. tostring(#self.executionQueue))
         end
     end

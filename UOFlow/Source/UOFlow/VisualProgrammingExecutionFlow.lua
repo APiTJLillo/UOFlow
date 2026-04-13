@@ -188,6 +188,14 @@ end
 
 -- Continue execution after pause or between blocks
 function VisualProgrammingInterface.Execution:continueExecution()
+    local currentBlock = self.currentBlock
+    local currentId = nil
+    if type(currentBlock) == "table" then
+        currentId = currentBlock.id
+    elseif currentBlock ~= nil then
+        currentId = currentBlock
+    end
+
     if self.primingFirstBlock then
         if UOWNativeLog then
             UOWNativeLog("[VPExec] continue priming", "queue=" .. tostring(#self.executionQueue))
@@ -209,7 +217,7 @@ function VisualProgrammingInterface.Execution:continueExecution()
     -- If we're waiting for a timer, don't start the next block yet
     if self.waitingForTimer then
         if UOWNativeLog then
-            UOWNativeLog("[VPExec] continue waiting", "queue=" .. tostring(#self.executionQueue), "currentBlock=" .. tostring(self.currentBlock and self.currentBlock.id))
+            UOWNativeLog("[VPExec] continue waiting", "queue=" .. tostring(#self.executionQueue), "currentBlock=" .. tostring(currentId))
         end
         Debug.Print("Waiting for timer to complete before continuing")
         return
@@ -217,22 +225,17 @@ function VisualProgrammingInterface.Execution:continueExecution()
     
     if #self.executionQueue > 0 then
         local nextBlock = self.executionQueue[1]
-        if UOWNativeLog then
-            UOWNativeLog("[VPExec] continue nextBlock", tostring(nextBlock.id), tostring(nextBlock.type), "remaining=" .. tostring(#self.executionQueue))
+
+        -- Previous block completion/tinting is handled in signalTimerComplete().
+        -- Keep the handoff minimal here so we can reliably enter the next block.
+        local executeFn = self.executeBlock or VisualProgrammingInterface.Execution.executeBlock
+        if type(executeFn) ~= "function" then
+            return
         end
-        Debug.Print("Continuing with next block " .. nextBlock.id)
-        
-        -- Mark previous block as completed and set to green
-        if self.currentBlock then
-            self.blockStates[self.currentBlock.id] = VisualProgrammingInterface.Execution.BlockState.COMPLETED
-            local blockWindow = "Block" .. self.currentBlock.id
-            if DoesWindowNameExist(blockWindow) then
-                WindowSetTintColor(blockWindow, 0, 255, 0) -- Green for success
-            end
-        end
-        
-        -- Execute next block
-        self:executeBlock(nextBlock)
+
+        self.silentTransition = true
+        executeFn(self, nextBlock)
+        self.silentTransition = false
         
         -- Set up continue timer if not waiting for action timer
         if not self.waitingForTimer then
@@ -241,13 +244,13 @@ function VisualProgrammingInterface.Execution:continueExecution()
         end
     else
         if UOWNativeLog then
-            UOWNativeLog("[VPExec] continue no more blocks", "current=" .. tostring(self.currentBlock and self.currentBlock.id))
+            UOWNativeLog("[VPExec] continue no more blocks", "current=" .. tostring(currentId))
         end
         Debug.Print("No more blocks to execute")
         -- Mark final block as completed and green before stopping
-        if self.currentBlock then
-            self.blockStates[self.currentBlock.id] = VisualProgrammingInterface.Execution.BlockState.COMPLETED
-            local blockWindow = "Block" .. self.currentBlock.id
+        if currentId ~= nil then
+            self.blockStates[currentId] = VisualProgrammingInterface.Execution.BlockState.COMPLETED
+            local blockWindow = "Block" .. currentId
             if DoesWindowNameExist(blockWindow) then
                 WindowSetTintColor(blockWindow, 0, 255, 0) -- Green for success
             end

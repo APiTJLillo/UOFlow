@@ -34,18 +34,17 @@ function VisualProgrammingInterface.Execution.OnUpdate(self, timePassed)
             return
         elseif pendingRaw.stage == "pump" then
             pendingRaw.pumpAttempts = (pendingRaw.pumpAttempts or 0) + 1
+            pendingRaw.stage = "done"
             if UOWNativeLog then
                 UOWNativeLog("[VPExec] pending raw pump",
                     "attempt=" .. tostring(pendingRaw.pumpAttempts),
                     "helper=" .. tostring(pendingRaw.helper),
                     "spell=" .. tostring(pendingRaw.spellId),
-                    "targetId=" .. tostring(pendingRaw.targetId))
+                    "targetId=" .. tostring(pendingRaw.targetId),
+                    "next=done")
             end
             if type(UOWPumpQueuedRawCasts) == "function" then
                 UOWPumpQueuedRawCasts()
-            end
-            if pendingRaw.pumpAttempts >= 3 then
-                pendingRaw.stage = "done"
             end
             return
         elseif pendingRaw.stage == "done" then
@@ -177,7 +176,11 @@ function VisualProgrammingInterface.Execution:signalTimerComplete()
         Debug.Print("Flow execution complete")
         return
     end
-    
+
+    -- The completed block is already recorded above. Clear the live pointer so
+    -- the next handoff does not depend on any stale block table state.
+    self.currentBlock = nil
+
     -- Continue execution with next block immediately
     Debug.Print("Continuing execution with " .. #self.executionQueue .. " blocks remaining")
     self:continueExecution()
