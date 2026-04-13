@@ -435,7 +435,7 @@ Interface.WarShield = true
 --
 ----------------------------------------------------------------
 function Interface.CreatePlayWindowSet()
-
+	Interface.DebugMode=true
 	if Interface.DebugMode then
 		WindowSetShowing("DebugWindow", true)
 		if not DebugWindow.logging then

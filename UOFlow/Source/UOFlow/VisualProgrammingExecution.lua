@@ -58,6 +58,23 @@ function VisualProgrammingInterface.Execution:testFlow()
     local function visit(block)
         if not block then
             Debug.Print("Warning: Attempted to visit nil block")
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] visit nil block")
+            end
+            return
+        end
+        if type(block) ~= "table" then
+            Debug.Print("Warning: Attempted to visit non-table block: " .. tostring(block))
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] visit non-table block", tostring(block), "type=" .. type(block))
+            end
+            return
+        end
+        if block.id == nil then
+            Debug.Print("Warning: Attempted to visit block without id")
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] visit block missing id", tostring(block.type), "y=" .. tostring(block.y))
+            end
             return
         end
         if visited[block.id] then return end
@@ -90,22 +107,39 @@ function VisualProgrammingInterface.Execution:testFlow()
     
     -- Get blocks sorted by vertical position
     local sortedBlocks = {}
-    for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
-        table.insert(sortedBlocks, block)
+    for id, block in pairs(VisualProgrammingInterface.manager.blocks) do
+        if type(block) == "table" then
+            table.insert(sortedBlocks, block)
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] sortedBlock candidate", tostring(id), tostring(block.type), "y=" .. tostring(block.y))
+            end
+        else
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] skipping non-table manager entry", tostring(id), "type=" .. type(block), "value=" .. tostring(block))
+            end
+        end
     end
     if UOWNativeLog then
         UOWNativeLog("[VPExec] sortedBlocks", #sortedBlocks)
     end
     table.sort(sortedBlocks, function(a, b) 
-        return (a and a.y or 0) < (b and b.y or 0)
+        local ay = (type(a) == "table" and tonumber(a.y)) or 0
+        local by = (type(b) == "table" and tonumber(b.y)) or 0
+        return ay < by
     end)
     
     -- Build execution queue starting from top blocks
     for _, block in ipairs(sortedBlocks) do
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] visit root", tostring(block.id), tostring(block.type), "y=" .. tostring(block.y))
+        end
         visit(block)
     end
     
     Debug.Print("Built execution queue with " .. #executionQueue .. " blocks")
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] built queue", tostring(#executionQueue))
+    end
     if UOWNativeLog then
         local labels = {}
         for i, block in ipairs(executionQueue) do

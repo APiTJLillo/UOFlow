@@ -43,7 +43,10 @@ function VisualProgrammingInterface.Execution:start()
     -- Build execution queue in order of connections
     local visited = {}
     local function visit(block)
-        if not block or visited[block.id] then return end
+        if not block or type(block) ~= "table" or block.id == nil then
+            return
+        end
+        if visited[block.id] then return end
         
         -- Add current block to queue
         table.insert(self.executionQueue, block)
@@ -64,21 +67,23 @@ function VisualProgrammingInterface.Execution:start()
     -- Find the first block (one with no incoming connections)
     local firstBlock = nil
     for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
-        local hasIncoming = false
-        for _, otherBlock in pairs(VisualProgrammingInterface.manager.blocks) do
-            if otherBlock.connections then
-                for _, conn in ipairs(otherBlock.connections) do
-                    if conn.id == block.id then
-                        hasIncoming = true
-                        break
+        if type(block) == "table" and block.id ~= nil then
+            local hasIncoming = false
+            for _, otherBlock in pairs(VisualProgrammingInterface.manager.blocks) do
+                if type(otherBlock) == "table" and otherBlock.connections then
+                    for _, conn in ipairs(otherBlock.connections) do
+                        if conn.id == block.id then
+                            hasIncoming = true
+                            break
+                        end
                     end
                 end
+                if hasIncoming then break end
             end
-            if hasIncoming then break end
-        end
-        if not hasIncoming then
-            firstBlock = block
-            break
+            if not hasIncoming then
+                firstBlock = block
+                break
+            end
         end
     end
     
