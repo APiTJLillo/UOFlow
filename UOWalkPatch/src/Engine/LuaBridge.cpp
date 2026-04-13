@@ -2898,16 +2898,97 @@ static void LogLateWrapAttempt(void* ctx, bool globalsSeen)
 
 static constexpr uint32_t kRequiredCastWrapperBits = kWrapperCastSpell | kWrapperCastSpellOnId;
 
-__declspec(noinline) static uint8_t ReadActionGateByte()
+__declspec(noinline) static uintptr_t ResolveActionGateAddress()
 {
     uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-    uintptr_t gateAddr = base + 0x00A3D540 + 0x5C2;
+    if (!base)
+        return 0;
+    return base + 0x00A3D540 + 0x5C2;
+}
+
+__declspec(noinline) static uint8_t ReadActionGateByte()
+{
+    uintptr_t gateAddr = ResolveActionGateAddress();
+    if (!gateAddr)
+        return 0xFF;
     __try {
         return *reinterpret_cast<uint8_t*>(gateAddr);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0xFF;
     }
 }
+
+__declspec(noinline) static bool WriteActionGateByte(uint8_t value)
+{
+    uintptr_t gateAddr = ResolveActionGateAddress();
+    if (!gateAddr)
+        return false;
+    __try {
+        *reinterpret_cast<uint8_t*>(gateAddr) = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+class ScopedForcedActionGate
+{
+public:
+    explicit ScopedForcedActionGate(const char* tag)
+        : m_tag(tag ? tag : "unknown")
+    {
+        m_previous = ReadActionGateByte();
+        if (m_previous != 0)
+            return;
+
+        if (WriteActionGateByte(1)) {
+            m_applied = true;
+            char buf[160];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CastGate] forced open tag=%s previous=%u",
+                      m_tag,
+                      static_cast<unsigned>(m_previous));
+            WriteRawLog(buf);
+        } else {
+            char buf[160];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CastGate] force open failed tag=%s",
+                      m_tag);
+            WriteRawLog(buf);
+        }
+    }
+
+    ~ScopedForcedActionGate()
+    {
+        if (!m_applied)
+            return;
+
+        if (WriteActionGateByte(m_previous)) {
+            char buf[160];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CastGate] restored tag=%s value=%u",
+                      m_tag,
+                      static_cast<unsigned>(m_previous));
+            WriteRawLog(buf);
+        } else {
+            char buf[160];
+            sprintf_s(buf,
+                      sizeof(buf),
+                      "[CastGate] restore failed tag=%s value=%u",
+                      m_tag,
+                      static_cast<unsigned>(m_previous));
+            WriteRawLog(buf);
+        }
+    }
+
+private:
+    const char* m_tag = "unknown";
+    uint8_t m_previous = 0xFF;
+    bool m_applied = false;
+};
 
 static bool HavePrimaryCastWrappers()
 {
@@ -8791,7 +8872,6 @@ static bool PushLuaPlusBooleanReturn(void* ctx, bool value)
             mov eax, stageBool
             push boolValue
             call eax
-            mov ecx, ctx
             lea eax, scratch
             mov edx, finalizeReturn
             call edx
@@ -8870,12 +8950,13 @@ static int __stdcall Lua_UOW_CastSpell_Raw(void* raw)
               spellId);
     WriteRawLog(gateBuf);
 
-    if (gateValue == 0) {
-        msg = "gate_closed";
+    if (gateValue == 0xFF) {
+        msg = "gate_fault";
     } else if (extracted && spellId > 0) {
         ok = DispatchNoClickCommand(
             "UOWCastSpellRaw",
             [spellId](std::string& innerMsg) {
+                ScopedForcedActionGate forcedGate("UOWCastSpellRaw");
                 bool result = NoClickCastSpell_Internal(spellId);
                 if (!result && innerMsg.empty())
                     innerMsg = "native_cast_failed";
@@ -8947,12 +9028,13 @@ static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw)
               objectId);
     WriteRawLog(gateBuf);
 
-    if (gateValue == 0) {
-        msg = "gate_closed";
+    if (gateValue == 0xFF) {
+        msg = "gate_fault";
     } else if (extracted && spellId > 0 && objectId != 0) {
         ok = DispatchNoClickCommand(
             "UOWCastSpellOnIdRaw",
             [spellId, objectId](std::string& innerMsg) {
+                ScopedForcedActionGate forcedGate("UOWCastSpellOnIdRaw");
                 bool result = NoClickCastSpellOnId_Internal(spellId, objectId);
                 if (!result && innerMsg.empty())
                     innerMsg = "native_cast_on_id_failed";
