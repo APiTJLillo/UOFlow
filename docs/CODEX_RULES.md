@@ -17,12 +17,20 @@ Then summarize in 5-10 bullets what you think is true before coding.
 1. There are multiple Lua execution domains/states in the client (at least evaluator/console domain and gameplay domain).
 2. A function being registered/logged does **not** prove it is callable from the specific VP runtime context.
 3. `DummyPrint()` and simple log probes proved evaluator-domain Lua→C works.
-4. Generic action queue lines (e.g. enqueue return addresses) are not sufficient proof of spell-cast execution.
-5. For cast debugging, treat these as required proof lines (or equivalent):
+4. Ghidra confirmed the client uses one common registration helper (`UOSA.exe+0x594E1F` / `FUN_00994e1f`) for built-ins, but the built-ins themselves are **not** plain stock `lua_CFunction` callbacks.
+5. Client-registered built-ins are written in a LuaPlus-style callback model:
+   - parse args via helper routines such as `FUN_00996fd1`
+   - stage returns via helpers such as `FUN_0099d545` / `FUN_0099d5f9`
+   - finalize returns via `FUN_0099e3d8`
+   - then return the number of values
+6. `DummyPrint()` working does **not** prove evaluator/VP can safely execute our gameplay `lua_CFunction` spell helpers. It only proves the evaluator can dispatch a minimal raw callback.
+7. `pcall` / `xpcall` are not reliable in this environment for debugging or cast execution. They can hide the real failure point and must be removed from critical VP/debug/cast paths.
+8. Generic action queue lines (e.g. enqueue return addresses) are not sufficient proof of spell-cast execution.
+9. For cast debugging, treat these as required proof lines (or equivalent):
    - `CALL_CAST_V1 invoked ...`
    - `BRIDGE_V1 vp_cast invoked ...`
    - `UOFlow.Spell.cast invoked ...`
-6. If those lines are missing, do not claim cast path is reached.
+10. If those lines are missing, do not claim cast path is reached.
 
 ---
 
@@ -34,6 +42,7 @@ For spell tests:
 - Use a single direct callable entry (e.g. `__uow_call_cast_v1`) for proof.
 - Do not fan out across many helpers in debug mode.
 - Do not treat `ok=true` with nil returns and no state change as success.
+- When the client callback ABI is in question, prefer a true client-style shim over another plain `lua_CFunction` experiment.
 
 ---
 
@@ -44,6 +53,7 @@ For spell tests:
 3. Avoid repeated rebinding spam in hot callback loops (latch/one-shot per `(ctx, L)` generation).
 4. Avoid introducing broad architectural changes while direct cast lane is not proven.
 5. Any change that adds context/FSM complexity must include explicit logs showing state transitions and why execution is blocked.
+6. Do not add `pcall` / `xpcall` around cast execution, VP button handlers, or native logging shims in this client.
 
 ---
 
@@ -86,10 +96,11 @@ A change is not done until all are true:
 
 1. Reproduce once with fresh log.
 2. Confirm direct probe still works (`DummyPrint`, log probe).
-3. Run one direct cast probe (`__uow_call_cast_v1(...)`).
-4. Compare expected log sequence vs actual.
-5. Make smallest possible patch.
-6. Re-test and update this file if a new durable rule is discovered.
+3. Confirm whether the function being tested is a raw evaluator callback or a gameplay LuaPlus callback.
+4. Run one direct cast probe (`__uow_call_cast_v1(...)`) only if the callback ABI is already proven for that domain.
+5. Compare expected log sequence vs actual.
+6. Make smallest possible patch.
+7. Re-test and update this file if a new durable rule is discovered.
 
 ---
 

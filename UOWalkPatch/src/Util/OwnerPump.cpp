@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -40,8 +41,35 @@ const char* OpLabel(const char* name) {
     return (name && *name) ? name : "<unnamed>";
 }
 
+bool ShouldLogOpNow(const char* name)
+{
+    if (!name || !*name)
+        return true;
+
+    std::atomic<DWORD>* nextTick = nullptr;
+    if (std::strcmp(name, "late_wrap_retry") == 0) {
+        static std::atomic<DWORD> s_nextLateWrapLogTick{0};
+        nextTick = &s_nextLateWrapLogTick;
+    } else if (std::strcmp(name, "early_bootstrap") == 0) {
+        static std::atomic<DWORD> s_nextBootstrapLogTick{0};
+        nextTick = &s_nextBootstrapLogTick;
+    }
+
+    if (!nextTick)
+        return true;
+
+    DWORD now = GetTickCount();
+    DWORD allowed = nextTick->load(std::memory_order_acquire);
+    if (allowed != 0 && now < allowed)
+        return false;
+    nextTick->store(now + 1000, std::memory_order_release);
+    return true;
+}
+
 void LogQueued(const char* name, std::uint32_t fromTid, std::uint32_t ownerTid)
 {
+    if (!ShouldLogOpNow(name))
+        return;
     char buf[192];
     sprintf_s(buf,
               sizeof(buf),
@@ -54,6 +82,8 @@ void LogQueued(const char* name, std::uint32_t fromTid, std::uint32_t ownerTid)
 
 void LogRunning(const char* name, std::uint32_t tid)
 {
+    if (!ShouldLogOpNow(name))
+        return;
     char buf[192];
     sprintf_s(buf,
               sizeof(buf),

@@ -82,6 +82,7 @@ namespace {
     ClientRegisterFn g_origRegister = nullptr;
     bool g_registerResolved = false;
     void* g_registerTarget = nullptr;
+    bool g_luaPlusHelperMapLogged = false;
     void* g_engineContext = nullptr;
     void* g_clientContext = nullptr;
     std::atomic<void*> g_ownerScriptContext{nullptr};
@@ -518,6 +519,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
                                                  const char* reason = nullptr,
                                                  lua_State* explicitL = nullptr);
 static void ForceLateCastWrapInstall(lua_State* L, const char* reason);
+static bool RegisterRawViaClient(lua_State* L, void* fn, const char* name);
 static int PushLuaCommandResult(lua_State* L, bool ok, const std::string& msg);
 static void LogUOFlowStatus(const char* tag);
 static void TraceRecordGateEntry(GateCallProbe* probe, const GateInvokeTls& snap, const uintptr_t* argBase);
@@ -527,6 +529,8 @@ static void DumpSpellPathSummary();
 static int __cdecl Lua_UOW_Debug_log(lua_State* L);
 static int __cdecl Lua_UOW_Log_test(lua_State* L);
 static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L);
+static int __cdecl Lua_UOW_Debug_log_LuaPlus(void);
+static bool TryExtractLuaPlusStringArg(void* ctx, void* callbackTag, const char*& outValue);
 static int __stdcall Lua_DummyPrint_Std(void* raw);
 static int __stdcall Lua_UOW_Debug_log_Std(void* raw);
 static int __stdcall Lua_UOW_Log_test_Std(void* raw);
@@ -1534,11 +1538,12 @@ static void EnsureDebugLogBindingsAnyState(lua_State* L, const char* reason)
     if (prior == stateKey)
         return;
 
-    RegisterFunctionSafe(L, Lua_UOW_Debug_log, "__uow_debug_log_v1");
+    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "__uow_debug_log_v1");
+    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "uow_debug_log");
+    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "Debug.Log");
+    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "UOW.Debug.Log");
     RegisterFunctionSafe(L, Lua_UOW_Log_test, "__uow_log_test_v1");
-    RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "Debug.Log");
     RegisterLuaPathSafe(L, Lua_UOW_Log_test, "Debug.LogTest");
-    RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "UOW.Debug.Log");
     RegisterLuaPathSafe(L, Lua_UOW_Log_test, "UOW.Debug.LogTest");
 
     s_lastBoundState.store(stateKey, std::memory_order_release);
@@ -1554,6 +1559,7 @@ static void EnsureDebugLogBindingsAnyState(lua_State* L, const char* reason)
     WriteRawLog(buf);
     LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "__uow_debug_log_v1");
     LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "__uow_log_test_v1");
+    LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "uow_debug_log");
     LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "Debug.Log");
     LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "Debug.LogTest");
     LogLuaFunctionBinding(L, reason ? reason : "debug_log_bind", "UOW.Debug.Log");
@@ -2505,6 +2511,17 @@ static void MaybeRunEarlyBootstrap(void* ctx, lua_State* callbackL, const char* 
 {
     if (!ctx)
         return;
+
+    const uint32_t bootstrapState = g_bootstrapState.load(std::memory_order_acquire);
+    const uintptr_t readyState = g_bootstrapReadyLuaState.load(std::memory_order_acquire);
+    const uintptr_t callbackState = reinterpret_cast<uintptr_t>(callbackL);
+    const uintptr_t observedState = g_bootstrapObservedLuaState.load(std::memory_order_acquire);
+    if (bootstrapState == kBootstrapDone &&
+        g_bootstrapReadyContext.load(std::memory_order_acquire) == ctx &&
+        readyState != 0 &&
+        (callbackState == 0 || callbackState == readyState || callbackState == observedState)) {
+        return;
+    }
 
     if (g_inScriptRegistration) {
         static DWORD s_nextRegisterLogTick = 0;
@@ -5513,14 +5530,12 @@ static void EnsureDirectLuaGlobals(lua_State* L)
         {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
-        {Lua_UOW_Debug_log, "__uow_debug_log_v1"},
         {Lua_UOW_Log_test, "__uow_log_test_v1"},
         {Lua_uow_spell_cast_global, "uow_spell_cast"},
         {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
         {Lua_uow_get_native, "uow_get_native"},
         {Lua_uow_vp_cast, "uow_vp_cast"},
         {Lua_uow_vp_ping, "uow_vp_ping"},
-        {Lua_UOW_Debug_log, "Debug.Log"},
         {Lua_UOW_Log_test, "Debug.LogTest"},
         {Lua_UOW_Debug_dump_spell_paths, "uow_dump_spell_paths"},
     };
@@ -5735,7 +5750,6 @@ static void ForceSpellBinding(lua_State* L, const char* reason)
     bool alias = RegisterViaClient(L, Lua_UOFlow_Spell_cast, "UOFlow.Spell.cast");
     RegisterLuaPathSafe(L, Lua_UOFlow_Spell_cast, "UOW.Spell.cast");
     RegisterLuaPathSafe(L, Lua_UOFlow_Spell_cast, "UOFlow.Spell.cast");
-    RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "UOW.Debug.Log");
     EnsureDirectLuaGlobals(L);
     LogSpellHelperBindings(L, tag);
     bool flat = true;
@@ -5776,6 +5790,54 @@ static void EnsureReplayHelper(lua_State* L)
     InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), "replay_helper");
 }
 
+static void LogLuaPlusClientHelperMap()
+{
+    if (g_luaPlusHelperMapLogged)
+        return;
+
+    HMODULE module = GetModuleHandleA(nullptr);
+    if (!module)
+        return;
+
+    const uintptr_t base = reinterpret_cast<uintptr_t>(module);
+    const uintptr_t registerVa = 0x00994E1F;
+    const uintptr_t argExtractVa = 0x00996FD1;
+    const uintptr_t argValidateVa = 0x009969C9;
+    const uintptr_t badArgsVa = 0x00999835;
+    const uintptr_t stageBoolVa = 0x0099D545;
+    const uintptr_t stageNumberVa = 0x0099D5F9;
+    const uintptr_t finalizeReturnVa = 0x0099E3D8;
+
+    char buf[512];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaPlusABI] register=%p arg_extract=%p arg_validate=%p bad_args=%p stage_bool=%p stage_number=%p finalize_return=%p",
+              reinterpret_cast<void*>(registerVa),
+              reinterpret_cast<void*>(argExtractVa),
+              reinterpret_cast<void*>(argValidateVa),
+              reinterpret_cast<void*>(badArgsVa),
+              reinterpret_cast<void*>(stageBoolVa),
+              reinterpret_cast<void*>(stageNumberVa),
+              reinterpret_cast<void*>(finalizeReturnVa));
+    WriteRawLog(buf);
+
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaPlusABI] helper_rvas register=0x%llX arg_extract=0x%llX arg_validate=0x%llX bad_args=0x%llX stage_bool=0x%llX stage_number=0x%llX finalize_return=0x%llX module_base=%p",
+              static_cast<unsigned long long>(registerVa - base),
+              static_cast<unsigned long long>(argExtractVa - base),
+              static_cast<unsigned long long>(argValidateVa - base),
+              static_cast<unsigned long long>(badArgsVa - base),
+              static_cast<unsigned long long>(stageBoolVa - base),
+              static_cast<unsigned long long>(stageNumberVa - base),
+              static_cast<unsigned long long>(finalizeReturnVa - base),
+              module);
+    WriteRawLog(buf);
+    WriteRawLog("[LuaPlusABI] built-ins in UOSA use client-side arg/return helpers, not plain stock lua_CFunction callbacks");
+
+    g_luaPlusHelperMapLogged = true;
+}
+
 static bool ResolveRegisterFunction()
 {
     if (g_registerResolved && g_origRegister)
@@ -5791,6 +5853,7 @@ static bool ResolveRegisterFunction()
     char buf[128];
     sprintf_s(buf, sizeof(buf), "ResolveRegisterFunction: register helper = %p", addr);
     WriteRawLog(buf);
+    LogLuaPlusClientHelperMap();
 
     if (!g_origRegister) {
         MH_STATUS init = MH_Initialize();
@@ -6161,14 +6224,38 @@ static int __cdecl Lua_DummyPrint(lua_State*)
 
 static int __stdcall Lua_DummyPrint_Std(void* L)
 {
-    char buf[192];
-    sprintf_s(buf,
-              sizeof(buf),
-              "[Lua] DummyPrint() evaluator invoked raw=%p caller=%u owner=%u",
+    void* ctx = CurrentScriptContext();
+    if (!ctx)
+        ctx = g_clientContext;
+
+    const char* text = nullptr;
+    const bool extracted = TryExtractLuaPlusStringArg(
+        ctx,
+        reinterpret_cast<void*>(&Lua_DummyPrint_Std),
+        text);
+
+    std::string msg = "[Lua] DummyPrint() evaluator invoked";
+    char meta[160];
+    sprintf_s(meta,
+              sizeof(meta),
+              " raw=%p caller=%u owner=%u",
               L,
               GetCurrentThreadId(),
               Util::OwnerPump::GetOwnerThreadId());
-    WriteRawLog(buf);
+    msg.append(meta);
+
+    if (!ctx) {
+        msg.append(" ctx_missing");
+    } else if (!extracted) {
+        msg.append(" arg_extract_failed");
+    } else if (text && *text) {
+        msg.append(" msg=");
+        msg.append(text);
+    } else {
+        msg.append(" msg=<empty>");
+    }
+
+    WriteRawLog(msg.c_str());
     return 0;
 }
 
@@ -6982,7 +7069,6 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
-        {Lua_UOW_Debug_log, "__uow_debug_log_v1"},
         {Lua_UOW_Log_test, "__uow_log_test_v1"},
         {Lua_UOFlow_bootstrap, "uow.bootstrap"},
         {Lua_UOFlow_Spell_cast, "uow.cmd.cast"},
@@ -7001,9 +7087,7 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_uow_cmd_clear_target, "uow.cmd.clear_target"},
         {Lua_uow_cmd_request_target, "uow.cmd.req_target"},
         {Lua_uow_cmd_show_cursor, "uow.cmd.show_cursor"},
-        {Lua_UOW_Debug_log, "Debug.Log"},
         {Lua_UOW_Log_test, "Debug.LogTest"},
-        {Lua_UOW_Debug_log, "UOW.Debug.Log"},
         {Lua_UOW_Log_test, "UOW.Debug.LogTest"},
         {Lua_UOW_Debug_dump_spell_paths, "UOW.Debug.DumpSpellPaths"},
         {Lua_UOW_Debug_dump_spell_paths, "uow_dump_spell_paths"},
@@ -7019,6 +7103,11 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
             WriteRawLog(buf);
         }
     }
+
+    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "__uow_debug_log_v1");
+    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "uow_debug_log");
+    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "Debug.Log");
+    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "UOW.Debug.Log");
 
     for (const auto& binding : kRequired)
         RegisterLuaPathSafe(L, binding.fn, binding.name);
@@ -8542,6 +8631,73 @@ static int __cdecl Lua_UOFlow_status(lua_State* L)
               busy ? "active" : "idle",
               windowMs);
     return PushLuaCommandResult(L, true, buf);
+}
+
+struct LuaPlusArgSlot {
+    union {
+        double numberValue;
+        struct {
+            const void* ptrValue;
+            uint32_t reservedValue;
+        };
+        uint64_t rawValue;
+    };
+    uint32_t type = 0;
+    uint32_t flags = 0;
+};
+
+static_assert(sizeof(LuaPlusArgSlot) == 16, "LuaPlusArgSlot must match client descriptor size");
+
+static bool TryExtractLuaPlusStringArg(void* ctx, void* callbackTag, const char*& outValue)
+{
+    outValue = nullptr;
+    if (!ctx || !callbackTag)
+        return false;
+
+    using LuaPlusExtractArgsFn = unsigned char(__stdcall*)(void*, void*, void*, unsigned int);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    if (!base)
+        return false;
+
+    auto* extractArgs = reinterpret_cast<LuaPlusExtractArgsFn>(base + 0x00596FD1);
+    if (!extractArgs)
+        return false;
+
+    LuaPlusArgSlot arg{};
+    arg.type = 2; // Narrow string, matching client built-ins such as LoadTextFile.
+    if (!extractArgs(ctx, callbackTag, &arg, 1))
+        return false;
+
+    outValue = static_cast<const char*>(arg.ptrValue);
+    return true;
+}
+
+static int __cdecl Lua_UOW_Debug_log_LuaPlus(void)
+{
+    void* ctx = CurrentScriptContext();
+    if (!ctx)
+        ctx = g_clientContext;
+
+    std::string msg = "[LuaDebugLuaPlus]";
+    const char* text = nullptr;
+    const bool extracted = TryExtractLuaPlusStringArg(
+        ctx,
+        reinterpret_cast<void*>(&Lua_UOW_Debug_log_LuaPlus),
+        text);
+
+    if (!ctx) {
+        msg += " ctx_missing";
+    } else if (!extracted) {
+        msg += " arg_extract_failed";
+    } else if (text && *text) {
+        msg.push_back(' ');
+        msg.append(text);
+    } else {
+        msg += " <empty>";
+    }
+
+    WriteRawLog(msg.c_str());
+    return 0;
 }
 
 static int __cdecl Lua_UOW_Debug_log(lua_State* L)

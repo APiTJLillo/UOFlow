@@ -143,7 +143,9 @@ function UOWNativeLog(...)
 		return
 	end
 
-	pcall(logFn, message)
+	-- In this client, protected calls can swallow failures and hide the real
+	-- dispatch problem. Keep the logger path direct.
+	logFn(message)
 end
 
 
@@ -179,28 +181,28 @@ function uow_selftest_cast_twice(spellId, waitMs)
 	end
 
 	uow_log('cast helper', castLabel)
-	local ok1, res1 = pcall(castFn, spellId)
+	local ok1, res1 = true, castFn(spellId)
 	uow_log('cast1', ok1, res1)
 
 	local delayMs = tonumber(waitMs) or 0
 	if delayMs > 0 then
 		if WindowUtils and type(WindowUtils.SendOverheadText) == 'function' then
 			local msg = towstring(string.format('wait %d ms', delayMs))
-			pcall(WindowUtils.SendOverheadText, msg, 66, true, false)
+			WindowUtils.SendOverheadText(msg, 66, true, false)
 		end
 		if type(Delay) == 'function' then
-			pcall(Delay, delayMs)
+			Delay(delayMs)
 		else
 			uow_log('Delay helper unavailable; skipping sleep', delayMs)
 		end
 	end
 
 	if type(ClearCurrentTarget) == 'function' then
-		local okClear, resClear = pcall(ClearCurrentTarget)
+		local okClear, resClear = true, ClearCurrentTarget()
 		uow_log('ClearCurrentTarget', okClear, resClear)
 	end
 
-	local ok2, res2 = pcall(castFn, spellId)
+	local ok2, res2 = true, castFn(spellId)
 	uow_log('cast2', ok2, res2)
 	return ok1 and res1, ok2 and res2
 end

@@ -555,10 +555,9 @@ function VisualProgrammingInterface.OnPropertyChanged()
     -- Update the parameter value
     block.params[paramName] = convertedValue
     
-    -- Update block visuals with error handling
-    pcall(function() 
-        block:updateVisuals()
-    end)
+    -- Keep this direct in the UOSA LuaPlus environment so failures surface
+    -- at the real callsite instead of disappearing behind pcall.
+    block:updateVisuals()
 end
 
 -- Handler for combo box selection changes
@@ -589,10 +588,9 @@ function VisualProgrammingInterface.OnParamSelectionChanged()
     -- Update the parameter value
     block.params[data.paramName] = newValue
     
-    -- Update block visuals with error handling
-    pcall(function() 
-        block:updateVisuals()
-    end)
+    -- Keep this direct in the UOSA LuaPlus environment so failures surface
+    -- at the real callsite instead of disappearing behind pcall.
+    block:updateVisuals()
 end
 
 -- Execution Control Event Handlers

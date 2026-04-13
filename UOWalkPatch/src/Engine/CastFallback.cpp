@@ -155,6 +155,7 @@ std::atomic<int> g_faultStreak{0};
 std::atomic<bool> g_castQueueSnapshotDisabled{false};
 uintptr_t g_moduleBase = 0;
 uintptr_t g_expectedVtable = 0;
+std::atomic<int> g_logActionQueue{0};
 
 struct ActionSnapshot {
     uintptr_t vtbl = 0;
@@ -215,6 +216,26 @@ bool ShouldEnableFallback()
         enabled = *cfg;
     else if (auto env = Core::Config::TryGetEnvBool("debug.native_cast_fallback"))
         enabled = *env;
+    return enabled;
+}
+
+bool ShouldLogActionQueue()
+{
+    int cached = g_logActionQueue.load(std::memory_order_acquire);
+    if (cached != 0)
+        return cached > 0;
+
+    bool enabled = false;
+    if (auto cfg = Core::Config::TryGetBool("debug.actionqueue"))
+        enabled = *cfg;
+    else if (auto env = Core::Config::TryGetEnvBool("debug.actionqueue"))
+        enabled = *env;
+    else if (auto legacyCfg = Core::Config::TryGetBool("UOW_DEBUG_ACTIONQUEUE"))
+        enabled = *legacyCfg;
+    else if (auto legacyEnv = Core::Config::TryGetEnvBool("UOW_DEBUG_ACTIONQUEUE"))
+        enabled = *legacyEnv;
+
+    g_logActionQueue.store(enabled ? 1 : -1, std::memory_order_release);
     return enabled;
 }
 
@@ -286,7 +307,7 @@ void* __fastcall Hook_BuildAction(void* self, void*, void* a1, void* a2)
 
 void __fastcall Hook_EnqueueAction(void* self, void*, void* action)
 {
-    if (g_nativeActive.load(std::memory_order_acquire)) {
+    if (g_nativeActive.load(std::memory_order_acquire) && ShouldLogActionQueue()) {
         const uintptr_t ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
         auto logMinimal = [self, action, ret]() {
             char retBuf[32];

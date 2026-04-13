@@ -1,3 +1,105 @@
+2026-04-13 - LuaPlus callback model / registration findings
+===========================================================
+
+Ghidra project / binary inspection summary:
+
+- Common client register helper:
+  - UOSA.exe+0x594E1F
+  - Ghidra name: FUN_00994e1f
+  - Called as: FUN_00994e1f(ctx, fn, "Name")
+  - Returns with `ret 0x0C`
+
+- Representative registration routine:
+  - UOSA.exe+0x12E060
+  - Ghidra name: FUN_0052e060
+  - Registers built-ins like:
+    - PrintWStringToChatWindow
+    - GetBuildVersion
+    - GetCurrentDateTime
+    - LoadTextFile
+    - UpdateViewport
+
+- Important conclusion:
+  - The client is NOT registering plain stock `int(lua_State*)` built-ins.
+  - The built-ins are native LuaPlus callbacks that pull args and push returns
+    through helper routines owned by the client.
+
+Key helper routines discovered in Ghidra:
+
+- UOSA.exe+0x596FD1 = FUN_00996fd1
+  - Arg extraction / validation entry
+  - Called like: FUN_00996fd1(ctx, callbackFn, argDescArray, argCount)
+  - Returns with `ret 0x10`
+
+- UOSA.exe+0x5969C9 = FUN_009969c9
+  - Per-argument validator / converter used by FUN_00996fd1
+  - Observed arg descriptor type mapping:
+    - type 1 = numeric
+    - type 2 = string
+    - type 3 = wstring
+    - type 4 = boolean
+    - higher values appear to be table / array / object-like variants
+
+- UOSA.exe+0x599835 = FUN_00999835
+  - Builds the bad-argument error text when arg extraction fails
+
+- UOSA.exe+0x59D545 = FUN_0099d545
+  - Stage boolean return value into a 16-byte scratch buffer
+  - Uses ESI as the scratch-buffer pointer
+  - Returns with `ret 0x04`
+
+- UOSA.exe+0x59D5F9 = FUN_0099d5f9
+  - Stage numeric return value into a 16-byte scratch buffer
+  - Uses ESI as the scratch-buffer pointer
+  - Returns with `ret 0x08`
+
+- UOSA.exe+0x59E3D8 = FUN_0099e3d8
+  - Finalize a staged return into the LuaPlus runtime
+  - Expects:
+    - EAX = pointer to scratch buffer
+    - ECX = current script context
+
+Built-in callback examples:
+
+- GetBuildVersion (UOSA.exe+0x12B920 / FUN_0052b920)
+  - Uses FUN_0099d5f9 repeatedly
+  - Finalizes each staged value with FUN_0099e3d8
+  - Returns 4
+
+- GetCurrentDateTime (UOSA.exe+0x1307F0 / FUN_005307f0)
+  - Same pattern
+  - Returns 7
+
+- IsLoginBefore (UOSA.exe+0x12B7E0 / FUN_0052b7e0)
+  - Uses FUN_0099d545
+  - Finalizes with FUN_0099e3d8
+  - Returns 1
+
+- PrintWStringToChatWindow (UOSA.exe+0x1273D0 / FUN_005273d0)
+  - Uses FUN_00996fd1 with two arg descriptors
+  - Uses a client cleanup path after argument handling
+  - Returns 0
+
+Why this matters for UOWalkPatch:
+
+- DummyPrint works because it is a minimal raw callback that only side-effects
+  and does not participate in LuaPlus arg/return helpers.
+
+- Spell helpers showing up as `function` or `kind=c` is NOT enough proof that
+  the client can successfully execute them through the current VP/evaluator
+  domain. The callback ABI is likely the mismatch.
+
+- Do not assume evaluator-visible helpers can safely call our plain
+  `lua_CFunction` gameplay wrappers.
+
+- Preferred direction:
+  1. Keep using the client register helper.
+  2. For evaluator-domain proof functions, keep them minimal.
+  3. For real client-callable helpers, follow the client's LuaPlus callback
+     model for arg parsing and return staging/finalization.
+  4. Avoid `pcall` / `xpcall` in cast-debug paths; they hide failures in this
+     environment.
+
 Running North
 INT3 breakpoint at uosa.005F64A0!
 @hit -> p1=5F80E744  p2=00000000  p3=00000002  this=5F7D7388
