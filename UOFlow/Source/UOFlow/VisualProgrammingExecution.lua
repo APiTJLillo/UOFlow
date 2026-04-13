@@ -115,8 +115,8 @@ function VisualProgrammingInterface.Execution:buildExecutionSnapshot()
     return snapshotByKey, orderedRecords, nil
 end
 
-function VisualProgrammingInterface.Execution:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords)
-    local executionQueue = {}
+function VisualProgrammingInterface.Execution:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords, executionQueue)
+    executionQueue = type(executionQueue) == "table" and executionQueue or {}
     local visited = {}
     local rootRecords = {}
 
@@ -188,7 +188,7 @@ function VisualProgrammingInterface.Execution:buildExecutionQueueFromSnapshot(sn
         UOWNativeLog("[VPExec] built queue", tostring(#executionQueue))
     end
 
-    return executionQueue
+    return #executionQueue
 end
 
 function VisualProgrammingInterface.Execution:testFlow()
@@ -265,10 +265,16 @@ function VisualProgrammingInterface.Execution:testFlow()
         return false, snapshotErr or "No executable blocks"
     end
 
-    local executionQueue = self:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords)
-    Debug.Print("Built execution queue with " .. #executionQueue .. " blocks")
-    
-    if #executionQueue == 0 then
+    local executionQueue = {}
+    local queueCount = self:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords, executionQueue)
+    if type(queueCount) ~= "number" then
+        queueCount = 0
+    end
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] post build queue", "count=" .. tostring(queueCount), "type=" .. type(executionQueue))
+    end
+
+    if queueCount == 0 then
         if UOWNativeLog then
             UOWNativeLog("[VPExec] built queue empty")
         end
@@ -282,9 +288,10 @@ function VisualProgrammingInterface.Execution:testFlow()
     if UOWNativeLog then
         UOWNativeLog("[VPExec] queue stored", tostring(#self.executionQueue))
     end
+    self.primingFirstBlock = true
     self.isRunning = true
     if UOWNativeLog then
-        UOWNativeLog("[VPExec] isRunning", tostring(self.isRunning))
+        UOWNativeLog("[VPExec] isRunning", tostring(self.isRunning), "priming=" .. tostring(self.primingFirstBlock))
     end
     
     -- Execute first block
@@ -293,13 +300,23 @@ function VisualProgrammingInterface.Execution:testFlow()
             UOWNativeLog("[VPExec] remove first pending", tostring(#self.executionQueue))
         end
         local firstBlock = table.remove(self.executionQueue, 1)
+        if type(firstBlock) ~= "table" then
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] firstBlock invalid", "type=" .. type(firstBlock))
+            end
+            self.isRunning = false
+            return false, "Invalid first block"
+        end
         if UOWNativeLog then
             UOWNativeLog("[VPExec] firstBlock", VPExecSafeString(firstBlock.id), VPExecSafeString(firstBlock.type), "remaining=" .. tostring(#self.executionQueue))
         end
         table.insert(testResults.executionOrder, firstBlock.id)
-        
-        Debug.Print("Executing first block " .. firstBlock.id)
+
         local success = self:executeBlock(firstBlock)
+        self.primingFirstBlock = false
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] firstBlock done", VPExecSafeString(firstBlock.id), "success=" .. tostring(success), "waiting=" .. tostring(self.waitingForTimer), "remaining=" .. tostring(#self.executionQueue))
+        end
         testResults.blocks[firstBlock.id] = {
             type = firstBlock.type,
             params = firstBlock.params,
@@ -331,7 +348,16 @@ function VisualProgrammingInterface.Execution:testFlow()
             
             return true, testResults
         end
+
+        if not self.waitingForTimer then
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] firstBlock continue immediate", "remaining=" .. tostring(#self.executionQueue))
+            end
+            self:continueExecution()
+        end
     end
+
+    self.primingFirstBlock = false
     
     if UOWNativeLog then
         UOWNativeLog("[VPExec] testFlow returning", "queueRemaining=" .. tostring(#self.executionQueue), "waiting=" .. tostring(self.waitingForTimer))

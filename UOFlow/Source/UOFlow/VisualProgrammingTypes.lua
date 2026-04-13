@@ -490,7 +490,6 @@ local function VPLogCastCall(phase, tag, spellId, helperLabel, callContext, ok, 
         VPValueToString(errText))
 
     VPNativeLog(message)
-    Debug.Print(message)
 end
 
 local function VPLogSpellState(tag, spellId)
@@ -517,16 +516,16 @@ local function VPLogSpellState(tag, spellId)
         end
     end
 
-    Debug.Print(string.format(
-        "[VPSpell] %s spell=%s activeWindow=%s useSpell=%s useTarget=%s lastSpell=%s currentSpellId=%s currentSpellCasting=%s",
-        VPValueToString(tag),
-        VPValueToString(spellId),
-        activeWindow,
-        useSpell,
-        useTarget,
-        lastSpell,
-        currentSpellId,
-        currentSpellCasting))
+    VPNativeLog(
+        "[VPSpell] state",
+        tostring(tag),
+        "spell=" .. VPValueToString(spellId),
+        "activeWindow=" .. activeWindow,
+        "useSpell=" .. useSpell,
+        "useTarget=" .. useTarget,
+        "lastSpell=" .. lastSpell,
+        "currentSpellId=" .. currentSpellId,
+        "currentSpellCasting=" .. currentSpellCasting)
 end
 
 local function VPDescribeCandidate(label, value)
@@ -564,7 +563,6 @@ local function VPLogFunctionIdentity(tag, helperLabel, fn, passSourceTag)
         VPValueToString(passSourceTag))
 
     VPNativeLog(message)
-    Debug.Print(message)
 end
 
 local function VPValidateNativeHandle(key, fn, expectedTag, expectedIdentity)
@@ -923,9 +921,12 @@ local function VPResolveLuaSpellCastWrapper()
     end
 
     local candidates = {
+        { label = "UOWCastSpellRaw", fn = type(UOWCastSpellRaw) == "function" and UOWCastSpellRaw or nil },
+        { label = "uow_spell_cast", fn = type(uow_spell_cast) == "function" and uow_spell_cast or nil },
+        { label = "uow.cmd.cast", fn = type(uow) == "table" and type(uow.cmd) == "table" and type(uow.cmd.cast) == "function" and uow.cmd.cast or nil },
+        { label = "UOWLuaSpellCastWrapper", fn = type(UOWLuaSpellCastWrapper) == "function" and UOWLuaSpellCastWrapper or nil },
         { label = "UOFlow.Spell.cast", fn = type(UOFlow) == "table" and type(UOFlow.Spell) == "table" and type(UOFlow.Spell.cast) == "function" and UOFlow.Spell.cast or nil },
         { label = "UOW.Spell.cast", fn = type(UOW) == "table" and type(UOW.Spell) == "table" and type(UOW.Spell.cast) == "function" and UOW.Spell.cast or nil },
-        { label = "uow.cmd.cast", fn = type(uow) == "table" and type(uow.cmd) == "table" and type(uow.cmd.cast) == "function" and uow.cmd.cast or nil },
     }
 
     local summary = {}
@@ -945,9 +946,12 @@ local function VPResolveLuaSpellCastOnIdWrapper()
     end
 
     local candidates = {
+        { label = "UOWCastSpellOnIdRaw", fn = type(UOWCastSpellOnIdRaw) == "function" and UOWCastSpellOnIdRaw or nil },
+        { label = "uow_spell_cast_on_id", fn = type(uow_spell_cast_on_id) == "function" and uow_spell_cast_on_id or nil },
+        { label = "uow.cmd.cast_on_id", fn = type(uow) == "table" and type(uow.cmd) == "table" and type(uow.cmd.cast_on_id) == "function" and uow.cmd.cast_on_id or nil },
+        { label = "UOWLuaSpellCastOnIdWrapper", fn = type(UOWLuaSpellCastOnIdWrapper) == "function" and UOWLuaSpellCastOnIdWrapper or nil },
         { label = "UOFlow.Spell.cast_on_id", fn = type(UOFlow) == "table" and type(UOFlow.Spell) == "table" and type(UOFlow.Spell.cast_on_id) == "function" and UOFlow.Spell.cast_on_id or nil },
         { label = "UOW.Spell.cast_on_id", fn = type(UOW) == "table" and type(UOW.Spell) == "table" and type(UOW.Spell.cast_on_id) == "function" and UOW.Spell.cast_on_id or nil },
-        { label = "uow.cmd.cast_on_id", fn = type(uow) == "table" and type(uow.cmd) == "table" and type(uow.cmd.cast_on_id) == "function" and uow.cmd.cast_on_id or nil },
     }
 
     local summary = {}
@@ -959,6 +963,15 @@ local function VPResolveLuaSpellCastOnIdWrapper()
     end
 
     return nil, nil, table.concat(summary, " | ")
+end
+
+local function VPIsRawCastHelper(label)
+    if type(label) ~= "string" then
+        return false
+    end
+
+    return string.find(label, "UOWCastSpellRaw", 1, true) ~= nil
+        or string.find(label, "UOWCastSpellOnIdRaw", 1, true) ~= nil
 end
 
 local function VPCastSpell(spellId, tag, targetId, callContext)
@@ -976,7 +989,7 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     local sourceTag = callContext.nativeSourceTag or tag
     local numericTargetId = tonumber(targetId)
     local useCastOnId = numericTargetId and numericTargetId > 0
-    local beforeState = VPSnapshotSpellState()
+    local beforeState = nil
     local castFn, castLabel, candidateSummary = nil, nil, nil
     local ok = false
     local result1 = nil
@@ -1002,8 +1015,6 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         "targetId=" .. tostring(targetId),
         "useCastOnId=" .. tostring(usedOnId))
     VPNativeLog("[VPSpell] cast candidates", tostring(tag), candidateSummary)
-    Debug.Print("[VPSpell] cast candidates " .. candidateSummary)
-    VPLogSpellState(tag .. ":before", spellId)
 
     if type(castFn) ~= "function" then
         local missingMsg = usedOnId
@@ -1013,17 +1024,14 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         VPNativeLog("[VPSpell] cast fail",
             tostring(tag),
             missingMsg)
-        VPLogSpellState(tag .. ":after", spellId)
         return false, missingMsg, nil, false
     end
 
-    VPLogCastCall("before", tag, spellId, castLabel, callContext, nil, nil, nil, nil)
     local preCallMessage = "[VP_CALL] about to call " .. VPValueToString(castLabel)
         .. " spell=" .. VPValueToString(spellId)
         .. " source=" .. VPValueToString(sourceTag)
         .. " helper=" .. VPValueToString(castLabel)
         .. " fn=" .. VPValueToString(castFn)
-    Debug.Print(preCallMessage)
     VPNativeLog(preCallMessage)
     if usedOnId then
         ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, numericTargetId)
@@ -1036,12 +1044,15 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         .. " ret1=" .. VPValueToString(result1)
         .. " ret2=" .. VPValueToString(result2)
         .. " err=" .. VPValueToString(errText)
-    Debug.Print(postCallMessage)
     VPNativeLog(postCallMessage)
 
-    local stateChanged = VPDidSpellStateChange(beforeState)
+    local stateChanged = false
     local hardSuccess = ok and result1 == true
-    VPLogCastCall("after", tag, spellId, castLabel, callContext, ok, result1, result2, errText)
+    if not hardSuccess and ok and VPIsRawCastHelper(castLabel) and errText == nil then
+        hardSuccess = true
+        result1 = true
+        result2 = "raw_dispatch"
+    end
     VPNativeLog("[VPSpell] helper result",
         tostring(tag),
         "helper=" .. tostring(castLabel),
@@ -1051,25 +1062,12 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         "stateChanged=" .. tostring(stateChanged),
         "hardSuccess=" .. tostring(hardSuccess),
         "source=" .. tostring(sourceTag))
-    Debug.Print(string.format(
-        "[VPSpell] %s helper=%s ok=%s result1=%s result2=%s stateChanged=%s hardSuccess=%s source=%s",
-        VPValueToString(tag),
-        VPValueToString(castLabel),
-        VPValueToString(ok),
-        VPValueToString(result1),
-        VPValueToString(result2),
-        VPValueToString(stateChanged),
-        VPValueToString(hardSuccess),
-        VPValueToString(sourceTag)))
-
     if hardSuccess then
-        VPLogSpellState(tag .. ":after", spellId)
         return true, result1, result2, usedOnId
     end
 
     local hardFail = VPValueToString(result2 or result1 or errText or "native_cast_failed")
     VPEmitUiLog("VP_CAST " .. hardFail)
-    VPLogSpellState(tag .. ":after", spellId)
     return false, hardFail, nil, usedOnId
 end
 

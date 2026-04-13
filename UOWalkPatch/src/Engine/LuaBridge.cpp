@@ -8516,21 +8516,51 @@ static int __cdecl Lua_uow_spell_cast_global(lua_State* L)
     std::string msg;
     bool ok = false;
     if (spellId > 0) {
-        ok = DispatchNoClickCommand(
-            "uow_spell_cast",
-            [spellId](std::string& innerMsg) {
-                bool result = NoClickCastSpell_Internal(spellId);
-                if (result && innerMsg.empty()) {
-                    char okMsg[96];
-                    sprintf_s(okMsg, sizeof(okMsg), "uow_spell_cast ok (spell=%d)", spellId);
-                    innerMsg = okMsg;
-                } else if (!result && innerMsg.empty()) {
-                    innerMsg = "uow_spell_cast failed";
-                }
-                return result;
-            },
-            msg,
-            false);
+        uint32_t previousTok = 0;
+        bool manualAssigned = false;
+        const uint32_t token = BeginManualCastAttempt(spellId, "uow_spell_cast", previousTok, manualAssigned);
+        if (!Engine::CastFallback::IsNativeHookActive()) {
+            msg = "native_hooks_inactive";
+            RestoreManualCastToken(previousTok, manualAssigned);
+        } else {
+            Engine::CastFallback::ArmExpectedCast(token,
+                                                  static_cast<uint32_t>(spellId),
+                                                  0u,
+                                                  0u,
+                                                  false);
+            ok = DispatchNoClickCommand(
+                "uow_spell_cast",
+                [spellId, token](std::string& innerMsg) {
+                    ScopedForcedActionGate forcedGate("uow_spell_cast");
+                    bool result = DirectBuildAndEnqueueSpell(spellId, token, innerMsg);
+                    Engine::CastFallback::ExpectedCastResult expected = Engine::CastFallback::ConsumeExpectedCast(token);
+                    char buf[320];
+                    sprintf_s(buf,
+                              sizeof(buf),
+                              "[Lua] uow_spell_cast direct evidence tok=%u build=%d enqueue=%d spell=%u targetType=%u targetId=%08X flag18=%u",
+                              token,
+                              expected.buildMatched ? 1 : 0,
+                              expected.enqueueMatched ? 1 : 0,
+                              expected.spellId,
+                              expected.targetType,
+                              expected.targetId,
+                              static_cast<unsigned>(expected.flag18));
+                    WriteRawLog(buf);
+                    if (!expected.hooksActive && innerMsg.empty()) {
+                        innerMsg = "native_hooks_inactive";
+                        result = false;
+                    } else if (result && !expected.enqueueMatched) {
+                        innerMsg = "enqueue_missing";
+                        result = false;
+                    } else if (!result && innerMsg.empty()) {
+                        innerMsg = "native_cast_failed";
+                    }
+                    return result;
+                },
+                msg,
+                false);
+            RestoreManualCastToken(previousTok, manualAssigned);
+        }
     } else {
         msg = "invalid_spell";
     }
@@ -8592,21 +8622,51 @@ static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L)
     std::string msg;
     bool ok = false;
     if (spellId > 0 && objectId != 0) {
-        ok = DispatchNoClickCommand(
-            "uow_spell_cast_on_id",
-            [spellId, objectId](std::string& innerMsg) {
-                bool result = NoClickCastSpellOnId_Internal(spellId, objectId);
-                if (result && innerMsg.empty()) {
-                    char okMsg[128];
-                    sprintf_s(okMsg, sizeof(okMsg), "uow_spell_cast_on_id ok (spell=%d target=%u)", spellId, objectId);
-                    innerMsg = okMsg;
-                } else if (!result && innerMsg.empty()) {
-                    innerMsg = "uow_spell_cast_on_id failed";
-                }
-                return result;
-            },
-            msg,
-            false);
+        uint32_t previousTok = 0;
+        bool manualAssigned = false;
+        const uint32_t token = BeginManualCastAttempt(spellId, "uow_spell_cast_on_id", previousTok, manualAssigned);
+        if (!Engine::CastFallback::IsNativeHookActive()) {
+            msg = "native_hooks_inactive";
+            RestoreManualCastToken(previousTok, manualAssigned);
+        } else {
+            Engine::CastFallback::ArmExpectedCast(token,
+                                                  static_cast<uint32_t>(spellId),
+                                                  4u,
+                                                  objectId,
+                                                  true);
+            ok = DispatchNoClickCommand(
+                "uow_spell_cast_on_id",
+                [spellId, objectId, token](std::string& innerMsg) {
+                    ScopedForcedActionGate forcedGate("uow_spell_cast_on_id");
+                    bool result = DirectBuildAndEnqueueSpellOnId(spellId, token, objectId, innerMsg);
+                    Engine::CastFallback::ExpectedCastResult expected = Engine::CastFallback::ConsumeExpectedCast(token);
+                    char buf[352];
+                    sprintf_s(buf,
+                              sizeof(buf),
+                              "[Lua] uow_spell_cast_on_id direct evidence tok=%u build=%d enqueue=%d spell=%u targetType=%u targetId=%08X flag18=%u",
+                              token,
+                              expected.buildMatched ? 1 : 0,
+                              expected.enqueueMatched ? 1 : 0,
+                              expected.spellId,
+                              expected.targetType,
+                              expected.targetId,
+                              static_cast<unsigned>(expected.flag18));
+                    WriteRawLog(buf);
+                    if (!expected.hooksActive && innerMsg.empty()) {
+                        innerMsg = "native_hooks_inactive";
+                        result = false;
+                    } else if (result && !expected.enqueueMatched) {
+                        innerMsg = "enqueue_missing";
+                        result = false;
+                    } else if (!result && innerMsg.empty()) {
+                        innerMsg = "native_cast_on_id_failed";
+                    }
+                    return result;
+                },
+                msg,
+                false);
+            RestoreManualCastToken(previousTok, manualAssigned);
+        }
     } else {
         msg = "invalid_args";
     }

@@ -6,7 +6,8 @@ VisualProgrammingInterface.Execution = {
     executionQueue = {},
     blockStates = {}, -- Stores execution state for each block
     delay = 100, -- Reduced delay between blocks for smoother execution
-    waitingForTimer = false -- New flag to track timer state
+    waitingForTimer = false, -- New flag to track timer state
+    primingFirstBlock = false
 }
 
 -- Block execution states

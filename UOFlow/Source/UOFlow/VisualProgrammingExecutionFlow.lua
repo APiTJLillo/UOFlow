@@ -10,6 +10,7 @@ function VisualProgrammingInterface.Execution:hardResetForTestRun()
     self.currentBlock = nil
     self.executionQueue = {}
     self.waitingForTimer = false
+    self.primingFirstBlock = false
     self.blockStates = {}
     self.continueTimer = 0
     self.resetTimer = 0
@@ -84,7 +85,8 @@ function VisualProgrammingInterface.Execution:start()
         snapshotByKey, orderedRecords = self:buildExecutionSnapshot()
     end
     if snapshotByKey and type(self.buildExecutionQueueFromSnapshot) == "function" then
-        self.executionQueue = self:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords)
+        self.executionQueue = {}
+        self:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords, self.executionQueue)
     end
     if #self.executionQueue == 0 then
         Debug.Print("Error: Could not build execution queue")
@@ -139,6 +141,7 @@ end
 -- Stop execution
 function VisualProgrammingInterface.Execution:stop()
     Debug.Print("Stopping execution")
+    self.primingFirstBlock = false
     
     -- If we're waiting for a timer, cancel it
     if self.waitingForTimer and VisualProgrammingInterface.ActionTimer then
@@ -163,6 +166,7 @@ function VisualProgrammingInterface.Execution:stop()
         self.currentBlock = nil
         self.executionQueue = {}
         self.waitingForTimer = false
+        self.primingFirstBlock = false
         self.blockStates = {}
         
         -- Reset the ActionTimer system
@@ -183,6 +187,13 @@ end
 
 -- Continue execution after pause or between blocks
 function VisualProgrammingInterface.Execution:continueExecution()
+    if self.primingFirstBlock then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] continue priming", "queue=" .. tostring(#self.executionQueue))
+        end
+        return
+    end
+
     if not self.isRunning or self.isPaused then
         if UOWNativeLog then
             UOWNativeLog("[VPExec] continue blocked", "running=" .. tostring(self.isRunning), "paused=" .. tostring(self.isPaused))
