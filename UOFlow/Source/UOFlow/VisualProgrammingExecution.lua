@@ -114,7 +114,7 @@ function VisualProgrammingInterface.Execution:testFlow()
         -- Check if connections exist
         if type(block.connections) == "table" then
             for _, connection in ipairs(block.connections) do
-                if connection and connection.id then
+                if type(connection) == "table" and connection.id ~= nil then
                     local nextBlock = VisualProgrammingInterface.manager:getBlock(connection.id)
                     if nextBlock then
                         visit(nextBlock)
@@ -157,7 +157,7 @@ function VisualProgrammingInterface.Execution:testFlow()
             for _, otherBlock in ipairs(sortedBlocks) do
                 if type(otherBlock) == "table" and type(otherBlock.connections) == "table" then
                     for _, conn in ipairs(otherBlock.connections) do
-                        if conn and conn.id == block.id then
+                        if type(conn) == "table" and conn.id == block.id then
                             hasIncoming = true
                             break
                         end

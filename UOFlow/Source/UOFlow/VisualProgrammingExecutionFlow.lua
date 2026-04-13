@@ -94,11 +94,14 @@ function VisualProgrammingInterface.Execution:start()
         
         -- Visit next block in chain if it exists
         if block.connections and #block.connections > 0 then
-            local nextBlockId = block.connections[1].id
-            local nextBlock = VisualProgrammingInterface.manager:getBlock(nextBlockId)
-            if nextBlock then
-                Debug.Print("Following connection from block " .. block.id .. " to block " .. nextBlockId)
-                visit(nextBlock)
+            local firstConnection = block.connections[1]
+            if type(firstConnection) == "table" and firstConnection.id ~= nil then
+                local nextBlockId = firstConnection.id
+                local nextBlock = VisualProgrammingInterface.manager:getBlock(nextBlockId)
+                if nextBlock then
+                    Debug.Print("Following connection from block " .. block.id .. " to block " .. nextBlockId)
+                    visit(nextBlock)
+                end
             end
         end
     end
@@ -111,7 +114,7 @@ function VisualProgrammingInterface.Execution:start()
             for _, otherBlock in pairs(VisualProgrammingInterface.manager.blocks) do
                 if type(otherBlock) == "table" and otherBlock.connections then
                     for _, conn in ipairs(otherBlock.connections) do
-                        if conn.id == block.id then
+                        if type(conn) == "table" and conn.id == block.id then
                             hasIncoming = true
                             break
                         end
