@@ -167,6 +167,12 @@ struct ActionSnapshot {
     bool ok = false;
 };
 
+struct QueueSnapshot {
+    uintptr_t slot0 = 0;
+    uintptr_t slot1 = 0;
+    bool ok = false;
+};
+
 static ActionSnapshot ReadActionSnapshot(void* action)
 {
     ActionSnapshot snap{};
@@ -180,6 +186,22 @@ static ActionSnapshot ReadActionSnapshot(void* action)
         snap.iconId = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_IconId);
         snap.targetId = *reinterpret_cast<uint32_t*>(base + Engine::Addresses::CAST_OFS_TargetId);
         snap.targetReady = *reinterpret_cast<uint8_t*>(base + Engine::Addresses::CAST_OFS_TargetReadyFlag);
+        snap.ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        snap.ok = false;
+    }
+    return snap;
+}
+
+static QueueSnapshot ReadQueueSnapshot(void* queue)
+{
+    QueueSnapshot snap{};
+    if (!queue)
+        return snap;
+    __try {
+        auto base = static_cast<std::uint8_t*>(queue);
+        snap.slot0 = *reinterpret_cast<uintptr_t*>(base + 0x00);
+        snap.slot1 = *reinterpret_cast<uintptr_t*>(base + 0x08);
         snap.ok = true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         snap.ok = false;
@@ -307,31 +329,49 @@ void* __fastcall Hook_BuildAction(void* self, void*, void* a1, void* a2)
 
 void __fastcall Hook_EnqueueAction(void* self, void*, void* action)
 {
-    if (g_nativeActive.load(std::memory_order_acquire) && ShouldLogActionQueue()) {
+    ActionSnapshot actionSnap = ReadActionSnapshot(action);
+    const bool castScopedLog = actionSnap.ok && LooksLikeSpellAction(actionSnap) && Engine::Lua::HasRecentCastAttempt();
+    const bool shouldLog = g_nativeActive.load(std::memory_order_acquire) && (ShouldLogActionQueue() || castScopedLog);
+
+    QueueSnapshot beforeQueue = shouldLog ? ReadQueueSnapshot(self) : QueueSnapshot{};
+
+    if (g_origEnqueueAction)
+        g_origEnqueueAction(self, action);
+
+    if (shouldLog) {
         const uintptr_t ret = reinterpret_cast<uintptr_t>(_ReturnAddress());
-        auto logMinimal = [self, action, ret]() {
+        QueueSnapshot afterQueue = ReadQueueSnapshot(self);
+        auto logSnapshot = [self, action, ret, actionSnap, beforeQueue, afterQueue]() {
             char retBuf[32];
             if (ret >= g_moduleBase)
                 sprintf_s(retBuf, sizeof(retBuf), "UOSA.exe+0x%X", static_cast<unsigned>(ret - g_moduleBase));
             else
                 sprintf_s(retBuf, sizeof(retBuf), "0x%p", reinterpret_cast<void*>(ret));
 
-            char buf[192];
+            char buf[352];
             sprintf_s(buf,
                       sizeof(buf),
-                      "[ActionQueue] enqueue ret=%s queue=%p action=%p",
+                      "[ActionQueue] enqueue ret=%s queue=%p action=%p spellId=%u targetType=%u targetId=%08X flag18=%u slots(before=%p,%p after=%p,%p)",
                       retBuf,
                       self,
-                      action);
+                      action,
+                      actionSnap.spellId,
+                      actionSnap.targetType,
+                      actionSnap.targetId,
+                      static_cast<unsigned>(actionSnap.targetReady),
+                      reinterpret_cast<void*>(beforeQueue.ok ? beforeQueue.slot0 : 0),
+                      reinterpret_cast<void*>(beforeQueue.ok ? beforeQueue.slot1 : 0),
+                      reinterpret_cast<void*>(afterQueue.ok ? afterQueue.slot0 : 0),
+                      reinterpret_cast<void*>(afterQueue.ok ? afterQueue.slot1 : 0));
             WriteRawLog(buf);
         };
 
         if (g_castQueueSnapshotDisabled.load(std::memory_order_acquire)) {
-            logMinimal();
+            logSnapshot();
         } else {
             DWORD sehCode = 0;
             __try {
-                logMinimal();
+                logSnapshot();
             } __except (sehCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
                 if (!g_castQueueSnapshotDisabled.exchange(true, std::memory_order_acq_rel)) {
                     char buf[160];
@@ -344,8 +384,6 @@ void __fastcall Hook_EnqueueAction(void* self, void*, void* action)
             }
         }
     }
-    if (g_origEnqueueAction)
-        g_origEnqueueAction(self, action);
 }
 
 } // namespace

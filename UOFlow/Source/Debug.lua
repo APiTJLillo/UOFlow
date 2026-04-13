@@ -179,7 +179,7 @@ local function UOWSpellCastOnIdWrapper(spellId, objectId)
 
 	UOWNativeLog("[LuaSpell] cast_on_id request spellId=", tostring(numericSpellId), " target=", tostring(numericObjectId))
 	local ok = rawCast(numericSpellId, numericObjectId)
-	local success = (ok ~= false)
+	local success = (ok == true)
 	UOWNativeLog(
 		"[LuaSpell] cast_on_id result spellId=",
 		tostring(numericSpellId),

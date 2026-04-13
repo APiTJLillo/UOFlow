@@ -7846,13 +7846,10 @@ static bool NoClickCastSpell_Internal(int spellId)
     bool sendObserved = WaitForSendLogged(kTargetFallbackSendWaitMs);
     bool fallbackForDirectOnly = directOk && !wrapperReady && !gateCtxAvailable;
     bool fallbackForGateCtx = gateCtxOk;
-    bool fallbackForPrimeFailure = !primeOk;
-    bool needTargetFallback = !sendObserved || fallbackForDirectOnly || fallbackForGateCtx || fallbackForPrimeFailure;
+    bool needTargetFallback = !sendObserved || fallbackForDirectOnly || fallbackForGateCtx;
     const char* gateReason = "not_needed";
     if (!sendObserved)
         gateReason = "send_missing";
-    else if (fallbackForPrimeFailure)
-        gateReason = "prime_failed";
     else if (fallbackForGateCtx)
         gateReason = "gate_ctx";
     else if (fallbackForDirectOnly)
@@ -8025,11 +8022,6 @@ static bool TryCastSpellOnIdViaClient(lua_State* L, int spellId, uint32_t object
               wrapperReady ? "ready" : "no",
               directReady ? "ready" : "no");
     WriteRawLog(intro);
-
-    if (!primeOk) {
-        WriteRawLog("[CastOnId] skipping client wrapper/orig due to prime_failed");
-        return false;
-    }
 
     if (wrapperReady) {
         bool wrapperOk = InvokeCastOnIdWrapper(L, spellId, objectId);
@@ -8869,7 +8861,18 @@ static int __stdcall Lua_UOW_CastSpell_Raw(void* raw)
 
     bool ok = false;
     std::string msg;
-    if (extracted && spellId > 0) {
+    const uint8_t gateValue = ReadActionGateByte();
+    char gateBuf[160];
+    sprintf_s(gateBuf,
+              sizeof(gateBuf),
+              "[LuaPlusCast] UOWCastSpellRaw gate=%u spell=%d",
+              static_cast<unsigned>(gateValue),
+              spellId);
+    WriteRawLog(gateBuf);
+
+    if (gateValue == 0) {
+        msg = "gate_closed";
+    } else if (extracted && spellId > 0) {
         ok = DispatchNoClickCommand(
             "UOWCastSpellRaw",
             [spellId](std::string& innerMsg) {
@@ -8934,7 +8937,19 @@ static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw)
 
     bool ok = false;
     std::string msg;
-    if (extracted && spellId > 0 && objectId != 0) {
+    const uint8_t gateValue = ReadActionGateByte();
+    char gateBuf[192];
+    sprintf_s(gateBuf,
+              sizeof(gateBuf),
+              "[LuaPlusCast] UOWCastSpellOnIdRaw gate=%u spell=%d target=%u",
+              static_cast<unsigned>(gateValue),
+              spellId,
+              objectId);
+    WriteRawLog(gateBuf);
+
+    if (gateValue == 0) {
+        msg = "gate_closed";
+    } else if (extracted && spellId > 0 && objectId != 0) {
         ok = DispatchNoClickCommand(
             "UOWCastSpellOnIdRaw",
             [spellId, objectId](std::string& innerMsg) {

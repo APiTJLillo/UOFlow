@@ -1,9 +1,30 @@
 -- Main execution system entry point
 
 -- Test flow functionality
+local function VPExecSafeString(value)
+    local valueType = type(value)
+    if valueType == "nil" or valueType == "string" or valueType == "number" or valueType == "boolean" then
+        return tostring(value)
+    end
+    return "<" .. valueType .. ">"
+end
+
 function VisualProgrammingInterface.Execution:testFlow()
-    -- Stop any existing execution and reset state
-    self:stop()
+    -- Hard reset without scheduling delayed stop/reset callbacks that can race the new run
+    if type(self.hardResetForTestRun) == "function" then
+        self:hardResetForTestRun()
+    else
+        self.isRunning = false
+        self.isPaused = false
+        self.currentBlock = nil
+        self.executionQueue = {}
+        self.waitingForTimer = false
+        self.blockStates = {}
+        self.continueTimer = 0
+        self.resetTimer = 0
+        self.resetBlockId = nil
+        self.resetBlockIds = {}
+    end
     
     if UOWNativeLog then
         UOWNativeLog("[VPExec] testFlow begin")
@@ -40,7 +61,7 @@ function VisualProgrammingInterface.Execution:testFlow()
         self.blockStates[id] = VisualProgrammingInterface.Execution.BlockState.PENDING
     end
     self.waitingForTimer = false
-    self.isRunning = true -- Set running state to true for proper timer handling
+    self.isRunning = false
     
     -- Clear any existing timers
     if VisualProgrammingInterface.ActionTimer then
@@ -64,16 +85,16 @@ function VisualProgrammingInterface.Execution:testFlow()
             return
         end
         if type(block) ~= "table" then
-            Debug.Print("Warning: Attempted to visit non-table block: " .. tostring(block))
+            Debug.Print("Warning: Attempted to visit non-table block: " .. VPExecSafeString(block))
             if UOWNativeLog then
-                UOWNativeLog("[VPExec] visit non-table block", tostring(block), "type=" .. type(block))
+                UOWNativeLog("[VPExec] visit non-table block", VPExecSafeString(block), "type=" .. type(block))
             end
             return
         end
         if block.id == nil then
             Debug.Print("Warning: Attempted to visit block without id")
             if UOWNativeLog then
-                UOWNativeLog("[VPExec] visit block missing id", tostring(block.type), "y=" .. tostring(block.y))
+                UOWNativeLog("[VPExec] visit block missing id", VPExecSafeString(block.type), "y=" .. VPExecSafeString(block.y))
             end
             return
         end
@@ -91,7 +112,7 @@ function VisualProgrammingInterface.Execution:testFlow()
         table.insert(executionQueue, block)
         
         -- Check if connections exist
-        if block.connections then
+        if type(block.connections) == "table" then
             for _, connection in ipairs(block.connections) do
                 if connection and connection.id then
                     local nextBlock = VisualProgrammingInterface.manager:getBlock(connection.id)
@@ -111,11 +132,11 @@ function VisualProgrammingInterface.Execution:testFlow()
         if type(block) == "table" then
             table.insert(sortedBlocks, block)
             if UOWNativeLog then
-                UOWNativeLog("[VPExec] sortedBlock candidate", tostring(id), tostring(block.type), "y=" .. tostring(block.y))
+                UOWNativeLog("[VPExec] sortedBlock candidate", VPExecSafeString(id), VPExecSafeString(block.type), "y=" .. VPExecSafeString(block.y))
             end
         else
             if UOWNativeLog then
-                UOWNativeLog("[VPExec] skipping non-table manager entry", tostring(id), "type=" .. type(block), "value=" .. tostring(block))
+                UOWNativeLog("[VPExec] skipping non-table manager entry", VPExecSafeString(id), "type=" .. type(block))
             end
         end
     end
@@ -128,10 +149,37 @@ function VisualProgrammingInterface.Execution:testFlow()
         return ay < by
     end)
     
-    -- Build execution queue starting from top blocks
+    -- Build execution queue from root blocks first, falling back to all blocks only if needed.
+    local rootBlocks = {}
     for _, block in ipairs(sortedBlocks) do
+        local hasIncoming = false
+        if block and block.id ~= nil then
+            for _, otherBlock in ipairs(sortedBlocks) do
+                if type(otherBlock) == "table" and type(otherBlock.connections) == "table" then
+                    for _, conn in ipairs(otherBlock.connections) do
+                        if conn and conn.id == block.id then
+                            hasIncoming = true
+                            break
+                        end
+                    end
+                end
+                if hasIncoming then
+                    break
+                end
+            end
+        end
+        if not hasIncoming then
+            table.insert(rootBlocks, block)
+        end
+    end
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] rootCount", tostring(#rootBlocks))
+    end
+
+    local visitList = (#rootBlocks > 0) and rootBlocks or sortedBlocks
+    for _, block in ipairs(visitList) do
         if UOWNativeLog then
-            UOWNativeLog("[VPExec] visit root", tostring(block.id), tostring(block.type), "y=" .. tostring(block.y))
+            UOWNativeLog("[VPExec] visit root", VPExecSafeString(block.id), VPExecSafeString(block.type), "y=" .. VPExecSafeString(block.y), "roots=" .. tostring(#rootBlocks))
         end
         visit(block)
     end
@@ -143,19 +191,29 @@ function VisualProgrammingInterface.Execution:testFlow()
     if UOWNativeLog then
         local labels = {}
         for i, block in ipairs(executionQueue) do
-            labels[i] = tostring(block.id) .. ":" .. tostring(block.type)
+            labels[i] = VPExecSafeString(block.id) .. ":" .. VPExecSafeString(block.type)
         end
         UOWNativeLog("[VPExec] queue", table.concat(labels, ","))
     end
     
+    if #executionQueue == 0 then
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] built queue empty")
+        end
+        self.executionQueue = {}
+        self.isRunning = false
+        return false, "No executable blocks"
+    end
+
     -- Store execution queue for processing in OnUpdate
     self.executionQueue = executionQueue
+    self.isRunning = true
     
     -- Execute first block
     if #self.executionQueue > 0 then
         local firstBlock = table.remove(self.executionQueue, 1)
         if UOWNativeLog then
-            UOWNativeLog("[VPExec] firstBlock", tostring(firstBlock.id), tostring(firstBlock.type), "remaining=" .. tostring(#self.executionQueue))
+            UOWNativeLog("[VPExec] firstBlock", VPExecSafeString(firstBlock.id), VPExecSafeString(firstBlock.type), "remaining=" .. tostring(#self.executionQueue))
         end
         table.insert(testResults.executionOrder, firstBlock.id)
         
@@ -170,7 +228,7 @@ function VisualProgrammingInterface.Execution:testFlow()
         
         if not success then
             if UOWNativeLog then
-                UOWNativeLog("[VPExec] firstBlock failed", tostring(firstBlock.id), tostring(firstBlock.type))
+                UOWNativeLog("[VPExec] firstBlock failed", VPExecSafeString(firstBlock.id), VPExecSafeString(firstBlock.type))
             end
             testResults.success = false
             testResults.error = "Failed at block " .. firstBlock.id

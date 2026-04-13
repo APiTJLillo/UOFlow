@@ -1,4 +1,43 @@
 -- Flow control and execution management
+function VisualProgrammingInterface.Execution:hardResetForTestRun()
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] hard reset for test")
+    end
+    Debug.Print("Hard resetting execution state for flow test")
+
+    self.isRunning = false
+    self.isPaused = false
+    self.currentBlock = nil
+    self.executionQueue = {}
+    self.waitingForTimer = false
+    self.blockStates = {}
+    self.continueTimer = 0
+    self.resetTimer = 0
+    self.resetBlockId = nil
+    self.resetBlockIds = {}
+
+    if VisualProgrammingInterface.ActionTimer then
+        VisualProgrammingInterface.ActionTimer.isWaiting = false
+        VisualProgrammingInterface.ActionTimer.callback = nil
+        VisualProgrammingInterface.ActionTimer.functionQueue = {}
+        VisualProgrammingInterface.ActionTimer.currentQueueId = nil
+        VisualProgrammingInterface.ActionTimer.isComplete = false
+        VisualProgrammingInterface.ActionTimer.currentTime = 0
+        VisualProgrammingInterface.ActionTimer.targetTime = 0
+    end
+
+    if VisualProgrammingInterface.manager and type(VisualProgrammingInterface.manager.blocks) == "table" then
+        for id, block in pairs(VisualProgrammingInterface.manager.blocks) do
+            if type(block) == "table" and block.id ~= nil then
+                local blockWindow = "Block" .. id
+                if DoesWindowNameExist(blockWindow) then
+                    WindowSetTintColor(blockWindow, 255, 255, 255)
+                end
+            end
+        end
+    end
+end
+
 function VisualProgrammingInterface.Execution:start()
     if self.isRunning then return end
     

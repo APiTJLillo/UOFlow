@@ -182,11 +182,17 @@ end
 function VisualProgrammingInterface.Execution:queueBlocksForReset()
     Debug.Print("Queueing blocks for reset")
     VisualProgrammingInterface.Execution.resetBlockIds = {}
+    if not VisualProgrammingInterface.manager or type(VisualProgrammingInterface.manager.blocks) ~= "table" then
+        Debug.Print("Reset queue skipped: manager.blocks missing")
+        return
+    end
     -- Queue all blocks for reset
     for id, _ in pairs(VisualProgrammingInterface.manager.blocks) do
         local block = VisualProgrammingInterface.manager.blocks[id]
-        Debug.Print("- Queueing " .. block.type .. " [" .. id .. "]")
-        table.insert(VisualProgrammingInterface.Execution.resetBlockIds, id)
+        if type(block) == "table" then
+            Debug.Print("- Queueing " .. tostring(block.type) .. " [" .. tostring(id) .. "]")
+            table.insert(VisualProgrammingInterface.Execution.resetBlockIds, id)
+        end
     end
     -- Reset timer for delayed reset
     VisualProgrammingInterface.Execution.resetTimer = 0
