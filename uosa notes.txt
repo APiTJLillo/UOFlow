@@ -100,6 +100,29 @@ Why this matters for UOWalkPatch:
   4. Avoid `pcall` / `xpcall` in cast-debug paths; they hide failures in this
      environment.
 
+2026-04-13 - practical migration baseline
+=========================================
+
+- `DummyPrint("test")` is now proven to work as a raw evaluator callback with
+  LuaPlus string arg extraction. It logs:
+  - caller thread id
+  - owner thread id
+  - extracted message text
+
+- `Debug.Log(...)`, `UOW.Debug.Log(...)`, `uow_debug_log(...)`, and
+  `__uow_debug_log_v1(...)` are not reliable primary script-call surfaces in
+  this client, even when registration logs claim they are present.
+
+- New migration direction:
+  1. Use `DummyPrint(...)` as the only script-to-DLL logging backend for
+     UOFlow-owned Lua scripts.
+  2. Preserve public Lua spell APIs (`UOFlow.Spell.cast`, `UOW.Spell.cast`,
+     `uow.cmd.cast`) as Lua wrappers.
+  3. Back those wrappers with one simple raw LuaPlus callback global:
+     `UOWCastSpellRaw(spellId)`.
+  4. Keep gameplay/native `lua_CFunction` helpers for internal/native paths,
+     not as the primary script execution surface.
+
 Running North
 INT3 breakpoint at uosa.005F64A0!
 @hit -> p1=5F80E744  p2=00000000  p3=00000002  this=5F7D7388

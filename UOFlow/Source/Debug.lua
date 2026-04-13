@@ -69,57 +69,16 @@ local function UOWLookupRawFunction(container, key)
 	return nil
 end
 
-local function UOWIsProbablyCFunction(fn)
-	if type(fn) ~= "function" then
-		return false
-	end
-	if type(debug) == "table" and type(debug.getinfo) == "function" then
-		local info = debug.getinfo(fn)
-		if type(info) == "table" then
-			return info.what == "C"
-		end
-	end
-	return false
-end
-
-local function UOWResolveNativeLogger()
-	local env = nil
-	if type(getfenv) == "function" then
-		local value = getfenv(1)
-		if type(value) == "table" then
-			env = value
-		end
+local function UOWResolveDummyPrint()
+	if type(DummyPrint) == "function" then
+		return DummyPrint
 	end
 
 	local globalTable = _G
-	if not globalTable and env and type(env._G) == "table" then
-		globalTable = env._G
-	end
-
-	local envUOW = type(env) == "table" and rawget(env, "UOW") or nil
-	local globalUOW = type(globalTable) == "table" and rawget(globalTable, "UOW") or nil
-
-	local candidates = {
-		UOWLookupRawFunction(env, "__uow_debug_log_v1"),
-		UOWLookupRawFunction(globalTable, "__uow_debug_log_v1"),
-		type(envUOW) == "table" and type(envUOW.Debug) == "table" and UOWLookupRawFunction(envUOW.Debug, "Log") or nil,
-		type(globalUOW) == "table" and type(globalUOW.Debug) == "table" and UOWLookupRawFunction(globalUOW.Debug, "Log") or nil,
-		UOWLookupRawFunction(env, "uow_debug_log"),
-		UOWLookupRawFunction(globalTable, "uow_debug_log"),
-		type(__uow_debug_log_v1) == "function" and __uow_debug_log_v1 or nil,
-		type(uow_debug_log) == "function" and uow_debug_log or nil,
-		UOW and UOW.Debug and type(UOW.Debug.Log) == "function" and UOW.Debug.Log or nil,
-	}
-
-	for _, candidate in ipairs(candidates) do
-		if UOWIsProbablyCFunction(candidate) then
-			return candidate
-		end
-	end
-
-	for _, candidate in ipairs(candidates) do
-		if type(candidate) == "function" then
-			return candidate
+	if type(globalTable) == "table" then
+		local rawDummy = rawget(globalTable, "DummyPrint")
+		if type(rawDummy) == "function" then
+			return rawDummy
 		end
 	end
 
@@ -127,8 +86,8 @@ local function UOWResolveNativeLogger()
 end
 
 function UOWNativeLog(...)
-	local logFn = UOWResolveNativeLogger()
-	if not logFn then
+	local logFn = UOWResolveDummyPrint()
+	if type(logFn) ~= "function" then
 		return
 	end
 
@@ -138,15 +97,76 @@ function UOWNativeLog(...)
 	end
 
 	local message = table.concat(parts, " ")
-	if UOWIsProbablyCFunction(logFn) then
-		logFn(message)
-		return
-	end
-
-	-- In this client, protected calls can swallow failures and hide the real
-	-- dispatch problem. Keep the logger path direct.
 	logFn(message)
 end
+
+local function UOWResolveRawSpellCast()
+	if type(UOWCastSpellRaw) == "function" then
+		return UOWCastSpellRaw
+	end
+
+	local globalTable = _G
+	if type(globalTable) == "table" then
+		local rawFn = rawget(globalTable, "UOWCastSpellRaw")
+		if type(rawFn) == "function" then
+			return rawFn
+		end
+	end
+
+	return nil
+end
+
+local function UOWSpellCastWrapper(spellId)
+	local numericSpellId = tonumber(spellId)
+	if not numericSpellId or numericSpellId <= 0 then
+		UOWNativeLog("[LuaSpell] cast invalid spellId=", tostring(spellId))
+		return false, "native_cast_failed"
+	end
+
+	local rawCast = UOWResolveRawSpellCast()
+	if type(rawCast) ~= "function" then
+		UOWNativeLog("[LuaSpell] cast raw missing spellId=", tostring(numericSpellId))
+		return false, "native_cast_failed"
+	end
+
+	UOWNativeLog("[LuaSpell] cast request spellId=", tostring(numericSpellId))
+	local ok = rawCast(numericSpellId)
+	local success = (ok == true)
+	UOWNativeLog(
+		"[LuaSpell] cast result spellId=",
+		tostring(numericSpellId),
+		" ok=",
+		tostring(success),
+		" raw=",
+		tostring(ok))
+
+	if success then
+		return true, "ok"
+	end
+
+	return false, "native_cast_failed"
+end
+
+function UOWInstallLuaSpellWrappers()
+	local globalTable = _G
+	if type(globalTable) ~= "table" then
+		return false
+	end
+
+	globalTable.UOFlow = type(globalTable.UOFlow) == "table" and globalTable.UOFlow or {}
+	globalTable.UOFlow.Spell = type(globalTable.UOFlow.Spell) == "table" and globalTable.UOFlow.Spell or {}
+	globalTable.UOW = type(globalTable.UOW) == "table" and globalTable.UOW or {}
+	globalTable.UOW.Spell = type(globalTable.UOW.Spell) == "table" and globalTable.UOW.Spell or {}
+	globalTable.uow = type(globalTable.uow) == "table" and globalTable.uow or {}
+	globalTable.uow.cmd = type(globalTable.uow.cmd) == "table" and globalTable.uow.cmd or {}
+
+	globalTable.UOFlow.Spell.cast = UOWSpellCastWrapper
+	globalTable.UOW.Spell.cast = UOWSpellCastWrapper
+	globalTable.uow.cmd.cast = UOWSpellCastWrapper
+	return true
+end
+
+UOWInstallLuaSpellWrappers()
 
 
 local function uow_log(...)
@@ -170,14 +190,15 @@ function uow_selftest_cast_twice(spellId, waitMs)
 		return false, false
 	end
 
-	local castFn = UserActionCastSpell
-	local castLabel = 'UserActionCastSpell'
-	if type(uow_spell_cast) == 'function' then
-		castFn = uow_spell_cast
-		castLabel = 'uow_spell_cast'
-	elseif UOFlow and UOFlow.Spell and type(UOFlow.Spell.cast) == 'function' then
-		castFn = UOFlow.Spell.cast
-		castLabel = 'UOFlow.Spell.cast'
+	if type(UOWInstallLuaSpellWrappers) == "function" then
+		UOWInstallLuaSpellWrappers()
+	end
+
+	local castFn = UOFlow and UOFlow.Spell and UOFlow.Spell.cast
+	local castLabel = 'UOFlow.Spell.cast'
+	if type(castFn) ~= 'function' then
+		uow_log('cast helper missing', castLabel)
+		return false, false
 	end
 
 	uow_log('cast helper', castLabel)

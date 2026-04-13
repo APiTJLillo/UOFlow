@@ -25,12 +25,16 @@ Then summarize in 5-10 bullets what you think is true before coding.
    - then return the number of values
 6. `DummyPrint()` working does **not** prove evaluator/VP can safely execute our gameplay `lua_CFunction` spell helpers. It only proves the evaluator can dispatch a minimal raw callback.
 7. `pcall` / `xpcall` are not reliable in this environment for debugging or cast execution. They can hide the real failure point and must be removed from critical VP/debug/cast paths.
-8. Generic action queue lines (e.g. enqueue return addresses) are not sufficient proof of spell-cast execution.
-9. For cast debugging, treat these as required proof lines (or equivalent):
+8. `DummyPrint("text")` is the only proven script-to-DLL logging surface in the evaluator domain. Use it through `UOWNativeLog(...)` for UOFlow-owned Lua scripts.
+9. `Debug.Log`, `UOW.Debug.Log`, `uow_debug_log`, and `__uow_debug_log_v1` are not reliable primary script-call surfaces here, even when they appear bound in logs.
+10. Public script spell APIs should be Lua wrappers (`UOFlow.Spell.cast`, `UOW.Spell.cast`, `uow.cmd.cast`) over simple raw globals such as `UOWCastSpellRaw`, not native dotted registrations.
+11. Generic action queue lines (e.g. enqueue return addresses) are not sufficient proof of spell-cast execution.
+12. For cast debugging, treat these as required proof lines (or equivalent):
    - `CALL_CAST_V1 invoked ...`
    - `BRIDGE_V1 vp_cast invoked ...`
    - `UOFlow.Spell.cast invoked ...`
-10. If those lines are missing, do not claim cast path is reached.
+   - `UOWCastSpellRaw invoked ...`
+13. If those lines are missing, do not claim cast path is reached.
 
 ---
 
@@ -40,6 +44,7 @@ Prefer one deterministic direct path over layered helper resolution.
 
 For spell tests:
 - Use a single direct callable entry (e.g. `__uow_call_cast_v1`) for proof.
+- Prefer a simple raw global following the `DummyPrint` model over dotted gameplay names when the callback ABI is in doubt.
 - Do not fan out across many helpers in debug mode.
 - Do not treat `ok=true` with nil returns and no state change as success.
 - When the client callback ABI is in question, prefer a true client-style shim over another plain `lua_CFunction` experiment.

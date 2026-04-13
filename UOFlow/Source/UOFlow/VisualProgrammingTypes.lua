@@ -94,42 +94,15 @@ local function ResolveNativeBridgeTableRoot()
 end
 
 local function ResolveNativeLog()
-    local bridge = ResolveNativeBridgeTableRoot()
-    local bridgeDebug = type(bridge) == "table" and rawget(bridge, "debug") or nil
-    if type(bridgeDebug) == "function" then
-        return bridgeDebug
-    end
-    if type(_G) == "table" then
-        local rawNativeLog = rawget(_G, "__uow_debug_log_v1")
-        if type(rawNativeLog) == "function" then
-            return rawNativeLog
-        end
-    end
-    if type(__uow_debug_log_v1) == "function" then
-        return __uow_debug_log_v1
-    end
     if type(UOWNativeLog) == "function" then
         return UOWNativeLog
-    end
-    if type(uow_debug_log) == "function" then
-        return uow_debug_log
-    end
-    if type(_G) == "table" then
-        local rawGlobalLog = rawget(_G, "uow_debug_log")
-        if type(rawGlobalLog) == "function" then
-            return rawGlobalLog
-        end
-    end
-    if type(uow) == "table" and type(uow.debug_log) == "function" then
-        return uow.debug_log
     end
     return nil
 end
 
 local function VPNativeLog(...)
-    local logFn = ResolveNativeLog()
-    if type(logFn) == "function" then
-        return logFn(...)
+    if type(UOWNativeLog) == "function" then
+        return UOWNativeLog(...)
     end
     return nil
 end
@@ -169,44 +142,11 @@ local function VPBuildDllLogLine(message)
 end
 
 local function VPForwardToDllLog(message)
-    if g_vpDebugPrintForwarding then
-        return nil
-    end
-
-    local logFn = ResolveNativeLog()
-    if type(logFn) ~= "function" then
-        return nil
-    end
-
-    g_vpDebugPrintForwarding = true
-    local result = logFn(VPBuildDllLogLine(message))
-    g_vpDebugPrintForwarding = false
-    return result
+    return VPNativeLog(VPBuildDllLogLine(message))
 end
 
 local function VPInstallDebugPrintTee()
-    if g_vpDebugPrintTeeInstalled then
-        return
-    end
-    if type(_G) == "table" and rawget(_G, "__UOW_VP_DEBUG_PRINT_TEE_INSTALLED") then
-        g_vpDebugPrintTeeInstalled = true
-        return
-    end
-    if type(Debug) ~= "table" or type(Debug.Print) ~= "function" then
-        return
-    end
-
-    local originalPrint = Debug.Print
-    Debug.Print = function(message, ...)
-        VPForwardToDllLog(message)
-        return originalPrint(message, ...)
-    end
-
     g_vpDebugPrintTeeInstalled = true
-    if type(_G) == "table" then
-        rawset(_G, "__UOW_VP_DEBUG_PRINT_TEE_INSTALLED", true)
-    end
-    VPForwardToDllLog("[LUA_TEE] Debug.Print -> DLL log")
 end
 
 local g_vpNativeHandles = {
@@ -977,6 +917,28 @@ local function RunCastProbe(spellId, sourceTag)
     return castFn, castSource, castResolveErr
 end
 
+local function VPResolveLuaSpellCastWrapper()
+    if type(UOWInstallLuaSpellWrappers) == "function" then
+        UOWInstallLuaSpellWrappers()
+    end
+
+    local candidates = {
+        { label = "UOFlow.Spell.cast", fn = type(UOFlow) == "table" and type(UOFlow.Spell) == "table" and type(UOFlow.Spell.cast) == "function" and UOFlow.Spell.cast or nil },
+        { label = "UOW.Spell.cast", fn = type(UOW) == "table" and type(UOW.Spell) == "table" and type(UOW.Spell.cast) == "function" and UOW.Spell.cast or nil },
+        { label = "uow.cmd.cast", fn = type(uow) == "table" and type(uow.cmd) == "table" and type(uow.cmd.cast) == "function" and uow.cmd.cast or nil },
+    }
+
+    local summary = {}
+    for _, candidate in ipairs(candidates) do
+        table.insert(summary, VPDescribeCandidate(candidate.label, candidate.fn))
+        if type(candidate.fn) == "function" then
+            return candidate.fn, candidate.label, table.concat(summary, " | ")
+        end
+    end
+
+    return nil, nil, table.concat(summary, " | ")
+end
+
 local function VPCastSpell(spellId, tag, targetId, callContext)
     local numericSpellId = tonumber(spellId)
     if not numericSpellId or numericSpellId <= 0 then
@@ -991,51 +953,42 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     callContext.luaContextTag = callContext.luaContextTag or VPGetLuaContextTag()
     local sourceTag = callContext.nativeSourceTag or tag
     local beforeState = VPSnapshotSpellState()
-    local castFn, castSource, castResolveErr = RunCastProbe(spellId, sourceTag)
+    local castFn, castLabel, candidateSummary = VPResolveLuaSpellCastWrapper()
     local ok = false
     local result1 = nil
     local result2 = nil
     local errText = nil
-    local castLabel = VP_NATIVE_CALL_CAST_NAME .. "(" .. VPValueToString(castSource) .. ")"
-    local candidateSummary = {
-        VPDescribeCandidate(VP_NATIVE_CALL_CAST_NAME, castFn),
-        "call_cast.err=" .. VPValueToString(castResolveErr),
-        "call_cast.source=" .. VPValueToString(castSource),
-        VPDescribeCandidate(castLabel, castFn),
-    }
 
     VPNativeLog("[VPSpell] cast begin",
         tostring(tag),
         "spell=" .. tostring(spellId),
         "ctx=" .. tostring(callContext.executionTag),
         "source=" .. tostring(sourceTag),
-        "targetId=" .. tostring(targetId),
-        "call_cast_source=" .. tostring(castSource))
-    VPNativeLog("[VPSpell] cast candidates", tostring(tag), table.concat(candidateSummary, " | "))
-    Debug.Print("[VPSpell] cast candidates " .. table.concat(candidateSummary, " | "))
+        "targetId=" .. tostring(targetId))
+    VPNativeLog("[VPSpell] cast candidates", tostring(tag), candidateSummary)
+    Debug.Print("[VPSpell] cast candidates " .. candidateSummary)
     VPLogSpellState(tag .. ":before", spellId)
 
     if type(castFn) ~= "function" then
-        local missingMsg = castResolveErr or ("native_entry_missing name=" .. VP_NATIVE_CALL_CAST_NAME)
+        local missingMsg = "native_cast_missing name=UOFlow.Spell.cast"
         VPEmitUiLog("VP_CAST " .. missingMsg)
         VPNativeLog("[VPSpell] cast fail",
             tostring(tag),
-            missingMsg,
-            "callCastSource=" .. VPValueToString(castSource))
+            missingMsg)
         VPLogSpellState(tag .. ":after", spellId)
         return false, missingMsg, nil, false
     end
 
     VPLogCastCall("before", tag, spellId, castLabel, callContext, nil, nil, nil, nil)
-    local preCallMessage = "[VP_CALL] about to call " .. VPValueToString(VP_NATIVE_CALL_CAST_NAME)
+    local preCallMessage = "[VP_CALL] about to call " .. VPValueToString(castLabel)
         .. " spell=" .. VPValueToString(spellId)
         .. " source=" .. VPValueToString(sourceTag)
         .. " helper=" .. VPValueToString(castLabel)
         .. " fn=" .. VPValueToString(castFn)
     Debug.Print(preCallMessage)
     VPNativeLog(preCallMessage)
-    ok, result1, result2, errText = VPInvokeFunction(castFn, spellId, sourceTag)
-    local postCallMessage = "[VP_CALL] after call " .. VPValueToString(VP_NATIVE_CALL_CAST_NAME)
+    ok, result1, result2, errText = VPInvokeFunction(castFn, spellId)
+    local postCallMessage = "[VP_CALL] after call " .. VPValueToString(castLabel)
         .. " spell=" .. VPValueToString(spellId)
         .. " ok=" .. VPValueToString(ok)
         .. " ret1=" .. VPValueToString(result1)
@@ -1045,7 +998,7 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
     VPNativeLog(postCallMessage)
 
     local stateChanged = VPDidSpellStateChange(beforeState)
-    local hardSuccess = ok and VPIsHardCastSuccess(result1, stateChanged)
+    local hardSuccess = ok and result1 == true
     VPLogCastCall("after", tag, spellId, castLabel, callContext, ok, result1, result2, errText)
     VPNativeLog("[VPSpell] helper result",
         tostring(tag),
@@ -1068,24 +1021,11 @@ local function VPCastSpell(spellId, tag, targetId, callContext)
         VPValueToString(sourceTag)))
 
     if hardSuccess then
-        if stateChanged and result1 ~= true then
-            result1 = true
-            if result2 == nil then
-                result2 = "state_changed"
-            end
-        end
         VPLogSpellState(tag .. ":after", spellId)
         return true, result1, result2, false
     end
 
-    local hardFail = string.format(
-        "hard_cast_fail helper=%s ok=%s ret1=%s ret2=%s stateChanged=%s err=%s",
-        VPValueToString(castLabel),
-        VPValueToString(ok),
-        VPValueToString(result1),
-        VPValueToString(result2),
-        VPValueToString(stateChanged),
-        VPValueToString(errText))
+    local hardFail = VPValueToString(result2 or result1 or errText or "native_cast_failed")
     VPEmitUiLog("VP_CAST " .. hardFail)
     VPLogSpellState(tag .. ":after", spellId)
     return false, hardFail, nil, false
@@ -1196,9 +1136,6 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 local spellTableType = uoflowType == "table" and type(UOFlow.Spell) or "<nil>"
                 local castType = (uoflowType == "table" and spellTableType == "table") and type(UOFlow.Spell.cast) or "<nil>"
                 callContext.nativeSourceTag = "VP_TEST_BUTTON"
-                VPInvokeBridgeHealth("VP_CAST/node_before block="
-                    .. VPValueToString(callContext.blockId)
-                    .. " spell=" .. VPValueToString(spellId))
 
                 VPEmitUiLog(string.format(
                     "[VP_CAST] phase=node_before block=%s spell=%s type(UOFlow)=%s type(UOFlow.Spell)=%s type(UOFlow.Spell.cast)=%s source=%s",

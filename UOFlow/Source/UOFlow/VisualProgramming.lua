@@ -53,43 +53,10 @@ function VisualProgrammingInterface.Actions:execute(type, params)
     return success
 end
 
-local function VPUIResolveNativeLog()
-    if type(__uow_debug_log_v1) == "function" then
-        return __uow_debug_log_v1
-    end
-    if type(UOWNativeLog) == "function" then
-        return UOWNativeLog
-    end
-    if type(uow_debug_log) == "function" then
-        return uow_debug_log
-    end
-    if type(_G) == "table" then
-        local rawNative = rawget(_G, "__uow_debug_log_v1")
-        if type(rawNative) == "function" then
-            return rawNative
-        end
-        local rawCompat = rawget(_G, "uow_debug_log")
-        if type(rawCompat) == "function" then
-            return rawCompat
-        end
-    end
-    if type(UOW) == "table" and type(UOW.Debug) == "table" and type(UOW.Debug.Log) == "function" then
-        return UOW.Debug.Log
-    end
-    return nil
-end
-
 local function VPUIEmitNativeLog(...)
-    local logFn = VPUIResolveNativeLog()
-    if type(logFn) ~= "function" then
-        return
+    if type(UOWNativeLog) == "function" then
+        UOWNativeLog(...)
     end
-
-    local parts = {}
-    for index = 1, select("#", ...) do
-        parts[index] = tostring(select(index, ...))
-    end
-    logFn(table.concat(parts, " "))
 end
 
 -- Handle test flow button click
@@ -99,6 +66,9 @@ function OnTestFlowClick()
         Debug.Print("[VPUI] Test clicked")
     end
     VPUIEmitNativeLog("[VPUI] OnTestFlowClick ENTER")
+    if type(UOWInstallLuaSpellWrappers) == "function" then
+        UOWInstallLuaSpellWrappers()
+    end
     if VisualProgrammingInterface and VisualProgrammingInterface.Execution then
         VPUIEmitNativeLog("[VPUI] testFlow BEFORE")
         local success, results = VisualProgrammingInterface.Execution:testFlow()

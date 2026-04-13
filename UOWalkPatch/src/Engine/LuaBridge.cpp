@@ -530,7 +530,10 @@ static int __cdecl Lua_UOW_Debug_log(lua_State* L);
 static int __cdecl Lua_UOW_Log_test(lua_State* L);
 static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L);
 static int __cdecl Lua_UOW_Debug_log_LuaPlus(void);
+static int __stdcall Lua_UOW_CastSpell_Raw(void* raw);
 static bool TryExtractLuaPlusStringArg(void* ctx, void* callbackTag, const char*& outValue);
+static bool TryExtractLuaPlusNumberArg(void* ctx, void* callbackTag, double& outValue);
+static bool PushLuaPlusBooleanReturn(void* ctx, bool value);
 static int __stdcall Lua_DummyPrint_Std(void* raw);
 static int __stdcall Lua_UOW_Debug_log_Std(void* raw);
 static int __stdcall Lua_UOW_Log_test_Std(void* raw);
@@ -1538,10 +1541,10 @@ static void EnsureDebugLogBindingsAnyState(lua_State* L, const char* reason)
     if (prior == stateKey)
         return;
 
-    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "__uow_debug_log_v1");
-    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "uow_debug_log");
-    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "Debug.Log");
-    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "UOW.Debug.Log");
+    RegisterFunctionSafe(L, Lua_UOW_Debug_log, "__uow_debug_log_v1");
+    RegisterFunctionSafe(L, Lua_UOW_Debug_log, "uow_debug_log");
+    RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "Debug.Log");
+    RegisterLuaPathSafe(L, Lua_UOW_Debug_log, "UOW.Debug.Log");
     RegisterFunctionSafe(L, Lua_UOW_Log_test, "__uow_log_test_v1");
     RegisterLuaPathSafe(L, Lua_UOW_Log_test, "Debug.LogTest");
     RegisterLuaPathSafe(L, Lua_UOW_Log_test, "UOW.Debug.LogTest");
@@ -1918,6 +1921,7 @@ static void LogSpellHelperBindings(lua_State* L, const char* stage)
         "__uow_vp_cast_v1",
         "__uow_vp_ping_v1",
         "__uow_debug_log_v1",
+        "UOWCastSpellRaw",
         "uow_spell_cast",
         "uow_spell_cast_on_id",
         "uow_get_native",
@@ -5587,12 +5591,14 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
     WriteRawLog(intro);
 
     // Evaluator-domain registration must stay minimal.
-    // 783e345 proved a single DummyPrint callback is safe here.
-    // Additional raw callbacks appear to destabilize the client's
-    // internal registration structures during world load.
+    // DummyPrint is the canonical proven-safe evaluator callback.
+    // Phase 1 of the LuaPlus migration adds exactly one more raw global
+    // for spell casting so Lua wrappers can call into the native cast core
+    // without depending on dotted gameplay lua_CFunction bindings.
     bool dummyOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_DummyPrint_Std), "DummyPrint");
+    bool castOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_CastSpell_Raw), "UOWCastSpellRaw");
 
-    if (dummyOk) {
+    if (dummyOk && castOk) {
         slot->flags |= kCtxEvaluatorProbesBound;
         char okBuf[256];
         sprintf_s(okBuf,
@@ -5602,7 +5608,7 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
                   dummyOk ? "yes" : "no",
                   "disabled",
                   "disabled",
-                  "disabled");
+                  castOk ? "yes" : "no");
         WriteRawLog(okBuf);
     } else {
         char failBuf[256];
@@ -5613,7 +5619,7 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
                   dummyOk ? "yes" : "no",
                   "disabled",
                   "disabled",
-                  "disabled");
+                  castOk ? "yes" : "no");
         WriteRawLog(failBuf);
     }
 }
@@ -5741,28 +5747,13 @@ static void ForceSpellBinding(lua_State* L, const char* reason)
     if (!IsGameplayContext(gameplayCtx, L, tag, true))
         return;
     char buf[224];
-    sprintf_s(buf, sizeof(buf), "%s: ensuring UOW.Spell.cast binding (ctx=%p)", tag, gameplayCtx);
+    sprintf_s(buf, sizeof(buf), "%s: preserving Lua-owned spell wrappers (ctx=%p)", tag, gameplayCtx);
     WriteRawLog(buf);
 
-    // Bind the visible spell helpers to the no-click/native cast path, not the
-    // legacy replay helper, so programmatic callers exercise the same pipeline.
-    bool primary = RegisterViaClient(L, Lua_UOFlow_Spell_cast, "UOW.Spell.cast");
-    bool alias = RegisterViaClient(L, Lua_UOFlow_Spell_cast, "UOFlow.Spell.cast");
-    RegisterLuaPathSafe(L, Lua_UOFlow_Spell_cast, "UOW.Spell.cast");
-    RegisterLuaPathSafe(L, Lua_UOFlow_Spell_cast, "UOFlow.Spell.cast");
     EnsureDirectLuaGlobals(L);
     LogSpellHelperBindings(L, tag);
-    bool flat = true;
-    if (primary || alias || flat) {
-        g_spellBindingReady.store(true, std::memory_order_release);
-        char okBuf[192];
-        sprintf_s(okBuf, sizeof(okBuf),
-            "%s: spell helper installed (alias=%s flat=%s)",
-            tag,
-            alias ? "yes" : "no",
-            flat ? "yes" : "no");
-        WriteRawLog(okBuf);
-    }
+    g_spellBindingReady.store(true, std::memory_order_release);
+    WriteRawLog("ForceSpellBinding: UOFlow.Spell.cast / UOW.Spell.cast are Lua wrapper owned");
 }
 
 static void EnsureReplayHelper(lua_State* L)
@@ -7042,7 +7033,6 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
 
     static const ConsoleBinding kRequired[] = {
         {Lua_UOFlow_status, "UOFlow.status"},
-        {Lua_UOFlow_Spell_cast, "UOFlow.Spell.cast"},
         {Lua_UOFlow_Spell_cast_on_id, "UOFlow.Spell.cast_on_id"},
         {Lua_UOFlow_Target_commit_obj, "UOFlow.Target.commit_obj"},
         {Lua_UOFlow_Target_commit_ground, "UOFlow.Target.commit_ground"},
@@ -7071,7 +7061,6 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
         {Lua_UOW_Log_test, "__uow_log_test_v1"},
         {Lua_UOFlow_bootstrap, "uow.bootstrap"},
-        {Lua_UOFlow_Spell_cast, "uow.cmd.cast"},
         {Lua_UOFlow_Spell_cast_on_id, "uow.cmd.cast_on_id"},
         {Lua_uow_spell_cast_global, "uow_spell_cast"},
         {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
@@ -7103,11 +7092,6 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
             WriteRawLog(buf);
         }
     }
-
-    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "__uow_debug_log_v1");
-    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "uow_debug_log");
-    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "Debug.Log");
-    RegisterRawViaClient(L, reinterpret_cast<void*>(Lua_UOW_Debug_log_LuaPlus), "UOW.Debug.Log");
 
     for (const auto& binding : kRequired)
         RegisterLuaPathSafe(L, binding.fn, binding.name);
@@ -8672,6 +8656,73 @@ static bool TryExtractLuaPlusStringArg(void* ctx, void* callbackTag, const char*
     return true;
 }
 
+static bool TryExtractLuaPlusNumberArg(void* ctx, void* callbackTag, double& outValue)
+{
+    outValue = 0.0;
+    if (!ctx || !callbackTag)
+        return false;
+
+    using LuaPlusExtractArgsFn = unsigned char(__stdcall*)(void*, void*, void*, unsigned int);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    if (!base)
+        return false;
+
+    auto* extractArgs = reinterpret_cast<LuaPlusExtractArgsFn>(base + 0x00596FD1);
+    if (!extractArgs)
+        return false;
+
+    LuaPlusArgSlot arg{};
+    arg.type = 1; // Numeric, matching client built-ins such as GetBuildVersion.
+    if (!extractArgs(ctx, callbackTag, &arg, 1))
+        return false;
+
+    outValue = arg.numberValue;
+    return true;
+}
+
+static bool PushLuaPlusBooleanReturn(void* ctx, bool value)
+{
+    if (!ctx)
+        return false;
+
+#if !defined(_M_IX86)
+    return false;
+#else
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    if (!base)
+        return false;
+
+    void* stageBool = reinterpret_cast<void*>(base + 0x0059D545);
+    void* finalizeReturn = reinterpret_cast<void*>(base + 0x0059E3D8);
+    if (!stageBool || !finalizeReturn)
+        return false;
+
+    alignas(16) unsigned char scratch[16] = {};
+    int boolValue = value ? 1 : 0;
+    bool success = true;
+
+    __try {
+        __asm {
+            push esi
+            lea esi, scratch
+            mov eax, stageBool
+            push boolValue
+            call eax
+            mov ecx, ctx
+            lea eax, scratch
+            mov edx, finalizeReturn
+            call edx
+            pop esi
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        success = false;
+    }
+
+    return success;
+#endif
+}
+
 static int __cdecl Lua_UOW_Debug_log_LuaPlus(void)
 {
     void* ctx = CurrentScriptContext();
@@ -8698,6 +8749,65 @@ static int __cdecl Lua_UOW_Debug_log_LuaPlus(void)
 
     WriteRawLog(msg.c_str());
     return 0;
+}
+
+static int __stdcall Lua_UOW_CastSpell_Raw(void* raw)
+{
+    void* ctx = CurrentScriptContext();
+    if (!ctx)
+        ctx = g_clientContext;
+
+    double spellNumber = 0.0;
+    const bool extracted = TryExtractLuaPlusNumberArg(
+        ctx,
+        reinterpret_cast<void*>(&Lua_UOW_CastSpell_Raw),
+        spellNumber);
+    const int spellId = extracted ? static_cast<int>(spellNumber) : 0;
+
+    char intro[256];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[LuaPlusCast] UOWCastSpellRaw invoked raw=%p caller=%u owner=%u ctx=%p extracted=%s spell=%d",
+              raw,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              ctx,
+              extracted ? "yes" : "no",
+              spellId);
+    WriteRawLog(intro);
+
+    bool ok = false;
+    std::string msg;
+    if (extracted && spellId > 0) {
+        ok = DispatchNoClickCommand(
+            "UOWCastSpellRaw",
+            [spellId](std::string& innerMsg) {
+                bool result = NoClickCastSpell_Internal(spellId);
+                if (!result && innerMsg.empty())
+                    innerMsg = "native_cast_failed";
+                return result;
+            },
+            msg,
+            false);
+    } else {
+        msg = extracted ? "invalid_spell" : "arg_extract_failed";
+    }
+
+    char outro[256];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[LuaPlusCast] UOWCastSpellRaw result ok=%d spell=%d msg=%s",
+              ok ? 1 : 0,
+              spellId,
+              msg.empty() ? "<none>" : msg.c_str());
+    WriteRawLog(outro);
+
+    if (!PushLuaPlusBooleanReturn(ctx, ok)) {
+        WriteRawLog("[LuaPlusCast] UOWCastSpellRaw return stage failed");
+        return 0;
+    }
+
+    return 1;
 }
 
 static int __cdecl Lua_UOW_Debug_log(lua_State* L)
