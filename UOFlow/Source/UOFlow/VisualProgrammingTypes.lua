@@ -1579,13 +1579,55 @@ function VisualProgrammingInterface.InitializeBlockTypes()
 end
 
 -- Helper functions for block creation
+function VisualProgrammingInterface.NormalizeBlockIcon(icon)
+    if type(icon) == "table" then
+        return {
+            texture = icon.texture or "icon100121",
+            x = tonumber(icon.x) or 5,
+            y = tonumber(icon.y) or 5
+        }
+    end
+
+    if type(icon) == "string" and icon ~= "" then
+        return {
+            texture = icon,
+            x = 0,
+            y = 0
+        }
+    end
+
+    return { texture = "icon100121", x = 5, y = 5 }
+end
+
+function VisualProgrammingInterface.CloneDefaultParams(name)
+    local source = VisualProgrammingInterface.Actions:getDefaultParams(name)
+    if type(source) ~= "table" then
+        return {}
+    end
+
+    local copy = {}
+    for key, value in pairs(source) do
+        if type(value) == "table" then
+            local nested = {}
+            for nestedKey, nestedValue in pairs(value) do
+                nested[nestedKey] = nestedValue
+            end
+            copy[key] = nested
+        else
+            copy[key] = value
+        end
+    end
+
+    return copy
+end
+
 function VisualProgrammingInterface.GetBlockIcon(blockType)
     local action = VisualProgrammingInterface.Actions:get(blockType)
-    if not action or not action.icon then
-        return { texture = "icon100121", x = 5, y = 5 }
+    if not action then
+        return VisualProgrammingInterface.NormalizeBlockIcon(nil)
     end
-    
-    return action.icon
+
+    return VisualProgrammingInterface.NormalizeBlockIcon(action.icon)
 end
 
 function VisualProgrammingInterface.UpdateBlockIcon(iconWindow, blockType)
@@ -1602,7 +1644,7 @@ function VisualProgrammingInterface.UpdateBlockIcon(iconWindow, blockType)
     WindowSetShowing(iconWindow, true)
     
     -- Then set the texture
-    Debug.Print("Setting texture for " .. iconWindow .. ": " .. icon.texture)
+    Debug.Print("Setting texture for " .. iconWindow .. ": " .. tostring(icon.texture))
     ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_NORMAL, icon.texture, icon.x, icon.y)
     ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_NORMAL_HIGHLITE, icon.texture, icon.x, icon.y)
     ButtonSetTexture(iconWindow, InterfaceCore.ButtonStates.STATE_PRESSED, icon.texture, icon.x, icon.y)
@@ -1617,14 +1659,20 @@ function VisualProgrammingInterface.GetBlockDescription(blockType)
 end
 
 -- Function to create and display a block
-function VisualProgrammingInterface.CreateBlock(type, index, column)
+function VisualProgrammingInterface.CreateBlock(blockType, index, column)
     -- Verify action exists
-    local action = VisualProgrammingInterface.Actions:get(type)
+    local action = VisualProgrammingInterface.Actions:get(blockType)
     if not action then
-        Debug.Print("Error: Unknown action type: " .. type)
+        if type(UOWNativeLog) == "function" then
+            UOWNativeLog("[VPUI] create block missing action", tostring(blockType), tostring(index), tostring(column))
+        end
+        Debug.Print("Error: Unknown action type: " .. tostring(blockType))
         return nil
     end
-    Debug.Print("Creating block of type: " .. type .. " at index: " .. index)
+    if type(UOWNativeLog) == "function" then
+        UOWNativeLog("[VPUI] create block enter", tostring(blockType), tostring(index), tostring(column))
+    end
+    Debug.Print("Creating block of type: " .. tostring(blockType) .. " at index: " .. tostring(index))
     
     -- Get scroll child window name
     local targetColumn = column == "right" and "right" or "middle"
@@ -1632,12 +1680,15 @@ function VisualProgrammingInterface.CreateBlock(type, index, column)
         and "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight"
         or "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
     if not DoesWindowNameExist(scrollChild) then
+        if type(UOWNativeLog) == "function" then
+            UOWNativeLog("[VPUI] create block missing scrollChild", tostring(blockType), tostring(index), tostring(scrollChild))
+        end
         Debug.Print("Scroll child window does not exist")
         return nil
     end
     
     -- Create block in manager
-    local block = VisualProgrammingInterface.manager:createBlock(type, 0, index * 80, targetColumn)
+    local block = VisualProgrammingInterface.manager:createBlock(blockType, 0, index * 80, targetColumn)
     local blockName = "Block" .. block.id
     Debug.Print("Block name: " .. blockName)
     block.windowName = blockName -- Store the window name for later reference
@@ -1649,6 +1700,9 @@ function VisualProgrammingInterface.CreateBlock(type, index, column)
         
         -- Ensure window exists before proceeding
         if not DoesWindowNameExist(blockName) then
+            if type(UOWNativeLog) == "function" then
+                UOWNativeLog("[VPUI] create block window failed", tostring(blockType), tostring(blockName))
+            end
             Debug.Print("Error: Block window not created: " .. blockName)
             return
         end
@@ -1659,10 +1713,7 @@ function VisualProgrammingInterface.CreateBlock(type, index, column)
         WindowAddAnchor(blockName, "topleft", scrollChild, "topleft", 0, index * 80)
         
         -- Initialize block with default parameters
-        local defaultParams = VisualProgrammingInterface.Actions:getDefaultParams(type)
-        if defaultParams then
-            block.params = defaultParams
-        end
+        block.params = VisualProgrammingInterface.CloneDefaultParams(blockType)
         
         -- Set block name and description using Block methods
         local desc = block:getDescription()
@@ -1697,7 +1748,13 @@ function VisualProgrammingInterface.CreateBlock(type, index, column)
         -- Set block icon using helper function
         local iconWindow = blockName .. "Icon"
         Debug.Print("Setting icon for window: " .. iconWindow)
-        if not VisualProgrammingInterface.UpdateBlockIcon(iconWindow, type) then
+        if type(UOWNativeLog) == "function" then
+            UOWNativeLog("[VPUI] create block icon", tostring(block.id), tostring(blockType), tostring(iconWindow))
+        end
+        if not VisualProgrammingInterface.UpdateBlockIcon(iconWindow, blockType) then
+            if type(UOWNativeLog) == "function" then
+                UOWNativeLog("[VPUI] create block icon failed", tostring(block.id), tostring(blockType), tostring(iconWindow))
+            end
             -- List all windows to help debug
             Debug.Print("Listing all child windows of " .. blockName .. ":")
             local children = WindowGetChildren(blockName)
@@ -1712,6 +1769,10 @@ function VisualProgrammingInterface.CreateBlock(type, index, column)
         Debug.Print("Block created successfully")
     else
         Debug.Print("Block window already exists: " .. blockName)
+    end
+
+    if type(UOWNativeLog) == "function" then
+        UOWNativeLog("[VPUI] create block success", tostring(block.id), tostring(blockType), "y=" .. tostring(block.y))
     end
     
     return block

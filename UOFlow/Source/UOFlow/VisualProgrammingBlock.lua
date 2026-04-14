@@ -52,11 +52,11 @@ function VisualProgrammingInterface.Block:setState(state)
         if state == "running" then
             WindowSetTintColor(blockWindow, 243, 227, 49) -- UO Gold for running
         elseif state == "completed" then
-            WindowSetTintColor(blockWindow, 159, 177, 189) -- UO Blue for completed
+            WindowSetTintColor(blockWindow, 0, 255, 0) -- Green for completed
         elseif state == "error" then
             WindowSetTintColor(blockWindow, 155, 0, 0) -- UO Red for error
         else -- pending
-            WindowSetTintColor(blockWindow, 206, 217, 242) -- UO Default text color for pending
+            WindowSetTintColor(blockWindow, 255, 255, 255) -- Neutral for pending
         end
         
         -- Update both name and description
@@ -145,21 +145,39 @@ function VisualProgrammingInterface.Block:updateVisuals()
         LabelSetText(description, StringToWString(self:getDescription()))
     end
     
-    -- Update icon if available
+    -- Update icon if available. The block template uses a Button, not a DynamicImage.
     local icon = blockWindow .. "Icon"
     if DoesWindowNameExist(icon) and action.icon then
-        DynamicImageSetTexture(icon, action.icon, 0, 0)
+        local iconInfo = nil
+        if type(VisualProgrammingInterface.NormalizeBlockIcon) == "function" then
+            iconInfo = VisualProgrammingInterface.NormalizeBlockIcon(action.icon)
+        elseif type(action.icon) == "string" then
+            iconInfo = { texture = action.icon, x = 0, y = 0 }
+        elseif type(action.icon) == "table" then
+            iconInfo = {
+                texture = action.icon.texture or "icon100121",
+                x = tonumber(action.icon.x) or 5,
+                y = tonumber(action.icon.y) or 5
+            }
+        end
+
+        if iconInfo and iconInfo.texture then
+            ButtonSetTexture(icon, InterfaceCore.ButtonStates.STATE_NORMAL, iconInfo.texture, iconInfo.x, iconInfo.y)
+            ButtonSetTexture(icon, InterfaceCore.ButtonStates.STATE_NORMAL_HIGHLITE, iconInfo.texture, iconInfo.x, iconInfo.y)
+            ButtonSetTexture(icon, InterfaceCore.ButtonStates.STATE_PRESSED, iconInfo.texture, iconInfo.x, iconInfo.y)
+            ButtonSetTexture(icon, InterfaceCore.ButtonStates.STATE_PRESSED_HIGHLITE, iconInfo.texture, iconInfo.x, iconInfo.y)
+        end
     end
     
     -- Update color based on state
     if self.state == "running" then
         WindowSetTintColor(blockWindow, 243, 227, 49) -- UO Gold for running
     elseif self.state == "completed" then
-        WindowSetTintColor(blockWindow, 159, 177, 189) -- UO Blue for completed
+        WindowSetTintColor(blockWindow, 0, 255, 0) -- Green for completed
     elseif self.state == "error" then
         WindowSetTintColor(blockWindow, 155, 0, 0) -- UO Red for error
     else
-        WindowSetTintColor(blockWindow, 206, 217, 242) -- UO Default text color for pending
+        WindowSetTintColor(blockWindow, 255, 255, 255) -- Neutral for pending
     end
 end
 

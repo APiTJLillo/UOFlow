@@ -254,21 +254,32 @@ function VisualProgrammingInterface.Execution:testFlow()
         VisualProgrammingInterface.ActionTimer.isComplete = false
     end
     
-    local snapshotByKey, orderedRecords, snapshotErr = self:buildExecutionSnapshot()
-    if not snapshotByKey then
-        if UOWNativeLog then
-            UOWNativeLog("[VPExec] snapshot error", VPExecSafeString(snapshotErr))
-        end
-        self.executionQueue = {}
-        self.isRunning = false
-        return false, snapshotErr or "No executable blocks"
+    local executionQueue = {}
+    local manager = VisualProgrammingInterface.manager
+    local orderedBlocks = {}
+    if manager and type(manager.getBlocksInVisualOrder) == "function" then
+        orderedBlocks = manager:getBlocksInVisualOrder()
+    else
+        orderedBlocks = VPExecCollectBlocksInVisualOrder(manager)
     end
 
-    local executionQueue = {}
-    local queueCount = self:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords, executionQueue)
-    if type(queueCount) ~= "number" then
-        queueCount = 0
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] live queue source", "count=" .. tostring(#orderedBlocks))
     end
+
+    for _, block in ipairs(orderedBlocks) do
+        if type(block) == "table" and block.id ~= nil then
+            table.insert(executionQueue, block)
+            if UOWNativeLog then
+                UOWNativeLog("[VPExec] live queue block",
+                    VPExecSafeString(block.id),
+                    VPExecSafeString(block.type),
+                    "y=" .. VPExecSafeString(block.y))
+            end
+        end
+    end
+
+    local queueCount = #executionQueue
     if UOWNativeLog then
         UOWNativeLog("[VPExec] post build queue", "count=" .. tostring(queueCount), "type=" .. type(executionQueue))
     end
@@ -287,81 +298,48 @@ function VisualProgrammingInterface.Execution:testFlow()
     if UOWNativeLog then
         UOWNativeLog("[VPExec] queue stored", tostring(#self.executionQueue))
     end
-        self.primingFirstBlock = true
-        self.isRunning = true
-        if UOWNativeLog then
-            UOWNativeLog("[VPExec] isRunning", tostring(self.isRunning), "priming=" .. tostring(self.primingFirstBlock))
-        end
+    self.primingFirstBlock = false
+    self.isRunning = true
+    self.isPaused = false
+    self.currentBlock = nil
+    self.continueTimer = 0
+    self.waitingForTimer = false
 
-    -- Execute first block
-    if #self.executionQueue > 0 then
+    local executeFn = self.executeBlock or VisualProgrammingInterface.Execution.executeBlock
+    local firstBlock = self.executionQueue[1]
+    if type(executeFn) ~= "function" then
+        self.executionQueue = {}
+        self.isRunning = false
         if UOWNativeLog then
-            UOWNativeLog("[VPExec] remove first pending", tostring(#self.executionQueue))
+            UOWNativeLog("[VPExec] kickoff failed", "execute_handler_missing")
         end
-        local firstBlock = table.remove(self.executionQueue, 1)
-        if type(firstBlock) ~= "table" then
-            if UOWNativeLog then
-                UOWNativeLog("[VPExec] firstBlock invalid", "type=" .. type(firstBlock))
-            end
-            self.isRunning = false
-            return false, "Invalid first block"
-        end
-        if UOWNativeLog then
-            UOWNativeLog("[VPExec] firstBlock", VPExecSafeString(firstBlock.id), VPExecSafeString(firstBlock.type), "remaining=" .. tostring(#self.executionQueue))
-        end
-        table.insert(testResults.executionOrder, firstBlock.id)
-
-        self.primingFirstBlock = false
-        if UOWNativeLog then
-            UOWNativeLog("[VPExec] priming cleared before firstBlock", VPExecSafeString(firstBlock.id), VPExecSafeString(firstBlock.type))
-        end
-
-        local success = self:executeBlock(firstBlock)
-        self.primingFirstBlock = false
-        if UOWNativeLog then
-            UOWNativeLog("[VPExec] firstBlock done", VPExecSafeString(firstBlock.id), "success=" .. tostring(success), "waiting=" .. tostring(self.waitingForTimer), "remaining=" .. tostring(#self.executionQueue))
-        end
-        testResults.blocks[firstBlock.id] = {
-            type = firstBlock.type,
-            params = firstBlock.params,
-            success = success,
-            state = self.blockStates[firstBlock.id]
-        }
-        
-        if not success then
-            if UOWNativeLog then
-                UOWNativeLog("[VPExec] firstBlock failed", VPExecSafeString(firstBlock.id), VPExecSafeString(firstBlock.type))
-            end
-            testResults.success = false
-            testResults.error = "Failed at block " .. firstBlock.id
-            
-            -- Clear any pending timers
-            if VisualProgrammingInterface.ActionTimer then
-                Debug.Print("Clearing timers after block failure")
-                VisualProgrammingInterface.ActionTimer.isWaiting = false
-                VisualProgrammingInterface.ActionTimer.callback = nil
-                VisualProgrammingInterface.ActionTimer.functionQueue = {}
-                VisualProgrammingInterface.ActionTimer.currentQueueId = nil
-                VisualProgrammingInterface.ActionTimer.isComplete = false
-            end
-            
-            -- Set up reset timer for all blocks
-            self:queueBlocksForReset()
-            self.waitingForTimer = false
-            self.isRunning = false
-            
-            return true, testResults
-        end
-
-        if not self.waitingForTimer then
-            if UOWNativeLog then
-                UOWNativeLog("[VPExec] firstBlock continue immediate", "remaining=" .. tostring(#self.executionQueue))
-            end
-            self:continueExecution()
-        end
+        return false, "execute_handler_missing"
     end
 
-    self.primingFirstBlock = false
+    if type(firstBlock) ~= "table" or firstBlock.id == nil then
+        self.executionQueue = {}
+        self.isRunning = false
+        if UOWNativeLog then
+            UOWNativeLog("[VPExec] kickoff failed", "missing_first_block")
+        end
+        return false, "missing_first_block"
+    end
+
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] kickoff",
+            "queue=" .. tostring(#self.executionQueue),
+            "first=" .. tostring(firstBlock.id),
+            "type=" .. tostring(firstBlock.type))
+    end
+
+    executeFn(self, firstBlock)
+
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] kickoff dispatched",
+            "remaining=" .. tostring(#self.executionQueue),
+            "waiting=" .. tostring(self.waitingForTimer),
+            "current=" .. tostring(self.currentBlock and self.currentBlock.id or nil))
+    end
     
     if UOWNativeLog then
         UOWNativeLog("[VPExec] testFlow returning", "queueRemaining=" .. tostring(#self.executionQueue), "waiting=" .. tostring(self.waitingForTimer))

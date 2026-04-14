@@ -1,4 +1,36 @@
 -- Block execution and state management
+local function VPExecSetBlockState(block, state)
+    if type(block) ~= "table" then
+        return false
+    end
+
+    if type(VisualProgrammingInterface) == "table"
+    and type(VisualProgrammingInterface.ApplyBlockState) == "function" then
+        return VisualProgrammingInterface.ApplyBlockState(block.id, state)
+    end
+
+    if type(block.setState) == "function" then
+        block:setState(state)
+        return true
+    end
+
+    local blockWindow = "Block" .. tostring(block.id)
+    if DoesWindowNameExist(blockWindow) then
+        if state == "completed" then
+            WindowSetTintColor(blockWindow, 0, 255, 0)
+        elseif state == "error" then
+            WindowSetTintColor(blockWindow, 255, 0, 0)
+        elseif state == "running" then
+            WindowSetTintColor(blockWindow, 243, 227, 49)
+        else
+            WindowSetTintColor(blockWindow, 255, 255, 255)
+        end
+        return true
+    end
+
+    return false
+end
+
 function VisualProgrammingInterface.Execution:executeBlock(block)
     if not block then return false end
 
@@ -12,6 +44,7 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     
     -- Update block state
     self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.RUNNING
+    VPExecSetBlockState(block, "running")
     self.currentBlock = block
     self.lastExecutedBlockId = block.id
 
@@ -25,56 +58,57 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     
     -- Update visual state
     local blockWindow = "Block" .. block.id
-    if DoesWindowNameExist(blockWindow) then
-        WindowSetTintColor(blockWindow, 255, 255, 0) -- Yellow during execution
-    end
     
     -- Check if Actions system is properly initialized
     if not VisualProgrammingInterface.Actions or type(VisualProgrammingInterface.Actions.get) ~= "function" then
         Debug.Print("Error: Actions system not properly initialized")
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
-        if DoesWindowNameExist(blockWindow) then
-            WindowSetTintColor(blockWindow, 255, 0, 0) -- Red for error
-        end
+        VPExecSetBlockState(block, "error")
         return false
     end
 
     -- Get action definition
     local success = true
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] action lookup begin", tostring(block.id), tostring(block.type))
+    end
     local action = VisualProgrammingInterface.Actions:get(block.type)
     if not action then
         if UOWNativeLog then
             UOWNativeLog("[VPExec] action lookup failed", tostring(block.id), tostring(block.type), tostring(action))
         end
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
-        if DoesWindowNameExist(blockWindow) then
-            WindowSetTintColor(blockWindow, 255, 0, 0) -- Red for error
-        end
+        VPExecSetBlockState(block, "error")
         Debug.Print("Unknown action type: " .. block.type)
         return false
+    end
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] action lookup ok", tostring(block.id), tostring(block.type))
     end
     
     -- Validate parameters
     if type(VisualProgrammingInterface.Actions.validateParams) ~= "function" then
         Debug.Print("Error: validateParams not available")
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
-        if DoesWindowNameExist(blockWindow) then
-            WindowSetTintColor(blockWindow, 255, 0, 0) -- Red for error
-        end
+        VPExecSetBlockState(block, "error")
         return false
     end
     
     local result = nil
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] validate begin", tostring(block.id), tostring(block.type))
+    end
     success, result = VisualProgrammingInterface.Actions:validateParams(block.type, block.params)
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] validate result", tostring(block.id), tostring(block.type), "ok=" .. tostring(success), "result=" .. tostring(result))
+    end
     
     if not success then
         if UOWNativeLog then
             UOWNativeLog("[VPExec] validate failed", tostring(block.id), tostring(block.type), "ok=" .. tostring(success), "result=" .. tostring(result))
         end
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
-        if DoesWindowNameExist(blockWindow) then
-            WindowSetTintColor(blockWindow, 255, 0, 0) -- Red for error
-        end
+        VPExecSetBlockState(block, "error")
         Debug.Print("Parameter validation failed: " .. tostring(result))
         return false
     end
@@ -83,9 +117,7 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     if type(VisualProgrammingInterface.Actions.execute) ~= "function" then
         Debug.Print("Error: execute not available")
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
-        if DoesWindowNameExist(blockWindow) then
-            WindowSetTintColor(blockWindow, 255, 0, 0) -- Red for error
-        end
+        VPExecSetBlockState(block, "error")
         return false
     end
     
@@ -100,6 +132,14 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     runtimeParams.__vpBlockType = block.type
     runtimeParams.__vpExecutionTag = "VP:block=" .. tostring(block.id) .. ":type=" .. tostring(block.type)
 
+    if UOWNativeLog then
+        UOWNativeLog(
+            "[VPExec] dispatch begin",
+            tostring(block.id),
+            tostring(block.type),
+            "direction=" .. tostring(runtimeParams.direction),
+            "queueRemaining=" .. tostring(#self.executionQueue))
+    end
     Debug.Print("Executing action for block " .. block.id)
     success, result = VisualProgrammingInterface.Actions:execute(block.type, runtimeParams)
     if UOWNativeLog then
@@ -132,9 +172,7 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
             end
             Debug.Print("Block " .. block.type .. " [" .. block.id .. "] completed immediately")
             self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.COMPLETED
-            if DoesWindowNameExist(blockWindow) then
-                WindowSetTintColor(blockWindow, 0, 255, 0) -- Green for success
-            end
+            VPExecSetBlockState(block, "completed")
             -- Don't clear timers for immediate completion
             -- Let the timer system handle its own state
         end
@@ -144,9 +182,7 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
         end
         Debug.Print("Block " .. block.type .. " [" .. block.id .. "] failed: " .. tostring(result))
         self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.ERROR
-        if DoesWindowNameExist(blockWindow) then
-            WindowSetTintColor(blockWindow, 255, 0, 0) -- Red for error
-        end
+        VPExecSetBlockState(block, "error")
         
         -- Clear any pending timers
         if VisualProgrammingInterface.ActionTimer then

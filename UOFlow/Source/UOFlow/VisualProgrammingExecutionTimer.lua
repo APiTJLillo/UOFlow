@@ -11,6 +11,65 @@ local function VPExecGetLoginTimeMs()
     return nil
 end
 
+local function VPExecGetStateTint(state)
+    if state == "completed" then
+        return 0, 255, 0
+    elseif state == "error" then
+        return 255, 0, 0
+    elseif state == "running" then
+        return 243, 227, 49
+    end
+
+    return 255, 255, 255
+end
+
+local function VPExecApplyBlockState(blockId, state)
+    local manager = VisualProgrammingInterface and VisualProgrammingInterface.manager or nil
+    local block = nil
+    if type(manager) == "table" and type(manager.blocks) == "table" then
+        block = manager.blocks[blockId]
+    end
+
+    if type(block) == "table" then
+        block.state = state
+    end
+
+    local blockWindow = "Block" .. tostring(blockId)
+    local red, green, blue = VPExecGetStateTint(state)
+    local applied = false
+    if DoesWindowNameExist(blockWindow) then
+        WindowSetTintColor(blockWindow, red, green, blue)
+        applied = true
+    end
+
+    if type(block) == "table" then
+        local description = nil
+        if type(block.getDescription) == "function" then
+            description = block:getDescription()
+        elseif block.type ~= nil then
+            description = tostring(block.type)
+        end
+
+        if description ~= nil then
+            local nameWindow = blockWindow .. "Name"
+            if DoesWindowNameExist(nameWindow) then
+                LabelSetText(nameWindow, StringToWString(description))
+                applied = true
+            end
+
+            local descriptionWindow = blockWindow .. "Description"
+            if DoesWindowNameExist(descriptionWindow) then
+                LabelSetText(descriptionWindow, StringToWString(description))
+                applied = true
+            end
+        end
+    end
+
+    return applied
+end
+
+VisualProgrammingInterface.ApplyBlockState = VPExecApplyBlockState
+
 -- Update handler for timers
 function VisualProgrammingInterface.Execution.OnUpdate(self, timePassed)
     if not VisualProgrammingInterface.Execution then return end
@@ -18,6 +77,29 @@ function VisualProgrammingInterface.Execution.OnUpdate(self, timePassed)
     -- Ensure timePassed is a number
     if type(timePassed) == "table" then
         timePassed = timePassed[1]
+    end
+
+    local vpWindowName = "VisualProgrammingInterfaceWindow"
+    if DoesWindowNameExist(vpWindowName) and WindowGetShowing(vpWindowName) then
+        local blockCount = type(VisualProgrammingInterface.GetManagerBlockCount) == "function"
+            and VisualProgrammingInterface.GetManagerBlockCount() or 0
+        if blockCount > 0 then
+            VisualProgrammingInterface._starterBlocksSeeded = true
+            VisualProgrammingInterface._starterSeedRequested = false
+        elseif type(VisualProgrammingInterface.EnsureStarterBlocks) == "function" then
+            local nowMs = VPExecGetLoginTimeMs()
+            local lastAttemptMs = tonumber(VisualProgrammingInterface._starterSeedLastAttemptMs) or -1
+            if nowMs == nil or lastAttemptMs < 0 or nowMs - lastAttemptMs >= 250 then
+                VisualProgrammingInterface._starterSeedLastAttemptMs = nowMs or 0
+                if UOWNativeLog then
+                    UOWNativeLog("[VPUI] update seed attempt",
+                        "existing=" .. tostring(blockCount),
+                        "requested=" .. tostring(VisualProgrammingInterface._starterSeedRequested),
+                        "seeded=" .. tostring(VisualProgrammingInterface._starterBlocksSeeded))
+                end
+                VisualProgrammingInterface.EnsureStarterBlocks("update")
+            end
+        end
     end
 
     local pendingRaw = VisualProgrammingInterface.Execution.pendingRawDispatch
@@ -110,48 +192,58 @@ function VisualProgrammingInterface.Execution.OnUpdate(self, timePassed)
         end
         
         if VisualProgrammingInterface.Execution.resetTimer >= (VisualProgrammingInterface.Execution.resetDelay / 1000) then
+            local singleResetId = VisualProgrammingInterface.Execution.resetBlockId
+            local pendingResetIds = {}
+            if type(VisualProgrammingInterface.Execution.resetBlockIds) == "table" then
+                for index = 1, #VisualProgrammingInterface.Execution.resetBlockIds do
+                    pendingResetIds[index] = VisualProgrammingInterface.Execution.resetBlockIds[index]
+                end
+            end
+
             if UOWNativeLog then
                 UOWNativeLog("[VPExec] reset firing",
-                    "targets=" .. tostring(#(VisualProgrammingInterface.Execution.resetBlockIds or {})),
-                    "single=" .. tostring(VisualProgrammingInterface.Execution.resetBlockId))
+                    "targets=" .. tostring(#pendingResetIds),
+                    "single=" .. tostring(singleResetId))
             end
             Debug.Print("Reset timer complete - resetting block visuals")
-            -- Reset blocks to default state
-            if VisualProgrammingInterface.Execution.resetBlockId then
-                local blockWindow = "Block" .. VisualProgrammingInterface.Execution.resetBlockId
-                if DoesWindowNameExist(blockWindow) then
-                    Debug.Print("Resetting single block " .. VisualProgrammingInterface.Execution.resetBlockId)
-                    WindowSetTintColor(blockWindow, 255, 255, 255)
-                end
-                VisualProgrammingInterface.Execution.resetBlockId = nil
-            end
-            
-            if VisualProgrammingInterface.Execution.resetBlockIds then
-                for _, id in ipairs(VisualProgrammingInterface.Execution.resetBlockIds) do
-                    local blockWindow = "Block" .. id
-                    if DoesWindowNameExist(blockWindow) then
-                        if UOWNativeLog then
-                            UOWNativeLog("[VPExec] reset block", tostring(id))
-                        end
-                        Debug.Print("Resetting block " .. id)
-                        WindowSetTintColor(blockWindow, 255, 255, 255)
-                    end
-                end
-                VisualProgrammingInterface.Execution.resetBlockIds = {}
-            end
-            
-            -- Clear reset state
-            Debug.Print("Clearing reset timer state")
+
+            -- Clear reset state before touching UI so a later UI error cannot
+            -- re-enter this block every frame and spam the log.
+            VisualProgrammingInterface.Execution.resetBlockId = nil
+            VisualProgrammingInterface.Execution.resetBlockIds = {}
             VisualProgrammingInterface.Execution.waitingForTimer = false
             VisualProgrammingInterface.Execution.resetTimer = 0
-            
-            -- Now that reset is complete, clear execution state if we're stopping
+
+            -- If execution is already stopped, clear the live execution state once.
             if not VisualProgrammingInterface.Execution.isRunning then
                 VisualProgrammingInterface.Execution.blockStates = {}
                 VisualProgrammingInterface.Execution.currentBlock = nil
                 VisualProgrammingInterface.Execution.executionQueue = {}
                 VisualProgrammingInterface.Execution.lastExecutedBlockId = nil
                 VisualProgrammingInterface.Execution.pendingCompletionWatch = nil
+                VisualProgrammingInterface.Execution.pendingRawDispatch = nil
+                VisualProgrammingInterface.Execution.continueTimer = 0
+            end
+
+            -- Reset block tints on a best-effort basis after state is cleared.
+            if singleResetId ~= nil then
+                if UOWNativeLog then
+                    UOWNativeLog("[VPExec] reset single block", tostring(singleResetId))
+                end
+                local resetOk = VPExecApplyBlockState(singleResetId, "pending")
+                if UOWNativeLog then
+                    UOWNativeLog("[VPExec] reset single block applied", tostring(singleResetId), "ok=" .. tostring(resetOk))
+                end
+            end
+
+            for _, id in ipairs(pendingResetIds) do
+                if UOWNativeLog then
+                    UOWNativeLog("[VPExec] reset block", tostring(id))
+                end
+                local resetOk = VPExecApplyBlockState(id, "pending")
+                if UOWNativeLog then
+                    UOWNativeLog("[VPExec] reset block applied", tostring(id), "ok=" .. tostring(resetOk))
+                end
             end
         end
     end
@@ -198,10 +290,8 @@ function VisualProgrammingInterface.Execution:signalTimerComplete()
     
     -- Update block state to completed
     self.blockStates[currentBlockId] = VisualProgrammingInterface.Execution.BlockState.COMPLETED
-    local blockWindow = "Block" .. currentBlockId
-    if DoesWindowNameExist(blockWindow) then
+    if VPExecApplyBlockState(currentBlockId, "completed") then
         Debug.Print("Setting block " .. currentBlockId .. " visual state to completed")
-        WindowSetTintColor(blockWindow, 0, 255, 0) -- Green for success
     end
     
     -- Clear waiting flag and ensure ActionTimer is properly reset

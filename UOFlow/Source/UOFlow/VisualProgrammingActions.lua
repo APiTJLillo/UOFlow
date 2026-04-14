@@ -59,23 +59,100 @@ local function VPResolveWalkApi()
     return nil
 end
 
-local function VPExecuteWalkStep(params, runFlag)
-    local walkApi = VPResolveWalkApi()
-    local direction = params and params.direction or nil
-    local tag = params and params.__vpExecutionTag or "VP:WalkStep"
+local VPWalkDirectionMap = {
+    north = 0,
+    ["north east"] = 1,
+    northeast = 1,
+    ne = 1,
+    east = 2,
+    ["south east"] = 3,
+    southeast = 3,
+    se = 3,
+    south = 4,
+    ["south west"] = 5,
+    southwest = 5,
+    sw = 5,
+    west = 6,
+    ["north west"] = 7,
+    northwest = 7,
+    nw = 7,
+}
 
-    if type(walkApi) ~= "table" or type(walkApi.step) ~= "function" then
-        if type(UOWNativeLog) == "function" then
-            UOWNativeLog("[VPWalk] helper missing", tostring(tag), tostring(direction), tostring(runFlag))
+local function VPNormalizeWalkDirection(direction)
+    local numericDirection = tonumber(direction)
+    if numericDirection ~= nil then
+        numericDirection = math.floor(numericDirection)
+        if numericDirection >= 0 and numericDirection <= 7 then
+            return numericDirection
         end
+        return nil
+    end
+
+    if type(direction) ~= "string" then
+        return nil
+    end
+
+    local key = string.lower(direction)
+    key = string.gsub(key, "_", " ")
+    key = string.gsub(key, "%s+", " ")
+    key = string.gsub(key, "^%s+", "")
+    key = string.gsub(key, "%s+$", "")
+    return VPWalkDirectionMap[key]
+end
+
+local function VPQueueWalkViaTransport(direction, runFlag, tag)
+    local numericDirection = VPNormalizeWalkDirection(direction)
+    local numericRun = (runFlag == true or tonumber(runFlag) == 1) and 1 or 0
+
+    if numericDirection == nil then
+        if type(UOWNativeLog) == "function" then
+            UOWNativeLog(
+                "UOFlow.Walk.step invoked",
+                "dir=", tostring(direction),
+                "run=", tostring(numericRun),
+                "source=", tostring(tag),
+                "invalid_direction")
+        end
+        return false, "invalid_direction"
+    end
+
+    if type(UOWNativeLog) ~= "function" then
         return false, "native_walk_missing"
     end
+
+    -- Use the same proven evaluator-domain transport line that the DLL already parses.
+    UOWNativeLog(
+        "UOFlow.Walk.step invoked",
+        "dir=", tostring(numericDirection),
+        "run=", tostring(numericRun),
+        "source=", tostring(tag),
+        "helper=", "DummyPrintWalkTransport")
+    UOWNativeLog(
+        "UOFlow.Walk.step result",
+        "dir=", tostring(numericDirection),
+        "run=", tostring(numericRun),
+        "helper=", "DummyPrintWalkTransport",
+        "ok=", "true",
+        "msg=", "queued",
+        "raw=", "nil")
+    return true, "queued"
+end
+
+local function VPExecuteWalkStep(params, runFlag)
+    local direction = params and params.direction or nil
+    local tag = params and params.__vpExecutionTag or "VP:WalkStep"
 
     if type(UOWNativeLog) == "function" then
         UOWNativeLog("[VPWalk] step begin", tostring(tag), "direction=" .. tostring(direction), "run=" .. tostring(runFlag))
     end
 
-    local ok, msg = walkApi.step(direction, runFlag and 1 or 0, tag)
+    local ok, msg = VPQueueWalkViaTransport(direction, runFlag and 1 or 0, tag)
+    if ok ~= true then
+        local walkApi = VPResolveWalkApi()
+        if type(walkApi) == "table" and type(walkApi.step) == "function" then
+            ok, msg = walkApi.step(direction, runFlag and 1 or 0, tag)
+        end
+    end
 
     if type(UOWNativeLog) == "function" then
         UOWNativeLog("[VPWalk] step result", tostring(tag), "ok=" .. tostring(ok), "msg=" .. tostring(msg))
@@ -87,6 +164,8 @@ local function VPExecuteWalkStep(params, runFlag)
 
     return false, msg or "walk_failed"
 end
+
+local VP_SAFE_MOVEMENT_ICON = { texture = "icon000623", x = 5, y = 5 }
 
 -- Register a new action type
 function VisualProgrammingInterface.Actions:register(definition)
@@ -199,7 +278,7 @@ function VisualProgrammingInterface.Actions:initialize()
         name = "Walk Step",
         description = "Request one walking step in a direction",
         category = self.categories.MOVEMENT,
-        icon = "Icons/actions/move.dds",
+        icon = VP_SAFE_MOVEMENT_ICON,
         params = {
             CreateParameter("direction", ParameterType.SELECT, "North", 
                 {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"})
@@ -213,7 +292,7 @@ function VisualProgrammingInterface.Actions:initialize()
         name = "Run Step",
         description = "Request one running step in a direction",
         category = self.categories.MOVEMENT,
-        icon = "Icons/actions/move.dds",
+        icon = VP_SAFE_MOVEMENT_ICON,
         params = {
             CreateParameter("direction", ParameterType.SELECT, "North",
                 {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"})
@@ -408,7 +487,7 @@ function VisualProgrammingInterface.Actions:initialize()
         name = "Walk Step",
         description = "Request one walking step in a direction",
         category = self.categories.MOVEMENT,
-        icon = "Icons/actions/move.dds",
+        icon = VP_SAFE_MOVEMENT_ICON,
         params = {
             CreateParameter("direction", ParameterType.SELECT, "North", 
                 {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"})
@@ -422,7 +501,7 @@ function VisualProgrammingInterface.Actions:initialize()
         name = "Run Step",
         description = "Request one running step in a direction",
         category = self.categories.MOVEMENT,
-        icon = "Icons/actions/move.dds",
+        icon = VP_SAFE_MOVEMENT_ICON,
         params = {
             CreateParameter("direction", ParameterType.SELECT, "North", 
                 {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"})

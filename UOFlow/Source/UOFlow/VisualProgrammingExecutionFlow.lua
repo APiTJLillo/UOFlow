@@ -33,9 +33,13 @@ function VisualProgrammingInterface.Execution:hardResetForTestRun()
     if VisualProgrammingInterface.manager and type(VisualProgrammingInterface.manager.blocks) == "table" then
         for id, block in pairs(VisualProgrammingInterface.manager.blocks) do
             if type(block) == "table" and block.id ~= nil then
-                local blockWindow = "Block" .. id
-                if DoesWindowNameExist(blockWindow) then
-                    WindowSetTintColor(blockWindow, 255, 255, 255)
+                if type(VisualProgrammingInterface.ApplyBlockState) == "function" then
+                    VisualProgrammingInterface.ApplyBlockState(id, "pending")
+                else
+                    local blockWindow = "Block" .. id
+                    if DoesWindowNameExist(blockWindow) then
+                        WindowSetTintColor(blockWindow, 255, 255, 255)
+                    end
                 end
             end
         end
@@ -83,14 +87,22 @@ function VisualProgrammingInterface.Execution:start()
         self.blockStates[id] = VisualProgrammingInterface.Execution.BlockState.PENDING
     end
     
-    local snapshotByKey, orderedRecords = nil, nil
-    if type(self.buildExecutionSnapshot) == "function" then
-        snapshotByKey, orderedRecords = self:buildExecutionSnapshot()
+    local orderedBlocks = {}
+    if type(VisualProgrammingInterface.manager.getBlocksInVisualOrder) == "function" then
+        orderedBlocks = VisualProgrammingInterface.manager:getBlocksInVisualOrder()
     end
-    if snapshotByKey and type(self.buildExecutionQueueFromSnapshot) == "function" then
-        self.executionQueue = {}
-        self:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords, self.executionQueue)
+
+    self.executionQueue = {}
+    for _, block in ipairs(orderedBlocks or {}) do
+        if type(block) == "table" and block.id ~= nil then
+            table.insert(self.executionQueue, block)
+        end
     end
+
+    if UOWNativeLog then
+        UOWNativeLog("[VPExec] start queue built", tostring(#self.executionQueue))
+    end
+
     if #self.executionQueue == 0 then
         Debug.Print("Error: Could not build execution queue")
         return false
@@ -255,9 +267,13 @@ function VisualProgrammingInterface.Execution:continueExecution()
         -- Mark final block as completed and green before stopping
         if currentId ~= nil then
             self.blockStates[currentId] = VisualProgrammingInterface.Execution.BlockState.COMPLETED
-            local blockWindow = "Block" .. currentId
-            if DoesWindowNameExist(blockWindow) then
-                WindowSetTintColor(blockWindow, 0, 255, 0) -- Green for success
+            if type(VisualProgrammingInterface.ApplyBlockState) == "function" then
+                VisualProgrammingInterface.ApplyBlockState(currentId, "completed")
+            else
+                local blockWindow = "Block" .. currentId
+                if DoesWindowNameExist(blockWindow) then
+                    WindowSetTintColor(blockWindow, 0, 255, 0) -- Green for success
+                end
             end
         end
         -- Don't stop immediately, let the current block finish
