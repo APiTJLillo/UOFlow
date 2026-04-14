@@ -208,6 +208,9 @@ VisualProgrammingInterface.RegisterUpdateHandlers = VPUIRegisterUpdateHandlers
 VisualProgrammingInterface.UnregisterUpdateHandlers = VPUIUnregisterUpdateHandlers
 
 function VisualProgrammingInterface.OnExecutionUpdate(timePassed)
+    if type(VisualProgrammingInterface.RefreshBlockViewportVisibility) == "function" then
+        VisualProgrammingInterface.RefreshBlockViewportVisibility()
+    end
     local execution = VisualProgrammingInterface.Execution
     if type(execution) ~= "table" or type(execution.OnUpdate) ~= "function" then
         return

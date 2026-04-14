@@ -72,7 +72,7 @@
                         </Anchor>
                     </Anchors>
                     <Windows>
-                        <Window name="$parentScrollChild" layer="default" handleinput="true">
+                        <Window name="$parentScrollChild" layer="default" handleinput="true" clipchildren="true">
                             <Size>
                                 <AbsPoint x="360" y="0"/>
                             </Size>
@@ -107,7 +107,7 @@
                         </Anchor>
                     </Anchors>
                     <Windows>
-                        <Window name="$parentScrollChildRight" layer="default" handleinput="true">
+                        <Window name="$parentScrollChildRight" layer="default" handleinput="true" clipchildren="true">
                             <Size>
                                 <AbsPoint x="230" y="0"/>
                             </Size>
@@ -142,7 +142,7 @@
                         </Anchor>
                     </Anchors>
                     <Windows>
-                        <Window name="$parentScrollChildLeft" layer="default">
+                        <Window name="$parentScrollChildLeft" layer="default" clipchildren="true">
                             <EventHandlers>
                                 <EventHandler event="OnInitialize" function="VisualProgrammingInterface.AddBlock" />
                             </EventHandlers>
@@ -246,7 +246,7 @@
         </Window>
 
         <!-- Block Template -->
-        <Window name="BlockTemplate" virtual="true" movable="false" layer="default" handleinput="true">
+        <Window name="BlockTemplate" virtual="true" movable="false" layer="default" handleinput="true" clipchildren="true">
             <Size>
                 <AbsPoint x="360" y="50" />
             </Size>
@@ -332,7 +332,7 @@
         </EditBox>
 
         <!-- Scroll Child Template -->
-        <Window name="ScrollChild" virtual="true" layer="default">
+        <Window name="ScrollChild" virtual="true" layer="default" clipchildren="true">
             <Size>
                 <AbsPoint x="360" y="0"/>
             </Size>

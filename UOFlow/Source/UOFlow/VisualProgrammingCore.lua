@@ -147,6 +147,58 @@ end
 
 VisualProgrammingInterface.GetManagerBlockCount = VPUIGetManagerBlockCount
 
+function VisualProgrammingInterface.RefreshBlockViewportVisibility()
+    local manager = VisualProgrammingInterface.manager
+    if type(manager) ~= "table" or type(manager.blocks) ~= "table" then
+        return
+    end
+
+    for _, block in pairs(manager.blocks) do
+        if type(block) == "table" and block.id ~= nil then
+            local blockName = "Block" .. tostring(block.id)
+            if DoesWindowNameExist(blockName) then
+                local scrollWindow = block.column == "right"
+                    and "VisualProgrammingInterfaceWindowScrollWindowRight"
+                    or "VisualProgrammingInterfaceWindowScrollWindow"
+                local viewportHeight = select(2, WindowGetDimensions(scrollWindow))
+                local blockHeight = select(2, WindowGetDimensions(blockName))
+                local scrollOffset = ScrollWindowGetOffset(scrollWindow) or 0
+                local blockTop = tonumber(block.y) or 0
+                local blockBottom = blockTop + (tonumber(blockHeight) or 50)
+                local viewportTop = scrollOffset
+                local viewportBottom = scrollOffset + (tonumber(viewportHeight) or 0)
+                local isVisible = blockBottom > viewportTop and blockTop < viewportBottom
+                local isFullyVisible = blockTop >= viewportTop and blockBottom <= viewportBottom
+
+                if not WindowGetShowing(blockName) then
+                    WindowSetShowing(blockName, true)
+                end
+
+                local nameWindow = blockName .. "Name"
+                if DoesWindowNameExist(nameWindow) and WindowGetShowing(nameWindow) ~= isVisible then
+                    WindowSetShowing(nameWindow, isVisible)
+                end
+
+                local descriptionWindow = blockName .. "Description"
+                if DoesWindowNameExist(descriptionWindow) and WindowGetShowing(descriptionWindow) ~= isVisible then
+                    WindowSetShowing(descriptionWindow, isVisible)
+                end
+
+                local showChrome = isFullyVisible
+                local backgroundWindow = blockName .. "Background"
+                if DoesWindowNameExist(backgroundWindow) and WindowGetShowing(backgroundWindow) ~= showChrome then
+                    WindowSetShowing(backgroundWindow, showChrome)
+                end
+
+                local iconWindow = blockName .. "Icon"
+                if DoesWindowNameExist(iconWindow) and WindowGetShowing(iconWindow) ~= showChrome then
+                    WindowSetShowing(iconWindow, showChrome)
+                end
+            end
+        end
+    end
+end
+
 function VisualProgrammingInterface.EnsureStarterBlocks(reason)
     local manager = VisualProgrammingInterface.manager
     if type(manager) ~= "table" or type(manager.blocks) ~= "table" then
@@ -226,6 +278,9 @@ function VisualProgrammingInterface.EnsureStarterBlocks(reason)
     local scrollWindow = "VisualProgrammingInterfaceWindowScrollWindow"
     if DoesWindowNameExist(scrollWindow) then
         ScrollWindowUpdateScrollRect(scrollWindow)
+    end
+    if type(VisualProgrammingInterface.RefreshBlockViewportVisibility) == "function" then
+        VisualProgrammingInterface.RefreshBlockViewportVisibility()
     end
 
     if type(UOWNativeLog) == "function" then
@@ -320,6 +375,9 @@ function VisualProgrammingInterface.Initialize()
     if DoesWindowNameExist("VisualProgrammingInterfaceWindowScrollWindow") then
         WindowSetLayer("VisualProgrammingInterfaceWindowScrollWindow", Window.Layers.DEFAULT)
     end
+    if type(VisualProgrammingInterface.RefreshBlockViewportVisibility) == "function" then
+        VisualProgrammingInterface.RefreshBlockViewportVisibility()
+    end
     
     Debug.Print("Visual Programming Interface initialized")
 end
@@ -375,6 +433,9 @@ function VisualProgrammingInterface.CreateBlock(blockType, index)
             WindowSetDimensions(scrollChild, 360, newHeight)
             Debug.Print("Updated scroll child height to: " .. tostring(newHeight))
             ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindow")
+            if type(VisualProgrammingInterface.RefreshBlockViewportVisibility) == "function" then
+                VisualProgrammingInterface.RefreshBlockViewportVisibility()
+            end
         else
             Debug.Print("Warning: Scroll child window not found when updating height")
         end
