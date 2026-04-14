@@ -13,6 +13,7 @@ function VisualProgrammingInterface.Execution:executeBlock(block)
     -- Update block state
     self.blockStates[block.id] = VisualProgrammingInterface.Execution.BlockState.RUNNING
     self.currentBlock = block
+    self.lastExecutedBlockId = block.id
 
     local headBlock = self.executionQueue and self.executionQueue[1] or nil
     if headBlock == block then

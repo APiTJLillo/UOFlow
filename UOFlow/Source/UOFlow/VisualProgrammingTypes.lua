@@ -1187,6 +1187,23 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                 end
 
                 local function queueCastTimers(queueUsedOnId)
+                    if type(VisualProgrammingInterface.Execution) == "table" then
+                        local nowSec = tonumber(Interface and Interface.TimeSinceLogin) or 0
+                        local targetDelay = queueUsedOnId and 0 or 500
+                        local watchDelaySec = (castTime + targetDelay + recoveryTime + 500) / 1000
+                        VisualProgrammingInterface.Execution.pendingCompletionWatch = {
+                            blockId = callContext.blockId,
+                            spellId = spellId,
+                            dueAtMs = nowSec + watchDelaySec
+                        }
+                        VPNativeLog("[VPExec] completion watch armed",
+                            "block=" .. tostring(callContext.blockId),
+                            "spell=" .. tostring(spellId),
+                            "usedOnId=" .. tostring(queueUsedOnId),
+                            "delaySec=" .. tostring(watchDelaySec),
+                            "dueAtSec=" .. tostring(VisualProgrammingInterface.Execution.pendingCompletionWatch.dueAtMs))
+                    end
+
                     Debug.Print("Starting cast sequence: " .. castTime .. "ms")
                     WaitTimer(castTime, function()
                         Debug.Print("Cast time complete")
@@ -1200,6 +1217,10 @@ function VisualProgrammingInterface.InitializeBlockTypes()
 
                                 Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
                                 WaitTimer(recoveryTime, function()
+                                    VPNativeLog("[VPSpell] recovery complete",
+                                        "block=" .. tostring(callContext.blockId),
+                                        "spell=" .. tostring(spellId),
+                                        "usedOnId=" .. tostring(queueUsedOnId))
                                     Debug.Print("Recovery time complete - full sequence done")
                                     VisualProgrammingInterface.ActionTimer:notifyCompletion()
                                     return true
@@ -1210,6 +1231,10 @@ function VisualProgrammingInterface.InitializeBlockTypes()
                         else
                             Debug.Print("Queueing recovery: " .. recoveryTime .. "ms")
                             WaitTimer(recoveryTime, function()
+                                VPNativeLog("[VPSpell] recovery complete",
+                                    "block=" .. tostring(callContext.blockId),
+                                    "spell=" .. tostring(spellId),
+                                    "usedOnId=" .. tostring(queueUsedOnId))
                                 Debug.Print("Recovery time complete - full sequence done")
                                 VisualProgrammingInterface.ActionTimer:notifyCompletion()
                                 return true

@@ -17,6 +17,8 @@ function VisualProgrammingInterface.Execution:hardResetForTestRun()
     self.resetBlockId = nil
     self.resetBlockIds = {}
     self.pendingRawDispatch = nil
+    self.pendingCompletionWatch = nil
+    self.lastExecutedBlockId = nil
 
     if VisualProgrammingInterface.ActionTimer then
         VisualProgrammingInterface.ActionTimer.isWaiting = false
@@ -169,6 +171,9 @@ function VisualProgrammingInterface.Execution:stop()
         self.waitingForTimer = false
         self.primingFirstBlock = false
         self.blockStates = {}
+        self.pendingRawDispatch = nil
+        self.pendingCompletionWatch = nil
+        self.lastExecutedBlockId = nil
         
         -- Reset the ActionTimer system
         if VisualProgrammingInterface.ActionTimer then
