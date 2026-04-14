@@ -132,7 +132,7 @@
                     </Windows>
                 </ScrollWindow>
 
-                <ScrollWindow name="$parentScrollWindowLeft" childscrollwindow="$parentScrollChildLeft" scrollbar="$parentVerticalScrollbar" lineheight="25" draganddrop="true" autoHideScrollBar="true" layer="default">
+                <ScrollWindow name="$parentScrollWindowLeft" childscrollwindow="$parentScrollChildLeft" scrollbar="$parentVerticalScrollbarLeft" lineheight="25" draganddrop="true" autoHideScrollBar="true" layer="default">
                     <Size>
                         <AbsPoint x="250" y="650" />
                     </Size>
@@ -258,14 +258,14 @@
             </EventHandlers>
             <Windows>
                 <!-- Background for tinting -->
-                <FullResizeImage name="$parentBackground" inherits="UO_Default_Inner_Window_Frame" layer="background">
+                <FullResizeImage name="$parentBackground" inherits="UO_Default_Inner_Window_Frame" layer="default">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" />
                         <Anchor point="bottomright" relativePoint="bottomright" />
                     </Anchors>
                     <Color r="255" g="255" b="255" a="255" />
                 </FullResizeImage>
-                <Button name="$parentIcon" inherits="UO_Default_Small_Select_Button" draganddrop="true" id="0" layer="popup">
+                <Button name="$parentIcon" inherits="UO_Default_Small_Select_Button" draganddrop="true" id="0" layer="default">
                     <Size>
                         <AbsPoint x="50" y="50" />
                     </Size>

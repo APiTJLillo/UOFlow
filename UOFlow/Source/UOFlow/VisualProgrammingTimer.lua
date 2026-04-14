@@ -121,37 +121,39 @@ function Timer:OnUpdate(timePassed)
 end
 
 function Timer:start(duration, callback, queueId)
-    Debug.Print("Starting timer: duration = " .. duration .. "ms, queueId = " .. tostring(queueId))
+    local numericDuration = tonumber(duration)
+    Debug.Print("Starting timer: duration = " .. tostring(duration) .. "ms, queueId = " .. tostring(queueId))
     
     -- Validate parameters
-    if type(duration) ~= "number" or duration <= 0 then
+    if not numericDuration or numericDuration <= 0 then
         Debug.Print("Warning: Invalid duration: " .. tostring(duration))
-        return
+        return false
     end
     if type(callback) ~= "function" then
         Debug.Print("Warning: Invalid callback")
-        return
+        return false
     end
     
     -- If timer is already waiting, queue this function
     if self.isWaiting then
         Debug.Print("Timer busy, queueing function with id: " .. tostring(queueId))
         table.insert(self.functionQueue, {
-            duration = duration,
+            duration = numericDuration,
             callback = callback,
             queueId = queueId
         })
-        return
+        return true
     end
     
     -- Start timer with provided parameters
     Debug.Print("Starting new timer with id: " .. tostring(queueId))
     self.currentTime = 0
-    self.targetTime = duration / 1000
+    self.targetTime = numericDuration / 1000
     self.isWaiting = true
     self.callback = callback
     self.currentQueueId = queueId
     self.isComplete = false
+    return true
 end
 
 -- Ensure the OnUpdate method is called with the correct self reference

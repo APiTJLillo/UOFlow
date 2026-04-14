@@ -29,9 +29,23 @@ end
 
 -- Helper function for waiting
 local function WaitTimer(duration, callback, queueId)
-    Debug.Print("WaitTimer called: " .. duration .. "ms, queue: " .. tostring(queueId))
-    VisualProgrammingInterface.ActionTimer:start(duration, callback, queueId)
-    return true
+    local numericDuration = tonumber(duration)
+    Debug.Print("WaitTimer called: " .. tostring(duration) .. "ms, queue: " .. tostring(queueId))
+
+    if not numericDuration then
+        Debug.Print("WaitTimer invalid duration: " .. tostring(duration))
+        return false
+    end
+
+    if numericDuration <= 0 then
+        Debug.Print("WaitTimer zero-duration immediate callback")
+        if type(callback) == "function" then
+            return callback() ~= false
+        end
+        return false
+    end
+
+    return VisualProgrammingInterface.ActionTimer:start(numericDuration, callback, queueId) == true
 end
 
 local function VPValueToString(value)
@@ -1565,12 +1579,21 @@ function VisualProgrammingInterface.InitializeBlockTypes()
             return time and time >= 0 and time <= 10000
         end,
         execute = function(params)
+            local waitMs = tonumber(params.time)
+            if not waitMs then
+                Debug.Print("Wait execute invalid time: " .. tostring(params.time))
+                return false, "invalid_time"
+            end
             local queueId = "wait_" .. tostring(Interface.TimeSinceLogin)
-            WaitTimer(params.time, function()
+            local started = WaitTimer(waitMs, function()
                 Debug.Print("Wait timer complete")
                 VisualProgrammingInterface.ActionTimer:notifyCompletion()
                 return true
             end, queueId)
+            if not started then
+                Debug.Print("Wait timer failed to start: " .. tostring(waitMs))
+                return false, "wait_start_failed"
+            end
             return false -- Keep execution system waiting
         end
     })
@@ -1640,7 +1663,7 @@ function VisualProgrammingInterface.UpdateBlockIcon(iconWindow, blockType)
     
     -- Set window properties first
     WindowSetDimensions(iconWindow, 50, 50)
-    WindowSetLayer(iconWindow, Window.Layers.POPUP)
+    WindowSetLayer(iconWindow, Window.Layers.DEFAULT)
     WindowSetShowing(iconWindow, true)
     
     -- Then set the texture
@@ -1679,6 +1702,10 @@ function VisualProgrammingInterface.CreateBlock(blockType, index, column)
     local scrollChild = targetColumn == "right"
         and "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight"
         or "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
+    local scrollWindow = targetColumn == "right"
+        and "VisualProgrammingInterfaceWindowScrollWindowRight"
+        or "VisualProgrammingInterfaceWindowScrollWindow"
+    local childWidth = targetColumn == "right" and 230 or 360
     if not DoesWindowNameExist(scrollChild) then
         if type(UOWNativeLog) == "function" then
             UOWNativeLog("[VPUI] create block missing scrollChild", tostring(blockType), tostring(index), tostring(scrollChild))
@@ -1708,7 +1735,7 @@ function VisualProgrammingInterface.CreateBlock(blockType, index, column)
         end
 
         -- Set dimensions and position
-        WindowSetDimensions(blockName, 380, 50)
+        WindowSetDimensions(blockName, 360, 50)
         WindowClearAnchors(blockName)
         WindowAddAnchor(blockName, "topleft", scrollChild, "topleft", 0, index * 80)
         
@@ -1724,8 +1751,11 @@ function VisualProgrammingInterface.CreateBlock(blockType, index, column)
         if DoesWindowNameExist(scrollChild) then
             local width, height = WindowGetDimensions(scrollChild)
             local newHeight = math.max(height, (index + 1) * 80)
-            WindowSetDimensions(scrollChild, width or 840, newHeight)
+            WindowSetDimensions(scrollChild, width or childWidth, newHeight)
             Debug.Print("Updated scroll child height to: " .. tostring(newHeight))
+            if DoesWindowNameExist(scrollWindow) then
+                ScrollWindowUpdateScrollRect(scrollWindow)
+            end
         else
             Debug.Print("Warning: Scroll child window not found when updating height")
         end
@@ -1743,6 +1773,14 @@ function VisualProgrammingInterface.CreateBlock(blockType, index, column)
         if DoesWindowNameExist(blockName .. "Description") then
             WindowSetLayer(blockName .. "Description", Window.Layers.DEFAULT)
             WindowSetShowing(blockName .. "Description", true)
+        end
+        if DoesWindowNameExist(blockName .. "Background") then
+            WindowSetLayer(blockName .. "Background", Window.Layers.DEFAULT)
+            WindowSetShowing(blockName .. "Background", true)
+        end
+        if DoesWindowNameExist(blockName .. "Icon") then
+            WindowSetLayer(blockName .. "Icon", Window.Layers.DEFAULT)
+            WindowSetShowing(blockName .. "Icon", true)
         end
         
         -- Set block icon using helper function

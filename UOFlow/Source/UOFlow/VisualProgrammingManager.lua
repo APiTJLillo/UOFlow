@@ -110,13 +110,13 @@ function VisualProgrammingInterface.Manager:removeBlock(id)
     -- Update middle column
     local middleScrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
     local middleHeight = math.max(middleBlocks * 80, 80)
-    WindowSetDimensions(middleScrollChild, 300, middleHeight)
+    WindowSetDimensions(middleScrollChild, 360, middleHeight)
     ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindow")
     
     -- Update right column
     local rightScrollChild = "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight"
     local rightHeight = math.max(rightBlocks * 80, 80)
-    WindowSetDimensions(rightScrollChild, 300, rightHeight)
+    WindowSetDimensions(rightScrollChild, 230, rightHeight)
     ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindowRight")
 
     self:rebuildLinearConnectionsFromVisualOrder()

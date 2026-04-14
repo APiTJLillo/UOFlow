@@ -32,12 +32,20 @@ local function VPUIRenderStarterBlock(block, index)
         return false
     end
 
-    WindowSetDimensions(blockName, 380, 50)
+    WindowSetDimensions(blockName, 360, 50)
     WindowClearAnchors(blockName)
     WindowAddAnchor(blockName, "topleft", scrollChild, "topleft", 0, index * 80)
     WindowSetLayer(blockName, Window.Layers.DEFAULT)
     WindowSetShowing(blockName, true)
     WindowSetAlpha(blockName, 1.0)
+    if DoesWindowNameExist(blockName .. "Background") then
+        WindowSetLayer(blockName .. "Background", Window.Layers.DEFAULT)
+        WindowSetShowing(blockName .. "Background", true)
+    end
+    if DoesWindowNameExist(blockName .. "Icon") then
+        WindowSetLayer(blockName .. "Icon", Window.Layers.DEFAULT)
+        WindowSetShowing(blockName .. "Icon", true)
+    end
 
     local description = type(block.getDescription) == "function" and block:getDescription() or tostring(block.type)
     if DoesWindowNameExist(blockName .. "Name") then
@@ -59,7 +67,7 @@ local function VPUIRenderStarterBlock(block, index)
 
     local width, height = WindowGetDimensions(scrollChild)
     local newHeight = math.max(height or 0, (index + 1) * 80)
-    WindowSetDimensions(scrollChild, width or 840, newHeight)
+    WindowSetDimensions(scrollChild, width or 360, newHeight)
 
     return true
 end
@@ -107,14 +115,21 @@ local function VPUICreateStarterBlock(manager, blockType, index)
 end
 
 local VPUI_STARTER_BLOCKS = {
-    { type = "Walk Step", index = 0, direction = "North" },
-    { type = "Walk Step", index = 1, direction = "NorthEast" },
-    { type = "Walk Step", index = 2, direction = "East" },
-    { type = "Walk Step", index = 3, direction = "SouthEast" },
-    { type = "Walk Step", index = 4, direction = "South" },
-    { type = "Walk Step", index = 5, direction = "SouthWest" },
-    { type = "Walk Step", index = 6, direction = "West" },
-    { type = "Walk Step", index = 7, direction = "NorthWest" },
+    { type = "Walk Step", index = 0, params = { direction = "North" } },
+    { type = "Wait", index = 1, params = { time = 1000 } },
+    { type = "Walk Step", index = 2, params = { direction = "NorthEast" } },
+    { type = "Wait", index = 3, params = { time = 1000 } },
+    { type = "Walk Step", index = 4, params = { direction = "East" } },
+    { type = "Wait", index = 5, params = { time = 1000 } },
+    { type = "Walk Step", index = 6, params = { direction = "SouthEast" } },
+    { type = "Wait", index = 7, params = { time = 1000 } },
+    { type = "Walk Step", index = 8, params = { direction = "South" } },
+    { type = "Wait", index = 9, params = { time = 1000 } },
+    { type = "Walk Step", index = 10, params = { direction = "SouthWest" } },
+    { type = "Wait", index = 11, params = { time = 1000 } },
+    { type = "Walk Step", index = 12, params = { direction = "West" } },
+    { type = "Wait", index = 13, params = { time = 1000 } },
+    { type = "Walk Step", index = 14, params = { direction = "NorthWest" } },
 }
 
 local function VPUIGetManagerBlockCount()
@@ -173,13 +188,17 @@ function VisualProgrammingInterface.EnsureStarterBlocks(reason)
             UOWNativeLog("[VPUI] starter block request",
                 tostring(blockInfo.index),
                 tostring(blockInfo.type),
-                "direction=" .. tostring(blockInfo.direction),
+                "params=" .. tostring(blockInfo.params and next(blockInfo.params) and "set" or "none"),
                 "reason=" .. tostring(reason))
         end
         local block = VPUICreateStarterBlock(manager, blockInfo.type, blockInfo.index)
         if block then
             block.params = block.params or {}
-            block.params.direction = blockInfo.direction
+            if type(blockInfo.params) == "table" then
+                for key, value in pairs(blockInfo.params) do
+                    block.params[key] = value
+                end
+            end
             local rendered = VPUIRenderStarterBlock(block, blockInfo.index)
             if previousBlock then
                 previousBlock.connections = previousBlock.connections or {}
@@ -191,7 +210,8 @@ function VisualProgrammingInterface.EnsureStarterBlocks(reason)
                 UOWNativeLog("[VPUI] starter block created",
                     tostring(block.id),
                     tostring(block.type),
-                    "direction=" .. tostring(block.params.direction),
+                    "params.direction=" .. tostring(block.params.direction),
+                    "params.time=" .. tostring(block.params.time),
                     "rendered=" .. tostring(rendered),
                     "reason=" .. tostring(reason))
             end
@@ -251,7 +271,7 @@ function VisualProgrammingInterface.Initialize()
     end
     
     -- Set up scroll windows with UO pattern
-    WindowSetDimensions(scrollChild, 840, 0)
+    WindowSetDimensions(scrollChild, 360, 0)
     WindowSetLayer(scrollChild, Window.Layers.DEFAULT)
     WindowSetShowing(scrollChild, true)
     ScrollWindowUpdateScrollRect(scrollWindow)
@@ -260,7 +280,7 @@ function VisualProgrammingInterface.Initialize()
     local rightScrollWindow = windowName .. "ScrollWindowRight"
     local rightScrollChild = rightScrollWindow .. "ScrollChildRight"
     if DoesWindowNameExist(rightScrollWindow) and DoesWindowNameExist(rightScrollChild) then
-        WindowSetDimensions(rightScrollChild, 300, 0)
+        WindowSetDimensions(rightScrollChild, 230, 0)
         WindowSetLayer(rightScrollChild, Window.Layers.DEFAULT)
         WindowSetShowing(rightScrollChild, true)
         ScrollWindowUpdateScrollRect(rightScrollWindow)
@@ -339,7 +359,7 @@ function VisualProgrammingInterface.CreateBlock(blockType, index)
         end
 
         -- Set dimensions and position
-        WindowSetDimensions(blockName, 380, 50)
+        WindowSetDimensions(blockName, 360, 50)
         WindowClearAnchors(blockName)
         WindowAddAnchor(blockName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowScrollChild", "topleft", 0, index * 80)
         
@@ -352,8 +372,9 @@ function VisualProgrammingInterface.CreateBlock(blockType, index)
         if DoesWindowNameExist(scrollChild) then
             local _, height = WindowGetDimensions(scrollChild)
             local newHeight = math.max(height, (index + 1) * 80)
-            WindowSetDimensions(scrollChild, 840, newHeight)
+            WindowSetDimensions(scrollChild, 360, newHeight)
             Debug.Print("Updated scroll child height to: " .. tostring(newHeight))
+            ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindow")
         else
             Debug.Print("Warning: Scroll child window not found when updating height")
         end
@@ -371,6 +392,14 @@ function VisualProgrammingInterface.CreateBlock(blockType, index)
         if DoesWindowNameExist(blockName .. "Description") then
             WindowSetLayer(blockName .. "Description", Window.Layers.DEFAULT)
             WindowSetShowing(blockName .. "Description", true)
+        end
+        if DoesWindowNameExist(blockName .. "Background") then
+            WindowSetLayer(blockName .. "Background", Window.Layers.DEFAULT)
+            WindowSetShowing(blockName .. "Background", true)
+        end
+        if DoesWindowNameExist(blockName .. "Icon") then
+            WindowSetLayer(blockName .. "Icon", Window.Layers.DEFAULT)
+            WindowSetShowing(blockName .. "Icon", true)
         end
         
         Debug.Print("Block created successfully")

@@ -34,9 +34,9 @@ function VisualProgrammingInterface.Actions:validateParams(type, params)
         return false
     end
     if action.validate then
-        local success = action.validate(params)
+        local success, result = action.validate(params)
         Debug.Print("Validation " .. (success and "passed" or "failed"))
-        return success
+        return success, result
     end
     return true
 end
@@ -48,9 +48,9 @@ function VisualProgrammingInterface.Actions:execute(type, params)
         Debug.Print("Action not found: " .. type)
         return false
     end
-    local success = action.execute(params)
+    local success, result = action.execute(params)
     Debug.Print("Action execution " .. (success and "succeeded" or "failed"))
-    return success
+    return success, result
 end
 
 local function VPUIEmitNativeLog(...)
