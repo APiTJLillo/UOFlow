@@ -414,7 +414,16 @@ function ItemProperties.GetCurrentWindow()
 end
 
 function ItemProperties.OnPlayerBackpackMouseover()
-	local backpackId = WindowData.PlayerEquipmentSlot[EquipmentData.EQPOS_BACKPACK].objectId
+	if not WindowData.PlayerEquipmentSlot then
+		return
+	end
+
+	local backpackSlot = WindowData.PlayerEquipmentSlot[EquipmentData.EQPOS_BACKPACK]
+	if not backpackSlot then
+		return
+	end
+
+	local backpackId = backpackSlot.objectId
 	
 	if backpackId ~= 0 then
 		local itemData = {

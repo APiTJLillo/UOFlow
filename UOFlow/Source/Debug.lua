@@ -265,6 +265,206 @@ end
 
 UOWInstallLuaSpellWrappers()
 
+local UOWWalkDirectionMap = {
+	north = 0,
+	["north east"] = 1,
+	northeast = 1,
+	ne = 1,
+	east = 2,
+	["south east"] = 3,
+	southeast = 3,
+	se = 3,
+	south = 4,
+	["south west"] = 5,
+	southwest = 5,
+	sw = 5,
+	west = 6,
+	["north west"] = 7,
+	northwest = 7,
+	nw = 7,
+}
+
+local function UOWNormalizeWalkDirection(direction)
+	local numericDirection = tonumber(direction)
+	if numericDirection ~= nil then
+		numericDirection = math.floor(numericDirection)
+		if numericDirection >= 0 and numericDirection <= 7 then
+			return numericDirection
+		end
+		return nil
+	end
+
+	if type(direction) ~= "string" then
+		return nil
+	end
+
+	local key = string.lower(direction)
+	key = string.gsub(key, "_", " ")
+	key = string.gsub(key, "%s+", " ")
+	key = string.gsub(key, "^%s+", "")
+	key = string.gsub(key, "%s+$", "")
+	return UOWWalkDirectionMap[key]
+end
+
+local function UOWResolveLuaCallableWalkStep()
+	local dummyFn = UOWResolveDummyPrint()
+	if type(dummyFn) == "function" then
+		return dummyFn, "DummyPrintWalkTransport"
+	end
+
+	if type(UOWWalkStepPackedRaw) == "function" then
+		return UOWWalkStepPackedRaw, "UOWWalkStepPackedRaw"
+	end
+
+	if type(UOWWalkStepRaw) == "function" then
+		return UOWWalkStepRaw, "UOWWalkStepRaw"
+	end
+
+	if type(__uow_call_walk_v1) == "function" then
+		return __uow_call_walk_v1, "__uow_call_walk_v1"
+	end
+
+	if type(uow_vp_walk) == "function" then
+		return uow_vp_walk, "uow_vp_walk"
+	end
+
+	if type(uow_walk_step) == "function" then
+		return uow_walk_step, "uow_walk_step"
+	end
+
+	local globalTable = _G
+	if type(globalTable) == "table" then
+		local packedFn = rawget(globalTable, "UOWWalkStepPackedRaw")
+		if type(packedFn) == "function" then
+			return packedFn, "UOWWalkStepPackedRaw(_G)"
+		end
+		local rawFn = rawget(globalTable, "UOWWalkStepRaw")
+		if type(rawFn) == "function" then
+			return rawFn, "UOWWalkStepRaw(_G)"
+		end
+		local callFn = rawget(globalTable, "__uow_call_walk_v1")
+		if type(callFn) == "function" then
+			return callFn, "__uow_call_walk_v1(_G)"
+		end
+		local bridgeFn = rawget(globalTable, "uow_vp_walk")
+		if type(bridgeFn) == "function" then
+			return bridgeFn, "uow_vp_walk(_G)"
+		end
+		local stepFn = rawget(globalTable, "uow_walk_step")
+		if type(stepFn) == "function" then
+			return stepFn, "uow_walk_step(_G)"
+		end
+	end
+
+	return nil, nil
+end
+
+local function UOWWalkStepWrapper(direction, runFlag, sourceTag)
+	local numericDirection = UOWNormalizeWalkDirection(direction)
+	local numericRun = (runFlag == true or tonumber(runFlag) == 1) and 1 or 0
+	local walkSource = tostring(sourceTag or "lua_wrapper")
+
+	if numericDirection == nil then
+		UOWNativeLog("UOFlow.Walk.step invoked", "dir=", tostring(direction), "run=", tostring(numericRun), "source=", walkSource, "invalid_direction")
+		return false, "invalid_direction"
+	end
+
+	local walkFn, walkLabel = UOWResolveLuaCallableWalkStep()
+	if type(walkFn) ~= "function" then
+		UOWNativeLog("UOFlow.Walk.step invoked", "dir=", tostring(numericDirection), "run=", tostring(numericRun), "source=", walkSource, "helper_missing")
+		return false, "native_walk_missing"
+	end
+
+	UOWNativeLog("UOFlow.Walk.step invoked", "dir=", tostring(numericDirection), "run=", tostring(numericRun), "source=", walkSource, "helper=", tostring(walkLabel))
+
+	local ok = nil
+	local result = nil
+	local isDummyTransport = walkLabel == "DummyPrintWalkTransport"
+	local isPackedRaw = string.find(tostring(walkLabel), "UOWWalkStepPackedRaw", 1, true) ~= nil
+	local isRaw = isPackedRaw or string.find(tostring(walkLabel), "UOWWalkStepRaw", 1, true) ~= nil
+	if isDummyTransport then
+		ok = nil
+	elseif isPackedRaw then
+		ok = walkFn(numericDirection + numericRun * 256)
+	elseif isRaw then
+		ok = walkFn(numericDirection, numericRun)
+	else
+		ok, result = walkFn(numericDirection, numericRun, walkSource)
+	end
+
+	local success = (ok == true)
+	if not success and (isRaw or isDummyTransport) and ok == nil then
+		success = true
+	end
+
+	local message = result
+	if success and (message == nil or message == "") then
+		message = "queued"
+	elseif not success and (message == nil or message == "") then
+		message = "walk_failed"
+	end
+
+	UOWNativeLog(
+		"UOFlow.Walk.step result",
+		"dir=",
+		tostring(numericDirection),
+		"run=",
+		tostring(numericRun),
+		"helper=",
+		tostring(walkLabel),
+		"ok=",
+		tostring(success),
+		"msg=",
+		tostring(message),
+		"raw=",
+		tostring(ok))
+
+	if success then
+		return true, message
+	end
+
+	return false, message
+end
+
+local function UOWWalkWalkWrapper(direction, sourceTag)
+	return UOWWalkStepWrapper(direction, 0, sourceTag or "walk_wrapper")
+end
+
+local function UOWWalkRunWrapper(direction, sourceTag)
+	return UOWWalkStepWrapper(direction, 1, sourceTag or "run_wrapper")
+end
+
+function UOWInstallLuaMovementWrappers()
+	local globalTable = _G
+	if type(globalTable) ~= "table" then
+		return false
+	end
+
+	globalTable.UOFlow = type(globalTable.UOFlow) == "table" and globalTable.UOFlow or {}
+	globalTable.UOFlow.Walk = type(globalTable.UOFlow.Walk) == "table" and globalTable.UOFlow.Walk or {}
+	globalTable.UOW = type(globalTable.UOW) == "table" and globalTable.UOW or {}
+	globalTable.UOW.Walk = type(globalTable.UOW.Walk) == "table" and globalTable.UOW.Walk or {}
+	globalTable.uow = type(globalTable.uow) == "table" and globalTable.uow or {}
+	globalTable.uow.cmd = type(globalTable.uow.cmd) == "table" and globalTable.uow.cmd or {}
+
+	globalTable.UOFlow.Walk.step = UOWWalkStepWrapper
+	globalTable.UOFlow.Walk.walk = UOWWalkWalkWrapper
+	globalTable.UOFlow.Walk.run = UOWWalkRunWrapper
+	globalTable.UOFlow.Walk.move = UOWWalkStepWrapper
+	globalTable.UOW.Walk.step = UOWWalkStepWrapper
+	globalTable.UOW.Walk.walk = UOWWalkWalkWrapper
+	globalTable.UOW.Walk.run = UOWWalkRunWrapper
+	globalTable.UOW.Walk.move = UOWWalkStepWrapper
+	globalTable.uow.cmd.walk_step = UOWWalkStepWrapper
+	globalTable.uow.cmd.walk = UOWWalkWalkWrapper
+	globalTable.uow.cmd.run = UOWWalkRunWrapper
+	globalTable.uow.cmd.move = UOWWalkStepWrapper
+	globalTable.UOWLuaWalkStepWrapper = UOWWalkStepWrapper
+	return true
+end
+
+UOWInstallLuaMovementWrappers()
+
 
 local function uow_log(...)
 	UOWNativeLog(...)

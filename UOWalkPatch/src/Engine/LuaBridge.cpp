@@ -253,6 +253,9 @@ namespace {
     static std::atomic<int> g_pendingRawCastSpell{0};
     static std::atomic<uint32_t> g_pendingRawCastTarget{0};
     static std::atomic<int> g_pendingRawCastMode{0}; // 0=none, 1=spell, 2=spell_on_id
+    static std::atomic<int> g_pendingRawWalkDir{-1};
+    static std::atomic<int> g_pendingRawWalkRun{0};
+    static std::atomic<int> g_pendingRawWalkActive{0}; // 0=none, 1=walk queued
     static volatile LONG g_castSpellCalleeDumps = 0;
 
     struct CastSpellFrameBuffer {
@@ -537,6 +540,8 @@ static int __cdecl Lua_UOW_Debug_dump_spell_paths(lua_State* L);
 static int __cdecl Lua_UOW_Debug_log_LuaPlus(void);
 static int __stdcall Lua_UOW_CastSpell_Raw(void* raw);
 static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw);
+static int __stdcall Lua_UOW_WalkStepPacked_Raw(void* raw);
+static int __stdcall Lua_UOW_WalkStep_Raw(void* raw);
 static bool TryExtractLuaPlusStringArg(void* ctx, void* callbackTag, const char*& outValue);
 static bool TryExtractLuaPlusNumberArg(void* ctx, void* callbackTag, double& outValue);
 static bool TryExtractLuaPlusTwoNumberArgs(void* ctx, void* callbackTag, double& outFirst, double& outSecond);
@@ -604,6 +609,8 @@ static int __cdecl Lua_UserActionIsActionTypeTargetModeCompat_W(lua_State* L);
 static bool TryConsumePendingSpellRequest(lua_State* L, const char* sourceTag);
 static void QueuePendingRawCastRequest(int spellId, uint32_t targetId, bool useOnId, const char* sourceTag);
 static bool ConsumePendingRawCastRequest(const char* sourceTag);
+static void QueuePendingRawWalkRequest(int dir, bool run, const char* sourceTag);
+static bool ConsumePendingRawWalkRequest(const char* sourceTag);
 static int __cdecl Lua_RequestTargetInfo_W(lua_State* L);
 static int __cdecl Lua_ClearCurrentTarget_W(lua_State* L);
 static int __cdecl Lua_UserActionIsTargetModeCompat_W(lua_State* L);
@@ -625,15 +632,21 @@ static int __cdecl Lua_TextLogAddSingleByteEntry_W(lua_State* L);
 static int __cdecl Lua_uow_cast_spell_and_target(lua_State* L);
 static int __cdecl Lua_uow_spell_cast_global(lua_State* L);
 static int __cdecl Lua_uow_spell_cast_on_id_global(lua_State* L);
+static int __cdecl Lua_uow_walk_step_global(lua_State* L);
 static int __cdecl Lua_uow_get_native(lua_State* L);
 static int __cdecl Lua_uow_is_cfunc(lua_State* L);
 static int __cdecl Lua_uow_call_cast(lua_State* L);
+static int __cdecl Lua_uow_call_walk(lua_State* L);
 static int __cdecl Lua_uow_bridge_health(lua_State* L);
 static int __cdecl Lua_uow_vp_cast(lua_State* L);
 static int __cdecl Lua_uow_vp_cast_on_id(lua_State* L);
+static int __cdecl Lua_uow_vp_walk(lua_State* L);
 static int __cdecl Lua_uow_vp_ping(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast(lua_State* L);
 static int __cdecl Lua_UOFlow_Spell_cast_on_id(lua_State* L);
+static int __cdecl Lua_UOFlow_Walk_step(lua_State* L);
+static int __cdecl Lua_UOFlow_Walk_walk(lua_State* L);
+static int __cdecl Lua_UOFlow_Walk_run(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_commit_obj(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_commit_ground(lua_State* L);
 static int __cdecl Lua_UOFlow_Target_cancel(lua_State* L);
@@ -667,6 +680,12 @@ static bool ResolveGameplayScriptContext(lua_State* L,
 static void PromoteGameplayOwnerFromLiveCallback(const char* reason, lua_State* callbackL = nullptr);
 static void ProbeGameplayBindingBootstrap(lua_State* L, const char* reasonTag);
 static void EnsureDirectLuaGlobals(lua_State* L);
+static bool ExecuteWalkStepCommand(lua_State* L,
+                                   int dir,
+                                   bool run,
+                                   const char* tag,
+                                   const char* sourceTag,
+                                   std::string& outMsg);
 
 static uint32_t ReadOptionalUInt(lua_State* L, int idx, uint32_t def = 0)
 {
@@ -717,6 +736,29 @@ static void LogLuaCastEntry(const char* funcName,
               Util::OwnerPump::GetOwnerThreadId(),
               g_ownerThreadId.load(std::memory_order_relaxed),
               L,
+              g_ownerScriptContext.load(std::memory_order_relaxed),
+              (sourceTag && *sourceTag) ? sourceTag : "<none>");
+    WriteRawLog(buf);
+}
+
+static void LogLuaWalkEntry(const char* funcName,
+                            lua_State* L,
+                            int dir,
+                            bool run,
+                            const char* sourceTag)
+{
+    char buf[448];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[LuaWalkEntry] fn=%s dir=%d run=%d caller=%u owner=%u gameplay_owner=%u L=%p engineL=%p ctx=%p source=%s",
+              funcName ? funcName : "<unknown>",
+              dir,
+              run ? 1 : 0,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              g_ownerThreadId.load(std::memory_order_relaxed),
+              L,
+              Engine::LuaState(),
               g_ownerScriptContext.load(std::memory_order_relaxed),
               (sourceTag && *sourceTag) ? sourceTag : "<none>");
     WriteRawLog(buf);
@@ -1433,6 +1475,8 @@ static void LogWalkBindingState(lua_State* L, const char* stage)
 
     int walkType = LUA_TNONE;
     const void* walkPtr = nullptr;
+    int stepType = LUA_TNONE;
+    const void* stepPtr = nullptr;
     int moveType = LUA_TNONE;
     const void* movePtr = nullptr;
     int bindType = LUA_TNONE;
@@ -1444,6 +1488,13 @@ static void LogWalkBindingState(lua_State* L, const char* stage)
         walkType = lua_type(L, -1);
         if (walkType == LUA_TFUNCTION) {
             walkPtr = lua_topointer(L, -1);
+        }
+        lua_pop(L, 1);
+
+        lua_getglobal(L, "UOFlow.Walk.step");
+        stepType = lua_type(L, -1);
+        if (stepType == LUA_TFUNCTION) {
+            stepPtr = lua_topointer(L, -1);
         }
         lua_pop(L, 1);
 
@@ -1468,10 +1519,12 @@ static void LogWalkBindingState(lua_State* L, const char* stage)
     }
 
     char buf[256];
-    sprintf_s(buf, sizeof(buf), "%s: walk=%s%p nsMove=%s%p bindWalk=%s%p",
+    sprintf_s(buf, sizeof(buf), "%s: walk=%s%p nsStep=%s%p nsMove=%s%p bindWalk=%s%p",
         stage ? stage : "WalkBindingState",
         (walkType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, walkType),
         walkPtr,
+        (stepType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, stepType),
+        stepPtr,
         (moveType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, moveType),
         movePtr,
         (bindType == LUA_TFUNCTION) ? "fn@" : lua_typename(L, bindType),
@@ -4138,6 +4191,105 @@ static bool ConsumePendingRawCastRequest(const char* sourceTag)
     return ok;
 }
 
+static void QueuePendingRawWalkRequest(int dir, bool run, const char* sourceTag)
+{
+    g_pendingRawWalkDir.store(dir, std::memory_order_release);
+    g_pendingRawWalkRun.store(run ? 1 : 0, std::memory_order_release);
+    g_pendingRawWalkActive.store(1, std::memory_order_release);
+
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "[QueuedRawWalk] queued source=%s dir=%d run=%d caller=%u owner=%u",
+              sourceTag ? sourceTag : "<none>",
+              dir,
+              run ? 1 : 0,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId());
+    WriteRawLog(buf);
+
+    const bool shouldDispatchNow =
+        !(sourceTag && (std::strcmp(sourceTag, "retry_not_ready") == 0 ||
+                        std::strcmp(sourceTag, "owner_retry_not_ready") == 0));
+    if (shouldDispatchNow) {
+        Util::OwnerPump::Invoke("queued_raw_walk_dispatch", []() {
+            ConsumePendingRawWalkRequest("queue_immediate");
+        });
+    }
+}
+
+static bool ConsumePendingRawWalkRequest(const char* sourceTag)
+{
+    const int active = g_pendingRawWalkActive.exchange(0, std::memory_order_acq_rel);
+    if (active == 0)
+        return false;
+
+    const int dir = g_pendingRawWalkDir.load(std::memory_order_acquire);
+    const bool run = g_pendingRawWalkRun.load(std::memory_order_acquire) != 0;
+    const uint32_t callerTid = GetCurrentThreadId();
+    const uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+
+    char intro[256];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[QueuedRawWalk] consume source=%s dir=%d run=%d caller=%u owner=%u",
+              sourceTag ? sourceTag : "<none>",
+              dir,
+              run ? 1 : 0,
+              callerTid,
+              ownerTid);
+    WriteRawLog(intro);
+
+    auto attempt = [dir, run](const char* tag) {
+        std::string msg;
+        bool ok = Engine::SendWalkStep(dir, run ? 1 : 0, &msg);
+
+        char outro[256];
+        sprintf_s(outro,
+                  sizeof(outro),
+                  "[QueuedRawWalk] result source=%s dir=%d run=%d ok=%d msg=%s caller=%u owner=%u",
+                  tag ? tag : "<none>",
+                  dir,
+                  run ? 1 : 0,
+                  ok ? 1 : 0,
+                  msg.empty() ? "<none>" : msg.c_str(),
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId());
+        WriteRawLog(outro);
+
+        if (!ok && msg == "movement_not_ready") {
+            QueuePendingRawWalkRequest(dir, run, "retry_not_ready");
+        }
+    };
+
+    if (ownerTid != 0 && callerTid != ownerTid) {
+        Util::OwnerPump::Post("queued_raw_walk", [dir, run]() {
+            std::string msg;
+            bool ok = Engine::SendWalkStep(dir, run ? 1 : 0, &msg);
+
+            char outro[256];
+            sprintf_s(outro,
+                      sizeof(outro),
+                      "[QueuedRawWalk] owner result source=owner_pump dir=%d run=%d ok=%d msg=%s caller=%u owner=%u",
+                      dir,
+                      run ? 1 : 0,
+                      ok ? 1 : 0,
+                      msg.empty() ? "<none>" : msg.c_str(),
+                      GetCurrentThreadId(),
+                      Util::OwnerPump::GetOwnerThreadId());
+            WriteRawLog(outro);
+
+            if (!ok && msg == "movement_not_ready") {
+                QueuePendingRawWalkRequest(dir, run, "owner_retry_not_ready");
+            }
+        });
+        return true;
+    }
+
+    attempt(sourceTag);
+    return true;
+}
+
 static void UowTracePushSpell(int spell)
 {
     g_castSpellCurSpell.store(spell, std::memory_order_relaxed);
@@ -6110,16 +6262,20 @@ static void EnsureDirectLuaGlobals(lua_State* L)
         {Lua_uow_get_native, "__uow_native_get_v1"},
         {Lua_uow_is_cfunc, "__uow_is_cfunc_v1"},
         {Lua_uow_call_cast, "__uow_call_cast_v1"},
+        {Lua_uow_call_walk, "__uow_call_walk_v1"},
         {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_cast_on_id, "__uow_vp_cast_on_id_v1"},
+        {Lua_uow_vp_walk, "__uow_vp_walk_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
         {Lua_UOW_Log_test, "__uow_log_test_v1"},
         {Lua_uow_spell_cast_global, "uow_spell_cast"},
         {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
+        {Lua_uow_walk_step_global, "uow_walk_step"},
         {Lua_uow_get_native, "uow_get_native"},
         {Lua_uow_vp_cast, "uow_vp_cast"},
         {Lua_uow_vp_cast_on_id, "uow_vp_cast_on_id"},
+        {Lua_uow_vp_walk, "uow_vp_walk"},
         {Lua_uow_vp_ping, "uow_vp_ping"},
         {Lua_UOW_Log_test, "Debug.LogTest"},
         {Lua_UOW_Debug_dump_spell_paths, "uow_dump_spell_paths"},
@@ -6179,33 +6335,39 @@ static void TryInstallEvaluatorProbeBindings(void* ctx, const char* reason)
     bool dummyOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_DummyPrint_Std), "DummyPrint");
     bool castOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_CastSpell_Raw), "UOWCastSpellRaw");
     bool castOnIdOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_CastSpellOnId_Raw), "UOWCastSpellOnIdRaw");
+    bool walkPackedOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_WalkStepPacked_Raw), "UOWWalkStepPackedRaw");
+    bool walkOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_WalkStep_Raw), "UOWWalkStepRaw");
     bool pumpOk = RegisterRawViaContext(ctx, reinterpret_cast<void*>(Lua_UOW_PumpQueuedRawCasts_Raw), "UOWPumpQueuedRawCasts");
 
-    if (dummyOk && castOk && castOnIdOk && pumpOk) {
+    if (dummyOk && castOk && castOnIdOk && walkPackedOk && walkOk && pumpOk) {
         slot->flags |= kCtxEvaluatorProbesBound;
-        char okBuf[320];
+        char okBuf[352];
         sprintf_s(okBuf,
                   sizeof(okBuf),
-                  "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s pump=%s",
+                  "[EvaluatorBind] ready ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s walk_packed=%s walk=%s pump=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
                   "disabled",
                   "disabled",
                   castOk ? "yes" : "no",
                   castOnIdOk ? "yes" : "no",
+                  walkPackedOk ? "yes" : "no",
+                  walkOk ? "yes" : "no",
                   pumpOk ? "yes" : "no");
         WriteRawLog(okBuf);
     } else {
-        char failBuf[320];
+        char failBuf[352];
         sprintf_s(failBuf,
                   sizeof(failBuf),
-                  "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s pump=%s",
+                  "[EvaluatorBind] deferred ctx=%p dummy=%s debug=%s logtest=%s cast=%s cast_on_id=%s walk_packed=%s walk=%s pump=%s",
                   ctx,
                   dummyOk ? "yes" : "no",
                   "disabled",
                   "disabled",
                   castOk ? "yes" : "no",
                   castOnIdOk ? "yes" : "no",
+                  walkPackedOk ? "yes" : "no",
+                  walkOk ? "yes" : "no",
                   pumpOk ? "yes" : "no");
         WriteRawLog(failBuf);
     }
@@ -6288,7 +6450,7 @@ static void ForceWalkBinding(lua_State* L, const char* reason)
 
     InterlockedExchange(&g_pendingRegistration, 0);
 
-    const void* desiredPtr = reinterpret_cast<const void*>(Lua_Walk);
+    const void* desiredPtr = reinterpret_cast<const void*>(Lua_UOFlow_Walk_step);
     const char* tag = reason ? reason : "EnsureWalkBinding";
 
     char stateBuf[160];
@@ -6296,20 +6458,14 @@ static void ForceWalkBinding(lua_State* L, const char* reason)
     LogWalkBindingState(L, stateBuf);
 
     char buf[224];
-    sprintf_s(buf, sizeof(buf), "%s: ensuring UOFlow.Walk.move binding via client helper (Lua_Walk=%p ctx=%p)",
+    sprintf_s(buf, sizeof(buf), "%s: preserving Lua-owned walk wrappers (Lua_Walk=%p ctx=%p)",
         tag,
         desiredPtr,
         g_clientContext);
     WriteRawLog(buf);
 
-    bool helperOk = RegisterViaClient(L, Lua_Walk, "UOFlow.Walk.move");
-    if (helperOk) {
-        WriteRawLog("ForceWalkBinding: client helper ensured UOFlow.Walk.move successfully");
-    } else {
-        WriteRawLog("ForceWalkBinding: client helper failed for UOFlow.Walk.move");
-    }
-
-    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), nullptr);
+    WriteRawLog("ForceWalkBinding: UOFlow.Walk.* / uow.cmd.walk* are Lua wrapper owned");
+    InstallUOFlowConsoleBindingsIfNeeded(CanonicalOwnerContext(), nullptr, L);
 
     sprintf_s(stateBuf, sizeof(stateBuf), "%s post-bind", tag);
     LogWalkBindingState(L, stateBuf);
@@ -6769,13 +6925,16 @@ static int __stdcall Hook_Register(void* ctx, void* func, const char* name)
         MaybeWrapLateCastFromRegister(ctx, name);
 
     uintptr_t walkInt = reinterpret_cast<uintptr_t>(&Lua_Walk);
+    uintptr_t stepInt = reinterpret_cast<uintptr_t>(&Lua_UOFlow_Walk_step);
     uintptr_t bindInt = reinterpret_cast<uintptr_t>(&Lua_BindWalk);
     void* walkPtr = reinterpret_cast<void*>(walkInt);
+    void* stepPtr = reinterpret_cast<void*>(stepInt);
     void* bindPtr = reinterpret_cast<void*>(bindInt);
     if (name && ctx) {
-        if (_stricmp(name, "UOFlow.Walk.move") == 0 && func == walkPtr) {
+        if (((_stricmp(name, "UOFlow.Walk.move") == 0) && func == walkPtr) ||
+            ((_stricmp(name, "UOFlow.Walk.step") == 0) && func == stepPtr)) {
             if (auto L2 = static_cast<lua_State*>(Engine::LuaState())) {
-                LogWalkBindingState(L2, "Hook_Register post-UOFlow.Walk.move");
+                LogWalkBindingState(L2, "Hook_Register post-UOFlow.Walk");
             }
             InstallUOFlowConsoleBindingsIfNeeded(ctx, "register_hook");
         } else if (_stricmp(name, "bindWalk") == 0 && func == bindPtr) {
@@ -6798,6 +6957,106 @@ static int __cdecl Lua_DummyPrint(lua_State*)
 {
     WriteRawLog("[Lua] DummyPrint() was invoked!");
     return 0;
+}
+
+static bool TryParseDummyPrintWalkRequest(const char* text,
+                                          int& outDir,
+                                          bool& outRun,
+                                          std::string& outSource)
+{
+    outDir = -1;
+    outRun = false;
+    outSource.clear();
+
+    if (!text)
+        return false;
+
+    static const char kPrefix[] = "__uow_walk_request_v1|";
+    const size_t prefixLen = sizeof(kPrefix) - 1;
+    if (std::strncmp(text, kPrefix, prefixLen) != 0)
+        return false;
+
+    const char* cursor = text + prefixLen;
+    char* end = nullptr;
+
+    const long dirValue = std::strtol(cursor, &end, 10);
+    if (end == cursor || !end || *end != '|')
+        return false;
+    cursor = end + 1;
+
+    const long runValue = std::strtol(cursor, &end, 10);
+    if (end == cursor || !end)
+        return false;
+
+    if (*end == '|') {
+        outSource.assign(end + 1);
+    } else if (*end != '\0') {
+        return false;
+    }
+
+    if (dirValue < 0 || dirValue > 7)
+        return false;
+
+    outDir = static_cast<int>(dirValue);
+    outRun = (runValue != 0);
+    return true;
+}
+
+static bool TryParseDummyPrintWalkLogTransport(const char* text,
+                                               int& outDir,
+                                               bool& outRun,
+                                               std::string& outSource)
+{
+    outDir = -1;
+    outRun = false;
+    outSource.clear();
+
+    if (!text)
+        return false;
+
+    static const char kPrefix[] = "UOFlow.Walk.step invoked dir= ";
+    const size_t prefixLen = sizeof(kPrefix) - 1;
+    if (std::strncmp(text, kPrefix, prefixLen) != 0)
+        return false;
+
+    const char* cursor = text + prefixLen;
+    char* end = nullptr;
+
+    const long dirValue = std::strtol(cursor, &end, 10);
+    if (end == cursor || !end)
+        return false;
+
+    static const char kRunMarker[] = " run= ";
+    if (std::strncmp(end, kRunMarker, sizeof(kRunMarker) - 1) != 0)
+        return false;
+    cursor = end + sizeof(kRunMarker) - 1;
+
+    const long runValue = std::strtol(cursor, &end, 10);
+    if (end == cursor || !end)
+        return false;
+
+    static const char kSourceMarker[] = " source= ";
+    if (std::strncmp(end, kSourceMarker, sizeof(kSourceMarker) - 1) != 0)
+        return false;
+    cursor = end + sizeof(kSourceMarker) - 1;
+
+    static const char kHelperMarker[] = " helper= ";
+    const char* helperPos = std::strstr(cursor, kHelperMarker);
+    if (!helperPos)
+        return false;
+
+    outSource.assign(cursor, helperPos - cursor);
+
+    const char* helperValue = helperPos + sizeof(kHelperMarker) - 1;
+    if (std::strcmp(helperValue, "DummyPrintWalkTransport") != 0)
+        return false;
+
+    if (dirValue < 0 || dirValue > 7)
+        return false;
+
+    outDir = static_cast<int>(dirValue);
+    outRun = (runValue != 0);
+    return true;
 }
 
 static int __stdcall Lua_DummyPrint_Std(void* L)
@@ -6834,28 +7093,236 @@ static int __stdcall Lua_DummyPrint_Std(void* L)
     }
 
     WriteRawLog(msg.c_str());
+
+    int walkDir = -1;
+    bool walkRun = false;
+    std::string walkSource;
+    if (extracted && text &&
+        (TryParseDummyPrintWalkRequest(text, walkDir, walkRun, walkSource) ||
+         TryParseDummyPrintWalkLogTransport(text, walkDir, walkRun, walkSource))) {
+        char walkBuf[320];
+        sprintf_s(walkBuf,
+                  sizeof(walkBuf),
+                  "[LuaPlusWalk] DummyPrint transport invoked raw=%p caller=%u owner=%u ctx=%p dir=%d run=%d mode=%d source=%s",
+                  L,
+                  GetCurrentThreadId(),
+                  Util::OwnerPump::GetOwnerThreadId(),
+                  ctx,
+                  walkDir,
+                  walkRun ? 1 : 0,
+                  walkRun ? 2 : 1,
+                  walkSource.empty() ? "<none>" : walkSource.c_str());
+        WriteRawLog(walkBuf);
+        QueuePendingRawWalkRequest(
+            walkDir,
+            walkRun,
+            walkSource.empty() ? "DummyPrintWalkTransport" : walkSource.c_str());
+    }
+
     return 0;
 }
 
 static int __cdecl Lua_Walk(lua_State* L)
 {
-    int dir = 0;
-    int run = 0;
-    if (L) {
-        int top = lua_gettop(L);
-        if (top >= 1)
-            dir = static_cast<int>(lua_tointeger(L, 1));
-        if (top >= 2)
-            run = lua_toboolean(L, 2) ? 1 : 0;
-    }
-    char buf[128];
-    sprintf_s(buf, sizeof(buf), "Lua_Walk invoked dir=%d run=%d", dir, run);
-    WriteRawLog(buf);
+    WriteRawLog("[Lua] Lua_Walk compatibility alias -> UOFlow.Walk.step");
+    return Lua_UOFlow_Walk_step(L);
+}
 
-    bool ok = SendWalk(dir, run);
-    WriteRawLog(ok ? "Lua_Walk -> walk enqueued" : "Lua_Walk -> walk failed");
-    lua_pushboolean(L, ok ? 1 : 0);
-    return 1;
+static bool ExecuteWalkStepCommand(lua_State* L,
+                                   int dir,
+                                   bool run,
+                                   const char* tag,
+                                   const char* sourceTag,
+                                   std::string& outMsg)
+{
+    LogLuaWalkEntry(tag, L, dir, run, sourceTag);
+
+    if (L) {
+        if (!Engine::LuaState())
+            Engine::ReportLuaState(L);
+        PromoteGameplayOwnerFromLiveCallback(tag ? tag : "walk_step", L);
+        ProbeGameplayBindingBootstrap(L, tag ? tag : "walk_step");
+    }
+
+    char intro[320];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[Lua] %s invoked dir=%d run=%d caller=%u owner=%u L=%p engineL=%p source=%s",
+              tag ? tag : "walk_step",
+              dir,
+              run ? 1 : 0,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L,
+              Engine::LuaState(),
+              (sourceTag && *sourceTag) ? sourceTag : "<none>");
+    WriteRawLog(intro);
+
+    char rawIntro[320];
+    sprintf_s(rawIntro,
+              sizeof(rawIntro),
+              "[Lua] UOWWalkStepRaw invoked dir=%d run=%d caller=%u owner=%u L=%p engineL=%p ctx=%p source=%s",
+              dir,
+              run ? 1 : 0,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L,
+              Engine::LuaState(),
+              g_ownerScriptContext.load(std::memory_order_relaxed),
+              (sourceTag && *sourceTag) ? sourceTag : "<none>");
+    WriteRawLog(rawIntro);
+
+    bool ok = Engine::SendWalkStep(dir, run ? 1 : 0, &outMsg);
+    if (outMsg.empty())
+        outMsg = ok ? "queued" : "walk_failed";
+
+    char outro[352];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[Lua] %s result ok=%d msg=%s caller=%u owner=%u L=%p engineL=%p",
+              tag ? tag : "walk_step",
+              ok ? 1 : 0,
+              outMsg.c_str(),
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L,
+              Engine::LuaState());
+    WriteRawLog(outro);
+    return ok;
+}
+
+static int __cdecl Lua_uow_walk_step_global(lua_State* L)
+{
+    int dir = -1;
+    bool run = false;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        dir = static_cast<int>(lua_tointeger(L, 1));
+    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
+        run = lua_tointeger(L, 2) != 0;
+    const std::string sourceTag = ReadOptionalString(L, 3);
+
+    std::string msg;
+    bool ok = ExecuteWalkStepCommand(L, dir, run, "uow_walk_step", sourceTag.c_str(), msg);
+    return PushLuaCommandResult(L, ok, msg);
+}
+
+static int __cdecl Lua_uow_vp_walk(lua_State* L)
+{
+    int dir = -1;
+    bool run = false;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        dir = static_cast<int>(lua_tointeger(L, 1));
+    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
+        run = lua_tointeger(L, 2) != 0;
+    const std::string sourceTag = ReadOptionalString(L, 3);
+
+    char intro[320];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[Lua] BRIDGE_V1 vp_walk invoked dir=%d run=%d caller=%u owner=%u L=%p source=%s",
+              dir,
+              run ? 1 : 0,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L,
+              sourceTag.empty() ? "<none>" : sourceTag.c_str());
+    WriteRawLog(intro);
+
+    std::string msg;
+    bool ok = ExecuteWalkStepCommand(L, dir, run, "uow_vp_walk", sourceTag.c_str(), msg);
+    return PushLuaCommandResult(L, ok, msg);
+}
+
+static int __cdecl Lua_uow_call_walk(lua_State* L)
+{
+    int dir = -1;
+    bool run = false;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        dir = static_cast<int>(lua_tointeger(L, 1));
+    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
+        run = lua_tointeger(L, 2) != 0;
+    const std::string sourceTag = ReadOptionalString(L, 3);
+
+    char enter[320];
+    sprintf_s(enter,
+              sizeof(enter),
+              "[Lua] CALL_WALK_V1 invoked dir=%d run=%d caller=%u owner=%u L=%p source=%s",
+              dir,
+              run ? 1 : 0,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L,
+              sourceTag.empty() ? "<none>" : sourceTag.c_str());
+    WriteRawLog(enter);
+    LogLuaWalkEntry("__uow_call_walk_v1", L, dir, run, sourceTag.c_str());
+
+    int resultCount = Lua_uow_vp_walk(L);
+    bool ok = false;
+    std::string msg;
+    if (L && resultCount >= 2) {
+        const int top = lua_gettop(L);
+        const int okIndex = top - resultCount + 1;
+        const int msgIndex = top - resultCount + 2;
+        ok = lua_toboolean(L, okIndex) != 0;
+        size_t msgLen = 0;
+        const char* rawMsg = lua_tolstring(L, msgIndex, &msgLen);
+        if (rawMsg && msgLen)
+            msg.assign(rawMsg, msgLen);
+    }
+
+    char outro[320];
+    sprintf_s(outro,
+              sizeof(outro),
+              "[Lua] CALL_WALK_V1 result ok=%d msg=%s caller=%u owner=%u L=%p",
+              ok ? 1 : 0,
+              msg.empty() ? "<none>" : msg.c_str(),
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              L);
+    WriteRawLog(outro);
+    return resultCount;
+}
+
+static int __cdecl Lua_UOFlow_Walk_step(lua_State* L)
+{
+    int dir = -1;
+    bool run = false;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        dir = static_cast<int>(lua_tointeger(L, 1));
+    if (L && lua_gettop(L) >= 2 && lua_type(L, 2) == LUA_TNUMBER)
+        run = lua_tointeger(L, 2) != 0;
+    const std::string sourceTag = ReadOptionalString(L, 3);
+
+    std::string msg;
+    bool ok = ExecuteWalkStepCommand(L, dir, run, "UOFlow.Walk.step", sourceTag.c_str(), msg);
+    LogUOFlowStatus("UOFlow.Walk.step", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
+}
+
+static int __cdecl Lua_UOFlow_Walk_walk(lua_State* L)
+{
+    int dir = -1;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        dir = static_cast<int>(lua_tointeger(L, 1));
+    const std::string sourceTag = ReadOptionalString(L, 2);
+
+    std::string msg;
+    bool ok = ExecuteWalkStepCommand(L, dir, false, "UOFlow.Walk.walk", sourceTag.c_str(), msg);
+    LogUOFlowStatus("UOFlow.Walk.walk", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
+}
+
+static int __cdecl Lua_UOFlow_Walk_run(lua_State* L)
+{
+    int dir = -1;
+    if (L && lua_gettop(L) >= 1 && lua_type(L, 1) == LUA_TNUMBER)
+        dir = static_cast<int>(lua_tointeger(L, 1));
+    const std::string sourceTag = ReadOptionalString(L, 2);
+
+    std::string msg;
+    bool ok = ExecuteWalkStepCommand(L, dir, true, "UOFlow.Walk.run", sourceTag.c_str(), msg);
+    LogUOFlowStatus("UOFlow.Walk.run", ok, msg);
+    return PushLuaCommandResult(L, ok, msg);
 }
 
 static int __cdecl Lua_UOW_Spell_Cast(lua_State* L)
@@ -7643,12 +8110,16 @@ static bool InstallUOFlowConsoleBindingsIfNeeded(void* ownerCtx,
         {Lua_uow_get_native, "__uow_native_get_v1"},
         {Lua_uow_is_cfunc, "__uow_is_cfunc_v1"},
         {Lua_uow_call_cast, "__uow_call_cast_v1"},
+        {Lua_uow_call_walk, "__uow_call_walk_v1"},
         {Lua_uow_bridge_health, "__uow_bridge_health_v1"},
         {Lua_uow_vp_cast, "__uow_vp_cast_v1"},
         {Lua_uow_vp_cast_on_id, "__uow_vp_cast_on_id_v1"},
+        {Lua_uow_vp_walk, "__uow_vp_walk_v1"},
         {Lua_uow_vp_ping, "__uow_vp_ping_v1"},
         {Lua_UOW_Log_test, "__uow_log_test_v1"},
         {Lua_UOFlow_bootstrap, "uow.bootstrap"},
+        {Lua_uow_walk_step_global, "uow_walk_step"},
+        {Lua_uow_vp_walk, "uow_vp_walk"},
         {Lua_UOFlow_Spell_cast_on_id, "uow.cmd.cast_on_id"},
         {Lua_uow_spell_cast_global, "uow_spell_cast"},
         {Lua_uow_spell_cast_on_id_global, "uow_spell_cast_on_id"},
@@ -9518,6 +9989,87 @@ static int __stdcall Lua_UOW_CastSpellOnId_Raw(void* raw)
     return 0;
 }
 
+static int __stdcall Lua_UOW_WalkStepPacked_Raw(void* raw)
+{
+    void* ctx = CurrentScriptContext();
+    if (!ctx)
+        ctx = g_clientContext;
+
+    double packedNumber = 0.0;
+    const bool extracted = TryExtractLuaPlusNumberArg(
+        ctx,
+        reinterpret_cast<void*>(&Lua_UOW_WalkStepPacked_Raw),
+        packedNumber);
+
+    const uint32_t packed = extracted ? static_cast<uint32_t>(packedNumber) : 0u;
+    const int dir = extracted ? static_cast<int>(packed & 0xFFu) : -1;
+    const bool run = extracted && ((packed >> 8) & 0x1u) != 0;
+
+    char intro[320];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[LuaPlusWalk] UOWWalkStepPackedRaw invoked raw=%p caller=%u owner=%u ctx=%p extracted=%s packed=%u dir=%d run=%d",
+              raw,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              ctx,
+              extracted ? "yes" : "no",
+              packed,
+              dir,
+              run ? 1 : 0);
+    WriteRawLog(intro);
+
+    if (extracted && dir >= 0 && dir <= 7) {
+        QueuePendingRawWalkRequest(dir, run, "UOWWalkStepPackedRaw");
+    } else {
+        WriteRawLog(extracted ? "[LuaPlusWalk] UOWWalkStepPackedRaw queue skipped invalid_direction"
+                              : "[LuaPlusWalk] UOWWalkStepPackedRaw queue skipped arg_extract_failed");
+    }
+
+    WriteRawLog("[LuaPlusWalk] UOWWalkStepPackedRaw queued and returning no values");
+    return 0;
+}
+
+static int __stdcall Lua_UOW_WalkStep_Raw(void* raw)
+{
+    void* ctx = CurrentScriptContext();
+    if (!ctx)
+        ctx = g_clientContext;
+
+    double dirNumber = 0.0;
+    double runNumber = 0.0;
+    const bool extracted = TryExtractLuaPlusTwoNumberArgs(
+        ctx,
+        reinterpret_cast<void*>(&Lua_UOW_WalkStep_Raw),
+        dirNumber,
+        runNumber);
+    const int dir = extracted ? static_cast<int>(dirNumber) : -1;
+    const bool run = extracted && runNumber != 0.0;
+
+    char intro[320];
+    sprintf_s(intro,
+              sizeof(intro),
+              "[LuaPlusWalk] UOWWalkStepRaw invoked raw=%p caller=%u owner=%u ctx=%p extracted=%s dir=%d run=%d",
+              raw,
+              GetCurrentThreadId(),
+              Util::OwnerPump::GetOwnerThreadId(),
+              ctx,
+              extracted ? "yes" : "no",
+              dir,
+              run ? 1 : 0);
+    WriteRawLog(intro);
+
+    if (extracted && dir >= 0 && dir <= 7) {
+        QueuePendingRawWalkRequest(dir, run, "UOWWalkStepRaw");
+    } else {
+        WriteRawLog(extracted ? "[LuaPlusWalk] UOWWalkStepRaw queue skipped invalid_direction"
+                              : "[LuaPlusWalk] UOWWalkStepRaw queue skipped arg_extract_failed");
+    }
+
+    WriteRawLog("[LuaPlusWalk] UOWWalkStepRaw queued and returning no values");
+    return 0;
+}
+
 static int __stdcall Lua_UOW_PumpQueuedRawCasts_Raw(void* raw)
 {
     (void)raw;
@@ -9529,6 +10081,7 @@ static int __stdcall Lua_UOW_PumpQueuedRawCasts_Raw(void* raw)
               Util::OwnerPump::GetOwnerThreadId());
     WriteRawLog(intro);
     ConsumePendingRawCastRequest("raw_pump_helper");
+    ConsumePendingRawWalkRequest("raw_pump_helper");
     WriteRawLog("[LuaPlusCast] UOWPumpQueuedRawCasts returning no values");
     return 0;
 }
@@ -11227,6 +11780,11 @@ static void MaybeLogLiveSpellBindings(lua_State* L, const char* tag, DWORD minIn
     WriteRawLog(envBuf);
 
     LogSpellHelperBindings(L, tag ? tag : "live");
+    LogLuaFunctionBinding(L, tag ? tag : "live", "UOWWalkStepPackedRaw");
+    LogLuaFunctionBinding(L, tag ? tag : "live", "UOWWalkStepRaw");
+    LogLuaFunctionBinding(L, tag ? tag : "live", "__uow_call_walk_v1");
+    LogLuaFunctionBinding(L, tag ? tag : "live", "uow_vp_walk");
+    LogLuaFunctionBinding(L, tag ? tag : "live", "uow_walk_step");
     LogLuaFunctionBinding(L, tag ? tag : "live", "UserActionCastSpell");
     LogLuaFunctionBinding(L, tag ? tag : "live", "UserActionCastSpellOnId");
     LogLuaFunctionBinding(L, tag ? tag : "live", "uow_debug_log");
@@ -11898,12 +12456,14 @@ bool InitLuaBridge()
 void PollQueuedRawCasts()
 {
     ConsumePendingRawCastRequest("poller_raw");
+    ConsumePendingRawWalkRequest("poller_raw");
 }
 
 void PollLateInstalls()
 {
     Util::OwnerPump::DrainOnOwnerThread();
     ConsumePendingRawCastRequest("poller");
+    ConsumePendingRawWalkRequest("poller");
     static DWORD s_lastTryTick = 0;
     DWORD now = GetTickCount();
     const uint32_t bootstrapState = g_bootstrapState.load(std::memory_order_acquire);

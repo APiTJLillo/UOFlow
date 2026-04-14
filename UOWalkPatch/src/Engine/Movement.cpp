@@ -25,7 +25,7 @@ struct Vec3 { int16_t x, y; int8_t z; };
 static void* g_moveComp = nullptr; // movement component instance
 static void* g_moveCandidate = nullptr;
 static void* g_dest = nullptr;     // last destination vector
-using UpdateState_t = uint32_t(__thiscall*)(void*, void*, uint32_t, int);
+using UpdateState_t = uint32_t(__stdcall*)(void*, uint32_t, int);
 static UpdateState_t g_updateState = nullptr;
 static UpdateState_t g_origUpdate = nullptr;
 static volatile LONG g_haveMoveComp = 0;
@@ -48,6 +48,11 @@ static constexpr size_t kDestCopySize = 0x40;
 static constexpr int kPtrDiffLogLimit = 128;
 static constexpr int kIndexSampleLimit = 32;
 static constexpr size_t kQueueEntrySize = 0x10;
+static constexpr uintptr_t kMoveControllerVtableRva = 0x008BA9DC;
+static constexpr uintptr_t kMoveControllerVtableAltRva = 0x008BA9C0;
+static constexpr uintptr_t kMoveControllerGlobalRva = 0x00A3D524;
+static constexpr uintptr_t kGameplayRootRva = 0x00A1A17C;
+static constexpr uintptr_t kResolveMoveHelperRva = 0x001C2230;
 struct MovementTracker {
     void* instance;
     Vec3 lastDest;
@@ -134,6 +139,20 @@ static void DumpMemorySafe(const char* label, void* addr, size_t len)
     }
 }
 
+static uint8_t ReadUInt8Safe(void* base, ptrdiff_t offset)
+{
+    if (!base)
+        return 0;
+    uint8_t value = 0;
+    __try {
+        value = *reinterpret_cast<uint8_t*>(static_cast<uint8_t*>(base) + offset);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        value = 0;
+    }
+    return value;
+}
+
 static float AsFloat(uint32_t v)
 {
     float f;
@@ -170,6 +189,53 @@ static void LogQueueEntry(const char* label, const uint8_t* data, size_t len = k
 }
 
 static bool CopyMemorySafe(const void* src, void* dst, size_t len);
+static uintptr_t ExpectedMoveControllerVtable()
+{
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi)))
+        return 0;
+    return reinterpret_cast<uintptr_t>(mi.lpBaseOfDll) + kMoveControllerVtableRva;
+}
+
+static uintptr_t AlternateMoveControllerVtable()
+{
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi)))
+        return 0;
+    return reinterpret_cast<uintptr_t>(mi.lpBaseOfDll) + kMoveControllerVtableAltRva;
+}
+
+static bool IsMovementComponentPlausible(void* component)
+{
+    if (!component)
+        return false;
+
+    const uintptr_t expectedVtable = ExpectedMoveControllerVtable();
+    const uintptr_t alternateVtable = AlternateMoveControllerVtable();
+    const uintptr_t actualVtable = ReadPointerSafe(component, 0x00);
+    if (!expectedVtable ||
+        (actualVtable != expectedVtable && actualVtable != alternateVtable))
+        return false;
+
+    const uint32_t dirNow = ReadUInt32Safe(component, 0x5C);
+    const uint32_t dirPrev = ReadUInt32Safe(component, 0x60);
+    const uint32_t desired = ReadUInt32Safe(component, 0x64);
+    return dirNow <= 8 && dirPrev <= 8 && desired <= 8;
+}
+
+static int CaptureSehInfo(EXCEPTION_POINTERS* ep,
+                          DWORD* outCode,
+                          void** outAddress,
+                          CONTEXT* outContext)
+{
+    if (outCode)
+        *outCode = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
+    if (outAddress)
+        *outAddress = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+    if (outContext && ep && ep->ContextRecord)
+        *outContext = *ep->ContextRecord;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
 
 static void LogMovementVtable(void* thisPtr)
 {
@@ -191,6 +257,36 @@ static void LogMovementVtable(void* thisPtr)
     }
 }
 
+static void LogMovementState(const char* tag, void* component)
+{
+    if (!tag)
+        tag = "MoveState";
+
+    if (!component) {
+        Logf("%s: component unavailable", tag);
+        return;
+    }
+
+    Logf("%s: comp=%p vt=%p cur=%u prev=%u desired=%u mode=%u prevMode=%u flags={79:%u 7A:%u 7B:%u 9C:%u} pending={list:%u queued:%u} target=%u pos={%.3f %.3f}",
+         tag,
+         component,
+         reinterpret_cast<void*>(ReadPointerSafe(component, 0x00)),
+         ReadUInt32Safe(component, 0x5C),
+         ReadUInt32Safe(component, 0x60),
+         ReadUInt32Safe(component, 0x64),
+         ReadUInt32Safe(component, 0x70),
+         ReadUInt32Safe(component, 0x74),
+         static_cast<unsigned>(ReadUInt8Safe(component, 0x79)),
+         static_cast<unsigned>(ReadUInt8Safe(component, 0x7A)),
+         static_cast<unsigned>(ReadUInt8Safe(component, 0x7B)),
+         static_cast<unsigned>(ReadUInt8Safe(component, 0x9C)),
+         ReadUInt32Safe(component, 0x1C),
+         ReadUInt32Safe(component, 0x98),
+         ReadUInt32Safe(component, 0xAC),
+         AsFloat(ReadUInt32Safe(component, 0x68)),
+         AsFloat(ReadUInt32Safe(component, 0x6C)));
+}
+
 static void LogQueueState(const char* tag)
 {
     if (!tag)
@@ -201,38 +297,16 @@ static void LogQueueState(const char* tag)
         return;
     }
 
-    uintptr_t queuePtr = ReadPointerSafe(g_moveComp, 0x08);
-    if (!queuePtr) {
-        Logf("%s: queue pointer unavailable (component=%p)", tag, g_moveComp);
-        return;
-    }
-
-    uint8_t snapshot[kDestCopySize]{};
-    if (!CopyMemorySafe(reinterpret_cast<void*>(queuePtr), snapshot, sizeof(snapshot))) {
-        Logf("%s: failed to snapshot queue state @ %p", tag, reinterpret_cast<void*>(queuePtr));
-        return;
-    }
-
-    uint32_t head = 0;
-    uint32_t tail = 0;
-    uint32_t count = 0;
-    std::memcpy(&head, snapshot + 0x10, sizeof(head));
-    std::memcpy(&tail, snapshot + 0x14, sizeof(tail));
-    std::memcpy(&count, snapshot + 0x2C, sizeof(count));
-
-    Logf("%s: queue=%p head=%u tail=%u count=%u", tag, reinterpret_cast<void*>(queuePtr), head, tail, count);
-
-    if (0x20 + kQueueEntrySize <= kDestCopySize) {
-        char label[96];
-        sprintf_s(label, sizeof(label), "%s head entry", tag);
-        LogQueueEntry(label, snapshot + 0x20);
-    }
-
-    if (0x30 + kQueueEntrySize <= kDestCopySize) {
-        char label[96];
-        sprintf_s(label, sizeof(label), "%s tail entry", tag);
-        LogQueueEntry(label, snapshot + 0x30);
-    }
+    Logf("%s: queueFields primary={head:%u tail:%u cap:%u count:%u} secondary={head:%u tail:%u cap:%u count:%u}",
+         tag,
+         ReadUInt32Safe(g_moveComp, 0x10),
+         ReadUInt32Safe(g_moveComp, 0x14),
+         ReadUInt32Safe(g_moveComp, 0x18),
+         ReadUInt32Safe(g_moveComp, 0x1C),
+         ReadUInt32Safe(g_moveComp, 0x8C),
+         ReadUInt32Safe(g_moveComp, 0x90),
+         ReadUInt32Safe(g_moveComp, 0x94),
+         ReadUInt32Safe(g_moveComp, 0x98));
 }
 
 static bool EnqueueViaUpdate(int dir, bool shouldRun, int stepScale)
@@ -263,7 +337,7 @@ static bool EnqueueViaUpdate(int dir, bool shouldRun, int stepScale)
               "SendWalk before enqueue (dir=%d run=%d)", dir, shouldRun ? 1 : 0);
     LogQueueState(beforeTag);
 
-    g_origUpdate(g_moveComp, scratch, static_cast<uint32_t>(dir), shouldRun ? 1 : 0);
+    g_origUpdate(g_moveComp, static_cast<uint32_t>(dir), shouldRun ? 2 : 1);
 
     char afterTag[64];
     sprintf_s(afterTag, sizeof(afterTag),
@@ -312,7 +386,86 @@ static bool CopyMemorySafe(const void* src, void* dst, size_t len)
 }
 
 static void FindMoveComponent();
-static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr, uint32_t dir, int runFlag);
+static uint32_t __stdcall H_Update(void* thisPtr, uint32_t dir, int runFlag);
+
+static bool ResolveMoveComponentViaClientHelper(void** outComponent)
+{
+    if (outComponent)
+        *outComponent = nullptr;
+
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi)))
+        return false;
+
+    BYTE* base = static_cast<BYTE*>(mi.lpBaseOfDll);
+    auto helper = reinterpret_cast<void(*)()>(base + kResolveMoveHelperRva);
+    uintptr_t gameplayRootSlot = reinterpret_cast<uintptr_t>(base + kGameplayRootRva);
+    uintptr_t gameplayRoot = 0;
+
+    __try {
+        gameplayRoot = *reinterpret_cast<uintptr_t*>(gameplayRootSlot);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        gameplayRoot = 0;
+    }
+
+    if (!gameplayRoot || !helper)
+        return false;
+
+    struct LookupPair {
+        void* component;
+        void* refToken;
+    } pair{};
+
+#if defined(_M_IX86)
+    DWORD sehCode = 0;
+    void* sehAddress = nullptr;
+    CONTEXT sehContext{};
+    __try {
+        __asm {
+            mov edi, gameplayRoot
+            lea esi, pair
+            mov eax, helper
+            call eax
+        }
+    }
+    __except (CaptureSehInfo(GetExceptionInformation(), &sehCode, &sehAddress, &sehContext)) {
+        Logf("ResolveMoveComponentViaClientHelper exception code=0x%08lX addr=%p root=%p helper=%p eax=%08lX ecx=%08lX edx=%08lX esi=%08lX edi=%08lX",
+             static_cast<unsigned long>(sehCode),
+             sehAddress,
+             reinterpret_cast<void*>(gameplayRoot),
+             helper,
+             static_cast<unsigned long>(sehContext.Eax),
+             static_cast<unsigned long>(sehContext.Ecx),
+             static_cast<unsigned long>(sehContext.Edx),
+             static_cast<unsigned long>(sehContext.Esi),
+             static_cast<unsigned long>(sehContext.Edi));
+        return false;
+    }
+#else
+    return false;
+#endif
+
+    if (!pair.component) {
+        Logf("ResolveMoveComponentViaClientHelper returned null rootSlot=%p root=%p helper=%p root+0x0c=%p root+0x10=%p",
+             reinterpret_cast<void*>(gameplayRootSlot),
+             reinterpret_cast<void*>(gameplayRoot),
+             reinterpret_cast<void*>(ReadPointerSafe(reinterpret_cast<void*>(gameplayRoot), 0x0C)),
+             reinterpret_cast<void*>(ReadPointerSafe(reinterpret_cast<void*>(gameplayRoot), 0x0C)),
+             reinterpret_cast<void*>(ReadPointerSafe(reinterpret_cast<void*>(gameplayRoot), 0x10)));
+        return false;
+    }
+
+    Logf("ResolveMoveComponentViaClientHelper rootSlot=%p root=%p helper=%p comp=%p ref=%p",
+         reinterpret_cast<void*>(gameplayRootSlot),
+         reinterpret_cast<void*>(gameplayRoot),
+         helper,
+         pair.component,
+         pair.refToken);
+    if (outComponent)
+        *outComponent = pair.component;
+    return true;
+}
 
 static int NormalizeDirection(int dir)
 {
@@ -322,6 +475,174 @@ static int NormalizeDirection(int dir)
     if (normalized < 0)
         normalized += 8;
     return normalized & 7;
+}
+
+static void SetWalkFailure(std::string* outReason, const char* reason)
+{
+    if (!outReason)
+        return;
+    outReason->assign(reason ? reason : "walk_failed");
+}
+
+static void AdoptMovementComponent(void* component, const char* reason, uint32_t dir = 8, int mode = -1)
+{
+    if (!component)
+        return;
+
+    const bool changed = (g_moveComp != component);
+    g_moveCandidate = component;
+    g_moveComp = component;
+    InterlockedExchange(&g_haveMoveComp, 1);
+
+    if (!changed)
+        return;
+
+    char buf[224];
+    sprintf_s(buf,
+              sizeof(buf),
+              "Movement component adopted = %p (reason=%s dir=%u mode=%d)",
+              component,
+              reason ? reason : "<none>",
+              dir,
+              mode);
+    WriteRawLog(buf);
+    LogMovementVtable(component);
+    Engine::RequestWalkRegistration();
+}
+
+static bool EnsureMovementComponent(const char* reason)
+{
+    if (g_moveComp && IsMovementComponentPlausible(g_moveComp))
+        return true;
+
+    if (g_moveComp && !IsMovementComponentPlausible(g_moveComp)) {
+        Logf("Movement component rejected as implausible: %p vt=%p reason=%s",
+             g_moveComp,
+             reinterpret_cast<void*>(ReadPointerSafe(g_moveComp, 0x00)),
+             reason ? reason : "<none>");
+        g_moveComp = nullptr;
+        InterlockedExchange(&g_haveMoveComp, 0);
+    }
+
+    void* helperCandidate = nullptr;
+    if (ResolveMoveComponentViaClientHelper(&helperCandidate) &&
+        helperCandidate &&
+        IsMovementComponentPlausible(helperCandidate)) {
+        AdoptMovementComponent(helperCandidate,
+                               reason ? reason : "client_helper_retry",
+                               ReadUInt32Safe(helperCandidate, 0x5C),
+                               static_cast<int>(ReadUInt32Safe(helperCandidate, 0x70)));
+        return g_moveComp != nullptr;
+    }
+
+    if (g_moveCandidate && IsMovementComponentPlausible(g_moveCandidate)) {
+        AdoptMovementComponent(g_moveCandidate, reason ? reason : "candidate");
+        return g_moveComp != nullptr;
+    }
+
+    FindMoveComponent();
+    return g_moveComp && IsMovementComponentPlausible(g_moveComp);
+}
+
+static bool SendWalkStepInternal(int dir, int run, std::string* outReason)
+{
+    if (dir < 0 || dir > 7) {
+        SetWalkFailure(outReason, "invalid_direction");
+        return false;
+    }
+
+    const uint32_t callerTid = GetCurrentThreadId();
+    const uint32_t ownerTid = Util::OwnerPump::GetOwnerThreadId();
+    if (ownerTid == 0 || callerTid != ownerTid) {
+        SetWalkFailure(outReason, "wrong_thread");
+        return false;
+    }
+
+    if (!g_origUpdate) {
+        SetWalkFailure(outReason, "movement_not_ready");
+        return false;
+    }
+
+    if (!EnsureMovementComponent("SendWalkStepInternal")) {
+        SetWalkFailure(outReason, "movement_not_ready");
+        return false;
+    }
+
+    const int normalizedDir = NormalizeDirection(dir);
+    const bool shouldRun = run != 0;
+    const int nativeMode = shouldRun ? 2 : 1;
+
+    char introBuf[256];
+    sprintf_s(introBuf,
+              sizeof(introBuf),
+              "SendWalk direct begin dir=%d run=%d mode=%d caller=%u owner=%u comp=%p",
+              normalizedDir,
+              shouldRun ? 1 : 0,
+              nativeMode,
+              callerTid,
+              ownerTid,
+              g_moveComp);
+    WriteRawLog(introBuf);
+    LogMovementState("SendWalk direct state", g_moveComp);
+
+    char beforeTag[80];
+    sprintf_s(beforeTag, sizeof(beforeTag),
+              "SendWalk direct before (dir=%d mode=%d)", normalizedDir, nativeMode);
+    LogQueueState(beforeTag);
+
+    uint32_t rc = 0;
+    DWORD sehCode = 0;
+    void* sehAddress = nullptr;
+    CONTEXT sehContext{};
+    __try {
+        rc = g_origUpdate(g_moveComp, static_cast<uint32_t>(normalizedDir), nativeMode);
+    }
+    __except (CaptureSehInfo(GetExceptionInformation(), &sehCode, &sehAddress, &sehContext)) {
+        char faultBuf[352];
+        sprintf_s(faultBuf,
+                  sizeof(faultBuf),
+                  "SendWalk direct exception code=0x%08lX addr=%p dir=%d mode=%d comp=%p eax=%08lX ebx=%08lX ecx=%08lX edx=%08lX esi=%08lX edi=%08lX ebp=%08lX",
+                  static_cast<unsigned long>(sehCode),
+                  sehAddress,
+                  normalizedDir,
+                  nativeMode,
+                  g_moveComp,
+                  static_cast<unsigned long>(sehContext.Eax),
+                  static_cast<unsigned long>(sehContext.Ebx),
+                  static_cast<unsigned long>(sehContext.Ecx),
+                  static_cast<unsigned long>(sehContext.Edx),
+                  static_cast<unsigned long>(sehContext.Esi),
+                  static_cast<unsigned long>(sehContext.Edi),
+                  static_cast<unsigned long>(sehContext.Ebp));
+        WriteRawLog(faultBuf);
+        SetWalkFailure(outReason, "movement_fault");
+        return false;
+    }
+
+    char afterTag[80];
+    sprintf_s(afterTag, sizeof(afterTag),
+              "SendWalk direct after (dir=%d mode=%d)", normalizedDir, nativeMode);
+    LogQueueState(afterTag);
+
+    char outroBuf[192];
+    sprintf_s(outroBuf,
+              sizeof(outroBuf),
+              "SendWalk direct completed rc=%u okByte=%u dir=%d mode=%d",
+              rc,
+              static_cast<unsigned>(rc & 0xFF),
+              normalizedDir,
+              nativeMode);
+    WriteRawLog(outroBuf);
+
+    const bool accepted = (rc & 0xFF) != 0;
+    if (!accepted) {
+        SetWalkFailure(outReason, "client_rejected");
+        return false;
+    }
+
+    if (outReason)
+        outReason->assign("queued");
+    return true;
 }
 
 } // namespace
@@ -338,12 +659,18 @@ uint32_t PopFastWalkKey() {
 }
 
 bool MovementReady() {
+    if (g_updateState && !g_moveComp)
+        FindMoveComponent();
     return g_updateState && g_moveComp;
 }
 
 void RequestWalkRegistration() {
     InterlockedExchange(&g_needWalkReg, 1);
     Engine::Lua::ScheduleWalkBinding();
+}
+
+bool SendWalkStep(int dir, int run, std::string* outReason) {
+    return SendWalkStepInternal(dir, run, outReason);
 }
 
 bool InitMovementHooks() {
@@ -360,6 +687,7 @@ bool InitMovementHooks() {
         if (MH_CreateHook(g_updateState, &H_Update, reinterpret_cast<LPVOID*>(&g_origUpdate)) == MH_OK &&
             MH_EnableHook(g_updateState) == MH_OK) {
             WriteRawLog("updateDataStructureState hook installed");
+            FindMoveComponent();
         } else {
             WriteRawLog("updateDataStructureState hook failed; falling back to scan");
             g_origUpdate = g_updateState;
@@ -381,6 +709,7 @@ void ShutdownMovementHooks() {
     g_moveComp = nullptr;
     g_moveCandidate = nullptr;
     g_dest = nullptr;
+    InterlockedExchange(&g_haveMoveComp, 0);
     g_fwTop = 0;
     g_trackerCount = 0;
     g_trackerLogBudget = 8;
@@ -408,32 +737,69 @@ void ShutdownMovementHooks() {
 namespace {
 
 static void FindMoveComponent() {
-    if (!g_updateState)
-        return;
-
     MODULEINFO mi{};
     if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(nullptr), &mi, sizeof(mi)))
         return;
 
     BYTE* base = (BYTE*)mi.lpBaseOfDll;
-    BYTE* end = base + mi.SizeOfImage;
+    BYTE* vtable = base + kMoveControllerVtableRva;
+    void* globalCandidate = reinterpret_cast<void*>(base + kMoveControllerGlobalRva);
 
-    BYTE* vtable = nullptr;
-    for (BYTE* p = base; p + 0x44 <= end; p += 4) {
-        if (*(DWORD*)(p + 0x40) == (DWORD)(uintptr_t)g_updateState) {
-            vtable = p;
-            break;
-        }
-    }
-
-    if (!vtable) {
-        WriteRawLog("Move component vtable not found");
+    MEMORY_BASIC_INFORMATION vtableMbi{};
+    if (!VirtualQuery(vtable, &vtableMbi, sizeof(vtableMbi)) ||
+        vtableMbi.State != MEM_COMMIT ||
+        (vtableMbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
+        WriteRawLog("Move component vtable unavailable");
         return;
     }
 
     char buf[64];
     sprintf_s(buf, sizeof(buf), "MoveComp vtable at %p", vtable);
     WriteRawLog(buf);
+
+    if (globalCandidate) {
+        const uint32_t dirNow = ReadUInt32Safe(globalCandidate, 0x5C);
+        const uint32_t dirPrev = ReadUInt32Safe(globalCandidate, 0x60);
+        const uint32_t desired = ReadUInt32Safe(globalCandidate, 0x64);
+        const uint32_t mode = ReadUInt32Safe(globalCandidate, 0x70);
+        const uintptr_t vt = ReadPointerSafe(globalCandidate, 0x00);
+        char globalBuf[224];
+        sprintf_s(globalBuf,
+                  sizeof(globalBuf),
+                  "MoveComp global candidate %p vt=%p dir=%u prev=%u desired=%u mode=%u",
+                  globalCandidate,
+                  reinterpret_cast<void*>(vt),
+                  dirNow,
+                  dirPrev,
+                  desired,
+                  mode);
+        WriteRawLog(globalBuf);
+        if (vt == reinterpret_cast<uintptr_t>(vtable)) {
+            AdoptMovementComponent(globalCandidate, "global_object", dirNow, static_cast<int>(mode));
+            return;
+        }
+    }
+
+    void* helperCandidate = nullptr;
+    if (ResolveMoveComponentViaClientHelper(&helperCandidate) && helperCandidate) {
+        char helperBuf[192];
+        sprintf_s(helperBuf,
+                  sizeof(helperBuf),
+                  "MoveComp helper candidate %p dir=%u prev=%u desired=%u vt=%p",
+                  helperCandidate,
+                  ReadUInt32Safe(helperCandidate, 0x5C),
+                  ReadUInt32Safe(helperCandidate, 0x60),
+                  ReadUInt32Safe(helperCandidate, 0x64),
+                  reinterpret_cast<void*>(ReadPointerSafe(helperCandidate, 0x00)));
+        WriteRawLog(helperBuf);
+        if (ReadPointerSafe(helperCandidate, 0x00) == reinterpret_cast<uintptr_t>(vtable)) {
+            AdoptMovementComponent(helperCandidate,
+                                   "client_helper",
+                                   ReadUInt32Safe(helperCandidate, 0x5C),
+                                   static_cast<int>(ReadUInt32Safe(helperCandidate, 0x70)));
+            return;
+        }
+    }
 
     SYSTEM_INFO si;
     GetSystemInfo(&si);
@@ -448,12 +814,21 @@ static void FindMoveComponent() {
             BYTE* e = b + mbi.RegionSize;
             for (BYTE* p = b; p + sizeof(void*) <= e; p += sizeof(void*)) {
                 if (*(void**)p == (void*)vtable) {
+                    const uint32_t dirNow = ReadUInt32Safe(p, 0x5C);
+                    const uint32_t dirPrev = ReadUInt32Safe(p, 0x60);
+                    if (dirNow > 8 || dirPrev > 8)
+                        continue;
+
                     MEMORY_BASIC_INFORMATION mbi2;
                     if (VirtualQuery(p, &mbi2, sizeof(mbi2)) &&
                         (mbi2.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))) {
                         g_moveCandidate = p;
-                        g_moveComp = p;
-                        sprintf_s(buf, sizeof(buf), "MoveComp candidate %p", p);
+                        sprintf_s(buf,
+                                  sizeof(buf),
+                                  "MoveComp candidate %p dir=%u prev=%u",
+                                  p,
+                                  dirNow,
+                                  dirPrev);
                         WriteRawLog(buf);
                         return;
                     }
@@ -504,319 +879,26 @@ static bool ReadVec3Safe(void* ptr, Vec3& out)
     return success;
 }
 
-static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr, uint32_t dir, int runFlag) {
+static uint32_t __stdcall H_Update(void* thisPtr, uint32_t dir, int runFlag) {
     Util::OwnerPump::DrainOnOwnerThread();
     Engine::Lua::PollQueuedRawCasts();
 
-    if (!g_moveCandidate && InterlockedCompareExchange(&g_haveMoveComp, 1, 0) == 0) {
-        g_moveCandidate = thisPtr;
-        Logf("Captured movement candidate = %p (thread %lu)", g_moveCandidate, GetCurrentThreadId());
-    }
-
-    DWORD now = GetTickCount();
-    bool dumpReserved = false;
-    if (destPtr && (!g_moveComp || g_pendingMoveActive)) {
-        LONG current = g_memDumpBudget;
-        while (current > 0) {
-            LONG prev = current;
-            current = InterlockedCompareExchange(&g_memDumpBudget, prev - 1, prev);
-            if (current == prev) {
-                dumpReserved = true;
-                break;
-            }
+    if (thisPtr) {
+        if (!g_moveCandidate) {
+            g_moveCandidate = thisPtr;
+            Logf("Captured movement candidate = %p (thread %lu)", g_moveCandidate, GetCurrentThreadId());
         }
-    }
 
-    Vec3 before{};
-    Vec3 after{};
-    bool haveBefore = ReadVec3Safe(destPtr, before);
-    bool haveAfter = false;
-    int dx = 0;
-    int dy = 0;
-    int dz = 0;
-
-    MovementTracker* tracker = GetTracker(thisPtr);
-
-    uint8_t compPtrData[kDestCopySize]{};
-    bool haveCompPtrData = false;
-    uintptr_t ptrA = ReadPointerSafe(thisPtr, 0x08);
-    uint32_t rawPtrB = ReadUInt32Safe(thisPtr, 0x0C);
-    uintptr_t ptrB = static_cast<uintptr_t>(rawPtrB);
-    uintptr_t destPtrA = ReadPointerSafe(destPtr, 0x06);
-    uintptr_t destPtrB = ReadPointerSafe(destPtr, 0x0A);
-    if (ptrA) {
-        haveCompPtrData = CopyMemorySafe(reinterpret_cast<void*>(ptrA), compPtrData, sizeof(compPtrData));
-        if (!haveCompPtrData && thisPtr == g_moveComp && g_ptrDiffLogBudget > 0) {
-            Logf("compPtr copy failed (ptrA=%p)", reinterpret_cast<void*>(ptrA));
-            --g_ptrDiffLogBudget;
-        }
-    }
-
-    uintptr_t thisBase = thisPtr ? reinterpret_cast<uintptr_t>(thisPtr) : 0;
-    bool ptrALooksValid = ptrA && thisPtr && ptrA >= thisBase && ptrA < thisBase + 0x200;
-    bool hasId = rawPtrB != 0;
-
-    if (!g_moveComp && ptrALooksValid && hasId) {
-        if (!g_moveCandidate || g_moveCandidate != thisPtr) {
-            Logf("Player candidate matched heuristics: this=%p ptrA=%p (offset=0x%X) id=%u dest=%p",
+        if (!g_moveComp) {
+            AdoptMovementComponent(thisPtr, "live_update", dir, runFlag);
+        } else if (g_moveComp != thisPtr) {
+            Logf("Movement update on alternate component this=%p active=%p dir=%u mode=%d",
                  thisPtr,
-                 reinterpret_cast<void*>(ptrA),
-                 static_cast<unsigned>(ptrA ? (ptrA - thisBase) : 0),
-                 static_cast<unsigned>(rawPtrB),
-                 destPtr);
-        }
-        g_moveCandidate = thisPtr;
-        if (destPtr) {
-            g_moveComp = thisPtr;
-            g_dest = destPtr;
-            Logf("Identified player movement component via ptr heuristic = %p (ptrA=%p offset=0x%X id=%u dest=%p)",
                  g_moveComp,
-                 reinterpret_cast<void*>(ptrA),
-                 static_cast<unsigned>(ptrA ? (ptrA - thisBase) : 0),
-                 static_cast<unsigned>(rawPtrB),
-                 destPtr);
-            g_haveCompPtrSnapshot = false;
-            g_ptrDiffLogBudget = kPtrDiffLogLimit;
-            g_savedIndexBudget = kIndexSampleLimit;
-            g_lastIndexHead = 0;
-            g_lastIndexTail = 0;
-            g_haveHeadEntry = false;
-            g_haveTailEntry = false;
-            std::memset(g_lastHeadEntry, 0, sizeof(g_lastHeadEntry));
-            std::memset(g_lastTailEntry, 0, sizeof(g_lastTailEntry));
-            LogMovementVtable(thisPtr);
-            Engine::RequestWalkRegistration();
-            InterlockedExchange(&g_pendingMoveActive, 0);
-        }
-    } else if (g_moveComp == thisPtr && destPtr) {
-        g_dest = destPtr;
-    }
-
-    if (thisPtr == g_moveComp && haveCompPtrData) {
-        LogMovementVtable(thisPtr);
-
-        uint32_t head = 0;
-        uint32_t tail = 0;
-        std::memcpy(&head, compPtrData + 0x10, sizeof(head));
-        std::memcpy(&tail, compPtrData + 0x14, sizeof(tail));
-        bool hadSnapshot = g_haveCompPtrSnapshot;
-
-        const uint8_t* headEntryPtr = (0x20 + kQueueEntrySize <= kDestCopySize) ? compPtrData + 0x20 : nullptr;
-        const uint8_t* tailEntryPtr = (0x30 + kQueueEntrySize <= kDestCopySize) ? compPtrData + 0x30 : nullptr;
-
-        if (!hadSnapshot) {
-            if (g_savedIndexBudget > 0) {
-                Logf("Queue indices initial: head=%u (0x%08X %.3f) tail=%u (0x%08X %.3f)",
-                     head, head, static_cast<double>(AsFloat(head)),
-                     tail, tail, static_cast<double>(AsFloat(tail)));
-                --g_savedIndexBudget;
-            }
-            if (headEntryPtr && g_savedIndexBudget > 0) {
-                LogQueueEntry("Queue head entry initial", headEntryPtr);
-                --g_savedIndexBudget;
-            }
-            if (tailEntryPtr && g_savedIndexBudget > 0) {
-                LogQueueEntry("Queue tail entry initial", tailEntryPtr);
-                --g_savedIndexBudget;
-            }
-            g_lastIndexHead = head;
-            g_lastIndexTail = tail;
-            if (headEntryPtr) {
-                std::memcpy(g_lastHeadEntry, headEntryPtr, kQueueEntrySize);
-                g_haveHeadEntry = true;
-            }
-            if (tailEntryPtr) {
-                std::memcpy(g_lastTailEntry, tailEntryPtr, kQueueEntrySize);
-                g_haveTailEntry = true;
-            }
-        } else {
-            if (head != g_lastIndexHead && g_savedIndexBudget > 0) {
-                Logf("Queue head changed: prev=%u (0x%08X %.3f) -> %u (0x%08X %.3f)",
-                     g_lastIndexHead, g_lastIndexHead, static_cast<double>(AsFloat(g_lastIndexHead)),
-                     head, head, static_cast<double>(AsFloat(head)));
-                --g_savedIndexBudget;
-            }
-            if (tail != g_lastIndexTail && g_savedIndexBudget > 0) {
-                Logf("Queue tail changed: prev=%u (0x%08X %.3f) -> %u (0x%08X %.3f)",
-                     g_lastIndexTail, g_lastIndexTail, static_cast<double>(AsFloat(g_lastIndexTail)),
-                     tail, tail, static_cast<double>(AsFloat(tail)));
-                --g_savedIndexBudget;
-            }
-            if (headEntryPtr) {
-                bool hadHeadEntry = g_haveHeadEntry;
-                if (!g_haveHeadEntry) {
-                    g_haveHeadEntry = true;
-                }
-                bool headEntryChanged = !hadHeadEntry ||
-                    std::memcmp(g_lastHeadEntry, headEntryPtr, kQueueEntrySize) != 0;
-                if (headEntryChanged) {
-                    if (g_savedIndexBudget > 0) {
-                        LogQueueEntry(hadHeadEntry ? "Queue head entry updated" : "Queue head entry", headEntryPtr);
-                        --g_savedIndexBudget;
-                    }
-                    std::memcpy(g_lastHeadEntry, headEntryPtr, kQueueEntrySize);
-                }
-            }
-            if (tailEntryPtr) {
-                bool hadTailEntry = g_haveTailEntry;
-                if (!g_haveTailEntry) {
-                    g_haveTailEntry = true;
-                }
-                bool tailEntryChanged = !hadTailEntry ||
-                    std::memcmp(g_lastTailEntry, tailEntryPtr, kQueueEntrySize) != 0;
-                if (tailEntryChanged) {
-                    if (g_savedIndexBudget > 0) {
-                        LogQueueEntry(hadTailEntry ? "Queue tail entry updated" : "Queue tail entry", tailEntryPtr);
-                        --g_savedIndexBudget;
-                    }
-                    std::memcpy(g_lastTailEntry, tailEntryPtr, kQueueEntrySize);
-                }
-            }
-            g_lastIndexHead = head;
-            g_lastIndexTail = tail;
-        }
-
-        if (g_haveCompPtrSnapshot && g_ptrDiffLogBudget > 0) {
-            for (size_t offset = 0; offset < kDestCopySize && g_ptrDiffLogBudget > 0; offset += 4) {
-                uint32_t prev = 0;
-                uint32_t curr = 0;
-                std::memcpy(&prev, g_lastCompPtrSnapshot + offset, sizeof(prev));
-                std::memcpy(&curr, compPtrData + offset, sizeof(curr));
-                if (prev != curr) {
-                    Logf("compPtr delta off=0x%02X prev=0x%08X (%d %.3f) curr=0x%08X (%d %.3f)",
-                         static_cast<unsigned>(offset),
-                         prev, static_cast<int32_t>(prev), static_cast<double>(AsFloat(prev)),
-                         curr, static_cast<int32_t>(curr), static_cast<double>(AsFloat(curr)));
-                    --g_ptrDiffLogBudget;
-                }
-            }
-        }
-        std::memcpy(g_lastCompPtrSnapshot, compPtrData, kDestCopySize);
-        g_haveCompPtrSnapshot = true;
-        g_lastIndexHead = head;
-        g_lastIndexTail = tail;
-    }
-
-    if (dumpReserved) {
-
-        Logf("Dumping movement state for this=%p (pA=%p pB=%p) dest=%p (dA=%p dB=%p) dir=%u run=%d (pendingDir=%ld pendingRun=%ld)",
-             thisPtr,
-             reinterpret_cast<void*>(ptrA),
-             reinterpret_cast<void*>(ptrB),
-             destPtr,
-             reinterpret_cast<void*>(destPtrA),
-             reinterpret_cast<void*>(destPtrB),
-             dir,
-             runFlag,
-             static_cast<long>(g_pendingDir),
-             static_cast<long>(g_pendingRunFlag));
-        if (haveBefore)
-            DumpMemorySafe("Pre destVec", &before, sizeof(before));
-        DumpMemorySafe("Pre destBlk", destPtr, 0x40);
-        DumpMemorySafe("Pre compBlk", thisPtr, 0x140);
-        if (ptrA)
-            DumpMemorySafe("Pre compPtrA", reinterpret_cast<void*>(ptrA), 0x60);
-        if (ptrB)
-            DumpMemorySafe("Pre compPtrB", reinterpret_cast<void*>(ptrB), 0x60);
-        if (destPtrA)
-            DumpMemorySafe("Pre destPtrA", reinterpret_cast<void*>(destPtrA), 0x60);
-        if (destPtrB)
-            DumpMemorySafe("Pre destPtrB", reinterpret_cast<void*>(destPtrB), 0x60);
-    }
-
-    uint32_t rc = g_origUpdate ? g_origUpdate(thisPtr, destPtr, dir, runFlag) : 0;
-
-    haveAfter = ReadVec3Safe(destPtr, after);
-    if (!haveAfter && haveBefore)
-        after = before;
-
-    if (haveBefore && haveAfter) {
-        dx = static_cast<int>(after.x) - static_cast<int>(before.x);
-        dy = static_cast<int>(after.y) - static_cast<int>(before.y);
-        dz = static_cast<int>(after.z) - static_cast<int>(before.z);
-    } else {
-        dx = dy = dz = 0;
-    }
-
-    if (tracker) {
-        if (!tracker->hasDest && g_trackerLogBudget > 0) {
-            Logf("Tracking movement candidate this=%p dest=(%d,%d,%d) dir=%u run=%d",
-                 thisPtr,
-                 static_cast<int>(after.x),
-                 static_cast<int>(after.y),
-                 static_cast<int>(after.z),
                  dir,
                  runFlag);
-            --g_trackerLogBudget;
-        }
-        tracker->lastDest = after;
-        tracker->lastTick = now;
-        tracker->hasDest = haveAfter;
-    }
-
-    if (dumpReserved) {
-        if (haveAfter)
-            DumpMemorySafe("Post destVec", &after, sizeof(after));
-        DumpMemorySafe("Post destBlk", destPtr, 0x40);
-        DumpMemorySafe("Post compBlk", thisPtr, 0x140);
-        if (ptrA)
-            DumpMemorySafe("Post compPtrA", reinterpret_cast<void*>(ptrA), 0x60);
-        if (ptrB)
-            DumpMemorySafe("Post compPtrB", reinterpret_cast<void*>(ptrB), 0x60);
-        if (destPtrA)
-            DumpMemorySafe("Post destPtrA", reinterpret_cast<void*>(destPtrA), 0x60);
-        if (destPtrB)
-            DumpMemorySafe("Post destPtrB", reinterpret_cast<void*>(destPtrB), 0x60);
-    }
-
-    if (!g_moveComp) {
-        if (g_pendingMoveActive) {
-            DWORD pendingTick = static_cast<DWORD>(g_pendingTick);
-            DWORD age = now - pendingTick;
-            if (age <= kPendingWindowMs) {
-                int expectedDir = static_cast<int>(g_pendingDir);
-                int expectedRun = static_cast<int>(g_pendingRunFlag);
-                if (expectedDir >= 0 && expectedDir < 8) {
-                    int stepX = kStepDx[expectedDir];
-                    int stepY = kStepDy[expectedDir];
-                    bool matchesStep = (dx == stepX && dy == stepY);
-                    if (!matchesStep && expectedRun != 0) {
-                        matchesStep = (dx == stepX * 2 && dy == stepY * 2);
-                    }
-                    bool runMatches = (runFlag == expectedRun);
-                    if (!runMatches) {
-                        bool wantRun = (expectedRun != 0);
-                        bool isRun = (runFlag > 1);
-                        if (!isRun && runFlag == 0)
-                            isRun = false;
-                        runMatches = (wantRun == isRun);
-                    }
-                    if (matchesStep && runMatches) {
-                        g_moveComp = thisPtr;
-                        g_dest = destPtr;
-                        Logf("Identified player movement component = %p (dir=%u run=%d)", g_moveComp, dir, runFlag);
-                        Engine::RequestWalkRegistration();
-                        InterlockedExchange(&g_pendingMoveActive, 0);
-                    }
-                }
-            } else {
-                InterlockedExchange(&g_pendingMoveActive, 0);
-            }
-        }
-    } else if (thisPtr == g_moveComp) {
-        g_dest = destPtr;
-    }
-
-    if (g_expectValid && haveAfter) {
-        Vec3 expected = g_expectedDest;
-        if (after.x == expected.x && after.y == expected.y && after.z == expected.z) {
-            if (g_moveComp != thisPtr) {
-                g_moveComp = thisPtr;
-                g_dest = destPtr;
-                Logf("Adjusted player movement component = %p", g_moveComp);
-                Engine::RequestWalkRegistration();
-            }
-            InterlockedExchange(&g_expectValid, 0);
+            AdoptMovementComponent(thisPtr, "live_update_override", dir, runFlag);
+            ++g_updateLogCount;
         }
     }
 
@@ -827,19 +909,16 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
         logThisCall = g_updateLogCount < 256;
     }
 
-    if (g_updateDepth++ == 0 && logThisCall) {
-        Logf("updateState(this=%p, dest=%p -> (%d,%d,%d), dir=%u, run=%d, dXYZ=(%d,%d,%d))",
-             thisPtr,
-             destPtr,
-             static_cast<int>(after.x),
-             static_cast<int>(after.y),
-             static_cast<int>(after.z),
-             dir,
-             runFlag,
-             dx,
-             dy,
-             dz);
+    ++g_updateDepth;
+    if (g_updateDepth == 1 && logThisCall) {
+        Logf("updateState(this=%p, dir=%u, mode=%d)", thisPtr, dir, runFlag);
         ++g_updateLogCount;
+    }
+
+    uint32_t rc = g_origUpdate ? g_origUpdate(thisPtr, dir, runFlag) : 0;
+
+    if (g_updateDepth == 1 && logThisCall) {
+        Logf("updateState result rc=%u this=%p dir=%u mode=%d", rc, thisPtr, dir, runFlag);
     }
 
     --g_updateDepth;
@@ -851,61 +930,23 @@ static uint32_t __fastcall H_Update(void* thisPtr, void* _unused, void* destPtr,
         }
     }
 
-    // Avoid calling into Lua from movement update to prevent re-entrancy issues.
-
     return rc;
 }
 
 } // namespace
 
 extern "C" __declspec(dllexport) bool __stdcall SendWalk(int dir, int run) {
-    if (!Net::IsSendReady()) {
-        WriteRawLog("SendWalk prerequisites missing");
-        return false;
+    std::string reason;
+    bool ok = Engine::SendWalkStep(dir, run, &reason);
+    if (!ok) {
+        char buf[160];
+        sprintf_s(buf,
+                  sizeof(buf),
+                  "SendWalk failed dir=%d run=%d reason=%s",
+                  dir,
+                  run,
+                  reason.empty() ? "<none>" : reason.c_str());
+        WriteRawLog(buf);
     }
-
-    const int normalizedDir = NormalizeDirection(dir);
-    const bool shouldRun = run != 0;
-    const int stepScale = shouldRun ? 2 : 1;
-
-    char introBuf[128];
-    sprintf_s(introBuf, sizeof(introBuf), "SendWalk begin dir=%d run=%d -> normDir=%d", dir, run, normalizedDir);
-    WriteRawLog(introBuf);
-
-    uint8_t pkt[7]{};
-    pkt[0] = 0x02;
-    pkt[1] = static_cast<uint8_t>(normalizedDir) | (shouldRun ? 0x80 : 0);
-    static uint8_t seq = 0;
-    if (++seq == 0)
-        seq = 1;
-    pkt[2] = seq;
-
-    uint32_t key = Engine::PopFastWalkKey();
-    if (!key) {
-        WriteRawLog("SendWalk no fast-walk key");
-        return false;
-    }
-
-    *reinterpret_cast<uint32_t*>(pkt + 3) = htonl(key);
-    if (!Net::SendPacketRaw(pkt, sizeof(pkt))) {
-        WriteRawLog("SendWalk send failed");
-        return false;
-    }
-
-    InterlockedExchange(&g_pendingDir, normalizedDir);
-    InterlockedExchange(&g_pendingRunFlag, shouldRun ? 2 : 1);
-    InterlockedExchange(&g_pendingTick, static_cast<LONG>(GetTickCount()));
-    InterlockedExchange(&g_pendingMoveActive, 1);
-
-    bool queuedLocally = EnqueueViaUpdate(normalizedDir, shouldRun, stepScale);
-
-    if (!queuedLocally) {
-        Logf("SendWalk: local queue update skipped (comp=%p dest=%p orig=%s)",
-             g_moveComp,
-             g_dest,
-             g_origUpdate ? "yes" : "no");
-    }
-
-    WriteRawLog(queuedLocally ? "SendWalk completed" : "SendWalk completed without enqueue");
-    return queuedLocally;
+    return ok;
 }

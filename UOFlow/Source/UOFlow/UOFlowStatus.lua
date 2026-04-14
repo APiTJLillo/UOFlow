@@ -16,7 +16,7 @@ local C = {
 }
 
 local ROWS = {
-  { key = "UOFlow.Walk.move", label = "Walk.move()" },
+  { key = "UOFlow.Walk.step", label = "Walk.step()" },
   { key = "nothing", label = "nothing" },
   { key = "nothing", label = "nothing" },
   { key = "nothing", label = "nothing" },

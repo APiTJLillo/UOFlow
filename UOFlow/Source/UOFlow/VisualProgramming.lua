@@ -81,6 +81,9 @@ function OnTestFlowClick()
     if type(UOWInstallLuaSpellWrappers) == "function" then
         UOWInstallLuaSpellWrappers()
     end
+    if type(UOWInstallLuaMovementWrappers) == "function" then
+        UOWInstallLuaMovementWrappers()
+    end
     if VisualProgrammingInterface and VisualProgrammingInterface.Execution then
         VPUIEmitNativeLog("[VPUI] testFlow BEFORE")
         local success, results = VisualProgrammingInterface.Execution:testFlow()

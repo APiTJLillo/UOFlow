@@ -47,6 +47,47 @@ function CreateParameter(name, type, defaultValue, options)
     }
 end
 
+local function VPResolveWalkApi()
+    if type(UOWInstallLuaMovementWrappers) == "function" then
+        UOWInstallLuaMovementWrappers()
+    end
+
+    if type(UOFlow) == "table" and type(UOFlow.Walk) == "table" and type(UOFlow.Walk.step) == "function" then
+        return UOFlow.Walk
+    end
+
+    return nil
+end
+
+local function VPExecuteWalkStep(params, runFlag)
+    local walkApi = VPResolveWalkApi()
+    local direction = params and params.direction or nil
+    local tag = params and params.__vpExecutionTag or "VP:WalkStep"
+
+    if type(walkApi) ~= "table" or type(walkApi.step) ~= "function" then
+        if type(UOWNativeLog) == "function" then
+            UOWNativeLog("[VPWalk] helper missing", tostring(tag), tostring(direction), tostring(runFlag))
+        end
+        return false, "native_walk_missing"
+    end
+
+    if type(UOWNativeLog) == "function" then
+        UOWNativeLog("[VPWalk] step begin", tostring(tag), "direction=" .. tostring(direction), "run=" .. tostring(runFlag))
+    end
+
+    local ok, msg = walkApi.step(direction, runFlag and 1 or 0, tag)
+
+    if type(UOWNativeLog) == "function" then
+        UOWNativeLog("[VPWalk] step result", tostring(tag), "ok=" .. tostring(ok), "msg=" .. tostring(msg))
+    end
+
+    if ok == true then
+        return true, msg or "queued"
+    end
+
+    return false, msg or "walk_failed"
+end
+
 -- Register a new action type
 function VisualProgrammingInterface.Actions:register(definition)
     if not definition.name then
@@ -153,24 +194,32 @@ end
 
 -- Initialize action system
 function VisualProgrammingInterface.Actions:initialize()
-    -- Register Move action
+    -- Register movement step actions
     self:register({
-        name = "Move",
-        description = "Move in a direction",
+        name = "Walk Step",
+        description = "Request one walking step in a direction",
         category = self.categories.MOVEMENT,
         icon = "Icons/actions/move.dds",
         params = {
             CreateParameter("direction", ParameterType.SELECT, "North", 
-                {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"}),
-            CreateParameter("distance", ParameterType.NUMBER, "1")
+                {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"})
         },
-        validate = function(params)
-            local dist = tonumber(params.distance)
-            return dist and dist >= 1 and dist <= 20
-        end,
         execute = function(params)
-            -- Movement logic will be implemented later
-            return true
+            return VPExecuteWalkStep(params, false)
+        end
+    })
+
+    self:register({
+        name = "Run Step",
+        description = "Request one running step in a direction",
+        category = self.categories.MOVEMENT,
+        icon = "Icons/actions/move.dds",
+        params = {
+            CreateParameter("direction", ParameterType.SELECT, "North",
+                {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"})
+        },
+        execute = function(params)
+            return VPExecuteWalkStep(params, true)
         end
     })
 
@@ -354,24 +403,32 @@ end
 
 -- Remove any redundant or unused code
 function VisualProgrammingInterface.Actions:initialize()
-    -- Register Move action
+    -- Register movement step actions
     self:register({
-        name = "Move",
-        description = "Move in a direction",
+        name = "Walk Step",
+        description = "Request one walking step in a direction",
         category = self.categories.MOVEMENT,
         icon = "Icons/actions/move.dds",
         params = {
             CreateParameter("direction", ParameterType.SELECT, "North", 
-                {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"}),
-            CreateParameter("distance", ParameterType.NUMBER, "1")
+                {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"})
         },
-        validate = function(params)
-            local dist = tonumber(params.distance)
-            return dist and dist >= 1 and dist <= 20
-        end,
         execute = function(params)
-            -- Movement logic will be implemented later
-            return true
+            return VPExecuteWalkStep(params, false)
+        end
+    })
+
+    self:register({
+        name = "Run Step",
+        description = "Request one running step in a direction",
+        category = self.categories.MOVEMENT,
+        icon = "Icons/actions/move.dds",
+        params = {
+            CreateParameter("direction", ParameterType.SELECT, "North", 
+                {"North", "South", "East", "West", "NorthEast", "NorthWest", "SouthEast", "SouthWest"})
+        },
+        execute = function(params)
+            return VPExecuteWalkStep(params, true)
         end
     })
 
