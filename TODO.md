@@ -13,6 +13,7 @@ This file lists planned enhancements for the UOFlow project.
 - Allow macros to loop or repeat based on conditions.
 - Expose additional in-game events for macro triggers.
 - Add a copy function that gives the Lua state access to the clipboard.
+
 ## General
 - Write comprehensive documentation for each Lua module.
 - Add unit tests for key Lua functions once a test framework is in place.

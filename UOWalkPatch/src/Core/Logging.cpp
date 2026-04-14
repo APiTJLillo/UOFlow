@@ -9,6 +9,154 @@ namespace {
     char   g_logPath[MAX_PATH];
     BOOL   g_logAnnounced = FALSE;
     HMODULE g_hModule = NULL;
+    char   g_dllDirectory[MAX_PATH];
+}
+
+static bool BuildPath(char* outPath,
+                      size_t outPathSize,
+                      const char* directory,
+                      const char* fileName) {
+    if (!outPath || outPathSize == 0 || !directory || !*directory || !fileName || !*fileName) {
+        return false;
+    }
+
+    return sprintf_s(outPath, outPathSize, "%s\\%s", directory, fileName) > 0;
+}
+
+static bool ResetFileToEmpty(const char* fullPath, const char* tag) {
+    if (!fullPath || !*fullPath) {
+        return false;
+    }
+
+    HANDLE hFile = CreateFileA(
+        fullPath,
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    if (hFile == INVALID_HANDLE_VALUE) {
+        char errBuf[MAX_PATH + 96];
+        sprintf_s(errBuf,
+                  sizeof(errBuf),
+                  "[Init] failed to reset %s: %s",
+                  tag ? tag : "file",
+                  fullPath);
+        WriteRawLog(errBuf);
+        LogLastError("CreateFileA(reset file)");
+        return false;
+    }
+
+    CloseHandle(hFile);
+
+    char msg[MAX_PATH + 96];
+    sprintf_s(msg,
+              sizeof(msg),
+              "[Init] reset %s: %s",
+              tag ? tag : "file",
+              fullPath);
+    WriteRawLog(msg);
+    return true;
+}
+
+static void LinkClientTextLogToDllFile(const char* logsDir,
+                                       const char* clientFileName,
+                                       const char* dllFileName,
+                                       const char* linkTag) {
+    if (!logsDir || !*logsDir || !clientFileName || !*clientFileName ||
+        !dllFileName || !*dllFileName || !g_dllDirectory[0]) {
+        return;
+    }
+
+    char dllTargetPath[MAX_PATH] = {};
+    char clientLinkPath[MAX_PATH] = {};
+    if (!BuildPath(dllTargetPath, sizeof(dllTargetPath), g_dllDirectory, dllFileName) ||
+        !BuildPath(clientLinkPath, sizeof(clientLinkPath), logsDir, clientFileName)) {
+        return;
+    }
+
+    if (!ResetFileToEmpty(dllTargetPath, linkTag)) {
+        return;
+    }
+
+    DWORD attrs = GetFileAttributesA(clientLinkPath);
+    if (attrs != INVALID_FILE_ATTRIBUTES) {
+        if (!DeleteFileA(clientLinkPath)) {
+            char errBuf[MAX_PATH + 96];
+            sprintf_s(errBuf,
+                      sizeof(errBuf),
+                      "[Init] failed to remove existing client text log alias: %s",
+                      clientLinkPath);
+            WriteRawLog(errBuf);
+            LogLastError("DeleteFileA(client text log alias)");
+            return;
+        }
+    }
+
+    if (!CreateHardLinkA(clientLinkPath, dllTargetPath, NULL)) {
+        char errBuf[MAX_PATH + 96];
+        sprintf_s(errBuf,
+                  sizeof(errBuf),
+                  "[Init] failed to link client text log to DLL directory: %s -> %s",
+                  clientLinkPath,
+                  dllTargetPath);
+        WriteRawLog(errBuf);
+        LogLastError("CreateHardLinkA(client text log)");
+
+        // Fall back to the original client-local file if hard links are unavailable.
+        ResetFileToEmpty(clientLinkPath, linkTag);
+        return;
+    }
+
+    char msg[MAX_PATH + 96];
+    sprintf_s(msg,
+              sizeof(msg),
+              "[Init] linked client text log: %s -> %s",
+              clientLinkPath,
+              dllTargetPath);
+    WriteRawLog(msg);
+}
+
+static void PrepareClientTextLogsInDllDirectory() {
+    char exePath[MAX_PATH] = {};
+    DWORD len = GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        WriteRawLog("[Init] unable to resolve client executable path for text logs");
+        return;
+    }
+
+    char* lastSlash = strrchr(exePath, '\\');
+    if (!lastSlash) {
+        WriteRawLog("[Init] unable to resolve client log directory");
+        return;
+    }
+    *lastSlash = '\0';
+
+    char logsDir[MAX_PATH] = {};
+    if (sprintf_s(logsDir, sizeof(logsDir), "%s\\logs", exePath) <= 0) {
+        WriteRawLog("[Init] unable to build client log directory path");
+        return;
+    }
+
+    if (!CreateDirectoryA(logsDir, NULL)) {
+        DWORD error = GetLastError();
+        if (error != ERROR_ALREADY_EXISTS) {
+            char errBuf[MAX_PATH + 96];
+            sprintf_s(errBuf,
+                      sizeof(errBuf),
+                      "[Init] failed to create client log directory: %s",
+                      logsDir);
+            WriteRawLog(errBuf);
+            SetLastError(error);
+            LogLastError("CreateDirectoryA(client logs)");
+            return;
+        }
+    }
+
+    LinkClientTextLogToDllFile(logsDir, "ingame_console.log", "ingame_console.log", "client ui log");
+    LinkClientTextLogToDllFile(logsDir, "Debug.Print.log", "Debug.Print.log", "client debug print log");
 }
 
 static void SetupConsole() {
@@ -26,6 +174,7 @@ void Init(HMODULE self) {
     g_hModule = self;
     g_logFile = INVALID_HANDLE_VALUE;
     g_logPath[0] = '\0';
+    g_dllDirectory[0] = '\0';
     g_logAnnounced = FALSE;
 
     char dllPath[MAX_PATH] = {};
@@ -33,6 +182,9 @@ void Init(HMODULE self) {
     if (len > 0 && len < MAX_PATH) {
         char* lastSlash = strrchr(dllPath, '\\');
         if (lastSlash && lastSlash + 1 < dllPath + MAX_PATH) {
+            *lastSlash = '\0';
+            strcpy_s(g_dllDirectory, MAX_PATH, dllPath);
+            *lastSlash = '\\';
             size_t destIndex = static_cast<size_t>((lastSlash + 1) - dllPath);
             size_t remaining = MAX_PATH - destIndex;
             if (remaining > 1 &&
@@ -53,6 +205,7 @@ void Init(HMODULE self) {
         }
     }
     SetupConsole();
+    PrepareClientTextLogsInDllDirectory();
 }
 
 void Shutdown() {

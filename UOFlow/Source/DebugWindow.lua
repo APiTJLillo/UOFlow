@@ -23,6 +23,8 @@ InterfaceLog.WARNING    = 2
 InterfaceLog.ERROR      = 3
 
 DebugWindow.logging = false
+local LUA_LOG_PATH = "logs/ingame_console.log"
+local DEBUG_PRINT_LOG_PATH = "logs/Debug.Print.log"
 
 ----------------------------------------------------------------
 -- DebugWindow Functions
@@ -36,7 +38,10 @@ function DebugWindow.Initialize()
 	TextLogCreate("DebugPrint", 1)
 	TextLogSetEnabled("DebugPrint", true)
 	TextLogClear("DebugPrint")
-	TextLogSetIncrementalSaving( "DebugPrint", true, "logs/Debug.Print.log")
+	TextLogSetIncrementalSaving( "DebugPrint", true, DEBUG_PRINT_LOG_PATH)
+	TextLogClear("UiLog")
+	TextLogSetIncrementalSaving("UiLog", true, LUA_LOG_PATH)
+	TextLogSetEnabled("UiLog", true)
 		
 	CreateWindow("DebugWindowOptions",false)
 	
@@ -58,9 +63,9 @@ function DebugWindow.Initialize()
     
     ButtonSetText("DebugWindowReloadUi", L"Reload UI")
     
-    -- Init logging with negated value, then toggle it to update the window properly
-    DebugWindow.logging = not TextLogGetEnabled( "UiLog" )
-	DebugWindow.ToggleLogging()
+    DebugWindow.logging = true
+    ButtonSetPressedFlag("DebugWindowToggleLoggingButton", DebugWindow.logging)
+    Debug.Print(L"Logging ON")
     
     -- Set window alpha
     WindowSetAlpha("DebugWindow", 1.0)
@@ -144,7 +149,7 @@ function DebugWindow.ToggleLogging()
 	
 	ButtonSetPressedFlag( "DebugWindowToggleLoggingButton", DebugWindow.logging )
 
-    TextLogSetIncrementalSaving( "UiLog", DebugWindow.logging, "logs/lua.log");
+    TextLogSetIncrementalSaving( "UiLog", DebugWindow.logging, LUA_LOG_PATH);
     TextLogSetEnabled( "UiLog", DebugWindow.logging )
     
     --TextLogSetIncrementalSaving( "Interface", logging, "logs/interface.log");
