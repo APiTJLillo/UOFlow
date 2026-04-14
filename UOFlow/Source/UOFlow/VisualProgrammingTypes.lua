@@ -1617,7 +1617,7 @@ function VisualProgrammingInterface.GetBlockDescription(blockType)
 end
 
 -- Function to create and display a block
-function VisualProgrammingInterface.CreateBlock(type, index)
+function VisualProgrammingInterface.CreateBlock(type, index, column)
     -- Verify action exists
     local action = VisualProgrammingInterface.Actions:get(type)
     if not action then
@@ -1627,14 +1627,17 @@ function VisualProgrammingInterface.CreateBlock(type, index)
     Debug.Print("Creating block of type: " .. type .. " at index: " .. index)
     
     -- Get scroll child window name
-    local scrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
+    local targetColumn = column == "right" and "right" or "middle"
+    local scrollChild = targetColumn == "right"
+        and "VisualProgrammingInterfaceWindowScrollWindowRightScrollChildRight"
+        or "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
     if not DoesWindowNameExist(scrollChild) then
         Debug.Print("Scroll child window does not exist")
         return nil
     end
     
     -- Create block in manager
-    local block = VisualProgrammingInterface.manager:createBlock(type, 0, index * 80)
+    local block = VisualProgrammingInterface.manager:createBlock(type, 0, index * 80, targetColumn)
     local blockName = "Block" .. block.id
     Debug.Print("Block name: " .. blockName)
     block.windowName = blockName -- Store the window name for later reference
@@ -1642,7 +1645,7 @@ function VisualProgrammingInterface.CreateBlock(type, index)
     -- Create block window
     if not DoesWindowNameExist(blockName) then
         Debug.Print("Creating window from template")
-        CreateWindowFromTemplate(blockName, "BlockTemplate", "VisualProgrammingInterfaceWindowScrollWindowScrollChild")
+        CreateWindowFromTemplate(blockName, "BlockTemplate", scrollChild)
         
         -- Ensure window exists before proceeding
         if not DoesWindowNameExist(blockName) then
@@ -1653,7 +1656,7 @@ function VisualProgrammingInterface.CreateBlock(type, index)
         -- Set dimensions and position
         WindowSetDimensions(blockName, 380, 50)
         WindowClearAnchors(blockName)
-        WindowAddAnchor(blockName, "topleft", "VisualProgrammingInterfaceWindowScrollWindowScrollChild", "topleft", 0, index * 80)
+        WindowAddAnchor(blockName, "topleft", scrollChild, "topleft", 0, index * 80)
         
         -- Initialize block with default parameters
         local defaultParams = VisualProgrammingInterface.Actions:getDefaultParams(type)
@@ -1667,11 +1670,10 @@ function VisualProgrammingInterface.CreateBlock(type, index)
         LabelSetText(blockName .. "Description", StringToWString(desc))
         
         -- Update scroll child height
-        local scrollChild = "VisualProgrammingInterfaceWindowScrollWindowScrollChild"
         if DoesWindowNameExist(scrollChild) then
-            local _, height = WindowGetDimensions(scrollChild)
+            local width, height = WindowGetDimensions(scrollChild)
             local newHeight = math.max(height, (index + 1) * 80)
-            WindowSetDimensions(scrollChild, 840, newHeight)
+            WindowSetDimensions(scrollChild, width or 840, newHeight)
             Debug.Print("Updated scroll child height to: " .. tostring(newHeight))
         else
             Debug.Print("Warning: Scroll child window not found when updating height")

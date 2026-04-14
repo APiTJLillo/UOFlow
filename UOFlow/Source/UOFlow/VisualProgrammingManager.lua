@@ -2,6 +2,32 @@
 VisualProgrammingInterface.Manager = {}
 VisualProgrammingInterface.Manager.__index = VisualProgrammingInterface.Manager
 
+local function VPManagerColumnRank(block)
+    if type(block) ~= "table" then
+        return 0
+    end
+    if block.column == "right" then
+        return 1
+    end
+    return 0
+end
+
+local function VPManagerSortBlocksByVisualOrder(a, b)
+    local aRank = VPManagerColumnRank(a)
+    local bRank = VPManagerColumnRank(b)
+    if aRank ~= bRank then
+        return aRank < bRank
+    end
+
+    local ay = tonumber(a and a.y) or 0
+    local by = tonumber(b and b.y) or 0
+    if ay ~= by then
+        return ay < by
+    end
+
+    return (tonumber(a and a.id) or 0) < (tonumber(b and b.id) or 0)
+end
+
 function VisualProgrammingInterface.Manager:new()
     local manager = {
         blocks = {},
@@ -92,11 +118,38 @@ function VisualProgrammingInterface.Manager:removeBlock(id)
     local rightHeight = math.max(rightBlocks * 80, 80)
     WindowSetDimensions(rightScrollChild, 300, rightHeight)
     ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindowRight")
-    
+
+    self:rebuildLinearConnectionsFromVisualOrder()
 end
 
 function VisualProgrammingInterface.Manager:getBlock(id)
     return self.blocks[id]
+end
+
+function VisualProgrammingInterface.Manager:getBlocksInVisualOrder()
+    local sortedBlocks = {}
+    for _, block in pairs(self.blocks) do
+        if type(block) == "table" then
+            table.insert(sortedBlocks, block)
+        end
+    end
+    table.sort(sortedBlocks, VPManagerSortBlocksByVisualOrder)
+    return sortedBlocks
+end
+
+function VisualProgrammingInterface.Manager:rebuildLinearConnectionsFromVisualOrder()
+    local sortedBlocks = self:getBlocksInVisualOrder()
+    local orderedIds = {}
+
+    for _, block in ipairs(sortedBlocks) do
+        table.insert(orderedIds, tostring(block.id))
+    end
+
+    if type(UOWNativeLog) == "function" then
+        UOWNativeLog("[VPExec] rebuilt visual order", table.concat(orderedIds, ","))
+    end
+
+    return sortedBlocks
 end
 
 function VisualProgrammingInterface.Manager:addBlockType(type, icon)

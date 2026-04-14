@@ -48,6 +48,37 @@ local function VPExecCompareRecords(a, b)
     return VPExecSafeString(a and a.key) < VPExecSafeString(b and b.key)
 end
 
+local function VPExecCollectBlocksInVisualOrder(manager)
+    local orderedBlocks = {}
+    if not manager or type(manager.blocks) ~= "table" then
+        return orderedBlocks
+    end
+
+    for _, block in pairs(manager.blocks) do
+        if type(block) == "table" and block.id ~= nil then
+            table.insert(orderedBlocks, block)
+        end
+    end
+
+    table.sort(orderedBlocks, function(a, b)
+        local aRank = (type(a) == "table" and a.column == "right") and 1 or 0
+        local bRank = (type(b) == "table" and b.column == "right") and 1 or 0
+        if aRank ~= bRank then
+            return aRank < bRank
+        end
+
+        local ay = tonumber(a and a.y) or 0
+        local by = tonumber(b and b.y) or 0
+        if ay ~= by then
+            return ay < by
+        end
+
+        return (tonumber(a and a.id) or 0) < (tonumber(b and b.id) or 0)
+    end)
+
+    return orderedBlocks
+end
+
 function VisualProgrammingInterface.Execution:resolveBlockById(blockId)
     local manager = VisualProgrammingInterface.manager
     if not manager or type(manager.blocks) ~= "table" then
@@ -84,8 +115,10 @@ function VisualProgrammingInterface.Execution:buildExecutionSnapshot()
 
     local snapshotByKey = {}
     local orderedRecords = {}
+    local orderedBlocks = VPExecCollectBlocksInVisualOrder(manager)
 
-    for id, block in pairs(manager.blocks) do
+    for _, block in ipairs(orderedBlocks) do
+        local id = block and block.id
         if type(block) == "table" and block.id ~= nil then
             local key = VPExecNormalizeId(block.id)
             local record = {
@@ -117,71 +150,37 @@ end
 
 function VisualProgrammingInterface.Execution:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords, executionQueue)
     executionQueue = type(executionQueue) == "table" and executionQueue or {}
-    local visited = {}
-    local rootRecords = {}
-
-    for _, record in ipairs(orderedRecords or {}) do
-        local hasIncoming = false
-        for _, otherRecord in ipairs(orderedRecords or {}) do
-            for _, connectionKey in ipairs(otherRecord.connectionIds or {}) do
-                if connectionKey == record.key then
-                    hasIncoming = true
-                    break
-                end
-            end
-            if hasIncoming then
-                break
-            end
-        end
-        if not hasIncoming then
-            table.insert(rootRecords, record)
-        end
-    end
+    local orderedList = orderedRecords or {}
+    local rootCount = (#orderedList > 0) and 1 or 0
 
     if UOWNativeLog then
-        UOWNativeLog("[VPExec] rootCount", tostring(#rootRecords))
+        UOWNativeLog("[VPExec] rootCount", tostring(rootCount))
     end
 
-    local visitList = (#rootRecords > 0) and rootRecords or (orderedRecords or {})
+    if rootCount > 0 and UOWNativeLog then
+        local firstRecord = orderedList[1]
+        UOWNativeLog("[VPExec] visit root",
+            VPExecSafeString(firstRecord and firstRecord.id),
+            VPExecSafeString(firstRecord and firstRecord.type),
+            "y=" .. VPExecSafeString(firstRecord and firstRecord.y),
+            "roots=1")
+    end
 
-    local function visitRecord(record)
-        if type(record) ~= "table" or not record.key then
+    for _, record in ipairs(orderedList) do
+        if type(record) == "table" and record.id ~= nil then
+            local liveBlock = self:resolveBlockById(record.id)
+            if type(liveBlock) == "table" then
+                table.insert(executionQueue, liveBlock)
+            else
+                if UOWNativeLog then
+                    UOWNativeLog("[VPExec] live block missing", VPExecSafeString(record.id), VPExecSafeString(record.type))
+                end
+            end
+        else
             if UOWNativeLog then
                 UOWNativeLog("[VPExec] visit invalid record", VPExecSafeString(record))
             end
-            return
         end
-        if visited[record.key] then
-            return
-        end
-        visited[record.key] = true
-
-        local liveBlock = self:resolveBlockById(record.id)
-        if type(liveBlock) == "table" then
-            table.insert(executionQueue, liveBlock)
-        else
-            if UOWNativeLog then
-                UOWNativeLog("[VPExec] live block missing", VPExecSafeString(record.id), VPExecSafeString(record.type))
-            end
-        end
-
-        for _, connectionKey in ipairs(record.connectionIds or {}) do
-            local nextRecord = snapshotByKey[connectionKey]
-            if nextRecord then
-                visitRecord(nextRecord)
-            else
-                if UOWNativeLog then
-                    UOWNativeLog("[VPExec] missing snapshot connection", VPExecSafeString(record.id), "to=" .. VPExecSafeString(connectionKey))
-                end
-            end
-        end
-    end
-
-    for _, record in ipairs(visitList) do
-        if UOWNativeLog then
-            UOWNativeLog("[VPExec] visit root", VPExecSafeString(record.id), VPExecSafeString(record.type), "y=" .. VPExecSafeString(record.y), "roots=" .. tostring(#rootRecords))
-        end
-        visitRecord(record)
     end
 
     if UOWNativeLog then
@@ -212,7 +211,7 @@ function VisualProgrammingInterface.Execution:testFlow()
         UOWNativeLog("[VPExec] testFlow begin")
     end
     Debug.Print("Starting flow test")
-    
+
     -- Initialize test results
     local testResults = {
         blocks = {},
@@ -451,7 +450,7 @@ function VisualProgrammingInterface.Execution:start()
         Debug.Print("Error: No blocks found")
         return false
     end
-    
+
     -- Reset visual states
     for id, _ in pairs(VisualProgrammingInterface.manager.blocks) do
         local blockWindow = "Block" .. id
@@ -460,54 +459,15 @@ function VisualProgrammingInterface.Execution:start()
         end
         self.blockStates[id] = VisualProgrammingInterface.Execution.BlockState.PENDING
     end
-    
-    -- Build execution queue in order of connections
-    local visited = {}
-    local function visit(block)
-        if not block or visited[block.id] then return end
-        
-        -- Add current block to queue
-        table.insert(self.executionQueue, block)
-        visited[block.id] = true
-        Debug.Print("Added block " .. block.id .. " to execution queue")
-        
-        -- Visit next block in chain if it exists
-        if block.connections and #block.connections > 0 then
-            local nextBlockId = block.connections[1].id
-            local nextBlock = VisualProgrammingInterface.manager:getBlock(nextBlockId)
-            if nextBlock then
-                Debug.Print("Following connection from block " .. block.id .. " to block " .. nextBlockId)
-                visit(nextBlock)
-            end
-        end
+
+    local snapshotByKey, orderedRecords, snapshotErr = self:buildExecutionSnapshot()
+    if not snapshotByKey then
+        Debug.Print("Error: Could not build execution queue: " .. tostring(snapshotErr or "unknown"))
+        return false
     end
-    
-    -- Find the first block (one with no incoming connections)
-    local firstBlock = nil
-    for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
-        local hasIncoming = false
-        for _, otherBlock in pairs(VisualProgrammingInterface.manager.blocks) do
-            if otherBlock.connections then
-                for _, conn in ipairs(otherBlock.connections) do
-                    if conn.id == block.id then
-                        hasIncoming = true
-                        break
-                    end
-                end
-            end
-            if hasIncoming then break end
-        end
-        if not hasIncoming then
-            firstBlock = block
-            break
-        end
-    end
-    
-    -- Start building queue from the first block
-    if firstBlock then
-        Debug.Print("Starting execution queue with block " .. firstBlock.id)
-        visit(firstBlock)
-    else
+
+    self:buildExecutionQueueFromSnapshot(snapshotByKey, orderedRecords, self.executionQueue)
+    if #self.executionQueue == 0 then
         Debug.Print("Error: Could not find starting block")
         return false
     end

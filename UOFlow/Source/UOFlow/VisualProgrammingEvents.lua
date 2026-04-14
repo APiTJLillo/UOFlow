@@ -78,6 +78,37 @@ function VisualProgrammingInterface.AnimateBlockShift(block, targetY)
     end
 end
 
+local function VPEventsCollectBlocksInVisualOrder()
+    local sortedBlocks = {}
+    if not VisualProgrammingInterface.manager or type(VisualProgrammingInterface.manager.blocks) ~= "table" then
+        return sortedBlocks
+    end
+
+    for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
+        if type(block) == "table" and block.id ~= nil then
+            table.insert(sortedBlocks, block)
+        end
+    end
+
+    table.sort(sortedBlocks, function(a, b)
+        local aRank = (type(a) == "table" and a.column == "right") and 1 or 0
+        local bRank = (type(b) == "table" and b.column == "right") and 1 or 0
+        if aRank ~= bRank then
+            return aRank < bRank
+        end
+
+        local ay = tonumber(a and a.y) or 0
+        local by = tonumber(b and b.y) or 0
+        if ay ~= by then
+            return ay < by
+        end
+
+        return (tonumber(a and a.id) or 0) < (tonumber(b and b.id) or 0)
+    end)
+
+    return sortedBlocks
+end
+
 function VisualProgrammingInterface.OnBlockDrag()
     local blockName = SystemData.ActiveWindow.name:gsub("Icon$", ""):gsub("Name$", ""):gsub("Description$", "")
     local block = VisualProgrammingInterface.manager:getBlock(tonumber(blockName:match("Block(%d+)")))
@@ -285,6 +316,7 @@ function VisualProgrammingInterface.OnBlockDragEnd()
     -- Update scroll windows
     ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindow")
     ScrollWindowUpdateScrollRect("VisualProgrammingInterfaceWindowScrollWindowRight")
+
 end
 
 function VisualProgrammingInterface.ContextMenuCallback(returnCode, param)
@@ -295,11 +327,7 @@ function VisualProgrammingInterface.ContextMenuCallback(returnCode, param)
             DestroyWindow(param)
         end
     elseif returnCode == "add_block" then
-        local sortedBlocks = {}
-        for _, block in pairs(VisualProgrammingInterface.manager.blocks) do
-            table.insert(sortedBlocks, block)
-        end
-        table.sort(sortedBlocks, function(a, b) return a.y < b.y end)
+        local sortedBlocks = VPEventsCollectBlocksInVisualOrder()
         
         local newIndex = #sortedBlocks
         Debug.Print("Adding new block of type: " .. tostring(param))
@@ -327,11 +355,7 @@ function VisualProgrammingInterface.ContextMenuCallback(returnCode, param)
         local block = VisualProgrammingInterface.manager:getBlock(blockId)
         if not block then return end
         
-        local sortedBlocks = {}
-        for _, b in pairs(VisualProgrammingInterface.manager.blocks) do
-            table.insert(sortedBlocks, b)
-        end
-        table.sort(sortedBlocks, function(a, b) return a.y < b.y end)
+        local sortedBlocks = VPEventsCollectBlocksInVisualOrder()
         
         local currentIndex = 1
         for i, b in ipairs(sortedBlocks) do
@@ -373,7 +397,7 @@ function VisualProgrammingInterface.ContextMenuCallback(returnCode, param)
                     WindowAddAnchor(bName, "topleft", parentWindow, "topleft", 0, newY)
                 end
             end
-            
+
         end
     end
 end

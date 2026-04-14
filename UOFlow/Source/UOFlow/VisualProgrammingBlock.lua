@@ -88,12 +88,12 @@ function VisualProgrammingInterface.Block:getDescription()
     
     -- Handle parameters based on block type
     if action.name == "Cast Spell" then
-        -- Special formatting for Cast Spell blocks: "SpellName → target"
+        -- Special formatting for Cast Spell blocks: "SpellName(target)"
         local spellName = self.params.spellId or ""
         local target = self.params.target or ""
         -- Remove any "Spell" suffix from spell names for cleaner display
         spellName = spellName:gsub(" Spell$", "")
-        desc = desc .. " [" .. self.id .. "]: " .. spellName .. "(" .. target .. ")"
+        desc = desc .. ": " .. spellName .. "(" .. target .. ")"
         -- Add state if not pending
         if self.state ~= "pending" then
             desc = desc .. " (" .. self.state .. ")"
@@ -111,9 +111,6 @@ function VisualProgrammingInterface.Block:getDescription()
             end
         end
     end
-    
-    -- Build final description with instance number first
-    desc = desc .. " [" .. self.id .. "]"
     
     -- Add parameters if any
     if #paramValues > 0 then
