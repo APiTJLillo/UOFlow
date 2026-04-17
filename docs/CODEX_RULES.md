@@ -29,11 +29,12 @@ Then summarize in 5-10 bullets what you think is true before coding.
 9. `Debug.Log`, `UOW.Debug.Log`, `uow_debug_log`, and `__uow_debug_log_v1` are not reliable primary script-call surfaces here, even when they appear bound in logs.
 10. Public script spell APIs should be Lua wrappers (`UOFlow.Spell.cast`, `UOW.Spell.cast`, `uow.cmd.cast`) over simple raw globals such as `UOWCastSpellRaw`, not native dotted registrations.
 11. Generic action queue lines (e.g. enqueue return addresses) are not sufficient proof of spell-cast execution.
-12. For cast debugging, treat these as required proof lines (or equivalent):
-   - `CALL_CAST_V1 invoked ...`
-   - `BRIDGE_V1 vp_cast invoked ...`
-   - `UOFlow.Spell.cast invoked ...`
-   - `UOWCastSpellRaw invoked ...`
+12. For cast debugging, treat these as required proof stages (or equivalent current labels):
+   - direct entry: `CALL_CAST_V1 invoked ...`
+   - bridge/global cast entry: `uow_vp_cast invoked ...` (legacy equivalent: `BRIDGE_V1 vp_cast invoked ...`)
+   - cast wrapper entry: `uow_spell_cast invoked ...` or `UOFlow.Spell.cast invoked ...` (path-dependent)
+   - final result line: `CALL_CAST_V1 result ok=... msg=...` (or equivalent wrapper result line)
+   - for raw-evaluator route, also require `UOWCastSpellRaw invoked ...` and queued result/evidence logs before claiming success
 13. If those lines are missing, do not claim cast path is reached.
 14. `UserActionCastSpell` / `UserActionCastSpellOnId` client pointers are LuaPlus/raw ABI callbacks, not `int(lua_State*)` call targets. Do not invoke the captured original pointers through `InvokeClientLuaFn(...)`.
 15. Phase-1 native cast recovery uses the direct client action path:
@@ -74,8 +75,8 @@ For spell tests:
 When debugging cast path, logs must include:
 1. VP-side before-call line with run id and spell id.
 2. Native entry line at first instruction of direct cast trampoline.
-3. Native entry/exit line for `UOFlow.Spell.cast` wrapper.
-4. Final result line with `(ok, msg)`.
+3. Native bridge/wrapper entry line (`uow_vp_cast` + `uow_spell_cast`, or `UOFlow.Spell.cast` on that route).
+4. Final result line with `(ok, msg)` (`CALL_CAST_V1 result ...` or equivalent wrapper result line).
 
 If a stage is missing in logs, stop and diagnose that stage before further changes.
 
@@ -369,3 +370,21 @@ These rules describe the current good state after rolling back from later regres
 4. `Manager:rebuildLinearConnectionsFromVisualOrder()` should stay cheap and safe. Do not turn it back into a graph-mutating function unless you are intentionally redesigning the execution model.
 5. `UOWPumpQueuedRawCasts()` currently pumps both casts and walks. Do not rename or narrow it casually without updating VP timer code and pollers.
 6. If raw callbacks start “working” only when called manually but VP breaks, suspect control-flow/return behavior first, not the native spell or movement helper.
+7. Execution functions have overlapping definitions across `UOFlow/Source/UOFlow/VisualProgrammingExecutionFlow.lua` and `UOFlow/Source/UOFlow/VisualProgrammingExecution.lua`; script load order in `UOFlow/Source/UOFlow/VisualProgramming.xml` currently loads `...ExecutionFlow.lua` first and `...Execution.lua` after it, so later definitions win.
+
+---
+
+## 15) Local RE/tooling paths (Windows host)
+
+Use these concrete paths when reproducing reverse-engineering context on this machine:
+
+1. Ghidra install root:
+   - `C:\Users\dukey\OneDrive\Desktop\ghidra_12.0.4_PUBLIC`
+2. Ghidra launcher:
+   - `C:\Users\dukey\OneDrive\Desktop\ghidra_12.0.4_PUBLIC\ghidraRun.bat`
+3. UOSA artifacts root:
+   - `C:\Users\dukey\OneDrive\Documents`
+4. Confirmed UOSA artifact currently present:
+   - `C:\Users\dukey\OneDrive\Documents\UOSA.exe.gzf`
+
+If you move to separate extracted files (e.g., `UOSA.exe`, `.gpr`, `.rep`), update this section immediately with exact absolute paths.
