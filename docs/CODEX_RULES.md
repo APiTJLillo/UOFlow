@@ -167,7 +167,7 @@ These rules describe the current good state after rolling back from later regres
    - anchor the new window into that same scroll child
 3. The add-block context-menu path must call `CreateBlock(..., targetColumn)`.
 4. The current add-block path lives in `UOFlow/Source/UOFlow/VisualProgrammingEvents.lua`.
-5. There is an older duplicate `CreateBlock` definition in `VisualProgrammingCore.lua`. Treat it as stale unless you intentionally reconcile both definitions.
+5. `VisualProgrammingCore.lua` should not define a second `CreateBlock`; keep one authoritative implementation in `VisualProgrammingTypes.lua`.
 6. If block creation starts throwing `Invalid Parameter passed to 'error()'` again after add/move/test changes, first verify:
    - the three-arg `CreateBlock(...)` is still the effective runtime definition
    - the block is being created in the correct scroll child for its column
@@ -363,14 +363,15 @@ These rules describe the current good state after rolling back from later regres
 ## 14) Repo landmines / future-self warnings
 
 1. There are duplicate or stale-looking definitions in the repo. Do not assume the first search hit is the live one.
-2. Specific known trap:
-   - `VisualProgrammingInterface.CreateBlock` exists in both `VisualProgrammingCore.lua` and `VisualProgrammingTypes.lua`
-   - the working one for current VP/UI behavior is the three-arg version in `VisualProgrammingTypes.lua`
-3. If a change breaks add-block, drag/drop, or test execution in a way that looks unrelated, check for load-order collisions between duplicate definitions first.
+2. `VisualProgrammingInterface.CreateBlock` is now single-source in `UOFlow/Source/UOFlow/VisualProgrammingTypes.lua` (three-arg, column-aware). Keep it there.
+3. If a change breaks add-block, drag/drop, or test execution in a way that looks unrelated, check for accidental reintroduction of duplicate definitions first.
 4. `Manager:rebuildLinearConnectionsFromVisualOrder()` should stay cheap and safe. Do not turn it back into a graph-mutating function unless you are intentionally redesigning the execution model.
 5. `UOWPumpQueuedRawCasts()` currently pumps both casts and walks. Do not rename or narrow it casually without updating VP timer code and pollers.
 6. If raw callbacks start “working” only when called manually but VP breaks, suspect control-flow/return behavior first, not the native spell or movement helper.
-7. Execution functions have overlapping definitions across `UOFlow/Source/UOFlow/VisualProgrammingExecutionFlow.lua` and `UOFlow/Source/UOFlow/VisualProgrammingExecution.lua`; script load order in `UOFlow/Source/UOFlow/VisualProgramming.xml` currently loads `...ExecutionFlow.lua` first and `...Execution.lua` after it, so later definitions win.
+7. Keep execution ownership split clean:
+   - `UOFlow/Source/UOFlow/VisualProgrammingExecution.lua` owns queue/snapshot builders and `Execution:start()`
+   - `UOFlow/Source/UOFlow/VisualProgrammingExecutionFlow.lua` owns flow controls (`hardResetForTestRun`, `pause`, `resume`, `stop`, `continueExecution`)
+   - if overlap is reintroduced, `UOFlow/Source/UOFlow/VisualProgramming.xml` load order still means later definitions win
 
 ---
 

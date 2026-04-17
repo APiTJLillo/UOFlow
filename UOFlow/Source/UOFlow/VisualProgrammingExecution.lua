@@ -384,22 +384,24 @@ end
 -- Initialize the execution system
 VisualProgrammingInterface.Execution:initialize()
 
--- Check and execute flows based on triggers
+-- Check trigger conditions without mutating execution state.
 function VisualProgrammingInterface.Execution:checkTriggers()
+    if type(VisualProgrammingInterface.Triggers) ~= "table"
+    or type(VisualProgrammingInterface.Triggers.check) ~= "function" then
+        return false, nil
+    end
+
     local triggered, triggerName = VisualProgrammingInterface.Triggers:check()
     if triggered then
-        Debug.Print("Trigger detected: " .. triggerName)
-        self:start()
+        Debug.Print("Trigger detected: " .. tostring(triggerName))
     end
+    return triggered == true, triggerName
 end
 
--- Modified start function to include trigger checks
+-- Build and run from the current visual snapshot.
 function VisualProgrammingInterface.Execution:start()
     if self.isRunning then return end
-    
-    -- Check triggers before starting
-    self:checkTriggers()
-    
+
     -- Reset execution state
     self.isRunning = true
     self.isPaused = false
