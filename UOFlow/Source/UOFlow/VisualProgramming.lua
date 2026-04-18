@@ -12,46 +12,8 @@ VisualProgrammingInterface.Actions.categories = VisualProgrammingInterface.Actio
     COMBAT = "Combat",
     SKILLS = "Skills"
 }
-VisualProgrammingInterface.Actions.actions = VisualProgrammingInterface.Actions.actions or {}
 VisualProgrammingInterface.Actions.registry = VisualProgrammingInterface.Actions.registry or {}
 VisualProgrammingInterface.Actions.defaultParams = VisualProgrammingInterface.Actions.defaultParams or {}
-
-function VisualProgrammingInterface.Actions:register(action)
-    Debug.Print("Registering action: " .. action.name)
-    self.actions[action.name] = action
-end
-
-function VisualProgrammingInterface.Actions:get(name)
-    Debug.Print("Getting action: " .. name)
-    return self.actions[name]
-end
-
-function VisualProgrammingInterface.Actions:validateParams(type, params)
-    Debug.Print("Validating params for: " .. type)
-    local action = self:get(type)
-    if not action then
-        Debug.Print("Action not found: " .. type)
-        return false
-    end
-    if action.validate then
-        local success, result = action.validate(params)
-        Debug.Print("Validation " .. (success and "passed" or "failed"))
-        return success, result
-    end
-    return true
-end
-
-function VisualProgrammingInterface.Actions:execute(type, params)
-    Debug.Print("Executing action: " .. type)
-    local action = self:get(type)
-    if not action then
-        Debug.Print("Action not found: " .. type)
-        return false
-    end
-    local success, result = action.execute(params)
-    Debug.Print("Action execution " .. (success and "succeeded" or "failed"))
-    return success, result
-end
 
 local function VPUIEmitNativeLog(...)
     if type(UOWNativeLog) == "function" then

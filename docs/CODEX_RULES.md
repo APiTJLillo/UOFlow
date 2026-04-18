@@ -372,6 +372,10 @@ These rules describe the current good state after rolling back from later regres
    - `UOFlow/Source/UOFlow/VisualProgrammingExecution.lua` owns queue/snapshot builders and `Execution:start()`
    - `UOFlow/Source/UOFlow/VisualProgrammingExecutionFlow.lua` owns flow controls (`hardResetForTestRun`, `pause`, `resume`, `stop`, `continueExecution`)
    - if overlap is reintroduced, `UOFlow/Source/UOFlow/VisualProgramming.xml` load order still means later definitions win
+8. Keep action-system ownership clean:
+   - `UOFlow/Source/UOFlow/VisualProgrammingActions.lua` owns `Actions:register/get/validateParams/execute/initialize`
+   - `UOFlow/Source/UOFlow/VisualProgramming.lua` should only bootstrap shared tables/utilities, not redefine `Actions` core methods
+9. Do not keep tracked C++/header backup artifacts (`*.bak*`) in `UOWalkPatch`; they create stale-code search hits and drift risk.
 
 ---
 
